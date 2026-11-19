@@ -1,0 +1,41 @@
+---
+id: bl-04
+title: "Hook events missing from loop trace in two cases"
+state: todo
+priority: 3
+labels: [ready-for-human]
+blocked_by: []
+---
+
+## Parent
+
+None. Backlog, not scheduled in a milestone.
+
+## What
+
+Three gaps between hook events and `loop trace`, found while finishing m1-04.
+
+- (a) When a hook is stopped by cancellation (SIGTERM during `before_run`), no `hook_finished` event is recorded, only a warn log line `hook before_run was stopped`. The hook shell row in `docs/spec-decisions.md` says each hook run is recorded as one `hook_finished` event. Either record a `hook_finished` with a stopped marker, or reword the row.
+- (b) `hook_finished` events recorded outside an Attempt (`before_remove` from the terminal retry cleanup, `Orchestrator.removeWorkspace`) are stored, but `loop trace` does not print them. m1-07's `TraceCommand` has an issue level kinds set where `hook_finished` could be added.
+- (c) In `loop trace`, the `after_create` and `before_run` hook lines print before the PreparingWorkspace phase line. `docs/PLAN.md` (around line 502) shows the phase line first, then the hook line.
+
+## Decisions (triage)
+
+- (a) Record, do not reword. A hook stopped by cancellation is recorded as one `hook_finished` event like any other hook run (plan 10, nothing is sampled). Fields: `hook`, `command`, `timed_out=false`, `stopped=true`, `duration_ms`, `output` (the tail kept so far, possibly empty); `exit_code` is omitted, as the row already says for a stopped hook. A hook that ends normally carries no `stopped` key. The event is written even though the caller is being cancelled (for example under `NonCancellable`), through the same record path as other `hook_finished` events, so m1-11 redaction applies to it. The warn log line stays. The `docs/spec-decisions.md` hook shell row is updated to name the `stopped` key. `loop trace` prints `stopped=true` on that hook line (add `stopped` to the printed hook keys, after `timed_out`, only when present).
+- (b) Issue level `hook_finished` events print as their own issue level blocks in seq order, like the other issue level kinds, with the same line format as an attempt's hook line (output tail included on failure). No new section or header.
+- (c) Within an attempt, the PreparingWorkspace phase line prints before the `after_create` and `before_run` hook lines, as in `docs/PLAN.md` 10.1. Fix it where the order is decided (record the phase before running the hooks, or order the lines in `TraceCommand`), whichever keeps the stored seq order true to what happened; prefer recording the phase first.
+- Out of scope: `loop show --events` (m1-13) prints raw events and needs no change here; `loop status` (m1-14) does not show hook events.
+- Blocked by m1-11: both touch `Orchestrator`'s `HookRecorder` and the `hook_finished` write path; landing after m1-11 means the new stopped event goes through redaction from the start.
+
+## Acceptance criteria
+
+- [ ] A hook stopped by cancellation (SIGTERM during `before_run`) is recorded as a `hook_finished` event with `stopped=true` and no `exit_code`, covered by a test; `loop trace` shows `stopped=true` on its line; the `docs/spec-decisions.md` hook shell row names the `stopped` key.
+- [ ] `loop trace` prints `hook_finished` events recorded outside an Attempt, including `before_remove`, covered by a `TraceCommand` test.
+- [ ] `loop trace` prints the PreparingWorkspace phase line before the `after_create` and `before_run` hook lines, covered by a `TraceCommand` test.
+- [ ] `./gradlew build` passes.
+
+## Comments
+
+2026-11-07 triage: ready-for-human, priority 3, decided to record stopped hooks as hook_finished with stopped=true, print issue level hook events as issue level blocks, and record the phase before its hooks; blocked by m1-11.
+
+2026-11-11 moved out of M1 to the backlog: was m1-25, now bl-04. Not needed to close M1.

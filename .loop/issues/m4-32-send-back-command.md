@@ -1,0 +1,50 @@
+---
+id: m4-32
+title: "loop send-back, which is bl-89's loop reject"
+state: todo
+priority: 3
+labels: [ready-for-agent]
+blocked_by: [m4-52]
+---
+
+## Parent
+
+[Loop, M4](../specs/loop-m4.md)
+
+## What
+
+Story 129 (PLAN 6.6). Lane A, runs on the claude-code runner. Area: a new `SendBackCommand.kt` in `cli/`, registered in `cli/.../Main.kt`, the waits (`spec-core/.../waiting/Waits.kt`, the logic in `loop.core.waiting`), the retry path that already carries a refuted merge check's findings, `PromptVariables.kt`.
+
+Carries bl-99. Sending m3-04 back with merge risk findings took a comment, a move to `review` (which ends the approval wait as a human change), a wait for the next tick, then a move back to `todo`. The docs say "move the issue back to todo with a comment", but a waiting issue is already `todo`. bl-99 proposed `loop send-back <id> --comment <text>`; Loop doing it on its own for a medium risk band is left for later.
+
+Carries the manual half of bl-89. Since m3-15, a red CI ends the CI wait with a comment and an unapproved `Waiting(approval)`, and by m3-15's note 8 Loop does not dispatch the issue again. bl-89 asked for `loop reject <id> [reason]`; it is this command, one name, `send-back`. The automatic sending of a red CI is the `ci_failed` reaction (m4-35).
+
+- `loop send-back <issue> --reason "<text>"` ends a `Waiting(approval)`, approved or not, and requeues the issue in the same workspace. The next attempt gets my reason as verify findings, the path a refuted merge check takes, with `loop.retry_kind` = `sent_back`; preflight renders it. The new value joins `PromptVariables.RETRY_KINDS`, and the list assertion of `PromptVariablesTest` gains it.
+- A bare id means the primary tracker (m4-12, m4-47); a namespaced id names its tracker.
+- Loop comments the reason on the issue, records `sent_back` (by, reason) and a human touch `send_back`, counted by the next ledger row.
+- The pull request, when one is open, stays open; the next delivery updates it.
+- **No slot:** a send back takes no `max_attempts` slot. The human is the bound. On the pilot app (`max_attempts: 2`) a slot would park the issue after one retry and one send back, and cost a `loop resume`. The slot stays for automatic reactions (m4-34). The docs say so.
+- Refused inside a Loop attempt, and on an issue that is not waiting for approval (a `Waiting(merge)` in progress, a `Waiting(ask)`, which `loop answer` ends), each with its own exit code and a message naming the right command.
+- A new glossary term for Send back goes under `residual_human_steps` with its exact text: `CONTEXT.md` is protected.
+- Out of this issue: automatic send backs on medium risk or red CI (m4-35), reactions.
+
+## Acceptance criteria
+
+- [ ] `loop send-back` on a `Waiting(approval)` issue ends the wait, comments the reason, and the next attempt's prompt carries the reason as verify findings with `loop.retry_kind` = `sent_back` (CLI test with the fake runner).
+- [ ] After a red CI wait recorded from Actions answers, `loop send-back` sends the issue back with the pull request left open, and the next delivery updates the same pull request (test on recorded responses).
+- [ ] `sent_back` and the `send_back` human touch are recorded, the touch counted in the next ledger row, and `loop trace` prints the event (test).
+- [ ] A send back takes no `max_attempts` slot: an issue with no slot left is sent back and dispatches again (test).
+- [ ] A bare id finds the issue in the primary tracker and a namespaced id in its tracker (test).
+- [ ] Inside an attempt, on an issue not waiting, on a `Waiting(merge)` and on a `Waiting(ask)`, the command fails with its own exit code, names the right command and changes nothing (one test each).
+- [ ] `./gradlew --no-daemon :cli:test --tests 'loop.cli.SendBackCommandTest'` passes.
+- [ ] `./gradlew --no-daemon :spec-core:test --tests 'loop.core.workflow.PromptVariablesTest'` passes.
+- [ ] The orchestrator edit is limited to call sites (judgment).
+- [ ] The glossary text for Send back is listed under `residual_human_steps` in the submitted result (judgment).
+- [ ] `docs/spec-decisions.md` and PLAN 6.6 describe `loop send-back` and why it takes no slot, and the "Delivery" bullet of `docs/self-hosting.md` (around line 121) names it instead of the move back to `todo` (judgment).
+- [ ] `./gradlew --no-daemon build` passes.
+
+## Comments
+
+2026-11-18 soule: written in m3-29.
+
+2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).

@@ -1,0 +1,12 @@
+.claude/worktrees/
+.scratch/
+.gradle/
+.kotlin/
+build/
+.idea/
+*.iml
+local.properties
+.claude/worktree/
+workspaces/
+.loop/result.json
+__pycache__/

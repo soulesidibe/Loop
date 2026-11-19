@@ -1,0 +1,39 @@
+# Recorded GitHub API responses
+
+Real responses of the GitHub REST API, recorded with curl on 2026-11-12 from the public repository `octocat/Hello-World`, unauthenticated, with `Accept: application/vnd.github+json` and `X-GitHub-Api-Version: 2022-11-28`. Each `<name>.json` is the body as received and `<name>.headers` keeps the status and the headers the adapter reads (`link`, `x-ratelimit-*`, `retry-after`).
+
+| Name | Request |
+|---|---|
+| `open-issues-page-1` | `GET /repos/octocat/Hello-World/issues?state=open&per_page=3&sort=created&direction=asc` |
+| `open-issues-page-2` | the `rel="next"` link of page 1. Its own `rel="next"` link was cut, so the recording ends at page 2 |
+| `issue-26` | `GET /repos/octocat/Hello-World/issues/26` |
+| `pull-request-1` | `GET /repos/octocat/Hello-World/issues/1`, a pull request seen through the issues API |
+| `issue-not-found` | `GET /repos/octocat/Hello-World/issues/999999999` |
+| `repository` | `GET /repos/octocat/Hello-World`, recorded on 2026-11-13 for the gone check of bl-22 |
+| `issue-comments-26` | `GET /repos/octocat/Hello-World/issues/26/comments?per_page=100`, recorded on 2026-11-13 for bl-06: four comments, oldest first, one with `\r\n` line ends and one with an emoji |
+
+Written by hand, after the shapes GitHub documents in "Rate limits for the REST API", because they cannot be recorded without exhausting a real limit:
+
+| Name | Response |
+|---|---|
+| `rate-limited` | the primary limit: 403 with `x-ratelimit-remaining: 0` and `x-ratelimit-reset` |
+| `secondary-rate-limited` | a secondary limit: 429 with `retry-after: 60` |
+
+Written by hand for the write side (m2-23), after the shapes GitHub documents in "REST API endpoints for issues", "for labels" and "for issue comments", because no test may write to a real repository and no agent sees a token with write access. The real run against the playground is bl-40:
+
+| Name | Response |
+|---|---|
+| `add-labels-26` | `POST /repos/octocat/Hello-World/issues/26/labels`: 200 with the issue's labels after the add |
+| `remove-label-26` | `DELETE /repos/octocat/Hello-World/issues/26/labels/ready-for-agent`: 200 with the labels left |
+| `label-not-found` | the same `DELETE` for a label the issue does not carry: 404 `Label does not exist` |
+| `update-issue-26` | `PATCH /repos/octocat/Hello-World/issues/26` with `{"state":"closed"}`: 200 with the issue, closed |
+| `create-comment-26` | `POST /repos/octocat/Hello-World/issues/26/comments`: 201 with the comment |
+| `write-forbidden` | a write with a read only token: 403 `Resource not accessible by personal access token` |
+| `validation-failed` | a write GitHub refuses: 422 `Validation Failed` |
+
+Written by hand for the CI wait (m3-15), after the shapes GitHub documents in "REST API endpoints for workflow runs", because the org's Actions minutes are spent until December 1 and no agent sees a token:
+
+| Name | Response |
+|---|---|
+| `actions-runs` | `GET /repos/octocat/Hello-World/actions/runs?head_sha=<sha>&per_page=100`: 200 with three runs of one head, `build` on `push` twice (run 41, a second attempt, `success`, and run 40, `failure`) and `lint` on `pull_request` (run 12, `in_progress`), each with an empty `pull_requests` |
+| `actions-forbidden` | the same listing with a token that lacks Actions read: 403 `Resource not accessible by personal access token` with `x-accepted-github-permissions: actions=read` |

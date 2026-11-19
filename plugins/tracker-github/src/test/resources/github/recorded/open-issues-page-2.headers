@@ -1,0 +1,7 @@
+status: 200
+link: <https://api.github.com/repositories/1296269/issues?state=open&per_page=3&sort=created&direction=asc&page=1&before=Y3Vyc29yOnYyOpLPAAABNsXDM3DOAD-rxg%3D%3D>; rel="prev"
+x-ratelimit-limit: 60
+x-ratelimit-remaining: 55
+x-ratelimit-used: 5
+x-ratelimit-resource: core
+x-ratelimit-reset: 1794498520

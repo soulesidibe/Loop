@@ -1,0 +1,29 @@
+[
+  {
+    "id": 208045946,
+    "node_id": "MDU6TGFiZWwyMDgwNDU5NDY=",
+    "url": "https://api.github.com/repos/octocat/Hello-World/labels/loop",
+    "name": "loop",
+    "description": null,
+    "color": "ededed",
+    "default": false
+  },
+  {
+    "id": 208045947,
+    "node_id": "LA_kwDOAAABcM8AAAAB1",
+    "url": "https://api.github.com/repos/octocat/Hello-World/labels/ready-for-agent",
+    "name": "ready-for-agent",
+    "description": null,
+    "color": "0e8a16",
+    "default": false
+  },
+  {
+    "id": 208045948,
+    "node_id": "LA_kwDOAAABcM8AAAAB2",
+    "url": "https://api.github.com/repos/octocat/Hello-World/labels/needs-review",
+    "name": "needs-review",
+    "description": null,
+    "color": "fbca04",
+    "default": false
+  }
+]

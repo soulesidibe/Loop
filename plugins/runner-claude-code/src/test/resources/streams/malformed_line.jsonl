@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"claude-session-4","cwd":"/work","tools":["Bash"],"model":"claude-sonnet","permissionMode":"bypassPermissions"}
+{"type":"assistant","message":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"Working."}],"usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}},"session_id":"claude-session-4"}
+this line is not json {
+{"type":"result","subtype":"success","is_error":false,"duration_ms":500,"num_turns":1,"result":"done","session_id":"claude-session-4","total_cost_usd":0.02,"usage":{"input_tokens":300,"output_tokens":40,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"permission_denials":[]}

@@ -1,0 +1,6 @@
+status: 404
+x-ratelimit-limit: 5000
+x-ratelimit-remaining: 4990
+x-ratelimit-used: 10
+x-ratelimit-resource: core
+x-ratelimit-reset: 1794500000

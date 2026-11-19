@@ -1,0 +1,36 @@
+---
+id: bl-05
+title: "Loop trace prints tracker issue identifier and title unredacted"
+state: todo
+priority: 3
+labels: [ready-for-human]
+blocked_by: []
+---
+
+## Parent
+
+None. Backlog, not scheduled in a milestone.
+
+## What
+
+Found during m1-26, where the manager scoped it out. `loop trace` echoes the issue identifier and title taken from the tracker without passing them through the redactor. A tracker field that holds a secret, for example a token pasted into a title, is printed as is.
+
+## Decisions (triage)
+
+- Scope: the whole rendered trace goes through the command's redactor (the startup redactor that has learned the workflow secrets) in one call, right before it is echoed. Not only the header line. This covers the tracker fields and any line m1-06, m1-08 or m1-09 adds later, at no extra cost.
+- This is redaction before writing to stdout, so it keeps the rule "before writing, never on read". The store stays read only with `Redactor.NONE`. Store events were redacted when recorded, and a marker holds no secret, so a second pass leaves them as they are.
+- The "No attempt recorded" line holds no tracker field and stays as it is.
+- Priority 3: the files tracker is written by the operator, so a secret in a title is unlikely, but a future remote tracker makes it real.
+
+## Acceptance criteria
+
+- [ ] `loop trace` echoes its whole rendered output through the command's startup redactor, so the tracker fields (issue identifier and title) are covered.
+- [ ] A test with a known secret in an issue title shows the marker in the trace output, not the secret. A second case puts a token pattern in the title and shows its pattern marker.
+- [ ] The "Secret redaction" write point list in `docs/spec-decisions.md` names `loop trace` output.
+- [ ] `./gradlew build` passes.
+
+## Comments
+
+2026-11-08 triage: ready-for-human, priority 3, decided to redact the whole rendered trace output once before echo through the startup redactor, keep the store read only with Redactor.NONE, and record trace output as a write point in docs/spec-decisions.md.
+
+2026-11-11 moved out of M1 to the backlog: was m1-28, now bl-05. Not needed to close M1.

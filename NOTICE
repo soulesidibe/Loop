@@ -1,0 +1,9 @@
+Loop
+Copyright 2026 Souleymane Sidibe
+
+This product is licensed under the Apache License, Version 2.0, see LICENSE.
+
+This product includes the Symphony service specification, vendored unchanged
+in docs/symphony/ (SPEC.md, LICENSE and NOTICE; the README there is Loop's). Copyright 2025 OpenAI, licensed under the Apache License,
+Version 2.0. Its own LICENSE and NOTICE are kept in that folder. Loop
+implements the specification and is not affiliated with or endorsed by OpenAI.

@@ -1,0 +1,13 @@
+{
+  "message": "Validation Failed",
+  "errors": [
+    {
+      "value": "",
+      "resource": "Label",
+      "field": "name",
+      "code": "invalid"
+    }
+  ],
+  "documentation_url": "https://docs.github.com/rest/issues/labels#add-labels-to-an-issue",
+  "status": "422"
+}

@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","session_id":"claude-session-8","cwd":"/work","tools":["Bash","Read","Edit"],"model":"claude-sonnet","permissionMode":"bypassPermissions"}
+{"type":"result","subtype":"success","is_error":true,"duration_ms":120,"num_turns":1,"result":"Invalid API key · Please run /login","session_id":"claude-session-8","total_cost_usd":0,"usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"permission_denials":[]}

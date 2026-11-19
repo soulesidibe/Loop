@@ -1,0 +1,143 @@
+package loop.cli
+
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import loop.api.ProjectId
+import loop.core.orchestrator.ToolConfigWriter
+import loop.core.workflow.ConfigValue
+import loop.core.workflow.ContextConfig
+import loop.core.workflow.WorkflowFile
+import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.NoSuchFileException
+import java.nio.file.Path
+import java.nio.file.StandardCopyOption
+import kotlin.io.path.Path
+import kotlin.io.path.readText
+import kotlin.io.path.writeText
+
+/** The tool config snapshot format version this build writes and reads. */
+const val TOOL_CONFIG_VERSION = 1
+
+/** The snapshot key of `context.tool_output_tokens` (m3-14), which `loop tool mcp` trims its replies to. */
+private const val TOOL_OUTPUT_TOKENS = "tool_output_tokens"
+
+/** What `loop tool` reads from the snapshot: no tracker settings beyond the kind, no credential. */
+data class ToolConfig(
+    val projectId: ProjectId,
+    /** The folder of `WORKFLOW.md`, to open the store. */
+    val workflowDir: Path,
+    val trackerKind: String,
+    val definedStates: List<String>,
+    /** `context.tool_output_tokens` of the attempt's workflow (m3-14); the default when the snapshot has none. */
+    val toolOutputTokens: Int = ContextConfig().toolOutputTokens,
+)
+
+/** Why a snapshot could not be used. */
+sealed class ToolConfigError(
+    message: String,
+) : Exception(message) {
+    /** The file is missing, unreadable or not a valid snapshot. */
+    class Unreadable(
+        sentence: String,
+    ) : ToolConfigError(sentence)
+
+    /** A snapshot of another format [version]. */
+    class UnknownVersion(
+        val version: String,
+    ) : ToolConfigError("version $version")
+}
+
+/** Reads the snapshot at [path]; a failure is a [ToolConfigError]. */
+fun readToolConfig(path: Path): Result<ToolConfig> =
+    try {
+        val json = Json.parseToJsonElement(path.readText()).jsonObject
+        val version = json["version"]?.jsonPrimitive?.content ?: throw ToolConfigError.Unreadable("it has no version")
+        if (version != TOOL_CONFIG_VERSION.toString()) throw ToolConfigError.UnknownVersion(version)
+        Result.success(
+            ToolConfig(
+                projectId = ProjectId(json.string("project_id")),
+                workflowDir = Path(json.string("workflow_dir")),
+                trackerKind = json.string("tracker_kind"),
+                definedStates =
+                    (json["defined_states"] as? JsonArray ?: throw ToolConfigError.Unreadable("it has no defined_states"))
+                        .map { it.jsonPrimitive.content },
+                // m3-14: optional, so a snapshot of an older Loop of the same version still reads.
+                toolOutputTokens =
+                    json[TOOL_OUTPUT_TOKENS]?.let { value ->
+                        (value as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull?.takeIf { it > 0 }
+                            ?: throw ToolConfigError.Unreadable("its $TOOL_OUTPUT_TOKENS is not a positive integer")
+                    } ?: ContextConfig().toolOutputTokens,
+            ),
+        )
+    } catch (e: ToolConfigError) {
+        Result.failure(e)
+    } catch (e: NoSuchFileException) {
+        Result.failure(ToolConfigError.Unreadable("the file does not exist"))
+    } catch (e: IOException) {
+        Result.failure(ToolConfigError.Unreadable(e.sentence()))
+    } catch (e: SerializationException) {
+        Result.failure(ToolConfigError.Unreadable("it is not valid JSON"))
+    } catch (e: IllegalArgumentException) {
+        Result.failure(ToolConfigError.Unreadable("it is not a valid attempt config"))
+    }
+
+private fun JsonObject.string(key: String): String =
+    (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: throw ToolConfigError.Unreadable("it has no $key")
+
+/**
+ * Writes `tool-config.json` (m1-23): `version`, `project_id`, `workflow_dir`, `tracker_kind`,
+ * `defined_states`, `tool_output_tokens` (m3-14) and `provider`, the non credential `tracker.provider` fields with `dir` resolved
+ * to an absolute path. A value that is exactly `$NAME`, at any depth inside `tracker.provider` and
+ * other than the `dir` path key, is a credential and is omitted, never replaced with a placeholder.
+ * A literal value is copied as written. Written to a temp file, then moved in place.
+ */
+object ToolConfigSnapshotWriter : ToolConfigWriter {
+    override fun write(
+        target: Path,
+        projectId: ProjectId,
+        workflow: WorkflowFile,
+        definedStates: List<String>,
+    ) {
+        val provider =
+            workflow.config.trackerProvider
+                .mapNotNull { (key, value) ->
+                    if (key == DIR_KEY) key to JsonPrimitive(workflow.trackerDir.toString()) else value.toJson()?.let { key to it }
+                }.toMap()
+        val snapshot =
+            JsonObject(
+                mapOf(
+                    "version" to JsonPrimitive(TOOL_CONFIG_VERSION),
+                    "project_id" to JsonPrimitive(projectId.value),
+                    "workflow_dir" to JsonPrimitive(workflow.path.parent.toString()),
+                    "tracker_kind" to JsonPrimitive(workflow.trackerKind),
+                    "defined_states" to JsonArray(definedStates.map(::JsonPrimitive)),
+                    TOOL_OUTPUT_TOKENS to JsonPrimitive(workflow.config.context.toolOutputTokens),
+                    "provider" to JsonObject(provider),
+                ),
+            )
+        val temp = target.resolveSibling("${target.fileName}.tmp")
+        temp.writeText(Json.encodeToString(JsonElement.serializer(), snapshot))
+        Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+    }
+
+    /** The value as JSON, null when it is a credential reference (exactly `$NAME`). */
+    private fun ConfigValue.toJson(): JsonElement? =
+        when (this) {
+            is ConfigValue.Str -> if (CREDENTIAL_REF.matches(value)) null else JsonPrimitive(value)
+            is ConfigValue.ListValue -> JsonArray(items.mapNotNull { it.toJson() })
+            is ConfigValue.MapValue -> JsonObject(entries.mapNotNull { (k, v) -> v.toJson()?.let { k to it } }.toMap())
+            ConfigValue.Null -> JsonNull
+        }
+
+    private const val DIR_KEY = "dir"
+    private val CREDENTIAL_REF = Regex("""\$[A-Za-z_][A-Za-z0-9_]*""")
+}

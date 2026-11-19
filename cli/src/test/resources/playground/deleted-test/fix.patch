@@ -1,0 +1,13 @@
+diff --git a/src/main/kotlin/calc/Calc.kt b/src/main/kotlin/calc/Calc.kt
+index 77020be..66e223f 100644
+--- a/src/main/kotlin/calc/Calc.kt
++++ b/src/main/kotlin/calc/Calc.kt
+@@ -8,4 +8,7 @@ fun add(
+ fun divide(
+     a: Int,
+     b: Int,
+-): Int = if (b == 0) 0 else a / b
++): Int {
++    require(b != 0) { "cannot divide by zero" }
++    return a / b
++}

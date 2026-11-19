@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","session_id":"claude-wake-session","cwd":"/work","tools":["Bash"],"model":"claude-sonnet","permissionMode":"bypassPermissions"}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":4000,"num_turns":1,"result":"carried on","session_id":"claude-wake-session","total_cost_usd":10.0,"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":10,"cache_creation_input_tokens":5},"permission_denials":[]}

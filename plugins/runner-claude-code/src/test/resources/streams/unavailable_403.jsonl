@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","session_id":"claude-session-21","cwd":"/work","tools":["Bash","Read","Edit"],"model":"claude-sonnet","permissionMode":"bypassPermissions"}
+{"type":"result","subtype":"success","is_error":true,"duration_ms":900,"num_turns":1,"result":"Failed to authenticate. API Error: 403 Attention Required! | Cloudflare","session_id":"claude-session-21","total_cost_usd":0.17,"usage":{"input_tokens":40000,"output_tokens":10,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"permission_denials":[]}
