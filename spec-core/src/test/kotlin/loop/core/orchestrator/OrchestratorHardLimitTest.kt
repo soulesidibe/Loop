@@ -365,7 +365,8 @@ class OrchestratorHardLimitTest {
             assertEquals(10_000L, checkNotNull(cancelledAt) { "the flow was never cancelled" } - checkNotNull(interruptedAt))
             assertTrue(sink.ofKind("attempt_stalled").isEmpty(), sink.events.toString())
             assertTrue(sink.ofKind("turn_failed").isEmpty(), sink.events.toString())
-            assertEquals("s1t1", sink.ofKind("interrupt_grace_expired").single().turnId?.value)
+            val expired = sink.ofKind("interrupt_grace_expired").single()
+            assertEquals("s1t1", expired.turnId?.value)
             assertEquals("hard_limit", sink.ofKind("session_rotated").single().data["reason"])
         }
 
