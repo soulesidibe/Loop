@@ -3,8 +3,8 @@ id: bl-158
 title: "The GitHub tracker reads blockers"
 state: todo
 priority: 2
-labels: [needs-triage]
-blocked_by: []
+labels: [ready-for-agent]
+blocked_by: [bl-157]
 ---
 
 ## Parent
@@ -13,24 +13,39 @@ None. Backlog, not scheduled in a milestone. Found on 2026-11-19 while weighing 
 
 ## What
 
-`GitHubTracker.normalize` (`plugins/tracker-github/src/main/kotlin/loop/tracker/github/GitHubTracker.kt`, around line 328) always sets `blockedBy = emptyList()`. On GitHub, every issue with the required labels is dispatched at once, whatever it waits for. The `files` tracker reads `blocked_by` and keeps an issue blocked until each blocker is `done`, failing closed on a missing blocker (`FilesTracker.withBlockedReason`). Loop's own backlog depends on that order: M4 chains most of its issues through `blocked_by`, and the exit issue m4-43 waits for three of them.
+`GitHubTracker.normalize` (`plugins/tracker-github/src/main/kotlin/loop/tracker/github/GitHubTracker.kt`, around line 328) always sets `blockedBy = emptyList()`. On GitHub, every issue with the required labels is dispatched at once, whatever it waits for. The `files` tracker reads `blocked_by` and keeps an issue blocked until each blocker is `done`, failing closed on a missing blocker (`FilesTracker.withBlockedReason`). Loop's own backlog depends on that order: M4 chains most of its issues through `blocked_by`.
 
-GitHub now has native issue dependencies ("blocked by" and "blocking" relationships), in the UI and the API. Check the current REST and GraphQL docs for the exact endpoints and fields before choosing.
+GitHub has native issue dependencies ("blocked by" and "blocking"). Checked against the live API on 2026-11-20:
 
-Proposed shape, to settle in triage:
+- Every issue object of the REST API carries `issue_dependencies_summary` with `blocked_by`, `blocking`, `total_blocked_by` and `total_blocking`.
+- `GET /repos/{owner}/{repo}/issues/{number}/dependencies/blocked_by` lists the blocking issues as issue objects, with `number`, `state`, `state_reason` and `repository_url`.
 
-- Read each candidate's "blocked by" issues from GitHub's native dependencies, and set `blockedBy` to their numbers.
-- A blocker resolves only when it is closed as completed. Closed as not planned, open, or unreadable keeps the issue blocked, the same fail closed rule as the `files` tracker, with the reason in `loop trace`.
-- A blocker in another repository is allowed if the token can read it, and keeps the issue blocked otherwise.
-- Cost: one extra request per candidate per poll at worst. Prefer a GraphQL query or a field already on the issue if GitHub offers one, and keep the shared rate limit hold (bl-50's area) in mind.
+Before relying on them, check in the current REST docs that `total_blocked_by` counts every blocker and `blocked_by` only the open ones, and record what the docs say in `docs/plugins/tracker-github.md`. No live issue with blockers was at hand to confirm it.
+
+Area: `GitHubTracker.kt` (`list`, `fetchIssuesByIds`, `normalize` or a new step after it), a new file beside it for the blocker logic if it grows past a few functions (for example `GitHubBlockers.kt`), `FakeGitHub.kt` and test fixtures, `GitHubTrackerTest`, `docs/plugins/tracker-github.md`. No core change: the adapter sets `blockedBy` and `blockedReason`, the orchestrator only reads `blockedReason` (`Issue.kt`). This issue waits for bl-157, which edits the same file.
+
+Design, settled in triage on 2026-11-20:
+
+- **No blocker, no request.** When `issue_dependencies_summary.total_blocked_by` is 0, the issue has no blocker and no extra request is sent.
+- **One request otherwise.** When it is above 0, one `GET .../issues/{number}/dependencies/blocked_by?per_page=100` lists the blockers. `blockedBy` becomes their references: the number for a blocker in the same repository, `owner/repo#number` for one in another.
+- **What resolves a blocker.** Only `state: closed` with `state_reason: completed`. Open, `not_planned`, `duplicate`, a missing or unknown `state_reason` keep the issue blocked. The first blocker that holds it, in the order GitHub lists them, gives `blockedReason = "blocked_by #12 (open)"`, `"blocked_by #12 (closed, not_planned)"` or `"blocked_by owner/repo#3 (open)"`.
+- **Unreadable blockers fail closed.** When the list holds fewer blockers than `total_blocked_by` (a private or cross repository blocker the token cannot see), the issue is blocked with `blockedReason = "blocked_by <n> unreadable"` even if every listed blocker resolved. An issue with no `issue_dependencies_summary` field counts as having no blocker, since older GitHub Enterprise servers do not send it. A summary that is present but malformed blocks with `blocked_by unreadable summary`.
+- **A failed blocker request** (an error status, a malformed body) blocks only that issue with `blocked_by unreadable (<status>)` and does not fail the whole fetch, so one bad issue does not stop the poll. A rate limit answer follows the existing rate limit handling of `send`.
+- **Order with bl-157.** An issue that is both untrusted and blocked shows the untrusted reason; its blockers are not requested.
+- **Native dependencies only.** No `Blocked by: #12` line read from the body: one source of truth, and the body is text people edit.
+
+Out of this issue: writing dependencies, the `blocking` direction, and moving Loop's own backlog to GitHub issues.
 
 ## Acceptance criteria
 
-- [ ] An open GitHub issue with an open "blocked by" issue is not dispatched, and `loop trace` names the blocker and its state (test on a recorded or fake response).
-- [ ] The issue is dispatched once every blocker is closed as completed, and stays blocked when one is closed as not planned (test).
-- [ ] A blocker the token cannot read keeps the issue blocked, with the reason recorded (test).
-- [ ] The extra requests per poll are counted in a test, and stay at most one per candidate.
-- [ ] `docs/plugins/tracker-github.md` documents how blockers are read and resolved.
+- [ ] An open issue with `total_blocked_by: 0` sends no dependency request (request count test with `FakeGitHub`).
+- [ ] An open issue with an open blocker #12 is not dispatchable, with `blockedBy` `["12"]` and `blockedReason` `blocked_by #12 (open)`, from both `fetchIssuesByStates` and `fetchIssuesByIds` (test on a fixture shaped like the documented answer).
+- [ ] The issue is dispatchable once every blocker is `closed` with `state_reason: completed`, and stays blocked when one is `closed` with `not_planned` or `duplicate`, the reason naming it (tests).
+- [ ] A blocker in another repository appears as `owner/repo#n` in `blockedBy` and in the reason (test).
+- [ ] With `total_blocked_by: 2` and one blocker listed, the issue is blocked with `blocked_by 1 unreadable`; an error answer to the blocker request blocks that issue only, the other issues of the poll unaffected (tests).
+- [ ] The dependency requests per poll are counted in a test, at most one per candidate and none for candidates with no blocker or with an untrusted author.
+- [ ] `./gradlew --no-daemon :plugins:tracker-github:test` passes.
+- [ ] `docs/plugins/tracker-github.md` documents how blockers are read, what resolves one, the fail closed cases and what the REST docs say about the two summary counts (judgment).
 - [ ] `./gradlew --no-daemon build` passes.
 
 ## Comments
@@ -39,4 +54,6 @@ Proposed shape, to settle in triage:
 
 > *This was generated by AI during triage.*
 
-Filed while preparing the public repository. With bl-157, it gates moving Loop's own backlog to GitHub issues, planned after the M4 exit so the milestone keeps the `files` tracker. Open question: native dependencies only, or also a body line such as `Blocked by: #12` like m4-17's `Area:` line, for repositories that do not use the native feature?
+Filed while preparing the public repository. With bl-157, it gates moving Loop's own backlog to GitHub issues, planned after the M4 exit so the milestone keeps the `files` tracker.
+
+2026-11-20 soule: triaged to ready-for-agent. Native dependencies only, no body line. Waits for bl-157, which edits `GitHubTracker.kt` too. Design in the What section.
