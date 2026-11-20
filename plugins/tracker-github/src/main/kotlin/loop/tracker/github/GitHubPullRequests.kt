@@ -1,6 +1,5 @@
 package loop.tracker.github
 
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -80,7 +79,7 @@ class GitHubPullRequests(
             ).toString()
         val response = client.exchange("POST", url, expected = setOf(UNPROCESSABLE), body = request)
         if (response.status != UNPROCESSABLE) return readResponse(response, url, created = true)
-        val reasons = validationDetail(response.body)
+        val reasons = GitHubClient.detail(response.body)
         if (!reasons.contains(ALREADY_EXISTS, ignoreCase = true)) throw TrackerError.Status(UNPROCESSABLE, reasons)
         val number =
             find(branch)?.takeIf { it.state == PullRequestState.Open }?.number
@@ -289,15 +288,6 @@ class GitHubPullRequests(
 
         /** What GitHub's 422 says, in `message` or an `errors[].message`, when the head already has a pull request. */
         private const val ALREADY_EXISTS = "pull request already exists"
-
-        /** GitHub's `message` and every `errors[].message` of a 422 body, joined, kept short. */
-        private fun validationDetail(body: String): String {
-            val json = runCatching { Json.parseToJsonElement(body) }.getOrNull() as? JsonObject
-            val messages =
-                listOfNotNull(json?.string("message")) +
-                    (json?.get("errors") as? JsonArray).orEmpty().mapNotNull { (it as? JsonObject)?.string("message") }
-            return if (messages.isEmpty()) GitHubClient.detail(body) else GitHubClient.short(messages.joinToString(": "))
-        }
 
         private fun JsonObject.long(key: String): Long? = (this[key] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull
 
