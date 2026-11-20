@@ -3,6 +3,7 @@ package loop.conformance
 import java.nio.file.Path
 import kotlin.io.path.createDirectories
 import kotlin.io.path.createTempDirectory
+import kotlin.io.path.isRegularFile
 import kotlin.io.path.readText
 import kotlin.io.path.writeText
 import kotlin.test.Test
@@ -15,6 +16,21 @@ import kotlin.test.assertTrue
  * instead of waiting for the next audit.
  */
 class ConformanceMatrixTest {
+    private companion object {
+        const val SPEC_DECISIONS = "docs/spec-decisions.md"
+
+        /**
+         * Gradle runs the tests in the module folder. The build files are protected
+         * paths for agents, so the root is found from there instead of passed in.
+         */
+        fun repositoryRoot(): Path {
+            val start = Path.of(System.getProperty("user.dir")).toAbsolutePath()
+            return generateSequence(start) { it.parent }
+                .firstOrNull { it.resolve("settings.gradle.kts").isRegularFile() && it.resolve(SPEC_DECISIONS).isRegularFile() }
+                ?: error("no folder with settings.gradle.kts and $SPEC_DECISIONS above $start")
+        }
+    }
+
     private val root: Path = createTempDirectory("loop-conformance-matrix")
 
     private fun testFile(
@@ -45,10 +61,9 @@ class ConformanceMatrixTest {
 
     @Test
     fun `the current matrix names only paths and tests that exist`() {
-        val doc = Path.of(System.getProperty("loop.specDecisions"))
-        val repo = Path.of(System.getProperty("loop.repoRoot"))
+        val repo = repositoryRoot()
 
-        val result = ConformanceMatrix.check(doc.readText(), repo)
+        val result = ConformanceMatrix.check(repo.resolve(SPEC_DECISIONS).readText(), repo)
 
         assertEquals(emptyList(), result.problems)
         assertTrue(result.paths >= 100, "only ${result.paths} paths checked")
