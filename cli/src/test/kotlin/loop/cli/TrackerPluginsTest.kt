@@ -22,6 +22,7 @@ import kotlin.io.path.readText
 import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertSame
@@ -106,11 +107,12 @@ class TrackerPluginsTest {
     }
 
     @Test
-    fun `trackerFor gives null for a kind no provider answers to`() {
+    fun `bl-104 trackerFor throws for a kind no provider answers to`() {
         val workflow = host().workflowLoader().load(fixture.workflow).getOrThrow()
         val none = TrackerPlugins.of(emptyList()).getOrThrow()
 
-        assertNull(trackerFor(workflow, fixture.loopHome, plugins = none))
+        val failure = assertFailsWith<IllegalStateException> { trackerFor(workflow, fixture.loopHome, plugins = none) }
+        assertEquals("tracker.kind \"files\" is not supported, no tracker plugin was found", failure.message)
         assertEquals("tracker.kind \"files\" is not supported, no tracker plugin was found", trackerProblem(workflow, none))
     }
 

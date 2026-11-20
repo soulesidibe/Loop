@@ -18,13 +18,15 @@ object PluginJars {
     /**
      * Compiles `loop.testplugin.[className]`, a provider of runner kind [kind], in [work] and writes it to
      * `[pluginsDir]/[className].jar` with its `META-INF/services` entry. Its profile declares `script`, required, and
-     * the runner it builds is the classpath's command runner running that script. Returns the JAR.
+     * the runner it builds is the classpath's command runner running that script. Without [withProfile] it is a
+     * provider of the m3-04 shape, which declares no profile (bl-104). Returns the JAR.
      */
     fun build(
         work: Path,
         pluginsDir: Path,
         className: String,
         kind: String,
+        withProfile: Boolean = true,
     ): Path =
         compile(
             work,
@@ -53,10 +55,7 @@ object PluginJars {
                     return "$kind";
                 }
 
-                @Override
-                public PluginProfile getProfile() {
-                    return new PluginProfile(List.of(new ProfileKey("script", ProfileType.STRING, true, null)), Set.of(), Map.of());
-                }
+                ${if (withProfile) profileMethod else ""}
 
                 @Override
                 public void validate(Map<String, ?> config) {
@@ -125,6 +124,14 @@ object PluginJars {
             }
             """.trimIndent(),
         )
+
+    private val profileMethod =
+        """
+        @Override
+        public PluginProfile getProfile() {
+            return new PluginProfile(List.of(new ProfileKey("script", ProfileType.STRING, true, null)), Set.of(), Map.of());
+        }
+        """.trimIndent()
 
     private fun compile(
         work: Path,
