@@ -42,7 +42,7 @@ data class GitHubTrackerSettings(
         /** The labels m2-11 and the playground use for the two handoff states. */
         val DEFAULT_HANDOFF_LABELS: Map<String, String> = mapOf("review" to "needs-review", "needs_info" to "needs-info")
 
-        /** The authors with write access to the repository: its owner, members of its organization and collaborators. */
+        /** The repository's owner, the members of its organization and its collaborators. */
         val DEFAULT_TRUSTED_ASSOCIATIONS: List<String> = listOf("OWNER", "MEMBER", "COLLABORATOR")
 
         /**
@@ -181,10 +181,14 @@ data class GitHubTrackerSettings(
             if (value == null) return DEFAULT_TRUSTED_ASSOCIATIONS
             val items = value as? List<*>
             if (items == null || items.any { it !is String }) {
-                throw GitHubConfigError.Invalid("tracker.provider.trusted_associations must be a list of author associations, got \"$value\"")
+                throw GitHubConfigError.Invalid(
+                    "tracker.provider.trusted_associations must be a list of author associations, got \"$value\"",
+                )
             }
             if (items.isEmpty()) {
-                throw GitHubConfigError.Invalid("tracker.provider.trusted_associations must not be empty, list the author associations to trust")
+                throw GitHubConfigError.Invalid(
+                    "tracker.provider.trusted_associations must not be empty, list the author associations to trust",
+                )
             }
             return items
                 .map { item ->
