@@ -2,7 +2,7 @@
 
 Status: validated plan, revised after the review of 2026-11-05 and the grilling of 2026-11-06 (terms in [`CONTEXT.md`](../CONTEXT.md), decisions in [`docs/adr/`](adr/)). M1 is done (2026-11-11), M2 is done (2026-11-14), M3 is done (2026-11-18); the M4 issues are in `.loop/issues/m4-*`, written in m3-29, with the spec in [`.loop/specs/loop-m4.md`](../.loop/specs/loop-m4.md).
 
-> Ids such as `m3-29` (milestone 3, issue 29) or `bl-134` (backlog issue 134) name Loop's own issues. Open ones are in [`.loop/issues/`](../.loop/issues/). Finished ones were kept out of this repository when it went public, so their ids remain only as history. "The pilot app" is a private iOS app used to prove Loop on real work.
+> Ids such as `m3-29` (milestone 3, issue 29) or `bl-134` (backlog issue 134) name Loop's own issues. Open ones are in [`.loop/issues/`](../.loop/issues/). Finished ones were kept out of this repository when it went public, so their ids remain only as history. Pull request numbers up to #119 (for example "pull request #115") refer to the old private repository, not to this one. "The pilot app" is a private iOS app used to prove Loop on real work.
 
 ## 1. What Loop is
 

@@ -4,6 +4,7 @@ Issues for this repo live in Loop's own `files` tracker, which Loop reads to dis
 
 ## Conventions
 
+- Pull request numbers up to #119 named in issues and specs (for example "pull request #115") belong to the old private repository, which this one replaced in November 2026. Do not look them up here.
 - One file per issue: `.loop/issues/<id>-<slug>.md`, in the main checkout, versioned in git.
 - Front matter: `id`, `title`, `state`, `priority`, `labels`, `blocked_by` (a list of issue ids).
 - Body sections: `## Parent` (link to the spec), `## What`, `## Acceptance criteria`, `## Comments`.

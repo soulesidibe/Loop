@@ -2,7 +2,7 @@
 
 This document records how Loop reads the Symphony spec: the commit it implements, its answers where the spec is ambiguous, the behaviors the spec asks implementations to document, and where Loop extends or departs from the spec. It is the single place for these answers. Code and other docs link here instead of restating them.
 
-> Ids such as `m3-29` (milestone 3, issue 29) or `bl-134` (backlog issue 134) name Loop's own issues. Open ones are in [`.loop/issues/`](../.loop/issues/). Finished ones were kept out of this repository when it went public, so their ids remain only as history. "The pilot app" is a private iOS app used to prove Loop on real work.
+> Ids such as `m3-29` (milestone 3, issue 29) or `bl-134` (backlog issue 134) name Loop's own issues. Open ones are in [`.loop/issues/`](../.loop/issues/). Finished ones were kept out of this repository when it went public, so their ids remain only as history. Pull request numbers up to #119 (for example "pull request #115") refer to the old private repository, not to this one. "The pilot app" is a private iOS app used to prove Loop on real work.
 
 Section numbers such as "8.4" refer to the vendored spec, [`symphony/SPEC.md`](symphony/SPEC.md). Terms follow the glossary in [`../CONTEXT.md`](../CONTEXT.md): an Attempt is one execution of an agent on one Issue, a Run is one working period of Loop, a Project is one `WORKFLOW.md` and its state, and a Parked Issue is not dispatched again until a human resumes it or its tracker state changes.
 
