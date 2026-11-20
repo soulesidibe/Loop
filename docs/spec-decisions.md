@@ -2445,6 +2445,8 @@ This section maps every item of the spec's test matrix (section 17) to the Loop 
 
 Paths are from the repository root. A test name in parentheses after a path is a test of that file; a path alone means the whole file covers the item. The adapter neutral tracker tests live in `plugin-api/src/testFixtures/kotlin/loop/api/TrackerAdapterContract.kt` and run through `plugins/tracker-files/src/test/kotlin/loop/tracker/files/FilesTrackerContractTest.kt` and `plugins/tracker-github/src/test/kotlin/loop/tracker/github/GitHubTrackerContractTest.kt` (m2-22).
 
+`conformance/src/test/kotlin/loop/conformance/ConformanceMatrixTest.kt` keeps this section true in `./gradlew build` (bl-154): every backticked path of a Kotlin file must be a file, and every backticked text in the parentheses after a path must be part of the name of a test of that file, so a row may shorten a long name or name a group of tests by their common start. A file name without a folder is a file of the folder of the last full path before it in the same row.
+
 Statuses:
 
 - **Covered:** the tests listed prove the item and pass in `./gradlew build`.
