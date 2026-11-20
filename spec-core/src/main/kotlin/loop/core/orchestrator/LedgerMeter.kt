@@ -8,6 +8,12 @@ import loop.core.workflow.WorkflowFile
 import loop.core.workflow.workflowHash
 
 /**
+ * This setup with [reported], the model the runtime reported as `context.windows` keys it, `<provider>/<model>`, in place
+ * of the configured one, kept when the runtime reported none (bl-147).
+ */
+internal fun LedgerSetup.withModel(reported: String?): LedgerSetup = if (reported == null) this else copy(model = reported)
+
+/**
  * What the ledger counts for one attempt (m2-19). A runner reports absolute totals for its session, so the meter
  * keeps the latest report, never a sum: a turn's share is the latest total at its end minus the latest at the end
  * of the turn before. A turn without a report has no share, and an attempt without any has no totals: null, never
