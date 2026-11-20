@@ -18,6 +18,7 @@ import loop.api.TurnId
 import loop.api.TurnLedger
 import loop.core.log.KeyValueLog
 import loop.core.workflow.AgentConfig
+import loop.core.workflow.CodexConfig
 import loop.core.workflow.ContextConfig
 import loop.core.workflow.WorkflowConfig
 import loop.core.workflow.WorkflowFile
@@ -49,6 +50,7 @@ class OrchestratorHardLimitTest {
     private fun workflow(
         maxTurns: Int = 20,
         maxRotations: Int = 5,
+        stallTimeoutMs: Long = CodexConfig().stallTimeoutMs,
     ): WorkflowFile =
         WorkflowFile(
             path = root.resolve("WORKFLOW.md"),
@@ -65,6 +67,7 @@ class OrchestratorHardLimitTest {
                 WorkflowConfig(
                     agent = AgentConfig(maxTurns = maxTurns),
                     context = ContextConfig(maxRotations = maxRotations),
+                    codex = CodexConfig(stallTimeoutMs = stallTimeoutMs),
                 ),
         )
 
@@ -322,6 +325,48 @@ class OrchestratorHardLimitTest {
             assertEquals(usage.last().data["total_cost_usd"], expired.data["total_cost_usd"])
             val kinds = sink.events.map { it.kind }
             assertTrue(kinds.indexOf("interrupt_grace_expired") < kinds.indexOf("turn_completed"), kinds.toString())
+        }
+
+    @Test
+    fun `bl-149 a stall timeout shorter than the interrupt grace neither stalls the interrupted turn nor shortens the grace`() =
+        runTest {
+            val tracker = FakeTracker(listOf(issue("m3-12")))
+            var interruptedAt: Long? = null
+            var cancelledAt: Long? = null
+            // Session 1 goes silent after crossing the hard limit and ignores the interrupt, past the 3 second stall timeout.
+            val runner =
+                FakeRunner().also { runner ->
+                    runner.occupancy = true
+                    runner.onInterrupt = { interruptedAt = testScheduler.currentTime }
+                    runner.sessionScript = { turn, _ ->
+                        val session = runner.sessionsOpened
+                        flow {
+                            val turnId = TurnId("s${session}t$turn")
+                            val sessionId = SessionId("th$session-${turnId.value}")
+                            emit(RunnerEvent.SessionStarted(sessionId, "th$session", turnId, runtimeSessionId = "runtime-$session"))
+                            if (session == 1) {
+                                emit(RunnerEvent.ContextUsage(sessionId, turnId, 300_000L, OPUS))
+                                try {
+                                    awaitCancellation()
+                                } finally {
+                                    cancelledAt = testScheduler.currentTime
+                                }
+                            }
+                            tracker.moveIssue("id-m3-12", "review")
+                            emit(RunnerEvent.ContextUsage(sessionId, turnId, 30_000L, OPUS))
+                            emit(RunnerEvent.TurnCompleted(sessionId, turnId, exitCode = 0))
+                        }
+                    }
+                }
+
+            val summary = orchestrator(tracker, runner, workflow(stallTimeoutMs = 3_000L)).tick().attempts.single()
+
+            assertEquals(AttemptOutcome.Succeeded, summary.outcome)
+            assertEquals(10_000L, checkNotNull(cancelledAt) { "the flow was never cancelled" } - checkNotNull(interruptedAt))
+            assertTrue(sink.ofKind("attempt_stalled").isEmpty(), sink.events.toString())
+            assertTrue(sink.ofKind("turn_failed").isEmpty(), sink.events.toString())
+            assertEquals("s1t1", sink.ofKind("interrupt_grace_expired").single().turnId?.value)
+            assertEquals("hard_limit", sink.ofKind("session_rotated").single().data["reason"])
         }
 
     @Test

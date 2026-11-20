@@ -227,7 +227,7 @@ open class WorkspaceFingerprinter(
         read: (InputStream) -> Unit,
     ): Int =
         // A read only look: never take the index lock to refresh it.
-        workspaceGit.stream(root, args, mapOf("GIT_OPTIONAL_LOCKS" to "0"), read)
+        workspaceGit.stream(root, args, mapOf("GIT_OPTIONAL_LOCKS" to "0"), read = read)
 
     private fun digest(keep: Boolean = false): Hash = Hash(keep)
 
