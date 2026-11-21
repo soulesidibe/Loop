@@ -178,6 +178,26 @@ object MergeCheckFinished : KeyedEvent("merge_check_finished", Delivery.OUTCOME,
     }
 }
 
+/**
+ * bl-172: at startup, a merge wait behind the head of the delivery queue was found in phase [PHASE] (`ci` or `merge`) and
+ * went back to phase `check` at its [Delivery.ROUND], so only the head holds the queue. [HEAD_ISSUE] names the head.
+ */
+object MergeRequeued : KeyedEvent("merge_requeued", MergeRequeued.PHASE, Delivery.ROUND, MergeRequeued.HEAD_ISSUE) {
+    /** The phase the wait was found in. */
+    const val PHASE = "phase"
+
+    /** The identifier of the issue at the head of the queue. */
+    const val HEAD_ISSUE = "head_issue"
+
+    override val sample = mapOf(PHASE to "ci", Delivery.ROUND to "1", HEAD_ISSUE to "bl-2")
+
+    override fun humanSentence(
+        data: Map<String, String>,
+        facts: HumanFacts,
+    ) = "waits behind ${data[HEAD_ISSUE]} in the delivery queue, back to the merge check of round ${data[Delivery.ROUND]} " +
+        "from phase ${data[PHASE]}"
+}
+
 /** m3-15: the merge waits for the Actions runs of the merged head [Delivery.SHA], pushed for them. */
 object CiWaiting : KeyedEvent("ci_waiting", Delivery.SHA) {
     override val sample = mapOf(Delivery.SHA to "0123456789abcdef")

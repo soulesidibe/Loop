@@ -28,6 +28,7 @@ import loop.core.verify.CheckResult
 import loop.core.verify.CheckRunner
 import loop.core.verify.WorkspaceFingerprinter
 import loop.core.verify.WorkspaceGit
+import loop.core.waiting.Wait
 import loop.core.waiting.WaitKeys
 import loop.core.workflow.AgentConfig
 import loop.core.workflow.CheckConfig
@@ -57,6 +58,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Instant
 
 /**
  * m3-15: the CI wait between the merge check and the merge. With `ci: actions` a passing merge check pushes the merged
@@ -112,6 +115,12 @@ class CiWaitOrchestratorTest {
         commit(project, "a.txt", "one\n")
         git(project, "worktree", "add", "-q", "-b", "loop/t-1", workspace.toString())
         return commit(workspace, "work.txt", "work\n")
+    }
+
+    /** The worktree of `loop/t-2` from `main`, with its own verified commit, after [verifiedWorktree]. Returns it. */
+    private fun secondWorktree(): String {
+        git(project, "worktree", "add", "-q", "-b", "loop/t-2", root.resolve("workspaces/t-2").toString(), "main")
+        return commit(root.resolve("workspaces/t-2"), "work2.txt", "work two\n")
     }
 
     /** A commit on the base, made on `upstream` so local `main` stays behind, as objects a fetch landed. */
@@ -292,9 +301,10 @@ class CiWaitOrchestratorTest {
     /** Everything one test drives: the fakes, the orchestrator and V, the verified commit. */
     private inner class Setup(
         val workflow: WorkflowFile = workflow(),
+        identifiers: List<String> = listOf("t-1"),
     ) {
         val verified = verifiedWorktree()
-        val tracker = FakeTracker(listOf(issue("t-1")))
+        val tracker = FakeTracker(identifiers.map { issue(it) })
         val remote = FakeRemote().apply { bases += git(project, "rev-parse", "main") }
         val waiting = FakeWaitingIssues(approvedWait(MergeCheck.cleanFingerprint(verified)))
         val sink = FakeSink()
@@ -625,4 +635,88 @@ class CiWaitOrchestratorTest {
     private companion object {
         val PROJECT = ProjectId("p1")
     }
+
+    /** The approved `Waiting(merge)` of [identifier] on pull request [number] in phase `check`, verified on [head]. */
+    private fun mergeWait(
+        identifier: String,
+        number: Long,
+        head: String,
+        since: Instant,
+    ): Wait.Merge {
+        val approval = approvedWait(MergeCheck.cleanFingerprint(head)).copy(issueId = "id-$identifier", identifier = identifier)
+        return (Wait.of(approval) as Wait.Approval).merging(number, "https://github.com/acme/widgets/pull/$number", since)
+    }
+
+    private fun Setup.store(vararg waits: Wait) {
+        waiting.records.clear()
+        waits.forEach { waiting.records[PROJECT.value to it.issueId] = it.toRecord() }
+    }
+
+    private fun Setup.record(identifier: String): WaitingIssue = waiting.records.getValue(PROJECT.value to "id-$identifier")
+
+    @Test
+    fun `a merge wait behind the head is never polled while the head waits for its CI`() =
+        runTest {
+            val setup = Setup(identifiers = listOf("t-1", "t-2"))
+            val second = secondWorktree()
+            setup.remote.pulls["loop/t-1"] = PullRequest(7, "https://github.com/acme/widgets/pull/7", created = false)
+            setup.remote.pulls["loop/t-2"] = PullRequest(8, "https://github.com/acme/widgets/pull/8", created = false)
+            setup.store(mergeWait("t-1", 7, setup.verified, FIXED_NOW), mergeWait("t-2", 8, second, FIXED_NOW + 1.seconds))
+            setup.remote.answers += pending
+            val orchestrator = orchestrator(setup.tracker, setup.remote, setup.waiting, setup.sink)
+
+            tick(orchestrator)
+            tick(orchestrator, after = 1_000)
+            tick(orchestrator, after = 30_000)
+            tick(orchestrator, after = 30_000)
+
+            assertEquals("ci", setup.record("t-1").data[WaitKeys.PHASE])
+            assertEquals("check", setup.record("t-2").data[WaitKeys.PHASE])
+            assertEquals(listOf(setup.verified, setup.verified), setup.remote.listed, "only the head is polled")
+            assertEquals(
+                listOf("t-1"),
+                setup.sink.events
+                    .filter { it.kind == CiWaiting.name }
+                    .map { it.issueIdentifier },
+            )
+        }
+
+    @Test
+    fun `at startup merge waits behind the head found in phase ci or merge go back to phase check at their round, with merge_requeued`() =
+        runTest {
+            val setup = Setup(identifiers = listOf("t-1", "t-2", "t-3"))
+            val second = secondWorktree()
+            val base = git(project, "rev-parse", "main")
+            val pushedAt = FIXED_NOW + 5.seconds
+            val head = mergeWait("t-1", 7, setup.verified, FIXED_NOW).checked(base, setup.verified).waitingForCi(pushedAt)
+            val behindInCi =
+                mergeWait("t-2", 8, second, FIXED_NOW + 1.seconds)
+                    .again(2)
+                    .checked(base, second)
+                    .waitingForCi(pushedAt)
+                    .waited(30_000)
+            val behindInMerge = mergeWait("t-3", 9, "3".repeat(40), FIXED_NOW + 2.seconds).checked(base, "3".repeat(40))
+            setup.store(behindInMerge, behindInCi, head)
+            setup.remote.pulls["loop/t-1"] = PullRequest(7, "https://github.com/acme/widgets/pull/7", created = false)
+            setup.remote.answers += pending
+            val orchestrator = orchestrator(setup.tracker, setup.remote, setup.waiting, setup.sink)
+
+            tick(orchestrator)
+
+            val demoted = setup.record("t-2")
+            assertEquals("check", demoted.data[WaitKeys.PHASE])
+            assertEquals("2", demoted.data[WaitKeys.ROUND])
+            assertNull(demoted.data[WaitKeys.CI_STARTED_AT])
+            assertNull(demoted.data[WaitKeys.CI_WAITED_MS])
+            assertEquals(FIXED_NOW + 1.seconds, demoted.since, "its place in the queue is kept")
+            assertEquals("check", setup.record("t-3").data[WaitKeys.PHASE])
+            assertEquals("1", setup.record("t-3").data[WaitKeys.ROUND])
+            assertEquals(head.toRecord(), setup.record("t-1"), "the head keeps its phase")
+            val requeued = setup.sink.events.filter { it.kind == "merge_requeued" }
+            assertEquals(listOf("t-2", "t-3"), requeued.map { it.issueIdentifier })
+            assertEquals(listOf("ci", "merge"), requeued.map { it.data["phase"] })
+            assertEquals(listOf("2", "1"), requeued.map { it.data["round"] })
+            assertEquals(listOf("t-1", "t-1"), requeued.map { it.data["head_issue"] })
+            assertTrue(setup.remote.listed.none { it == second }, "a demoted wait is not polled")
+        }
 }

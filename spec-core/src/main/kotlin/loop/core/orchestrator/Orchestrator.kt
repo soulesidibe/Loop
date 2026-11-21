@@ -90,6 +90,7 @@ import loop.core.events.IssueCommented
 import loop.core.events.IssueLabeled
 import loop.core.events.IssueMoved
 import loop.core.events.IssueParked
+import loop.core.events.MergeRequeued
 import loop.core.events.Phase
 import loop.core.events.PromptRecordFailed
 import loop.core.events.RateLimit
@@ -145,7 +146,10 @@ import loop.core.verify.WorkspaceFingerprint
 import loop.core.verify.WorkspaceGit
 import loop.core.verify.commands
 import loop.core.verify.judgmentCalls
+import loop.core.waiting.MergePhase
+import loop.core.waiting.MergeQueue
 import loop.core.waiting.Wait
+import loop.core.waiting.WaitKeys
 import loop.core.waiting.Waits
 import loop.core.workflow.CheckConfig
 import loop.core.workflow.ContextConfig
@@ -575,7 +579,7 @@ class Orchestrator(
         val restored = restoreWaiting(scope, issues)
         // m2-24: approvals given from another terminal, and the approval waits a human ended by moving the issue.
         val delivered = syncApprovals(issues)
-        // m2-26: the merge waits, one merge check at a time in the background, on a free agent slot.
+        // m2-26, bl-172: the merge waits, one delivery at a time, the head of the queue on a free agent slot.
         val verifications = restored + syncMerges(scope, issues)
         val parkedIds =
             retries.stillParked(issues) ?: return Dispatched(candidates = issues.size, attempts = emptyList(), verifications)
@@ -4467,7 +4471,7 @@ class Orchestrator(
      * still among the active [candidates], in a workflow with `kinds:`, and whose workspace is still there, runs its
      * checks again in [scope] and then applies its move like an attempt's drain; its issue waits meanwhile. Any other
      * `verify` wait ends at once and its issue is dispatched by the usual paths. A wait for another reason keeps its
-     * issue waiting.
+     * issue waiting, and the merge waits behind the head of the queue go back to phase `check` ([requeueBehindHead]).
      */
     private suspend fun restoreWaiting(
         scope: CoroutineScope,
@@ -4475,8 +4479,37 @@ class Orchestrator(
     ): List<Deferred<Unit>> {
         if (waitingRestored) return emptyList()
         waitingRestored = true
+        requeueBehindHead()
         val byId = candidates.associateBy { it.id }
         return waits.current().mapNotNull { record -> resumeWait(scope, record, byId[record.issueId]) }
+    }
+
+    /**
+     * bl-172: at startup, the merge waits behind the head of the queue found in phase `ci` or `merge`, which a Loop that
+     * delivered several pull requests at once may have left, go back to phase `check` at their round, as a new round
+     * does, so only the head holds the queue. Each records `merge_requeued` naming the head. A wait that cannot be
+     * written is logged and stays as it is: [syncMerges] never advances it while it is behind the head.
+     */
+    private suspend fun requeueBehindHead() {
+        val queue = MergeQueue.of(waits.current())
+        val head = queue.firstOrNull() ?: return
+        for (wait in queue.drop(1).filter { it.phase != MergePhase.Check }) {
+            if (!storeWait(wait.again(wait.round), waitContext(wait))) continue
+            val phase = if (wait.phase == MergePhase.Ci) WaitKeys.PHASE_CI else WaitKeys.PHASE_MERGE
+            recordWaitEvent(
+                wait,
+                MergeRequeued,
+                mapOf(MergeRequeued.PHASE to phase, Delivery.ROUND to wait.round.toString(), MergeRequeued.HEAD_ISSUE to head.identifier),
+            )
+            log.log(
+                LogLevel.INFO,
+                MergeCheck.MARK,
+                LogOutcome.SCHEDULED,
+                waitContext(wait),
+                mapOf("round" to wait.round, "phase" to phase),
+                "behind ${head.identifier} in the delivery queue",
+            )
+        }
     }
 
     /** Where the issue of a wait stands this tick, see [standings]. */
@@ -4721,33 +4754,44 @@ class Orchestrator(
     }
 
     /**
-     * Goes through the merge waits of this tick's read, the merge waits [syncApprovals] just started included (m2-26). A
-     * wait whose issue left the active states is settled at once through [Merges.settleInactive]: a pull request merged
-     * at the stored head is delivered (the move to `on_delivered.move_to`, a human touch when a human merged it),
-     * anything else ends the wait as a human change. A wait whose issue is still active first runs what needs no slot,
-     * the CI poll (m3-15), through [Merges.advance]; when its next step needs a slot, its merge check and merge run in
-     * one background job in [scope] through [Merges.run], on a free agent slot and only when no other merge check runs
-     * in this project. The running checks are returned so `--once` waits for them.
+     * Goes through the merge waits of this tick's read in queue order ([MergeQueue]), the merge waits [syncApprovals]
+     * just started included, at the back (m2-26, bl-172). A wait whose issue left the active states is settled at once
+     * through [Merges.settleInactive], wherever it stands: a pull request merged at the stored head is delivered (the
+     * move to `on_delivered.move_to`, a human touch when a human merged it), anything else ends the wait as a human
+     * change, and the wait leaves the queue. The first other wait is the head, and only the head advances: whose check
+     * runs, whose attempt runs or whose issue cannot be read holds the queue and does nothing this tick. An active head
+     * first runs what needs no slot, the CI poll (m3-15), through [Merges.advance]; when its next step needs a slot, its
+     * merge check and merge run in one background job in [scope] through [Merges.run], on a free agent slot. The waits
+     * behind the head stay in phase `check` and do nothing. The running checks are returned so `--once` waits for them.
      */
     private suspend fun syncMerges(
         scope: CoroutineScope,
         candidates: List<Issue>,
     ): List<Deferred<Unit>> {
-        val mergeWaits = waits.current(WaitReason.Merge).filterIsInstance<Wait.Merge>()
+        val mergeWaits = MergeQueue.of(waits.current(WaitReason.Merge))
         if (mergeWaits.isEmpty()) return emptyList()
         val standing = standings(mergeWaits, candidates, skip = waits::isChecking)
         val launched = mutableListOf<Deferred<Unit>>()
+        var headFound = false
         for (stored in mergeWaits) {
-            if (waits.isChecking(stored.issueId) || stored.issueId in running) continue
+            if (waits.isChecking(stored.issueId) || stored.issueId in running) {
+                headFound = true
+                continue
+            }
             val candidate =
                 when (val found = standing(stored.issueId)) {
-                    Standing.Unread -> continue
+                    Standing.Unread -> {
+                        headFound = true
+                        continue
+                    }
                     is Standing.Active -> found.issue
                     is Standing.Gone -> {
                         merges.settleInactive(stored, found.issue)
                         continue
                     }
                 }
+            if (headFound) continue
+            headFound = true
             // m3-15: a CI wait is polled here, with no slot; once CI allows the merge, the merge phase starts below.
             val wait = merges.advance(stored) ?: continue
             // bl-86: step one of the slot plan, for the merge check work that holds a slot, before the parked read and

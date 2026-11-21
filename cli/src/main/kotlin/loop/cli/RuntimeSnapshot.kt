@@ -14,6 +14,7 @@ import loop.core.events.RunnerHoldLifted
 import loop.core.events.RunnerHoldStarted
 import loop.core.events.TurnStarted
 import loop.core.events.Usage
+import loop.core.waiting.MergeQueue
 import loop.core.waiting.Wait
 import loop.store.StoredEvent
 import kotlin.time.Instant
@@ -90,6 +91,8 @@ internal data class WaitingRow(
     val attempt: AttemptRef?,
     val reason: String,
     val since: Instant,
+    /** bl-172: the place of a merge wait in the delivery queue, from 1 for the head, null for any other wait. */
+    val queue: Int? = null,
 )
 
 /** The event kinds [runtimeSnapshot] reads. */
@@ -115,7 +118,8 @@ internal val SNAPSHOT_KINDS: Set<String> =
  * later `attempt_started`, `retry_dropped` or `issue_parked`; running wins over a pending retry, because a
  * dispatched retry keeps its entry until the attempt ends. A waiting issue is listed as waiting only, whatever its
  * events: the attempt whose checks run is still open, and the wait outlives the run that started it. The runner hold
- * (bl-39) is the live run's latest `runner_hold_started` when no `runner_hold_lifted` follows it.
+ * (bl-39) is the live run's latest `runner_hold_started` when no `runner_hold_lifted` follows it. Each merge wait has its
+ * place in the delivery queue (bl-172), the order of [MergeQueue].
  */
 internal fun runtimeSnapshot(
     events: List<StoredEvent>,
@@ -165,13 +169,14 @@ internal fun runtimeSnapshot(
                 }
             }
     }
+    val places = MergeQueue.of(waiting).withIndex().associate { (index, wait) -> wait.issueId to index + 1 }
     val waitingRows =
         waiting
             .sortedWith(compareBy({ it.since }, { it.issueId }))
             .map { record ->
                 val latest = ordered.lastOrNull { it.kind == AttemptStarted.name && it.issueId == record.issueId }
                 val attempt = (record.attemptId ?: latest?.attemptId)?.let(numbers::get)
-                WaitingRow(record.identifier, attempt, record.reason.wire, record.since)
+                WaitingRow(record.identifier, attempt, record.reason.wire, record.since, places[record.issueId])
             }
     val parkedRows =
         parked
