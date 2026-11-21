@@ -6,9 +6,10 @@ import java.util.Properties
 
 /**
  * Loop's version, sent as `clientInfo.version` (m3-18). Read from the same `build-info.properties` file the cli reads
- * for `loop --version`, the one the start script names in the `loop.buildInfo` property: a 12 hex commit with an
- * optional `-dirty`. [UNKNOWN] without the property, as in tests run outside the launcher, or when the file cannot be
- * read or holds no valid value. The plugin API carries no version, so the plugin reads the file itself.
+ * for `loop --version`, the one the start script names in the `loop.buildInfo` property: a release tag such as `0.1.0`,
+ * a label such as `0.1.0-5-g<hex>` after it, or a 12 hex commit without a tag, each with an optional `-dirty` (bl-159).
+ * [UNKNOWN] without the property, as in tests run outside the launcher, or when the file cannot be read or holds no
+ * valid value. The plugin API carries no version, so the plugin reads the file itself.
  */
 internal object LoopVersion {
     const val UNKNOWN: String = "unknown"

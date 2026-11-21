@@ -34,7 +34,7 @@ What works today:
 ## Requirements
 
 - macOS or Linux.
-- Java 21.
+- Java 21. `bin/loop` uses `runtime/bin/java` inside the install when there is one, then `JAVA_HOME`, then `java` on the `PATH`, and never sets `JAVA_HOME` for your agents.
 - git.
 - An agent CLI signed in on your machine: [Claude Code](https://docs.anthropic.com/en/docs/claude-code) for the `claude-code` runner, or Codex for the `codex-app-server` runner.
 
@@ -48,7 +48,7 @@ cd loop
 ./gradlew installLoop
 ```
 
-Clone with git rather than downloading a zip: the build records the git commit as Loop's version. This builds Loop and installs it in `~/.loop/install` (or `$LOOP_HOME/install`). Add `~/.loop/install/bin` to your `PATH`, then check:
+Clone with git rather than downloading a zip: the build records its version from git, the release tag such as `0.1.0` or, between releases, a label such as `0.1.0-5-g3f2a9c1d7e4b` (the tag, the commits since and the commit, not a semver to compare). This builds Loop and installs it in `~/.loop/install` (or `$LOOP_HOME/install`). Add `~/.loop/install/bin` to your `PATH`, then check:
 
 ```sh
 loop --version

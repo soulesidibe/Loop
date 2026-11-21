@@ -1,3 +1,4 @@
+import loop.buildlogic.version.GitVersion
 import org.gradle.process.ExecOperations
 import java.io.ByteArrayOutputStream
 import java.io.OutputStream
@@ -24,11 +25,13 @@ application {
 }
 
 /**
- * The checkout's commit as 12 hex digits, with `-dirty` when tracked files have changes, or
- * `unknown` when git, the repository or the commit is unavailable. Never fails the build. Only
- * read at execution time through [GenerateBuildInfo], so the configuration cache never runs git.
+ * The build's version and full commit from git (bl-159), parsed by [GitVersion]: `0.1.0` on a tag, `0.1.0-5-g<hex>`
+ * after it, the 12 hex commit with no tag reachable, each with `-dirty` for tracked changes, or `unknown` without git.
+ * Never fails the build. [GenerateBuildInfo] reads it at execution time; the distribution archives name themselves
+ * after the version, so a build that includes them also runs git while configuring, and a new commit or a dirty tree
+ * reconfigures it. Nothing compiled or tested depends on the version.
  */
-abstract class GitVersionSource : ValueSource<String, GitVersionSource.Parameters> {
+abstract class GitVersionSource : ValueSource<GitVersion.Result, GitVersionSource.Parameters> {
     interface Parameters : ValueSourceParameters {
         val repository: DirectoryProperty
     }
@@ -36,18 +39,15 @@ abstract class GitVersionSource : ValueSource<String, GitVersionSource.Parameter
     @get:Inject
     abstract val exec: ExecOperations
 
-    override fun obtain(): String =
+    override fun obtain(): GitVersion.Result =
         try {
-            val sha = git("rev-parse", "--short=12", "HEAD")
-            val status = git("status", "--porcelain", "--untracked-files=no")
-            when {
-                sha == null || status == null || !Regex("[0-9a-f]{12}").matches(sha) -> UNKNOWN
-                status.isEmpty() -> sha
-                else -> "$sha-dirty"
-            }
+            GitVersion.parse(
+                describe = git("describe", "--tags", "--match", "[0-9]*", "--abbrev=12", "--always", "--dirty"),
+                fullSha = git("rev-parse", "HEAD"),
+            )
         } catch (e: GradleException) {
             // git is missing or cannot start (an exec failure): the build goes on without a version.
-            UNKNOWN
+            GitVersion.parse(null, null)
         }
 
     /** The trimmed output of a git command, null when it exits non zero. */
@@ -63,33 +63,37 @@ abstract class GitVersionSource : ValueSource<String, GitVersionSource.Parameter
             }
         return if (result.exitValue == 0) out.toString(Charsets.UTF_8).trim() else null
     }
-
-    private companion object {
-        const val UNKNOWN = "unknown"
-    }
 }
 
-/** Writes `build-info.properties` (`version=...`), shipped at the root of the distribution (m1-12). */
+/**
+ * Writes `build-info.properties` (`version=...`, `commit=<full sha>`), shipped at the root of the distribution
+ * (m1-12, bl-159).
+ */
 abstract class GenerateBuildInfo : DefaultTask() {
     @get:Input
     abstract val version: Property<String>
+
+    @get:Input
+    abstract val commit: Property<String>
 
     @get:OutputFile
     abstract val output: RegularFileProperty
 
     @TaskAction
     fun write() {
-        output.get().asFile.writeText("version=${version.get()}\n")
+        output.get().asFile.writeText("version=${version.get()}\ncommit=${commit.get()}\n")
     }
 }
 
+val gitVersion =
+    providers.of(GitVersionSource::class) {
+        parameters.repository.set(layout.projectDirectory.dir(".."))
+    }
+
 val generateBuildInfo =
     tasks.register<GenerateBuildInfo>("generateBuildInfo") {
-        version.set(
-            providers.of(GitVersionSource::class) {
-                parameters.repository.set(layout.projectDirectory.dir(".."))
-            },
-        )
+        version.set(gitVersion.map { it.version })
+        commit.set(gitVersion.map { it.commit })
         output.set(layout.buildDirectory.file("build-info/build-info.properties"))
     }
 
@@ -130,10 +134,38 @@ tasks.startScripts {
         // DEFAULT_JVM_OPTS is single quoted in the unix script: close the quote, expand
         // APP_HOME (computed earlier in the script), reopen.
         val unix = scripts.unixScript
-        unix.writeText(unix.readText().replace("__APP_HOME__", "'\"\$APP_HOME\"'"))
+        // bl-159: the Java of `$APP_HOME/runtime/` first (Homebrew links its JDK there), then JAVA_HOME, then
+        // java on the PATH. Nothing is exported: agents inherit Loop's environment and must keep their own JAVA_HOME.
+        val javaAnchor = "if [ -n \"\$JAVA_HOME\" ] ; then\n"
+        val runtimeJava =
+            "if [ -x \"\$APP_HOME/runtime/bin/java\" ] ; then\n" +
+                "    JAVACMD=\$APP_HOME/runtime/bin/java\n" +
+                "elif [ -n \"\$JAVA_HOME\" ] ; then\n"
+        val text = unix.readText()
+        // A Gradle upgrade that changes the template must fail here, not silently drop the runtime lookup.
+        check(text.split(javaAnchor).size == 2) { "the start script template changed: no single JAVA_HOME check" }
+        unix.writeText(text.replace(javaAnchor, runtimeJava).replace("__APP_HOME__", "'\"\$APP_HOME\"'"))
         val windows = scripts.windowsScript
         windows.writeText(windows.readText().replace("__APP_HOME__", "%APP_HOME%"))
     }
+}
+
+// The release archives (bl-159): loop-<version>.tar.gz and loop-<version>.zip, top folder loop-<version>/, no
+// Windows launcher. installDist keeps loop.bat. The excludes match the source path of the start script.
+tasks.distTar {
+    compression = Compression.GZIP
+    archiveExtension.set("tar.gz")
+}
+listOf(tasks.distTar, tasks.distZip).forEach { archive ->
+    archive.configure {
+        archiveVersion.set(gitVersion.map { it.version })
+        exclude("**/loop.bat")
+    }
+}
+
+// The version parsing lives in build-logic, free of the Gradle API, and is unit tested here (bl-159).
+kotlin.sourceSets.named("test") {
+    kotlin.srcDir("../build-logic/src/main/kotlin/loop/buildlogic/version")
 }
 
 val launcherInstallDir = layout.buildDirectory.dir("install/loop")

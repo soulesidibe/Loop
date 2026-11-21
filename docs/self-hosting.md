@@ -8,6 +8,7 @@ Written 2026-11-11 in issue m1-12. Terms follow [`CONTEXT.md`](../CONTEXT.md). T
 
 1. [Install](#install)
 2. [Version](#version)
+   - [Java](#java)
 3. [Known limits](#known-limits)
 4. [Running Loop on its own issues](#running-loop-on-its-own-issues)
    - [Gradle daemons per Attempt](#gradle-daemons-per-attempt)
@@ -40,16 +41,27 @@ Only a live run blocks the install. The run file lock decides: a stale run file 
 
 ## Version
 
-The version is the 12 character hex git SHA of the commit the build came from, for example `3f2a9c1d7e4b`.
+The version comes from the release tags, bare semver with no `v` prefix, through `git describe --tags --match '[0-9]*' --abbrev=12 --always --dirty`:
 
-- `-dirty` is appended when tracked files had uncommitted changes at build time: `3f2a9c1d7e4b-dirty`.
-- `unknown` means the build had no git (no `git` command, no `.git` folder, no commit) or git failed. Building the distribution never fails for this, but `./gradlew build` does fail on a source tree without git, because a test asserts that the installed version is a real SHA.
+- On a release tag it is the tag: `0.1.0`.
+- After a tag it is the tag, the number of commits since and the commit: `0.1.0-5-g3f2a9c1d7e4b`. This is a label, not a semver to compare: semver sorts it before `0.1.0`, though it is newer.
+- With no tag reachable, or a clone without tags, it is the 12 character hex git SHA: `3f2a9c1d7e4b`. A tag that is not a semver gives the SHA too.
+- `-dirty` is appended when tracked files had uncommitted changes at build time: `0.1.0-dirty`, `3f2a9c1d7e4b-dirty`.
+- `unknown` means the build had no git (no `git` command, no `.git` folder, no commit) or git failed. Building the distribution never fails for this, but `./gradlew build` does fail on a source tree without git, because a test asserts that the installed version is a real one.
+
+`build-info.properties`, at the root of the install, also records the full commit as `commit=<sha>`, so a build is traceable whatever its version.
+
+Git runs when Gradle configures a build that includes the release archives (`loop-<version>.tar.gz` and `.zip`, named after the version), as `./gradlew build` does: a new commit or a dirty tree reconfigures that build once. Nothing compiled or tested depends on the version.
 
 The version shows in three places:
 
 - `loop --version` prints it.
 - Every `attempt_started` event stores it as `loop_version` in its data, first and retry Attempts alike.
 - The `loop trace` header shows it after the start time, as `loop <version>`. Attempts recorded before m1-12 have no version and no `loop` column.
+
+### Java
+
+`bin/loop` looks for Java in this order: `runtime/bin/java` inside the install, when it is executable, then `JAVA_HOME`, then `java` on the `PATH`. It sets and exports nothing: agents inherit Loop's environment, so a `JAVA_HOME` set for Loop would make the project's build run with Loop's JDK. A packaged install links its Java 21 as `runtime/` instead, and a project that needs another JDK keeps its own `JAVA_HOME`.
 
 ## Known limits
 
@@ -150,6 +162,7 @@ The default `auto_merge.protected_paths` also apply: a diff that touches `WORKFL
 `guards.protect` refutes any result that edits these paths:
 
 - `scripts/`, the worktree hooks included: the checks run them.
+- `.github/`: the CI and release workflows hold write permissions (publishing a release, attesting it) that `./gradlew build` cannot verify, and auto merge is on for the `code` kind, so no agent changes them (bl-159).
 - `WORKFLOW.md`, the build scripts (`*.gradle.kts`, `*/*.gradle.kts`, `plugins/*/*.gradle.kts`), `gradle/`, `build-logic/src/`, `gradle.properties`, `gradlew`, `gradlew.bat`: the checks and how the build runs them. A `build.gradle.kts` can exclude tests or turn a check off. `build-logic/` is protected through its sources only: `diff_policy` counts ignored files too, and every build writes ignored output under `build-logic/build/` and `build-logic/.gradle/`, so protecting the folder whole refuted every result (m3-15's first attempt, 2026-11-15). For the same reason the build scripts are listed by depth instead of `**/*.gradle.kts`: Gradle's kotlin-dsl writes ignored copies of the convention plugins under `build-logic/build/kotlin-dsl/`, the build check recreates them after `diff_policy` runs, and the merge check's `diff_policy` then refuted them (m3-15, attempts 2 and 3). A module nested deeper than `plugins/*/` needs its own glob; `OwnWorkflowTest` pins the list, and bl-88 tracks fixing this in `diff_policy` itself.
 - `.loop/specs/`, `docs/adr/`, `CONTEXT.md`: the decisions the work is judged against.
 

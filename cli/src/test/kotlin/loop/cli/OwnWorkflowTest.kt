@@ -79,6 +79,7 @@ class OwnWorkflowTest {
         val protect =
             listOf(
                 "scripts/",
+                ".github/",
                 "WORKFLOW.md",
                 "*.gradle.kts",
                 "*/*.gradle.kts",

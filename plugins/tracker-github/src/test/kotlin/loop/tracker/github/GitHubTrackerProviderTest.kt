@@ -32,6 +32,7 @@ class GitHubTrackerProviderTest {
                 ProfileKey("api_url", ProfileType.STRING, default = "https://api.github.com"),
                 ProfileKey("labels", ProfileType.LIST, default = "empty"),
                 ProfileKey("handoff_labels", ProfileType.MAP, default = "review: needs-review, needs_info: needs-info"),
+                ProfileKey("trusted_associations", ProfileType.LIST, default = "OWNER, MEMBER, COLLABORATOR"),
             ),
             provider.profile.keys,
         )

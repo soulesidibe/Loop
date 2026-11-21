@@ -158,6 +158,27 @@ class RunnerPluginsTest {
     }
 
     @Test
+    fun `bl-104 a JAR provider built against m3-04, with no profile, loads and is checked by its own validate only`() {
+        PluginJars.build(
+            root.resolve("build"),
+            fixture.loopHome.resolve("plugins").createDirectories(),
+            "OldRunnerProvider",
+            "old-runner",
+            withProfile = false,
+        )
+        useRunner("old-runner", "    script: \"${fixture.agentScript}\"\n    extra: 1\n")
+        val host = host()
+
+        val plugins = host.runnerPlugins.getOrThrow()
+        val provider = plugins.provider("old-runner")!!
+        val workflow = host.workflowLoader().load(fixture.workflow).getOrThrow()
+
+        assertSame(PluginProfile.UNDECLARED, provider.profile)
+        assertEquals(emptyList(), workflow.configWarnings)
+        assertIs<CommandRunner>(runnerFor(workflow, plugins, host.rawEnv, agentEnvRemovedNames(workflow)))
+    }
+
+    @Test
     fun `a JAR provider runs an attempt end to end through the installed launcher`() {
         PluginJars.build(root.resolve("build"), fixture.loopHome.resolve("plugins").createDirectories(), "JarRunnerProvider", "jar-runner")
         useRunner("jar-runner", "    script: \"${fixture.agentScript}\"\n")

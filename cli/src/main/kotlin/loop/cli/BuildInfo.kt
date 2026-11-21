@@ -8,7 +8,9 @@ import kotlin.io.path.Path
 /**
  * The build's version (m1-12), from the `build-info.properties` file Gradle writes at the root of
  * the distribution and the start script names in the `loop.buildInfo` property. The value is a
- * 12 hex commit with an optional `-dirty`, or `unknown`; it is read as an opaque label.
+ * release tag such as `0.1.0`, a label such as `0.1.0-5-g<hex>` after it, or a 12 hex commit without
+ * a tag, each with an optional `-dirty`, or `unknown` (bl-159); it is read as an opaque label, never
+ * compared as a semver.
  */
 internal object BuildInfo {
     const val UNKNOWN: String = "unknown"

@@ -55,6 +55,9 @@ kinds:
         # workspace under skip-worktree, and a protected path missing that way makes diff_policy unverified.
         protect:
           - scripts/
+          # CI and release files hold write permissions (contents, id-token, attestations) that ./gradlew build
+          # cannot verify, so every change under .github/ is human lane (bl-159).
+          - .github/
           - WORKFLOW.md
           # The tracked build scripts by depth, never **/*.gradle.kts: Gradle generates ignored copies under
           # build-logic/build/, and diff_policy counts ignored files. A module nested deeper needs its own glob.

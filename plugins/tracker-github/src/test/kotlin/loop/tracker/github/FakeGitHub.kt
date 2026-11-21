@@ -92,6 +92,12 @@ class FakeGitHub : GitHubTransport {
             repo: String = REPO,
         ): String = "$API/repos/$repo/issues/$number"
 
+        /** The URL that lists the blockers of issue [number] (bl-158). */
+        fun blockedByUrl(
+            number: Int,
+            repo: String = REPO,
+        ): String = "$API/repos/$repo/issues/$number/dependencies/blocked_by?per_page=100"
+
         /** The comments URL of issue [number], with `page` when given (bl-06). */
         fun commentsUrl(
             number: Int,
@@ -99,19 +105,24 @@ class FakeGitHub : GitHubTransport {
             repo: String = REPO,
         ): String = "$API/repos/$repo/issues/$number/comments?per_page=100" + (page?.let { "&page=$it" } ?: "")
 
-        /** One comment the way GitHub returns it: its author's login, its creation time and its body (bl-06). */
+        /**
+         * One comment the way GitHub returns it: its author's login, its creation time and its body (bl-06), and its
+         * `author_association` (bl-157), left out when [association] is null.
+         */
         fun comment(
             login: String?,
             createdAt: String,
             body: String?,
+            association: String? = "OWNER",
         ): JsonObject =
             JsonObject(
-                mapOf(
-                    "id" to JsonPrimitive(createdAt.hashCode()),
-                    "user" to (login?.let { JsonObject(mapOf("login" to JsonPrimitive(it))) } ?: JsonNull),
-                    "created_at" to JsonPrimitive(createdAt),
-                    "body" to (body?.let(::JsonPrimitive) ?: JsonNull),
-                ),
+                buildMap {
+                    put("id", JsonPrimitive(createdAt.hashCode()))
+                    put("user", login?.let { JsonObject(mapOf("login" to JsonPrimitive(it))) } ?: JsonNull)
+                    put("created_at", JsonPrimitive(createdAt))
+                    put("body", body?.let(::JsonPrimitive) ?: JsonNull)
+                    association?.let { put("author_association", JsonPrimitive(it)) }
+                },
             )
 
         /** The recorded response `github/recorded/<name>`: its body and its `.headers` file. */
@@ -138,7 +149,10 @@ class FakeGitHub : GitHubTransport {
 
         /**
          * The recorded issue 26 with the given fields replaced, the way GitHub would return an issue
-         * with them. [labels] become label objects; [pullRequest] adds the `pull_request` key.
+         * with them. [labels] become label objects; [pullRequest] adds the `pull_request` key. [authorAssociation]
+         * replaces the recorded `NONE`, `OWNER` by default so the issue is trusted (bl-157); null removes the key.
+         * [totalBlockedBy] and [openBlockedBy] fill `issue_dependencies_summary` (bl-158), the open count defaulting to
+         * the total; a null total removes the summary. [stateReason] replaces the recorded null `state_reason`.
          */
         fun issue(
             number: Int,
@@ -150,6 +164,10 @@ class FakeGitHub : GitHubTransport {
             pullRequest: Boolean = false,
             repo: String = REPO,
             comments: Int = 0,
+            authorAssociation: String? = "OWNER",
+            totalBlockedBy: Int? = 0,
+            openBlockedBy: Int? = totalBlockedBy,
+            stateReason: String? = null,
         ): JsonObject {
             val template = recordedJson("issue-26").jsonObject
             val labelObjects =
@@ -180,12 +198,26 @@ class FakeGitHub : GitHubTransport {
                         "body" to (body?.let(::JsonPrimitive) ?: JsonNull),
                         "created_at" to JsonPrimitive(createdAt),
                         "comments" to JsonPrimitive(comments),
-                    )
+                        "state_reason" to (stateReason?.let(::JsonPrimitive) ?: JsonNull),
+                        "repository_url" to JsonPrimitive("$API/repos/$repo"),
+                        "issue_dependencies_summary" to
+                            JsonObject(
+                                mapOf(
+                                    "blocked_by" to JsonPrimitive(openBlockedBy ?: 0),
+                                    "total_blocked_by" to JsonPrimitive(totalBlockedBy ?: 0),
+                                    "blocking" to JsonPrimitive(0),
+                                    "total_blocking" to JsonPrimitive(0),
+                                ),
+                            ),
+                    ) +
+                    (authorAssociation?.let { mapOf("author_association" to JsonPrimitive(it)) } ?: emptyMap())
+            val withSummary = if (totalBlockedBy == null) fields - "issue_dependencies_summary" else fields
+            val withAssociation = if (authorAssociation == null) withSummary - "author_association" else withSummary
             val withPull =
                 if (pullRequest) {
-                    fields + ("pull_request" to JsonObject(mapOf("url" to JsonPrimitive("$API/repos/$repo/pulls/$number"))))
+                    withAssociation + ("pull_request" to JsonObject(mapOf("url" to JsonPrimitive("$API/repos/$repo/pulls/$number"))))
                 } else {
-                    fields
+                    withAssociation
                 }
             return JsonObject(withPull)
         }

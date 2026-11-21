@@ -2,7 +2,7 @@
 
 The `github` tracker reads the issues of one GitHub repository through the GitHub REST API. This page is the adapter profile that section 11.2 of the spec asks every adapter to publish. The implementation is `GitHubTracker` in `plugins/tracker-github` (`loop.tracker.github`).
 
-Written 2026-11-12 in issue m2-22, the read side, and wired into the host on 2026-11-13 in bl-23. The write side (moves as label changes, comments, label writes) came on 2026-11-13 in m2-23, pull request delivery in m2-25, and the base fetch and the merge in m2-26. Terms follow [`CONTEXT.md`](../../CONTEXT.md); spec section numbers refer to [`symphony/SPEC.md`](../symphony/SPEC.md); Loop's readings of the spec are in [`spec-decisions.md`](../spec-decisions.md#github-tracker-read-side-extension-m2-22).
+Written 2026-11-12 in issue m2-22, the read side, and wired into the host on 2026-11-13 in bl-23. The write side (moves as label changes, comments, label writes) came on 2026-11-13 in m2-23, pull request delivery in m2-25, and the base fetch and the merge in m2-26. Trusted authors came on 2026-11-20 in bl-157, blockers on 2026-11-21 in bl-158. Terms follow [`CONTEXT.md`](../../CONTEXT.md); spec section numbers refer to [`symphony/SPEC.md`](../symphony/SPEC.md); Loop's readings of the spec are in [`spec-decisions.md`](../spec-decisions.md#github-tracker-read-side-extension-m2-22).
 
 ## Contents
 
@@ -13,11 +13,13 @@ Written 2026-11-12 in issue m2-22, the read side, and wired into the host on 202
 5. [Rate limits](#rate-limits)
 6. [Normalization](#normalization)
 7. [Comments](#comments)
-8. [States](#states)
-9. [Writes](#writes)
-10. [Pull request delivery](#pull-request-delivery)
-11. [Errors](#errors)
-12. [Known gaps](#known-gaps)
+8. [Trusted authors](#trusted-authors)
+9. [Blockers](#blockers)
+10. [States](#states)
+11. [Writes](#writes)
+12. [Pull request delivery](#pull-request-delivery)
+13. [Errors](#errors)
+14. [Known gaps](#known-gaps)
 
 ## Configuration
 
@@ -29,6 +31,7 @@ Written 2026-11-12 in issue m2-22, the read side, and wired into the host on 202
 | `tracker.provider.api_url` | an `https` address | `https://api.github.com` | For GitHub Enterprise Server, `https://<host>/api/v3`. A trailing `/` is dropped; a query or fragment is refused. Plain `http` is refused unless the host is a loopback host (`localhost`, `127.0.0.0/8`, `::1`), the escape for a test's fake server (m2-25), since the token goes to this address. |
 | `tracker.provider.labels` | list of labels | empty | Scope labels: only issues that carry every one are in scope, see [scope](#scope). |
 | `tracker.provider.handoff_labels` | map of `review` and `needs_info` to a label | `review: needs-review`, `needs_info: needs-info` | The label a move to each handoff state adds, see [states](#states). A state left out keeps its default; any other key is refused. |
+| `tracker.provider.trusted_associations` | list of GitHub author associations | `OWNER`, `MEMBER`, `COLLABORATOR` | Whose issues are dispatched and whose comments reach the agent, see [trusted authors](#trusted-authors). Compared case insensitively. Each value is one of `OWNER`, `MEMBER`, `COLLABORATOR`, `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, `FIRST_TIMER`, `MANNEQUIN` and `NONE`; an empty list is refused. |
 | `tracker.active_states` | list of states | `open` | Profile default, see [states](#states). Preflight refuses a handoff state here. |
 | `tracker.terminal_states` | list of states | `closed` | Profile default, see [states](#states). Preflight refuses a handoff state here. |
 | `tracker.required_labels` | list of labels | empty | Applied by the orchestrator after normalization, compared case insensitively. A move to a handoff state removes every one, so it must not be empty: preflight refuses an empty list (bl-46), see [states](#states). |
@@ -49,13 +52,16 @@ Unknown `tracker.provider` keys are ignored, with a startup warning naming each 
 | Category | When | Message |
 |---|---|---|
 | `invalid_tracker_config` | `repo` missing | `tracker.provider.repo is required` |
-| `invalid_tracker_config` | `repo`, `api_url` not a string, `labels` not a list, `handoff_labels` not a map (profile check, m3-05) | `tracker.provider.<key> must be a string`, `must be a list`, `must be a map` |
+| `invalid_tracker_config` | `repo`, `api_url` not a string, `labels` or `trusted_associations` not a list, `handoff_labels` not a map (profile check, m3-05) | `tracker.provider.<key> must be a string`, `must be a list`, `must be a map` |
 | `invalid_tracker_config` | `repo` not `owner/name` | `tracker.provider.repo must be owner/name, got "<value>"` |
 | `invalid_tracker_config` | `api_url` not an http or https address | `tracker.provider.api_url must be an http or https address, got "<value>"` |
 | `invalid_tracker_config` | `api_url` over `http` to a host that is not a loopback host (m2-25) | `tracker.provider.api_url must be an https address, http is allowed only for a loopback host, got "<value>"` |
 | `invalid_tracker_config` | `labels` a list holding something other than a string | `tracker.provider.labels must be a list of labels` |
 | `invalid_tracker_config` | `handoff_labels` with a key other than `review` and `needs_info` | `tracker.provider.handoff_labels has "<key>", only review and needs_info have a handoff label` |
 | `invalid_tracker_config` | a `handoff_labels` value that is not a non blank string | `tracker.provider.handoff_labels.<state> must be a label` |
+| `invalid_tracker_config` | `trusted_associations` not a list, or a list holding something other than a string (bl-157) | `tracker.provider.trusted_associations must be a list of author associations, got "<value>"` |
+| `invalid_tracker_config` | `trusted_associations` an empty list | `tracker.provider.trusted_associations must not be empty, list the author associations to trust` |
+| `invalid_tracker_config` | a `trusted_associations` value that is not one of the eight author associations | `tracker.provider.trusted_associations has "<value>", which is not a GitHub author association, use OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, FIRST_TIMER, MANNEQUIN or NONE` |
 | `invalid_tracker_config` | `token`, or the value of its `$NAME`, holds whitespace or a control character | see above |
 | `missing_tracker_secret` | `token` missing or blank, or its `$NAME` unset or empty | see above |
 | `missing_tracker_secret` | `token` not a string (profile check, m3-05) | `tracker.provider.token must be a string` |
@@ -79,6 +85,7 @@ tracker:
     handoff_labels:        # optional, these are the defaults
       review: needs-review
       needs_info: needs-info
+    trusted_associations: [OWNER, MEMBER, COLLABORATOR]   # optional, the default
   active_states: [open]
   terminal_states: [closed]
   required_labels: [ready-for-agent]
@@ -95,6 +102,7 @@ Since m3-05 the tracker is a plugin, `GitHubTrackerProvider`, registered in `MET
 | `tracker.provider.api_url` | string | `https://api.github.com` | no | none |
 | `tracker.provider.labels` | list | empty | no | none |
 | `tracker.provider.handoff_labels` | map | `review: needs-review`, `needs_info: needs-info` | no | none |
+| `tracker.provider.trusted_associations` | list | `OWNER`, `MEMBER`, `COLLABORATOR` | no | none |
 
 Loop checks `tracker.provider` against it on every load of `WORKFLOW.md`, at startup, in the preflight of every tick and on every reload, before `GitHubTrackerSettings.parse` reads it. A failure keeps the spec 11.4 categories of the [validation errors](#configuration): a missing or wrongly typed key fails with `invalid_tracker_config` naming it, the secret `token` missing or written `$NAME` with the variable unset or blank fails with `missing_tracker_secret` naming the variable, never a value. A literal token is left to the settings reader. A key the profile does not list is a startup warning, `tracker.provider.<key> is not a key of the github tracker, Loop ignores it`, never a failure, for forward compatibility. Its profile defaults for the states are `open` and `closed`.
 
@@ -119,7 +127,7 @@ Loop checks `tracker.provider` against it on every load of `WORKFLOW.md`, at sta
 
 ## Rate limits
 
-GitHub's REST limit is 5,000 requests an hour for a token. A poll costs one request per page of the list, a refresh one request per running issue, a dispatch one request when the issue has comments (see [comments](#comments)), and a write one request per call it makes (see [writes](#writes)).
+GitHub's REST limit is 5,000 requests an hour for a token. A poll costs one request per page of the list, plus one per candidate that has a blocker (see [blockers](#blockers)), a refresh one request per running issue, plus one when it has a blocker, a dispatch one request when the issue has comments (see [comments](#comments)), and a write one request per call it makes (see [writes](#writes)).
 
 - A rate limit answer is a 429, or a 403 with `x-ratelimit-remaining: 0` or a `retry-after` header. The call fails with `RateLimited`, whose `retryAt` is, in this order: now plus `retry-after` seconds, the `x-ratelimit-reset` time when the remaining count is 0, or now plus one minute, as GitHub asks for a secondary limit that names no time.
 - Until `retryAt`, the adapter sends no request: every call fails at once with the same `RateLimited`, writes included. GitHub may block an integration that keeps sending requests while limited. A write answered with a rate limit holds the reads the same way.
@@ -138,8 +146,9 @@ GitHub's REST limit is 5,000 requests an hour for a token. A poll costs one requ
 | `state` | `state` | Trimmed, required, non empty, as GitHub spells it (`open`, `closed`). |
 | `priority` | labels | GitHub has no priority. A label `priority:<n>` (any case, spaces allowed after the colon, `n` digits) gives the priority; with several, the lowest `n` wins. Null when there is none. |
 | `labels` | `labels` | Label names, trimmed, lowercased, blanks dropped, duplicates removed. A `priority:<n>` label is read into `priority` and not repeated here, so it cannot be a required label. A value that is not a list gives an empty list. |
-| `blocked_by` | none | Always empty, see [known gaps](#known-gaps). |
-| `dispatchable` | none | Always true. GitHub's REST issue gives no blocker ids, and the adapter invents no blocker rule (11.3). |
+| `blocked_by` | `issue_dependencies_summary` and the blocked_by list | The blockers of a candidate as GitHub lists them: `12` for an issue of the same repository, `owner/repo#12` for one in another. Empty when it has none, and for an issue that is not a candidate, see [blockers](#blockers). |
+| `blocked_reason` | `author_association`, then the blockers | `untrusted_author (<ASSOCIATION>)`, or `untrusted_author (missing)` when GitHub gives none, when the issue's author is outside `tracker.provider.trusted_associations`, see [trusted authors](#trusted-authors). Otherwise the first blocker that holds it, such as `blocked_by #12 (open)`, or why its blockers cannot be read, see [blockers](#blockers). Null when nothing blocks it. |
+| `dispatchable` | `blocked_reason` | True when `blocked_reason` is null. |
 | `description` | `body` | Trimmed; empty or null is null. Comments are added at dispatch only, see [comments](#comments). |
 | `created_at` | `created_at` | Parsed as an RFC 3339 instant; an unusable value is null. |
 | `updated_at` | none | Not provided. |
@@ -161,8 +170,39 @@ Written in bl-06. Loop puts nothing in the prompt on its own: the prompt templat
 
 - **One request, never on a poll.** `GET /repos/{owner}/{repo}/issues/{number}/comments?per_page=100`. A list or a by id read records GitHub's `comments` count of each issue; when the latest read counted none, no request is sent and the issue is returned as is. An issue the adapter never read is asked for anyway, so no answer is missed. A comment Loop writes adds one to the count it holds (m2-23), so the next dispatch asks for the comments, on the last page past 100, even before a read counts the new one.
 - **Newest last, newest kept.** Comments are sorted by `created_at`, oldest first. Past 100 comments the request asks for the last page (`&page=<n>`), and the section opens with `<k> older comments are not shown.`, so the newest answers always survive.
+- **Trusted authors only.** A comment whose `author_association` is missing or outside `tracker.provider.trusted_associations` is left out, see [trusted authors](#trusted-authors). When any was left out, the section opens with one line that counts them, `3 comments from outside tracker.provider.trusted_associations are not shown.` (`1 comment ... is not shown.` for one), before the `older comments` line when both appear. Nothing of their text or author is shown. An issue whose comments are all left out gets the heading and that line only.
 - **Each comment** is one block: `YYYY-MM-DD HH:MMZ <login>: <first line>` in UTC, then its other lines indented two spaces, so a heading inside a comment never opens a section. Line ends are normalized and blank lines dropped, like a `files` tracker comment. A deleted account is `ghost`. Blank comments are left out; with no other comment the issue is returned as is.
 - **Failures.** Any error of the request is the call's error, with the categories of [errors](#errors); a body that is not a list, or a comment that is not an object or has no usable `created_at`, is `Malformed`. A rate limit holds this request like any other. The orchestrator then starts no agent: the attempt fails with `tracker error: <message>` and is retried with the normal backoff, so a prompt is never rendered without the answers.
+
+## Trusted authors
+
+Written in bl-157. On a public repository anyone with a GitHub account can open an issue and comment on any issue, and the author of an issue can edit its title and body at any time. Loop puts the issue text and its comments in the prompt of an agent that runs commands and pushes branches, so outside text there is a prompt injection: a stranger could ask the agent to leak what it can read or push something it should not. `tracker.required_labels` stops a stranger from starting an attempt, since only people with triage access can label, but not from adding text to an attempt a maintainer started.
+
+GitHub gives each issue and each comment an `author_association`, the relation of its author to the repository: `OWNER`, `MEMBER` (of the owning organization), `COLLABORATOR`, `CONTRIBUTOR` (has a merged commit), `FIRST_TIME_CONTRIBUTOR`, `FIRST_TIMER`, `MANNEQUIN` or `NONE`. `tracker.provider.trusted_associations` lists the ones Loop trusts, by default `OWNER`, `MEMBER` and `COLLABORATOR`: the repository's owner, the members of its organization and its collaborators.
+
+- **Issues.** An issue whose author is outside the list, or that has no `author_association`, keeps its labels and state but gets `blocked_reason` `untrusted_author (<ASSOCIATION>)`, such as `untrusted_author (NONE)`, or `untrusted_author (missing)`. It is never dispatched: the orchestrator records `candidate_skipped` with that reason, so `loop trace <number>` shows why it waits, and a running attempt of such an issue ends at its next turn boundary, like that of any blocked issue.
+- **Why the author check covers body edits.** Only the author of an issue and people with triage access to the repository can edit its title and body. A trusted author means every possible editor is trusted too, so a maintainer who labels an outside issue `ready-for-agent` after reading it cannot have the body rewritten under them: that issue is blocked whatever its labels. Loop does not read the edit history. To work on an outside report, a maintainer opens a new issue in their own words.
+- **Comments.** Only the comments of trusted authors reach the agent; the others are counted in one line, see [comments](#comments). Loop's own comments are written with the configured token, whose owner is the repository owner or a collaborator, so they stay in.
+- **Widening and narrowing.** A private repository whose contributors are all trusted can add `CONTRIBUTOR`; a solo project can keep only `OWNER`. Adding `NONE` trusts every GitHub account and brings the risk back.
+
+The tracker reads no pull request comments, so no check applies to them.
+
+## Blockers
+
+Written in bl-158. GitHub has native issue dependencies: an issue can be marked "blocked by" other issues, of the same repository or of another. The adapter reads them, so an issue waits for its blockers like a `files` tracker issue waits for its `blocked_by`. It reads nothing else: a `Blocked by: #12` line in the body is plain text, since the body is text people edit, and one source of truth is enough. Writing dependencies and the `blocking` direction are out of scope.
+
+- **Which issues.** Blockers are read for a candidate only: an `open` issue, in scope, by a [trusted author](#trusted-authors), carrying every label of `tracker.required_labels`. Any other issue is never dispatched, so it costs no request and keeps an empty `blocked_by`. An untrusted issue keeps its `untrusted_author` reason and its blockers are not asked for.
+- **No blocker, no request.** Every issue object carries `issue_dependencies_summary`. When its `total_blocked_by` is 0 the issue has no blocker and nothing more is sent.
+- **One request otherwise.** `GET /repos/{owner}/{repo}/issues/{number}/dependencies/blocked_by?per_page=100` lists the blockers as issue objects. A list reads them once every page of the list is read, so a list that fails on a page sends none. `blocked_by` gets their references in GitHub's order: `12` for an issue of the same repository, compared case insensitively, `owner/repo#12` for one in another, taken from the blocker's `repository_url`.
+- **What resolves a blocker.** Only `state: closed` with `state_reason: completed`, compared case insensitively. An open blocker, one closed as `not_planned` or `duplicate`, and one closed with a missing or unknown `state_reason` keep the issue blocked. The first blocker that holds it, in GitHub's order, gives `blocked_reason`: `blocked_by #12 (open)`, `blocked_by #12 (closed, not_planned)`, `blocked_by #12 (closed)` for a closed blocker with no reason, or `blocked_by owner/repo#3 (open)`.
+- **Fail closed.** Each case blocks that issue only, never the whole call, so one bad issue does not stop the poll:
+  - the list holds fewer blockers than `total_blocked_by`, such as a blocker in a private repository the token cannot see, or more than 100 blockers: `blocked_by <n> unreadable`, even when every listed blocker resolved. A listed blocker that holds the issue names it first;
+  - a summary that is present but not an object with a non negative integer `total_blocked_by`, `null` included: `blocked_by unreadable summary`, with no request;
+  - an error answer to the blocker request, such as a 404 or a 500: `blocked_by unreadable (<status>)`;
+  - a body that is not a list of issues, or a blocker with no positive `number`, no `state` or no `repository_url` ending in `/repos/<owner>/<repo>`: `blocked_by unreadable (malformed)`.
+- **What does not block.** An issue with no `issue_dependencies_summary` field counts as having no blocker, since older GitHub Enterprise servers do not send it. A rate limit answer to the blocker request fails the call and holds requests like any other, see [rate limits](#rate-limits), and an unreachable GitHub fails the call with `Unavailable`. A failed call keeps running workers running, where a blocked running issue would be stopped.
+- **A running issue.** A refresh reads the blockers of a running candidate the same way. When one appears or reopens, the attempt ends at its next turn boundary, like that of any blocked issue.
+- **What the REST docs say about the two counts.** Read on 2026-11-21: "REST API endpoints for issues" gives `issue_dependencies_summary` four required integers, `blocked_by`, `blocking`, `total_blocked_by` and `total_blocking`, with no description, so the docs do not say which count is open only. "REST API endpoints for issue dependencies" documents the blocked_by list with `per_page` (default 30, max 100) and `page`, an array of issues as the answer, the statuses 200, 301, 404 and 410, and no state filter. Those pages are written for API version 2026-03-10; Loop sends 2022-11-28, which carries the same field. Checked against the live API the same day on three public issues: `total_blocked_by` counts every blocker, `blocked_by` only the open ones, and the list shows the closed blockers too, with their `state_reason`. The adapter relies only on `total_blocked_by` and the list, so it fails closed if GitHub ever lists only open blockers.
 
 ## States
 
@@ -283,7 +323,7 @@ Every call returns a result whose failure is a `TrackerError`. The adapter does 
 | `TrackerError` | When | Spec category (11.4) | Message |
 |---|---|---|---|
 | `Unavailable` | GitHub cannot be reached, the connection fails, or no answer within 30 seconds | `tracker_request` | The I/O error's message, such as `GitHub did not answer within 30s` |
-| `Status` | Any non success answer that is not a rate limit, and not a 404 or 410 of fetch by ids while the repository answers, nor a 404 of a label removal. A write answered 403 (a token without write access), 404 or 422 (a value GitHub refuses) is one too | `tracker_status` | `The tracker answered <status>: <GitHub's message>`, followed by each `errors[].message` joined with `: ` (bl-68), cut at 200 characters |
+| `Status` | Any non success answer that is not a rate limit, and not a 404 or 410 of fetch by ids while the repository answers, nor a 404 of a label removal, nor an answer to a blocker request, which blocks its issue instead (see [blockers](#blockers)). A write answered 403 (a token without write access), 404 or 422 (a value GitHub refuses) is one too | `tracker_status` | `The tracker answered <status>: <GitHub's message>`, followed by each `errors[].message` joined with `: ` (bl-68), cut at 200 characters |
 | `Malformed` | A body that is not JSON, a list body that is not an array, an issue body that is not an object, a requested issue that cannot be normalized | `tracker_response` | `Malformed issue at <url>` |
 | `Pagination` | A next page link on another origin, a repeated link, more than 100 pages, an issue on two pages | `tracker_pagination` | `The tracker pages are inconsistent: <detail>` |
 | `RateLimited` | A rate limit answer, or any call while requests are held | `tracker_rate_limited` | `The tracker rate limit is exhausted, requests resume at <time>` |
@@ -304,6 +344,7 @@ Recorded so later issues close them.
 - **The comment author is the token's account.** GitHub sets it; the author Loop gives a comment (`agent <id>`, `loop`) is not written, so an agent's comment reads as the token owner's in GitHub and under `## Comments`.
 - **A human's return is not a human touch.** The ledger records a `human_touch` when an issue is dispatched again after its last attempt left it outside the active states (m2-19). An issue handed off by labels stays `open`, so restoring `ready-for-agent` is not counted.
 - **`loop trace` takes the issue number**, such as `loop trace 26`, not the identifier `Hello-World-26`: it looks the issue up by id.
-- **No blockers.** `blocked_by` is empty and every issue is dispatchable. GitHub's issue dependencies need one more request per issue; nothing reads them yet.
+- **Blockers past 100.** The blocked_by list is read in one page of 100. An issue with more blockers stays blocked with `blocked_by <n> unreadable`.
+- **Blockers only for candidates.** An issue that is closed or lacks a required label has an empty `blocked_by`, so `blocked_by` alone does not tell an issue with no blocker from one that was not asked.
 - **Requests in a refresh are sequential**, one per running issue. With Loop's concurrency limits that is a handful of requests a tick.
 - **No conditional requests.** The adapter does not send `If-None-Match`, so an unchanged list still costs its requests against the rate limit.

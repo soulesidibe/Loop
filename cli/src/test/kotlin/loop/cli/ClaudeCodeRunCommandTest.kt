@@ -245,6 +245,8 @@ class ClaudeCodeRunCommandTest {
         assertContains(lines[1], "\"rotations\":1")
         // The attempt's spend keeps the first session's tokens: 1000 then 100 more.
         assertContains(lines[1], "\"attempt_tokens\":1100")
+        // bl-147: the workflow names no model, so each line holds the model of its session's init line.
+        lines.forEach { assertContains(it, "\"model\":\"anthropic/claude-fake\"") }
         val trace = LoopCommand(host { PreflightResult() }).test(listOf("trace", "t-1", "--workflow", fixture.workflow.toString()))
         assertContains(trace.stdout, "session_rotated")
         assertContains(trace.stdout, "reason=soft_limit rotation=1/5 occupancy_tokens=220 window=1000 fraction=0.2200")
