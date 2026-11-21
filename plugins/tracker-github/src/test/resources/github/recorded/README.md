@@ -44,3 +44,4 @@ Recorded for m4-07 (bl-98) on 2026-11-21 in m4-00, with `gh api -i`, from the ar
 |---|---|
 | `actions-run-43779352010` | `GET /repos/soulesidibe/Loop-private/actions/runs/43779352010`: 200, a completed run with conclusion `failure` |
 | `actions-run-43779352010-jobs` | `GET /repos/soulesidibe/Loop-private/actions/runs/43779352010/jobs`: 200, its one job, `failure` with zero steps |
+| `actions-runs-43779352010` | `GET /repos/soulesidibe/Loop-private/actions/runs?head_sha=1c495c0359f1fb41aef31782e7221ff699f6cb8c&per_page=100`: 200, the listing the CI wait reads, with run 43779352010 alone, the same run as `actions-run-43779352010` |
