@@ -57,9 +57,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
-import kotlin.test.assertTrue
 
 /**
  * m3-15: the CI wait between the merge check and the merge. With `ci: actions` a passing merge check pushes the merged
@@ -673,7 +673,12 @@ class CiWaitOrchestratorTest {
             assertEquals("ci", setup.record("t-1").data[WaitKeys.PHASE])
             assertEquals("check", setup.record("t-2").data[WaitKeys.PHASE])
             assertEquals(listOf(setup.verified, setup.verified), setup.remote.listed, "only the head is polled")
-            assertEquals(listOf("t-1"), setup.sink.events.filter { it.kind == CiWaiting.name }.map { it.issueIdentifier })
+            assertEquals(
+                listOf("t-1"),
+                setup.sink.events
+                    .filter { it.kind == CiWaiting.name }
+                    .map { it.issueIdentifier },
+            )
         }
 
     @Test

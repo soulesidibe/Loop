@@ -179,7 +179,12 @@ class StatusCommand(
                 )
             } +
             snapshot.waiting.map { row ->
-                Line(WAITING, row.identifier, attempt(row.attempt), details("reason" to row.reason, "since" to seconds(row.since), "queue" to row.queue?.toString()))
+                Line(
+                    WAITING,
+                    row.identifier,
+                    attempt(row.attempt),
+                    details("reason" to row.reason, "since" to seconds(row.since), "queue" to row.queue?.toString()),
+                )
             } +
             snapshot.parked.map { row ->
                 Line(

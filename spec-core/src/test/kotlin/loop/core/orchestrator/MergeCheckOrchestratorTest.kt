@@ -1298,7 +1298,13 @@ class MergeCheckOrchestratorTest {
             val first = verifiedWorktree()
             val second = secondWorktree()
             val tracker = FakeTracker(listOf(issue("t-1"), issue("t-2")))
-            val remote = queueRemote().apply { mergeFailures += DeliveryError.Rejected("Cannot merge pull request #7 on acme/widgets: 405") }
+            val remote =
+                queueRemote().apply {
+                    mergeFailures +=
+                        DeliveryError.Rejected(
+                            "Cannot merge pull request #7 on acme/widgets: 405",
+                        )
+                }
             val waiting =
                 FakeWaitingIssues(
                     mergeWait(clean(first)),
@@ -1318,7 +1324,10 @@ class MergeCheckOrchestratorTest {
 
             // A new approval of t-1 starts a new merge wait, at the back of the queue.
             waiting.records[PROJECT.value to "id-t-1"] =
-                fallback.copy(data = fallback.data + mapOf(WaitingIssue.APPROVED_BY to "soule", WaitingIssue.APPROVED_AT to FIXED_NOW.toString()))
+                fallback.copy(
+                    data =
+                        fallback.data + mapOf(WaitingIssue.APPROVED_BY to "soule", WaitingIssue.APPROVED_AT to FIXED_NOW.toString()),
+                )
             tick(orchestrator, after = 1_000)
             val requeued = waiting.records.getValue(PROJECT.value to "id-t-1")
             assertEquals(WaitReason.Merge, requeued.reason)

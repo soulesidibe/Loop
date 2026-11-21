@@ -321,7 +321,10 @@ class StatusCommandTest {
                 "waiting   t-1  attempt 1  a1000000  reason=merge since=2026-11-11T10:05:00Z queue=2",
                 "waiting   t-2  attempt 1  b1000000  reason=merge since=2026-11-11T10:05:00Z queue=3",
             ),
-            result.stdout.trimEnd().lines().drop(3),
+            result.stdout
+                .trimEnd()
+                .lines()
+                .drop(3),
         )
     }
 
