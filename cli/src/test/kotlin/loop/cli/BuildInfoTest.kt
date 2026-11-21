@@ -25,6 +25,15 @@ class BuildInfoTest {
     }
 
     @Test
+    fun `every version shape the build writes reads back unchanged`() {
+        val commit = "commit=3f2a9c1d7e4b5a6978c0d1e2f3a4b5c6d7e8f901\n"
+        listOf("0.1.0", "0.1.0-dirty", "0.1.0-5-g3f2a9c1d7e4b", "1.0.0-rc.1-12-g3f2a9c1d7e4b-dirty", "3f2a9c1d7e4b").forEach {
+            assertEquals(it, BuildInfo.versionOf(fileWith("version=$it\n$commit")))
+            assertTrue(BUILT_VERSION.matches(it), it)
+        }
+    }
+
+    @Test
     fun `no property and a missing file give unknown`() {
         assertEquals("unknown", BuildInfo.versionOf(null))
         assertEquals("unknown", BuildInfo.versionOf(root.resolve("absent.properties")))
@@ -72,8 +81,8 @@ class BuildInfoTest {
     @Test
     fun `a run through the installed launcher records the installed version on its attempt`() {
         val installed = installedVersion()
-        // Built from a git checkout: never unknown, a 12 hex commit with an optional -dirty.
-        assertTrue(Regex("[0-9a-f]{12}(-dirty)?").matches(installed), installed)
+        // Built from a git checkout: never unknown, but a tag, a commit after a tag or a commit, with an optional -dirty.
+        assertTrue(BUILT_VERSION.matches(installed), installed)
         val fixture = LoopFixture(root)
         fixture.issue("t-1")
 
@@ -85,5 +94,10 @@ class BuildInfoTest {
                 .query("SELECT data FROM events WHERE kind = 'attempt_started' AND issue_id = 't-1'")
                 .map { row -> loopVersionOf(row["data"]!!) }
         assertEquals(listOf<String?>(installed), recorded)
+    }
+
+    private companion object {
+        /** The shapes of `GitVersion`: a semver tag, optionally `-<count>-g<hex>` after it, or a commit; `-dirty` last. */
+        val BUILT_VERSION = Regex("([0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?(-[0-9]+-g[0-9a-f]{12,64})?|[0-9a-f]{12,64})(-dirty)?")
     }
 }
