@@ -37,3 +37,10 @@ Written by hand for the CI wait (m3-15), after the shapes GitHub documents in "R
 |---|---|
 | `actions-runs` | `GET /repos/octocat/Hello-World/actions/runs?head_sha=<sha>&per_page=100`: 200 with three runs of one head, `build` on `push` twice (run 41, a second attempt, `success`, and run 40, `failure`) and `lint` on `pull_request` (run 12, `in_progress`), each with an empty `pull_requests` |
 | `actions-forbidden` | the same listing with a token that lacks Actions read: 403 `Resource not accessible by personal access token` with `x-accepted-github-permissions: actions=read` |
+
+Recorded for m4-07 (bl-98) on 2026-11-21 in m4-00, with `gh api -i`, from the archived private repository `soulesidibe/Loop-private`, where GitHub refused to start run 43779352010 for a billing reason on 2026-11-16. Each `<name>.json` is the body as received, with every email address replaced by one at `example.com` (the commit author `loop@localhost` became `loop@example.com`), and `<name>.headers` keeps the status and the `x-ratelimit-*` headers. Never edit them by hand:
+
+| Name | Request |
+|---|---|
+| `actions-run-43779352010` | `GET /repos/soulesidibe/Loop-private/actions/runs/43779352010`: 200, a completed run with conclusion `failure` |
+| `actions-run-43779352010-jobs` | `GET /repos/soulesidibe/Loop-private/actions/runs/43779352010/jobs`: 200, its one job, `failure` with zero steps |

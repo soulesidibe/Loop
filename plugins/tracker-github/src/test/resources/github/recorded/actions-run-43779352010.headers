@@ -1,0 +1,6 @@
+status: 200
+x-ratelimit-limit: 5000
+x-ratelimit-remaining: 4955
+x-ratelimit-used: 45
+x-ratelimit-resource: core
+x-ratelimit-reset: 1795267827
