@@ -22,7 +22,8 @@ import kotlin.time.Instant
  * request, no request is sent until GitHub's reset time, and every call, a write included, fails fast with
  * [TrackerError.RateLimited]. [completeIssue] appends the issue's comments to its description just before its
  * prompt is rendered (bl-06). Only authors in `trusted_associations` reach the agent (bl-157): an issue by another
- * author is blocked, a comment by one is left out. Writes (m2-23): a move to a handoff state is a label change, a move to `open` or
+ * author is blocked, a comment by one is left out. A candidate with native blockers is blocked until each one is closed as
+ * completed, see [GitHubBlockers] (bl-158). Writes (m2-23): a move to a handoff state is a label change, a move to `open` or
  * `closed` patches the issue state, a comment is posted as given. A write is never retried inside a call.
  */
 class GitHubTracker(
@@ -44,6 +45,8 @@ class GitHubTracker(
 
     /** The requests, their headers and the rate limit hold, shared with pull request delivery (m2-25). */
     private val client = GitHubClient(settings.apiUrl, settings.token, transport, clock)
+
+    private val blockers = GitHubBlockers(client, settings.owner, settings.repo)
 
     private val base = settings.apiUrl.toString()
 
@@ -76,6 +79,7 @@ class GitHubTracker(
      */
     override suspend fun fetchIssuesByIds(ids: List<String>): Result<List<Issue>> =
         catching {
+            val required = required()
             var repositoryChecked = false
             ids.filter { ISSUE_NUMBER.matches(it) }.distinct().mapNotNull { number ->
                 val url = URI("$base/repos/${settings.owner}/${settings.repo}/issues/$number")
@@ -89,7 +93,7 @@ class GitHubTracker(
                 val item = parse(response.body, url) as? JsonObject ?: throw TrackerError.Malformed(url.toString())
                 if (item.isPullRequest()) return@mapNotNull null
                 val issue = normalize(item) ?: throw TrackerError.Malformed(url.toString())
-                issue.takeIf { item.inScope() }
+                if (item.inScope()) withBlockers(item, issue, required) else null
             }
         }
 
@@ -260,7 +264,7 @@ class GitHubTracker(
             URI("$base/repos/${settings.owner}/${settings.repo}/issues?state=$state$labels&sort=created&direction=asc&per_page=$pageSize")
         val seenPages = mutableSetOf<String>()
         val seenNumbers = mutableSetOf<Long>()
-        val issues = mutableListOf<Issue>()
+        val issues = mutableListOf<Pair<JsonObject, Issue>>()
         while (url != null) {
             if (seenPages.size == MAX_PAGES) throw TrackerError.Pagination("more than $MAX_PAGES pages of $pageSize issues")
             if (!seenPages.add(url.toString())) throw TrackerError.Pagination("the next page link repeats $url")
@@ -276,13 +280,32 @@ class GitHubTracker(
                     item != null && item.isPullRequest() -> Unit
                     item == null -> onMalformed(TrackerError.Malformed("$url, item $index"))
                     else ->
-                        normalize(item)?.let { if (item.inScope()) issues += it }
+                        normalize(item)?.let { if (item.inScope()) issues += item to it }
                             ?: onMalformed(TrackerError.Malformed("$url, item $index"))
                 }
             }
             url = nextPage(response, url)
         }
-        return issues
+        // Blockers are read once every page is, so a list that fails on a page sends no blocker request.
+        val required = required()
+        return issues.map { (item, issue) -> withBlockers(item, issue, required) }
+    }
+
+    /** `tracker.required_labels`, trimmed and lowercased like the orchestrator compares them, blanks dropped. */
+    private fun required(): List<String> = requiredLabels().map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+
+    /**
+     * [issue] with its native blockers when it is a candidate: `open`, by a trusted author and carrying every label of
+     * [required]. Any other issue is never dispatched, so its blockers cost no request and it is returned as is: an
+     * untrusted issue keeps its `untrusted_author` reason (bl-157).
+     */
+    private suspend fun withBlockers(
+        item: JsonObject,
+        issue: Issue,
+        required: List<String>,
+    ): Issue {
+        val candidate = issue.blockedReason == null && issue.state.equals("open", ignoreCase = true) && issue.labels.containsAll(required)
+        return if (candidate) blockers.apply(item, issue) else issue
     }
 
     /**
