@@ -2,6 +2,7 @@ package loop.tracker.github
 
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -118,13 +119,20 @@ class GitHubClient(
                 throw TrackerError.Malformed(url.toString(), e)
             }
 
-        /** GitHub's `message` from an error body, else the body's first line, kept short. */
+        /**
+         * GitHub's `message` and every `errors[].message` of an error body, joined with `: `, else the body's first
+         * line, kept short. A 422 names its cause only in `errors` (bl-68).
+         */
         fun detail(body: String): String {
-            val message =
-                runCatching { (Json.parseToJsonElement(body) as? JsonObject)?.string("message") }.getOrNull()
+            val json = runCatching { Json.parseToJsonElement(body) }.getOrNull() as? JsonObject
+            val messages =
+                listOfNotNull(json?.string("message")) +
+                    (json?.get("errors") as? JsonArray).orEmpty().mapNotNull { (it as? JsonObject)?.string("message") }
+            val text =
+                messages.joinToString(": ").ifEmpty { null }
                     ?: body.lineSequence().firstOrNull { it.isNotBlank() }?.trim()
                     ?: "no message"
-            return short(message)
+            return short(text)
         }
 
         /** [text] cut at 200 characters, with `...` when cut. */
