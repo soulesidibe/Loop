@@ -1,8 +1,12 @@
 package loop.core.orchestrator
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import loop.api.ActionsRun
 import loop.api.ActionsRuns
@@ -15,6 +19,7 @@ import loop.api.PullRequest
 import loop.api.PullRequestState
 import loop.api.Redactor
 import loop.api.RunId
+import loop.api.RunnerEvent
 import loop.api.SecretRedactor
 import loop.api.WaitReason
 import loop.api.WaitingIssue
@@ -133,11 +138,14 @@ class CiWaitOrchestratorTest {
 
     private val actions = MergeConfig(MergeMethod.Merge, CiMode.Actions, ciTimeoutMs = 120_000, ciNoRunGraceMs = 60_000)
 
-    private fun workflow(merge: MergeConfig = actions): WorkflowFile =
+    private fun workflow(
+        merge: MergeConfig = actions,
+        maxConcurrentAgents: Int = 10,
+    ): WorkflowFile =
         WorkflowFile(
             config =
                 WorkflowConfig(
-                    agent = AgentConfig(maxTurns = 1, maxConcurrentAgents = 10),
+                    agent = AgentConfig(maxTurns = 1, maxConcurrentAgents = maxConcurrentAgents),
                     kinds =
                         KindsConfig(
                             KindConfig(
@@ -270,13 +278,14 @@ class CiWaitOrchestratorTest {
         waiting: FakeWaitingIssues,
         sink: FakeSink,
         workflow: WorkflowFile = workflow(),
+        runner: FakeRunner = FakeRunner(),
     ): Orchestrator {
         var next = 0
         val clock = SchedulerClock(testScheduler)
         return Orchestrator(
             workflow = workflow,
             tracker = tracker,
-            runner = FakeRunner(),
+            runner = runner,
             sink = sink,
             log = KeyValueLog(out = {}, clock = clock, redactor = Redactor.NONE),
             clock = clock,
@@ -565,6 +574,41 @@ class CiWaitOrchestratorTest {
         }
 
     @Test
+    fun `a green CI wait merges at the next tick while attempts hold every agent slot (bl-173)`() =
+        runTest {
+            val setup = Setup(workflow(maxConcurrentAgents = 1), identifiers = listOf("t-1", "t-2"))
+            setup.remote.answers += green
+            val release = CompletableDeferred<Unit>()
+            val runner =
+                FakeRunner { _, _ ->
+                    flow {
+                        emit(RunnerEvent.SessionStarted(SESSION, threadId = "th1", turnId = TURN))
+                        release.await()
+                        emit(RunnerEvent.TurnCompleted(SESSION, TURN, exitCode = 0))
+                    }
+                }
+            val orchestrator = orchestrator(setup.tracker, setup.remote, setup.waiting, setup.sink, setup.workflow, runner)
+            tick(orchestrator)
+            assertEquals("ci", setup.wait?.data?.get(WaitKeys.PHASE), "the merge check took the one agent slot")
+            assertEquals(emptyList(), runner.calls, "t-2 waited for the slot of the merge check")
+
+            advanceTimeBy(1_000)
+            val attempt = async { orchestrator.tick() }
+            runCurrent()
+            assertEquals(listOf("t-2"), runner.calls.map { it.first.issue.identifier }, "t-2 now holds the one agent slot")
+            assertEquals("ci", setup.wait?.data?.get(WaitKeys.PHASE), "CI is polled 30 seconds after the push")
+
+            tick(orchestrator, after = 30_000)
+
+            assertEquals(listOf(setup.verified), setup.remote.merges, "the merge phase needs no agent slot")
+            assertEquals(listOf("id-t-1" to "done"), setup.tracker.moves)
+            assertNull(setup.wait)
+            assertFalse(attempt.isCompleted, "t-2 still runs")
+            release.complete(Unit)
+            attempt.await()
+        }
+
+    @Test
     fun `a moved base at the merge starts a new round of the check and of the CI wait`() =
         runTest {
             val setup = Setup()
@@ -578,8 +622,14 @@ class CiWaitOrchestratorTest {
 
             tick(orchestrator, after = 30_000)
 
+            val requeued = assertNotNull(setup.wait)
+            assertEquals("check", requeued.data[WaitKeys.PHASE], "bl-173: the merge phase holds no agent slot, so it stops at the check")
+            assertEquals("2", requeued.data[WaitKeys.ROUND])
+
+            tick(orchestrator, after = 1_000)
+
             val wait = assertNotNull(setup.wait)
-            assertEquals("ci", wait.data[WaitKeys.PHASE], "checked again on the moved base, then waiting for CI again")
+            assertEquals("ci", wait.data[WaitKeys.PHASE], "checked again on the moved base at the next tick, then waiting for CI again")
             assertEquals("2", wait.data[WaitKeys.ROUND])
             assertEquals(moved, wait.data[WaitKeys.BASE_SHA])
             val merged = assertNotNull(wait.data[WaitKeys.MERGED_HEAD])
