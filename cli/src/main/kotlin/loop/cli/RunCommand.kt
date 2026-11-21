@@ -14,6 +14,7 @@ import kotlinx.coroutines.withContext
 import loop.api.Redactor
 import loop.api.RunId
 import loop.api.SecretRedactor
+import loop.core.events.DeliveryQueuePaused
 import loop.core.events.RunStopped
 import loop.core.ledger.JsonlTurnLedger
 import loop.core.log.HumanLog
@@ -321,6 +322,12 @@ class RunCommand(
                 riskReviewerFor = { wf -> riskReviewerFor(wf, host.rawEnv, agentEnvRemovedNames(wf), holdoutDir) },
                 // m3-16: the machine limits of <LOOP_HOME>/config.yaml and the machine slots of the shared store.
                 machine = StoreMachine(host.loopHome, store, projectId, runId, ProcessHandle.current().pid(), clock),
+                // bl-175: a pause of the delivery queue an earlier run left, which this restart ends.
+                queuePausedBefore = {
+                    store.eventsOfKinds(projectId, DeliveryQueuePaused.QUEUE_KINDS).getOrNull()?.let { stored ->
+                        DeliveryQueuePaused.openIn(stored.map { it.event })
+                    }
+                },
             )
         log.log(
             LogLevel.INFO,

@@ -126,6 +126,24 @@ class RuntimeSnapshotTest {
     }
 
     @Test
+    fun `bl-175 the live run's latest delivery_queue_paused without a resume after it pauses the queue`() {
+        val paused = mapOf("issue" to "A", "reason" to "ci_timeout")
+        val events =
+            listOf(
+                event("delivery_queue_paused", "a", "a-1", run = old, data = paused),
+                event("delivery_queue_paused", "a", "a-1", data = paused),
+            )
+
+        val pause = runtimeSnapshot(events, live, emptyList()).queuePause
+
+        assertEquals(QueuePauseRow(issue = "A", reason = "ci_timeout", since = Instant.parse("2026-11-11T10:00:02Z")), pause)
+        assertEquals(null, runtimeSnapshot(events.take(1), live, emptyList()).queuePause, "a pause of a dead run is no pause")
+        assertEquals(null, runtimeSnapshot(events, null, emptyList()).queuePause, "no pause without a live run")
+        val resumed = events + event("delivery_queue_resumed", "a", "a-1", data = mapOf("by" to "approve"))
+        assertEquals(null, runtimeSnapshot(resumed, live, emptyList()).queuePause, "a resume ends the pause")
+    }
+
+    @Test
     fun `a scheduled retry is retrying until an attempt starts, the retry is dropped or the issue parks`() {
         val retry = mapOf("kind" to "error", "attempt" to "2", "due_at" to "2026-11-11T10:05:00Z", "error" to "boom")
         val events =

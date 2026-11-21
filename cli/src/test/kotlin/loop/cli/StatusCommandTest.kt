@@ -258,6 +258,36 @@ class StatusCommandTest {
     }
 
     @Test
+    fun `bl-175 a delivery queue the live run paused prints one paused line, above the issues`() {
+        fixture.seed(
+            event(
+                "delivery_queue_paused",
+                "t-2",
+                B1,
+                "2026-11-11T10:04:50Z",
+                data = mapOf("issue" to "t-2", "reason" to "ci_timeout"),
+            ),
+        )
+        val lock = holdRunFile()
+        try {
+            val result = fixture.loop("status", fixture.workflow.toString())
+
+            assertEquals(0, result.exitCode, result.toString())
+            assertEquals(
+                listOf(
+                    "paused    delivery queue  issue=t-2 reason=ci_timeout since=2026-11-11T10:04:50Z  resume with loop approve or a restart",
+                ),
+                result.stdout
+                    .trimEnd()
+                    .lines()
+                    .drop(3),
+            )
+        } finally {
+            lock.release()
+        }
+    }
+
+    @Test
     fun `bl-39 a runner hold of the live run prints one held line with its reason and next probe, above the issues`() {
         val reason = "turn_failed: Failed to authenticate. API Error: 403"
         fixture.seed(
