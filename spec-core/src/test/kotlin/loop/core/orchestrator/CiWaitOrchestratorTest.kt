@@ -609,7 +609,7 @@ class CiWaitOrchestratorTest {
         }
 
     @Test
-    fun `a moved base at the merge starts a new round of the check at the next tick and of the CI wait`() =
+    fun `a moved base at the merge starts a new round of the check and of the CI wait`() =
         runTest {
             val setup = Setup()
             val moved = baseCommit()
