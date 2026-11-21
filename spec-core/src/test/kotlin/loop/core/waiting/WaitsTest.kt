@@ -410,6 +410,19 @@ class WaitsTest {
     }
 
     @Test
+    fun `a running merge phase is checking but counts as no merge check, it holds no agent slot (bl-173)`() {
+        val waits = Waits(FakeWaitingIssues(), project)
+        waits.checkStarted("id-1", holdsSlot = false)
+        assertTrue(waits.isChecking("id-1"))
+        assertEquals(0, waits.checks)
+        waits.checkStarted("id-2")
+        assertEquals(1, waits.checks)
+        waits.checkEnded("id-1")
+        assertFalse(waits.isChecking("id-1"))
+        assertEquals(1, waits.checks)
+    }
+
+    @Test
     fun `an approval goes through the store's own approve, in one call`() =
         runTest {
             val calls = mutableListOf<String>()

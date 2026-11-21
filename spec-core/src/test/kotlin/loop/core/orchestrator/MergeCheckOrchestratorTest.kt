@@ -25,6 +25,7 @@ import loop.api.RunId
 import loop.api.SecretRedactor
 import loop.api.WaitReason
 import loop.api.WaitingIssue
+import loop.core.delivery.AutoMerge
 import loop.core.delivery.MergeCheck
 import loop.core.events.BaseFetched
 import loop.core.events.MergeCheckFinished
@@ -554,6 +555,69 @@ class MergeCheckOrchestratorTest {
             machine.slots -= "another-process"
             orchestrator.tick()
             assertEquals(1, remote.merges.size)
+        }
+
+    /** The merge wait of t-1 in phase `merge`, its check passed on the base of `main` with V, [verified], as its merged head. */
+    private fun mergePhaseWait(
+        verified: String,
+        approvedBy: String,
+    ): WaitingIssue {
+        val extra =
+            mapOf(
+                WaitKeys.PHASE to "merge",
+                WaitKeys.BASE_SHA to git(project, "rev-parse", "main"),
+                WaitKeys.MERGED_HEAD to verified,
+                WaitingIssue.APPROVED_BY to approvedBy,
+            )
+        return mergeWait(clean(verified), extra)
+    }
+
+    @Test
+    fun `a merge phase approved by a human claims no machine slot and merges with every machine slot taken (bl-173)`() =
+        runTest {
+            val verified = verifiedWorktree()
+            val tracker = FakeTracker(listOf(issue("t-1")))
+            val machine = FakeMachine(MachineLimits(maxConcurrentAgents = 1)).apply { slots += "another-process" }
+            val remote =
+                FakeRemote().apply {
+                    lastBase = git(project, "rev-parse", "main")
+                    pulls["loop/t-1"] = PullRequest(7, "https://github.com/acme/widgets/pull/7", created = false, headSha = verified)
+                }
+            val waiting = FakeWaitingIssues(mergePhaseWait(verified, approvedBy = "soule"))
+
+            orchestrator(tracker, remote, waiting, FakeSink(), machine = machine).tick()
+
+            assertEquals(listOf(Triple(7L, verified, MergeMethod.Merge)), remote.merges)
+            assertEquals(emptyList(), machine.log, "no reviewer runs, so no machine slot is claimed")
+        }
+
+    @Test
+    fun `a merge phase approved by the auto policy waits for a machine slot, its gate runs the merge risk reviewer (bl-173)`() =
+        runTest {
+            val verified = verifiedWorktree()
+            val tracker = FakeTracker(listOf(issue("t-1")))
+            val machine = FakeMachine(MachineLimits(maxConcurrentAgents = 1)).apply { slots += "another-process" }
+            val remote =
+                FakeRemote().apply {
+                    lastBase = git(project, "rev-parse", "main")
+                    pulls["loop/t-1"] = PullRequest(7, "https://github.com/acme/widgets/pull/7", created = false, headSha = verified)
+                }
+            val stored = mergePhaseWait(verified, approvedBy = AutoMerge.AUTO)
+            val waiting = FakeWaitingIssues(stored)
+            val orchestrator = orchestrator(tracker, remote, waiting, FakeSink(), machine = machine)
+
+            orchestrator.tick()
+
+            assertEquals(emptyList(), remote.pushes, "the merge phase waits for a machine slot")
+            assertEquals(stored, waiting.records.values.single())
+            assertTrue(machine.log.single().startsWith("refused "))
+
+            machine.slots -= "another-process"
+            orchestrator.tick()
+
+            val holder = machine.log[1].removePrefix("claimed ")
+            assertEquals(listOf("claimed $holder", "released $holder"), machine.log.drop(1))
+            assertEquals(listOf(verified to "loop/t-1"), remote.pushes)
         }
 
     @Test

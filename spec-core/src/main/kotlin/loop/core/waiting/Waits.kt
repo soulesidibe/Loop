@@ -25,8 +25,11 @@ class Waits(
     /** What each issue waits for in this process, by issue id. */
     private val held = mutableMapOf<String, WaitReason>()
 
-    /** The issues whose merge check runs now (m2-26). */
-    private val checking = mutableSetOf<String>()
+    /**
+     * The issues whose merge work runs now (m2-26), each true when the run holds an agent slot: one that started in
+     * phase `check`, not one that started in phase `merge` (bl-173).
+     */
+    private val checking = mutableMapOf<String, Boolean>()
 
     /** The last read of the store, by issue id in the order it gave, plus the writes made through this object since. */
     private var stored = LinkedHashMap<String, Wait>()
@@ -98,18 +101,21 @@ class Waits(
         at: Instant,
     ): Result<Wait?> = guarded { store.approve(projectId, issueId, by, at) }.map { it?.let(Wait::of) }
 
-    /** The number of merge checks running now, each holding an agent slot (m2-26). */
-    val checks: Int get() = checking.size
+    /** The number of merge checks running now, each holding an agent slot (m2-26): phase `check` work only (bl-173). */
+    val checks: Int get() = checking.count { it.value }
 
-    /** True while the merge check of [issueId] runs. */
+    /** True while the merge work of [issueId] runs, its merge check or its merge phase. */
     fun isChecking(issueId: String): Boolean = issueId in checking
 
-    /** Counts the merge check of [issueId] as running. */
-    fun checkStarted(issueId: String) {
-        checking += issueId
+    /** Counts the merge work of [issueId] as running, holding an agent slot when [holdsSlot]. */
+    fun checkStarted(
+        issueId: String,
+        holdsSlot: Boolean = true,
+    ) {
+        checking[issueId] = holdsSlot
     }
 
-    /** Counts the merge check of [issueId] as ended. */
+    /** Counts the merge work of [issueId] as ended. */
     fun checkEnded(issueId: String) {
         checking -= issueId
     }
