@@ -166,8 +166,7 @@ sealed class Wait(
         val candidateHead: String? get() = data[WaitKeys.CANDIDATE_HEAD]?.takeIf { it.isNotBlank() }
 
         /** True once [head] was pushed early as the candidate head (bl-174), so pushing it again records nothing. */
-        fun pushedEarly(head: String): Boolean =
-            data[WaitKeys.CANDIDATE_PUSHED] == "true" && candidateHead.equals(head, ignoreCase = true)
+        fun pushedEarly(head: String): Boolean = data[WaitKeys.CANDIDATE_PUSHED] == "true" && candidateHead.equals(head, ignoreCase = true)
 
         /** The round of the merge check, from 1. */
         val round: Int get() = data[WaitKeys.ROUND]?.toIntOrNull() ?: 1
@@ -182,8 +181,7 @@ sealed class Wait(
         fun intending(base: String): Merge = Merge(with(data = data + (WaitKeys.BASE_SHA to base)))
 
         /** This wait holding [head], the merge commit its check just made, as the candidate head, not pushed yet (bl-174). */
-        fun candidate(head: String): Merge =
-            Merge(with(data = data - WaitKeys.CANDIDATE_PUSHED + (WaitKeys.CANDIDATE_HEAD to head)))
+        fun candidate(head: String): Merge = Merge(with(data = data - WaitKeys.CANDIDATE_PUSHED + (WaitKeys.CANDIDATE_HEAD to head)))
 
         /** This wait once its candidate head was pushed (bl-174). */
         fun candidatePushed(): Merge = Merge(with(data = data + (WaitKeys.CANDIDATE_PUSHED to "true")))

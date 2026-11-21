@@ -222,7 +222,15 @@ class WaitsTest {
         assertFalse(again.containsKey("candidate_head") || again.containsKey("candidate_pushed"))
         val refused = checked.refused(later)
         assertFalse(refused.toRecord().data.containsKey("candidate_head") || refused.toRecord().data.containsKey("candidate_pushed"))
-        val approved = assertIs<Wait.Approval>(Wait.of(record(WaitReason.Approval, approvalData + pushed.toRecord().data.filterKeys { it.startsWith("candidate_") })))
+        val approved =
+            assertIs<Wait.Approval>(
+                Wait.of(
+                    record(
+                        WaitReason.Approval,
+                        approvalData + pushed.toRecord().data.filterKeys { it.startsWith("candidate_") },
+                    ),
+                ),
+            )
         assertNull(approved.merging(7, "https://github.com/acme/widgets/pull/7", later).candidateHead)
     }
 

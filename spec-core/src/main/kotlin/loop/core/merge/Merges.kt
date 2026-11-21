@@ -374,7 +374,8 @@ internal class Merges(
      * fetched commit is already in the branch, only the `diff_policy` checks run again, against it (bl-32). The fetched
      * commit is stored as `base_sha` before the merge, so a stop between the merge commit and the next write is
      * resumed: a workspace at a clean merge commit whose parents are the stored head and that base is Loop's own merge,
-     * found before the fetch and rechecked as it is, against that base (send back 1). A clean pass gives the next wait, phase `merge`, its merged head the delivered
+     * found before the fetch and rechecked as it is, against that base (send back 1). A merge commit, made or resumed, is
+     * pushed before the checks run, see [pushEarly] (bl-174). A clean pass gives the next wait, phase `merge`, its merged head the delivered
      * commit everywhere; null when the wait ended, waits for a new approval or the next tick.
      */
     private suspend fun checkPhase(

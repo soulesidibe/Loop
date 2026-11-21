@@ -1188,7 +1188,10 @@ class MergeCheckOrchestratorTest {
             val checks =
                 CheckRunner { _, _, _ ->
                     pushedBeforeChecks = remote.pushes.map { it.first }
-                    storedBeforeChecks = waiting.records.values.single().data
+                    storedBeforeChecks =
+                        waiting.records.values
+                            .single()
+                            .data
                     CheckResult(0, timedOut = false, durationMs = 5)
                 }
 
@@ -1639,7 +1642,11 @@ class MergeCheckOrchestratorTest {
             assertEquals(1, checks.runs, "the merged result is rechecked")
             assertEquals(MergeCheck.MERGED, sink.data(MergeCheckFinished.name)["outcome"])
             assertEquals(merged, git(project, "rev-parse", "refs/heads/loop/t-1"), "no second merge commit")
-            assertEquals(listOf(merged to "loop/t-1", merged to "loop/t-1"), remote.pushes, "the early push before the stop, then the merge")
+            assertEquals(
+                listOf(merged to "loop/t-1", merged to "loop/t-1"),
+                remote.pushes,
+                "the early push before the stop, then the merge",
+            )
             assertEquals(listOf(Triple(7L, merged, MergeMethod.Merge)), remote.merges)
             assertEquals("soule", sink.all("issue_moved").single()["approved_by"])
             assertEquals(listOf("id-t-1" to "done"), tracker.moves)
