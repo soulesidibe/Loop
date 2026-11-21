@@ -1,7 +1,7 @@
 ---
 id: bl-159
 title: "Release groundwork: versions from tags, a runtime folder for Java, release archives, .github protected"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-human]
 blocked_by: []
@@ -35,3 +35,13 @@ Lane: human. Every change is a protected path (`cli/build.gradle.kts`, `WORKFLOW
 ## Comments
 
 2026-11-20 soule: written from the releases spec, after the Fable 5.2 review of the plan.
+
+2026-11-21 soule: done, plan reviewed by Fable 5.2 before the work.
+
+- Versions: `GitVersion` (`build-logic/src/main/kotlin/loop/buildlogic/version/`, package `loop.buildlogic.version` since `.gitignore` ignores any `build/` folder) parses `git describe --tags --match '[0-9]*' --abbrev=12 --always --dirty` and `git rev-parse HEAD`. A tag that is not a semver falls back to the 12 hex SHA. `build-info.properties` gains `commit=<full sha>`. `GitVersionTest` (compiled into the cli tests from build-logic) covers a tag, after a tag, dirty, no tag, no git and a non semver tag; `BuildInfoTest` accepts every shape. A throwaway clone printed `5840760549fb`, `0.1.0-1-g5840760549fb`, `0.2.0`, `0.2.0-dirty`.
+- Configuration cache: the archives name themselves after the version, so a build that includes them runs git while configuring and reconfigures after a new commit. Documented in the build script and `docs/self-hosting.md`.
+- Runtime: the start script checks `$APP_HOME/runtime/bin/java`, then `JAVA_HOME`, then `PATH`, exports nothing, and the build fails if Gradle's template loses its JAVA_HOME check. `StartScriptTest` passes for runtime only (child sees JAVA_HOME unset), JAVA_HOME only, PATH only, and runtime plus JAVA_HOME (runtime wins, JAVA_HOME reaches the child unchanged).
+- Archives: `:cli:distTar :cli:distZip` wrote `loop-ce33f44cb6a3-dirty.tar.gz` (gzip) and `loop-ce33f44cb6a3-dirty.zip`. Both have the single top folder `loop-ce33f44cb6a3-dirty/`, holding `build-info.properties`, `bin/loop` and `lib/`, and no `bin/loop.bat` (installDist keeps it). The unpacked `bin/loop --version` printed `loop ce33f44cb6a3-dirty`.
+- `.github/` is in the `protect` list with its comment; `OwnWorkflowTest` and the protect list section of `docs/self-hosting.md` updated. `grep -qE '^ +- \.github/' WORKFLOW.md` passes.
+- Repository settings, checked with `gh api`: environment `release` with soulesidibe as required reviewer, `prevent_self_review: false`, custom deployment policy allowing only tags `[0-9]*.[0-9]*.[0-9]*`. Ruleset "Release tags" (id 27794169): active, target tag, `refs/tags/[0-9]*`, rules creation, update, deletion, bypass the repository admin role only. A `workflow_dispatch` dry run from `main` cannot enter `release` (bl-160).
+- The first full build failed on `InstallCommandTest`, which compared the whole `build-info.properties` to the version line; it now checks the copy is identical and holds a 40 hex commit. `./gradlew --no-daemon build` then passed on the branch merged with origin/main (bl-150, bl-154, bl-68).
