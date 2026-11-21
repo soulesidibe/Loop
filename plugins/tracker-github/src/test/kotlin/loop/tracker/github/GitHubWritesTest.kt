@@ -182,6 +182,48 @@ class GitHubWritesTest {
         }
 
     @Test
+    fun `bl-68 a move to closed answered 422 because Closes n closed the issue meanwhile reads it and succeeds`() =
+        runTest {
+            github.on("PATCH", issueUrl, FakeGitHub.recorded("issue-closed-by-another-request"))
+            github.on(issueUrl, FakeGitHub.response(200, FakeGitHub.issue(26, state = "closed").toString()))
+
+            val result = tracker().moveIssue("26", "closed")
+
+            assertTrue(result.isSuccess, result.toString())
+            assertEquals(listOf("PATCH $issueUrl", "GET $issueUrl"), github.requests.map { "${it.method} ${it.url}" })
+        }
+
+    @Test
+    fun `bl-68 a 422 on a move to open or closed fails with GitHub's errors when the read shows another state`() =
+        runTest {
+            github.on("PATCH", issueUrl, FakeGitHub.recorded("issue-closed-by-another-request"))
+            github.on(issueUrl, FakeGitHub.response(200, FakeGitHub.issue(26, state = "open").toString()))
+
+            val error = tracker().moveIssue("26", "closed").exceptionOrNull()
+
+            assertIs<TrackerError.Status>(error)
+            assertEquals(422, error.status)
+            assertEquals(
+                "The tracker answered 422: Validation Failed: This issue was closed by another request. Reload it and try again.",
+                error.message,
+            )
+            assertEquals(listOf("PATCH $issueUrl", "GET $issueUrl"), github.requests.map { "${it.method} ${it.url}" })
+        }
+
+    @Test
+    fun `bl-68 a 422 on a move to closed whose read fails keeps the 422, the write sent once`() =
+        runTest {
+            github.on("PATCH", issueUrl, FakeGitHub.recorded("issue-closed-by-another-request"))
+            github.on(issueUrl, FakeGitHub.recorded("write-forbidden"))
+
+            val error = tracker().moveIssue("26", "closed").exceptionOrNull()
+
+            assertIs<TrackerError.Status>(error)
+            assertEquals(422, error.status)
+            assertEquals(1, github.writes.size)
+        }
+
+    @Test
     fun `an undefined state or an id that is not an issue number is refused without a request`() =
         runTest {
             val undefined = tracker().moveIssue("26", "done").exceptionOrNull()
@@ -260,7 +302,10 @@ class GitHubWritesTest {
                     assertEquals(status, error.status)
                     assertFalse(token in error.message.orEmpty())
                 }
-                assertEquals(4, github.requests.size, "one request per call for $name: ${github.requests.map { it.method + " " + it.url }}")
+                // bl-68: a 422 on a move to closed reads the issue once, which the fallback answers 404.
+                val reads = if (status == 422) 1 else 0
+                assertEquals(4, github.writes.size, "one write per call for $name: ${github.requests.map { it.method + " " + it.url }}")
+                assertEquals(4 + reads, github.requests.size, "requests for $name: ${github.requests.map { it.method + " " + it.url }}")
             }
             assertEquals(
                 "The tracker answered 403: Resource not accessible by personal access token",
