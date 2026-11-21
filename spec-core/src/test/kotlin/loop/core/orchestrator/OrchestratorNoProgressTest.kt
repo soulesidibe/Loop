@@ -494,6 +494,57 @@ class OrchestratorNoProgressTest {
             assertEquals(ParkReason.SplitIssue, parked.reason())
         }
 
+    /** The operator log lines of the `progress` event that name [fact]. */
+    private fun progressLines(fact: String): List<String> = logLines.filter { "event=progress" in it && "fact=$fact" in it }
+
+    @Test
+    fun `bl-149 a readable HEAD with a working tree git cannot read counts as progress and is logged once per attempt`() =
+        runTest {
+            val workspace = gitWorkspace()
+            // A corrupt index fails git status, while rev-parse still reads HEAD.
+            workspace.resolve(".git/index").writeText("not an index")
+            val tracker = FakeTracker(listOf(issue("m1-02")))
+            val runner = occupancyRunner(onTurn = {}) { 300_000L }
+            val sink = FakeSink()
+            val parked = FakeParkedIssues()
+
+            orchestrator(tracker, runner, sink, parked).tick()
+
+            // Two rotations without a commit would park with split_issue; the unread working tree counts as progress.
+            assertTrue(runner.sessionsOpened > 2, sink.events.toString())
+            assertTrue(sink.ofKind("issue_parked").none { it.data["reason"] == "split_issue" }, sink.events.toString())
+            val lines = progressLines("working_tree")
+            assertEquals(1, lines.size, logLines.joinToString("\n"))
+            val line = lines.single()
+            assertTrue("level=warn" in line, line)
+            assertTrue("outcome=failed" in line, line)
+            assertTrue("attempt_id=a1" in line, line)
+            assertTrue("git status" in line, line)
+            assertTrue(progressLines("head").isEmpty(), logLines.joinToString("\n"))
+        }
+
+    @Test
+    fun `bl-149 a HEAD git cannot read is logged once per attempt`() =
+        runTest {
+            // A repository with no commit: HEAD cannot be read, the working tree can.
+            val workspace = root.resolve("workspaces").resolve("m1-02").createDirectories()
+            git(workspace, "init", "-q")
+            val tracker = FakeTracker(listOf(issue("m1-02")))
+            val runner =
+                occupancyRunner(onTurn = { session -> if (session == 3) tracker.issues[0] = issue("m1-02", state = "review") }) { session ->
+                    if (session < 3) 300_000L else 30_000L
+                }
+            val sink = FakeSink()
+
+            orchestrator(tracker, runner, sink).tick()
+
+            assertEquals(3, runner.sessionsOpened)
+            val lines = progressLines("head")
+            assertEquals(1, lines.size, logLines.joinToString("\n"))
+            assertTrue("level=warn" in lines.single(), lines.single())
+            assertTrue(progressLines("working_tree").isEmpty(), logLines.joinToString("\n"))
+        }
+
     private companion object {
         val PROJECT = ProjectId("p1")
         const val ISSUE_ID = "id-m1-02"

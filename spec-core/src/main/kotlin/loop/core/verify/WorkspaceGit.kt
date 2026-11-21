@@ -3,9 +3,13 @@ package loop.core.verify
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
+import java.nio.ByteBuffer
 import java.nio.file.Files
 import java.nio.file.LinkOption
+import java.nio.file.NoSuchFileException
 import java.nio.file.Path
+import java.nio.file.StandardOpenOption
+import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
 import java.util.HexFormat
 import java.util.concurrent.Executors
@@ -29,7 +33,45 @@ class WorkspaceGit(
     private val git: String = "git",
     private val timeout: Duration = DEFAULT_TIMEOUT,
     private val startProcess: (ProcessBuilder) -> Process = { it.start() },
+    private val workTreeLimits: WorkTreeLimits = WorkTreeLimits(),
 ) {
+    /**
+     * A switch that stops the git commands and the hashing of one read, such as [workTree], from another thread (bl-149):
+     * [cancel] stops the git it started, if one runs, and every later step fails with an [IOException].
+     */
+    class Cancellation {
+        @Volatile
+        var cancelled: Boolean = false
+            private set
+
+        private var process: Process? = null
+
+        /** Stops the read: its running git now, its next step at once. */
+        fun cancel() {
+            val running =
+                synchronized(this) {
+                    cancelled = true
+                    process
+                }
+            running?.let(::stop)
+        }
+
+        /** The read started [started]: it is stopped at once when the read is already cancelled. */
+        internal fun started(started: Process) {
+            val stopNow =
+                synchronized(this) {
+                    process = started
+                    cancelled
+                }
+            if (stopNow) stop(started)
+        }
+
+        /** Fails when the read was cancelled. */
+        internal fun check() {
+            if (cancelled) throw IOException(CANCELLED)
+        }
+    }
+
     private val env: Map<String, String> = minimal(env)
 
     /** What one git command printed and how it exited. */
@@ -55,23 +97,28 @@ class WorkspaceGit(
         root: Path,
         args: List<String>,
         extra: Map<String, String> = emptyMap(),
+        cancellation: Cancellation? = null,
         read: (InputStream) -> Unit,
     ): Int {
         val builder = ProcessBuilder(command(root, args)).redirectError(ProcessBuilder.Redirect.DISCARD)
-        return start(builder, extra) { process ->
+        return start(builder, extra, cancellation) { process ->
             process.inputStream.use(read)
             process.waitFor()
         }
     }
 
-    /** Runs git with [args] in [root] and keeps what it prints; [extra] is added to the environment. */
+    /**
+     * Runs git with [args] in [root] and keeps what it prints; [extra] is added to the environment, and a [cancellation]
+     * stops it.
+     */
     fun run(
         root: Path,
         vararg args: String,
         extra: Map<String, String> = emptyMap(),
+        cancellation: Cancellation? = null,
     ): Outcome {
         val builder = ProcessBuilder(command(root, args.toList()))
-        return start(builder, extra) { process ->
+        return start(builder, extra, cancellation) { process ->
             val err = ByteArrayOutputStream()
             var errorRead: Result<Long>? = null
             val errors =
@@ -87,9 +134,12 @@ class WorkspaceGit(
         }
     }
 
-    /** The commit `HEAD` of [root] is at. */
-    fun head(root: Path): String {
-        val outcome = run(root, "rev-parse", "--verify", "-q", "HEAD")
+    /** The commit `HEAD` of [root] is at; a [cancellation] stops the read. */
+    fun head(
+        root: Path,
+        cancellation: Cancellation? = null,
+    ): String {
+        val outcome = run(root, "rev-parse", "--verify", "-q", "HEAD", cancellation = cancellation)
         if (outcome.code != 0) throw IOException("git rev-parse HEAD exited with code ${outcome.code}: ${outcome.firstLine()}")
         return outcome.stdout.trim()
     }
@@ -182,45 +232,140 @@ class WorkspaceGit(
     }
 
     /**
-     * A fingerprint of the work tree of [root] against its HEAD (bl-136): the SHA-256 of every entry `git status` lists,
-     * tracked changes and untracked files git does not ignore, each with the hash of the file's content, so a second
-     * edit of a file already changed reads differently. Ignored files, such as a gitignored `.scratch/`, are left out.
-     * It takes no optional lock, so the index is never rewritten. A git failure, in a folder that is not a git work
-     * tree for one, is an [IOException].
+     * A fingerprint of the work tree of [root] against its HEAD (bl-136): the SHA-256 of the path of every entry
+     * `git status` lists, tracked changes and untracked files git does not ignore, each with what its file holds, so a
+     * second edit of a file already changed reads differently. Ignored files, such as a gitignored `.scratch/`, are left
+     * out. It takes no optional lock, so the index is never rewritten.
+     *
+     * bl-149: it reads file content only. The status letters are left out and each path counts once, so `git add`,
+     * `git reset` or a stash and its pop with no content change read the same. A regular file reads as the hash of its
+     * content, or as its size and modified time when it is over [WorkTreeLimits.fileBytes] or Loop cannot open it, so
+     * one unreadable file never fails the whole read and a change to it still shows. A symbolic link reads as the name
+     * of its target, a deleted file as nothing, and a nested repository or submodule as its HEAD and its own work tree
+     * fingerprint, down to [WorkTreeLimits.depth]. The read is bounded: `git status` is read as it streams, more than
+     * [WorkTreeLimits.entries] entries in all fail it, and a [cancellation] stops its git and its hashing at the next
+     * chunk. A git failure, in a folder that is not a git work tree for one, is an [IOException].
      */
-    fun workTree(root: Path): String {
-        val outcome = run(root, "--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
-        if (outcome.code != 0) throw IOException("git status exited with code ${outcome.code}: ${outcome.firstLine()}")
+    fun workTree(
+        root: Path,
+        cancellation: Cancellation = Cancellation(),
+    ): String = workTree(root, cancellation, depth = 0, entries = intArrayOf(0))
+
+    /** The [workTree] of [root], a repository [depth] levels below the first, [entries] counting the entries read so far. */
+    private fun workTree(
+        root: Path,
+        cancellation: Cancellation,
+        depth: Int,
+        entries: IntArray,
+    ): String {
+        val paths = statusPaths(root, cancellation, entries)
         val digest = MessageDigest.getInstance(SHA_256)
-        outcome.stdout
-            .split('\u0000')
-            .filter { it.length > STATUS_PREFIX }
-            .forEach { entry ->
-                digest.update(entry.toByteArray(Charsets.UTF_8))
-                digest.update(0)
-                contentHash(root.resolve(entry.substring(STATUS_PREFIX)))?.let { digest.update(it) }
-                digest.update(0)
-            }
+        paths.forEach { path ->
+            digest.update(path.toByteArray(Charsets.UTF_8))
+            digest.update(0)
+            digest.update(content(root.resolve(path), cancellation, depth, entries).toByteArray(Charsets.UTF_8))
+            digest.update(0)
+        }
         return HexFormat.of().formatHex(digest.digest())
     }
 
-    /** The SHA-256 of the file at [path], of its target for a symbolic link, null for anything else or a deleted file. */
-    private fun contentHash(path: Path): ByteArray? {
-        val digest = MessageDigest.getInstance(SHA_256)
-        when {
-            Files.isSymbolicLink(path) -> digest.update(Files.readSymbolicLink(path).toString().toByteArray(Charsets.UTF_8))
-            Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) ->
-                Files.newInputStream(path).use { input ->
-                    val buffer = ByteArray(BUFFER_BYTES)
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read < 0) break
-                        digest.update(buffer, 0, read)
+    /**
+     * The paths `git status` lists in [root], sorted, each once: a path both staged for deletion and untracked is one
+     * path. Read as git prints them, entry by entry, with at most [WorkTreeLimits.entries] counted in [entries].
+     */
+    private fun statusPaths(
+        root: Path,
+        cancellation: Cancellation,
+        entries: IntArray,
+    ): Set<String> {
+        val paths = sortedSetOf<String>()
+        var overflow = false
+        val code =
+            stream(root, STATUS_ARGS, cancellation = cancellation) { input ->
+                val entry = ByteArrayOutputStream()
+                val buffer = ByteArray(BUFFER_BYTES)
+                while (!overflow) {
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    for (index in 0 until read) {
+                        val byte = buffer[index]
+                        if (byte.toInt() != 0) {
+                            if (entry.size() < ENTRY_BYTES_MAX) entry.write(byte.toInt())
+                            continue
+                        }
+                        val line = entry.toString(Charsets.UTF_8)
+                        entry.reset()
+                        if (line.length <= STATUS_PREFIX) continue
+                        if (++entries[0] > workTreeLimits.entries) {
+                            overflow = true
+                            break
+                        }
+                        paths += line.substring(STATUS_PREFIX)
                     }
                 }
-            else -> return null
+            }
+        if (overflow) throw IOException("git status lists more than ${workTreeLimits.entries} entries")
+        if (code != 0) throw IOException("git status exited with code $code")
+        return paths
+    }
+
+    /** What the entry at [path] holds, as [workTree] reads it. */
+    private fun content(
+        path: Path,
+        cancellation: Cancellation,
+        depth: Int,
+        entries: IntArray,
+    ): String {
+        cancellation.check()
+        val attributes =
+            try {
+                Files.readAttributes(path, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+            } catch (e: NoSuchFileException) {
+                return ""
+            } catch (e: IOException) {
+                return "unreadable"
+            }
+        val stamp = "${attributes.size()}:${attributes.lastModifiedTime().toMillis()}"
+        return when {
+            attributes.isSymbolicLink ->
+                "link:" + runCatching { Files.readSymbolicLink(path).toString() }.getOrDefault("unreadable")
+            attributes.isRegularFile ->
+                if (attributes.size() > workTreeLimits.fileBytes) {
+                    "large:$stamp"
+                } else {
+                    try {
+                        "file:" + contentHash(path, cancellation)
+                    } catch (e: IOException) {
+                        if (cancellation.cancelled) throw e
+                        "unreadable:$stamp"
+                    }
+                }
+            attributes.isDirectory && depth < workTreeLimits.depth && Files.exists(path.resolve(".git"), LinkOption.NOFOLLOW_LINKS) -> {
+                val head = run(path, "rev-parse", "--verify", "-q", "HEAD", cancellation = cancellation)
+                val commit = if (head.code == 0) head.stdout.trim() else ""
+                "repo:$commit:" + workTree(path, cancellation, depth + 1, entries)
+            }
+            else -> "other"
         }
-        return digest.digest()
+    }
+
+    /** The SHA-256 of the content of the file at [path], never following a link, read chunk by chunk until cancelled. */
+    private fun contentHash(
+        path: Path,
+        cancellation: Cancellation,
+    ): String {
+        val digest = MessageDigest.getInstance(SHA_256)
+        Files.newByteChannel(path, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS).use { channel ->
+            val buffer = ByteBuffer.allocate(BUFFER_BYTES)
+            while (true) {
+                cancellation.check()
+                buffer.clear()
+                if (channel.read(buffer) < 0) break
+                buffer.flip()
+                digest.update(buffer)
+            }
+        }
+        return HexFormat.of().formatHex(digest.digest())
     }
 
     /** True when [sha] names a commit the repository of [root] holds. */
@@ -352,13 +497,16 @@ class WorkspaceGit(
     private fun <T> start(
         builder: ProcessBuilder,
         extra: Map<String, String>,
+        cancellation: Cancellation?,
         body: (Process) -> T,
     ): T {
+        cancellation?.check()
         builder.environment().clear()
         builder.environment().putAll(env)
         builder.environment()["GIT_TERMINAL_PROMPT"] = "0"
         builder.environment().putAll(extra)
         val process = startProcess(builder)
+        cancellation?.started(process)
         val timedOut = AtomicBoolean(false)
         val watchdog =
             WATCHDOG.schedule(
@@ -375,19 +523,16 @@ class WorkspaceGit(
             process.outputStream.close()
             val result = body(process)
             if (timedOut.get()) throw IOException("git did not finish within $timeout")
+            cancellation?.check()
             return result
         } catch (e: IOException) {
             if (timedOut.get()) throw IOException("git did not finish within $timeout", e)
+            if (cancellation?.cancelled == true) throw IOException(CANCELLED, e)
             throw e
         } finally {
             watchdog.cancel(false)
             if (process.isAlive) stop(process)
         }
-    }
-
-    private fun stop(process: Process) {
-        process.descendants().forEach { it.destroyForcibly() }
-        process.destroyForcibly()
     }
 
     override fun toString(): String = "WorkspaceGit(git=$git, timeout=$timeout)"
@@ -445,17 +590,43 @@ class WorkspaceGit(
 
         private const val SHA_256 = "SHA-256"
 
+        /** The `git status` of [workTree]: no optional lock, NUL separated, every untracked file, no rename pairs. */
+        private val STATUS_ARGS =
+            listOf("--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
+
         /** The `XY ` status and space before the path of a `git status --porcelain=v1` entry. */
         private const val STATUS_PREFIX = 3
+
+        /** The most of one `git status` entry kept, far above any path a file system allows. */
+        private const val ENTRY_BYTES_MAX = 64 * 1024
         private const val BUFFER_BYTES = 64 * 1024
 
         private const val MAX_PATHS = 5
         private const val MAX_PATH_CHARS = 100
 
+        private const val CANCELLED = "the git read was cancelled"
+
+        /** Stops [process] and what it started. */
+        private fun stop(process: Process) {
+            process.descendants().forEach { it.destroyForcibly() }
+            process.destroyForcibly()
+        }
+
         private val WATCHDOG: ScheduledExecutorService =
             Executors.newSingleThreadScheduledExecutor { task -> Thread(task, "loop-workspace-git").apply { isDaemon = true } }
     }
 }
+
+/**
+ * The bounds of one [WorkspaceGit.workTree] read (bl-149): at most [entries] `git status` entries in all, nested
+ * repositories included, the content of a file hashed only up to [fileBytes] (a larger one reads as its size and
+ * modified time), and nested repositories or submodules read down to [depth] levels.
+ */
+data class WorkTreeLimits(
+    val entries: Int = 20_000,
+    val fileBytes: Long = 1024L * 1024L,
+    val depth: Int = 2,
+)
 
 /**
  * One file of a diff (m2-28): its [path] and the lines [added] and [deleted]. [counted] is false when git printed no
