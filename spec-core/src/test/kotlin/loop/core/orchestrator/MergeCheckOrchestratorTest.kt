@@ -806,7 +806,7 @@ class MergeCheckOrchestratorTest {
         }
 
     @Test
-    fun `a failing recheck after the early push keeps the merge commit, comments, ends the wait and hands the findings over`() =
+    fun `a failing recheck keeps the merge commit, comments, ends the wait and hands the findings over`() =
         runTest {
             val verified = verifiedWorktree()
             val base = baseCommit()
