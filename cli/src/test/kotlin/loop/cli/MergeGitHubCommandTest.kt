@@ -33,7 +33,9 @@ import kotlin.time.Clock
  * and whose issue `Closes #n` already closed, is delivered by the next `loop run --once` with no error and no human
  * touch. The issue is already in `on_delivered.move_to`, so nothing is written to it; the workspace is removed and the
  * local branch stays. bl-32: an agent that deletes a test and moves local `main` to its head is still refuted, since
- * `diff_policy` is judged against the base fetched host side, and nothing is merged.
+ * `diff_policy` is judged against the base fetched host side, and nothing is merged. bl-68: an issue still open when
+ * Loop moves it, whose PATCH GitHub answers 422 because `Closes #n` closed it meanwhile, is delivered too, with no
+ * failed delivery in the log.
  */
 class MergeGitHubCommandTest {
     @TempDir
@@ -55,6 +57,17 @@ class MergeGitHubCommandTest {
     @Volatile
     private var mergedHead: String = ""
 
+    /** The state GitHub shows for issue 7; a PATCH of it closes it and answers [patchAnswer] (bl-68). */
+    @Volatile
+    private var issueState: String = "closed"
+
+    /** The status and body of a PATCH of issue 7. */
+    private val patchAnswer: Pair<Int, String> =
+        422 to
+            """{"message":"Validation Failed","errors":[{"resource":"Issue","code":"custom",""" +
+            """"message":"This issue was closed by another request. Reload it and try again."}],""" +
+            """"documentation_url":"https://docs.github.com/rest/issues/issues#update-an-issue","status":"422"}"""
+
     /** Every request the server got: its method, path and query. */
     private val requests: MutableList<String> = Collections.synchronizedList(mutableListOf())
 
@@ -70,7 +83,15 @@ class MergeGitHubCommandTest {
                 val path = exchange.requestURI.rawPath
                 val query = exchange.requestURI.rawQuery.orEmpty()
                 requests += "${exchange.requestMethod} $path?$query"
-                val (status, body) = if (exchange.requestMethod == "GET") answer(path, query) else 404 to """{"message":"Not Found"}"""
+                val (status, body) =
+                    when {
+                        exchange.requestMethod == "GET" -> answer(path, query)
+                        exchange.requestMethod == "PATCH" && path == "/api/repos/acme/widgets/issues/7" -> {
+                            issueState = "closed"
+                            patchAnswer
+                        }
+                        else -> 404 to """{"message":"Not Found"}"""
+                    }
                 exchange.responseHeaders.add("Content-Type", "application/json; charset=utf-8")
                 exchange.responseHeaders.add("x-ratelimit-remaining", "4999")
                 val bytes = body.toByteArray()
@@ -85,18 +106,15 @@ class MergeGitHubCommandTest {
         server.stop(0)
     }
 
-    /** No open issue, issue 7 closed by `Closes #7`, and pull request 1 of `loop/widgets-7` merged at [mergedHead]. */
+    /** Issue 7 in [issueState], `closed` by `Closes #7` by default, and pull request 1 of `loop/widgets-7` merged at [mergedHead]. */
     private fun answer(
         path: String,
         query: String,
     ): Pair<Int, String> {
         val repo = "/api/repos/acme/widgets"
         return when {
-            path == "$repo/issues" -> 200 to "[]"
-            path == "$repo/issues/7" ->
-                200 to
-                    """{"number":7,"title":"Add hello","state":"closed","labels":[{"name":"ready-for-agent"}],""" +
-                    """"body":"Say hello.","comments":0,"created_at":"2026-11-14T08:00:00Z","node_id":"I_7"}"""
+            path == "$repo/issues" -> 200 to if (issueState == "open" && "state=closed" !in query) "[${issue()}]" else "[]"
+            path == "$repo/issues/7" -> 200 to issue()
             path == "$repo/pulls" && "head=acme%3Aloop%2Fwidgets-7" in query ->
                 200 to
                     """[{"number":1,"html_url":"https://github.com/acme/widgets/pull/1","state":"closed",""" +
@@ -106,6 +124,10 @@ class MergeGitHubCommandTest {
             else -> 404 to """{"message":"Not Found"}"""
         }
     }
+
+    private fun issue(): String =
+        """{"number":7,"title":"Add hello","state":"$issueState","labels":[{"name":"ready-for-agent"}],""" +
+            """"body":"Say hello.","comments":0,"created_at":"2026-11-14T08:00:00Z","node_id":"I_7"}"""
 
     private val apiUrl: String get() = "http://${server.address.address.hostAddress}:${server.address.port}/api"
 
@@ -145,8 +167,11 @@ class MergeGitHubCommandTest {
         )
     }
 
-    @Test
-    fun `m2-26 an issue Closes n already closed is delivered with no error and no human touch`() {
+    /**
+     * A workflow, the issue's workspace on `loop/widgets-7` with one commit, the head GitHub shows merged, and the
+     * stored merge wait of issue 7 at that head. The repository and the workspace.
+     */
+    private fun mergedWait(): Pair<TestRepo, Path> {
         writeWorkflow()
         val repo = fixture.useGitWorktrees()
         repo.git("init", "--quiet", "--bare", root.resolve("remote.git").toString(), cwd = root)
@@ -184,6 +209,12 @@ class MergeGitHubCommandTest {
                 )
             runBlocking { store.startWaiting(wait) }.getOrThrow()
         }
+        return repo to workspace
+    }
+
+    @Test
+    fun `m2-26 an issue Closes n already closed is delivered with no error and no human touch`() {
+        val (repo, workspace) = mergedWait()
 
         val run = fixture.loop("run", fixture.workflow.toString(), "--once", env = env)
 
@@ -196,6 +227,26 @@ class MergeGitHubCommandTest {
         assertFalse(workspace.exists(), "the workspace is removed")
         assertTrue(repo.hasBranch("loop/widgets-7"), "the local branch stays")
         assertFalse(run.stdout.contains(token) || run.stderr.contains(token))
+    }
+
+    @Test
+    fun `bl-68 a move to closed answered 422 because Closes n closed the issue meanwhile is delivered with no failed delivery`() {
+        issueState = "open"
+        val (repo, workspace) = mergedWait()
+
+        val run = fixture.loop("run", fixture.workflow.toString(), "--once", env = env)
+
+        assertEquals(0, run.exitCode, run.toString())
+        assertEquals(listOf("PATCH /api/repos/acme/widgets/issues/7?"), requests.filter { !it.startsWith("GET ") }, "one move, sent once")
+        assertEquals(emptyList(), fixture.query("SELECT 1 FROM waiting_issues"), run.toString())
+        assertEquals(emptyList(), fixture.query("SELECT data FROM events WHERE kind = 'delivery_failed'"))
+        val moved = fixture.query("SELECT data FROM events WHERE kind = 'issue_moved'").map { it["data"].orEmpty() }
+        assertEquals(1, moved.size, moved.toString())
+        assertContains(moved.single(), "\"merged\":\"true\"")
+        assertFalse("event=delivery outcome=failed" in run.stderr, run.stderr)
+        assertContains(run.stderr, "event=delivery outcome=completed")
+        assertFalse(workspace.exists(), "the workspace is removed")
+        assertTrue(repo.hasBranch("loop/widgets-7"), "the local branch stays")
     }
 
     private val playground: Path =

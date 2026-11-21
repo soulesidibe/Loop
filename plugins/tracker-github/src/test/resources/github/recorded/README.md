@@ -37,3 +37,9 @@ Written by hand for the CI wait (m3-15), after the shapes GitHub documents in "R
 |---|---|
 | `actions-runs` | `GET /repos/octocat/Hello-World/actions/runs?head_sha=<sha>&per_page=100`: 200 with three runs of one head, `build` on `push` twice (run 41, a second attempt, `success`, and run 40, `failure`) and `lint` on `pull_request` (run 12, `in_progress`), each with an empty `pull_requests` |
 | `actions-forbidden` | the same listing with a token that lacks Actions read: 403 `Resource not accessible by personal access token` with `x-accepted-github-permissions: actions=read` |
+
+Recorded for bl-68 on 2026-11-20 from the playground, `Soules-Studio-Ltd/loop-playground`, with its token, the headers kept to the status and the rate limit set of the hand written ones:
+
+| Name | Response |
+|---|---|
+| `issue-closed-by-another-request` | `PATCH /repos/<repo>/issues/<n>` with `{"state":"closed"}` sent one second after GitHub merged a pull request whose body ends `Closes #<n>`: 422 `Validation Failed`, `This issue was closed by another request. Reload it and try again.` A read right after shows the issue closed |
