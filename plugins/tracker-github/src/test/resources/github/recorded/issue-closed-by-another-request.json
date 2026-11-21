@@ -1,0 +1,12 @@
+{
+  "message": "Validation Failed",
+  "errors": [
+    {
+      "resource": "Issue",
+      "code": "custom",
+      "message": "This issue was closed by another request. Reload it and try again."
+    }
+  ],
+  "documentation_url": "https://docs.github.com/rest/issues/issues#update-an-issue",
+  "status": "422"
+}
