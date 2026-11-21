@@ -26,6 +26,7 @@ import kotlin.time.Instant
  * `loop run` works in another process. With a machine config (m3-16) it also prints the machine slots in use, the cap
  * and the machine day spend. Since m3-09 a running attempt shows its running session's latest and peak occupancy, and
  * an attempt whose runner declares no occupancy gets a line saying only the prompt limit and the turn cap hold for it.
+ * Since bl-172 a merge wait shows its place in the delivery queue, `queue=1` for the head.
  */
 class StatusCommand(
     private val host: Host,
@@ -178,7 +179,7 @@ class StatusCommand(
                 )
             } +
             snapshot.waiting.map { row ->
-                Line(WAITING, row.identifier, attempt(row.attempt), details("reason" to row.reason, "since" to seconds(row.since)))
+                Line(WAITING, row.identifier, attempt(row.attempt), details("reason" to row.reason, "since" to seconds(row.since), "queue" to row.queue?.toString()))
             } +
             snapshot.parked.map { row ->
                 Line(

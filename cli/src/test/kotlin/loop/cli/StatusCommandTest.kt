@@ -127,6 +127,7 @@ class StatusCommandTest {
         issue: String,
         attempt: String,
         since: String,
+        reason: WaitReason = WaitReason.Verify,
     ) = SqliteEventStore.open(fixture.loopHome, fixture.projectDir, Redactor.NONE).getOrThrow().use { store ->
         runBlocking {
             store
@@ -135,7 +136,7 @@ class StatusCommandTest {
                         projectId = project,
                         issueId = issue,
                         identifier = issue,
-                        reason = WaitReason.Verify,
+                        reason = reason,
                         attemptId = AttemptId(attempt),
                         runId = RunId(LoopFixture.RUN_ID),
                         since = Instant.parse(since),
@@ -295,6 +296,33 @@ class StatusCommandTest {
         } finally {
             lock.release()
         }
+    }
+
+    @Test
+    fun `bl-172 status shows each merge wait's place in the delivery queue, the oldest first, ties by issue id`() {
+        fixture.seed(
+            event("attempt_started", "t-1", A1, "2026-11-11T09:00:00Z", run = OLD_RUN),
+            event("attempt_started", "t-2", B1, "2026-11-11T09:01:00Z", run = OLD_RUN),
+            event("attempt_started", "t-3", C1, "2026-11-11T09:02:00Z", run = OLD_RUN),
+            event("attempt_started", "t-6", F1, "2026-11-11T09:03:00Z", run = OLD_RUN),
+        )
+        wait("t-3", C1, "2026-11-11T10:00:00Z", WaitReason.Merge)
+        wait("t-2", B1, "2026-11-11T10:05:00Z", WaitReason.Merge)
+        wait("t-1", A1, "2026-11-11T10:05:00Z", WaitReason.Merge)
+        wait("t-6", F1, "2026-11-11T10:01:00Z", WaitReason.Approval)
+
+        val result = fixture.loop("status", fixture.workflow.toString())
+
+        assertEquals(0, result.exitCode, result.toString())
+        assertEquals(
+            listOf(
+                "waiting   t-3  attempt 1  c1000000  reason=merge since=2026-11-11T10:00:00Z queue=1",
+                "waiting   t-6  attempt 1  f1000000  reason=approval since=2026-11-11T10:01:00Z",
+                "waiting   t-1  attempt 1  a1000000  reason=merge since=2026-11-11T10:05:00Z queue=2",
+                "waiting   t-2  attempt 1  b1000000  reason=merge since=2026-11-11T10:05:00Z queue=3",
+            ),
+            result.stdout.trimEnd().lines().drop(3),
+        )
     }
 
     @Test

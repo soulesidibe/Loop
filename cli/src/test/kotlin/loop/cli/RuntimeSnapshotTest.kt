@@ -203,15 +203,17 @@ class RuntimeSnapshotTest {
     private fun waiting(
         issue: String,
         attempt: String?,
+        reason: WaitReason = WaitReason.Verify,
+        since: String = "2026-11-11T10:06:00Z",
     ) = Wait.of(
         WaitingIssue(
             projectId = project,
             issueId = issue,
             identifier = issue.uppercase(),
-            reason = WaitReason.Verify,
+            reason = reason,
             attemptId = attempt?.let(::AttemptId),
             runId = live,
-            since = Instant.parse("2026-11-11T10:06:00Z"),
+            since = Instant.parse(since),
             data = mapOf("to" to "review"),
         ),
     )
@@ -245,5 +247,20 @@ class RuntimeSnapshotTest {
         val snapshot = runtimeSnapshot(events, null, emptyList(), listOf(waiting("w", "w-1")))
 
         assertEquals(listOf(AttemptRef(1, AttemptId("w-1"))), snapshot.waiting.map { it.attempt })
+    }
+
+    @Test
+    fun `bl-172 each merge wait has its place in the delivery queue, the oldest since first, ties by issue id`() {
+        val waits =
+            listOf(
+                waiting("b", null, WaitReason.Merge, "2026-11-11T10:05:00Z"),
+                waiting("v", null, WaitReason.Verify, "2026-11-11T10:00:00Z"),
+                waiting("a", null, WaitReason.Merge, "2026-11-11T10:05:00Z"),
+                waiting("c", null, WaitReason.Merge, "2026-11-11T10:01:00Z"),
+            )
+
+        val snapshot = runtimeSnapshot(emptyList(), null, emptyList(), waits)
+
+        assertEquals(listOf("V" to null, "C" to 1, "A" to 2, "B" to 3), snapshot.waiting.map { it.identifier to it.queue })
     }
 }
