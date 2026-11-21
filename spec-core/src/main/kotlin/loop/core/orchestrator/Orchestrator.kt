@@ -80,6 +80,8 @@ import loop.core.events.ConfigReloadFailed
 import loop.core.events.ConfigReloaded
 import loop.core.events.ContextUsage
 import loop.core.events.Delivery
+import loop.core.events.DeliveryQueuePaused
+import loop.core.events.DeliveryQueueResumed
 import loop.core.events.DiffBaseUnpinned
 import loop.core.events.EventDefinition
 import loop.core.events.EvidenceRecordFailed
@@ -90,8 +92,6 @@ import loop.core.events.IssueCommented
 import loop.core.events.IssueLabeled
 import loop.core.events.IssueMoved
 import loop.core.events.IssueParked
-import loop.core.events.DeliveryQueuePaused
-import loop.core.events.DeliveryQueueResumed
 import loop.core.events.MergeRequeued
 import loop.core.events.Phase
 import loop.core.events.PromptRecordFailed
