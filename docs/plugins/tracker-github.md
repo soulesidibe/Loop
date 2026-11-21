@@ -209,7 +209,7 @@ The required labels are those of the effective workflow, read at each move, so a
 
 **Return path.** A human sends an issue back to Loop by restoring `ready-for-agent` (the required labels). Removing `needs-review` or `needs-info` is the human's job too: Loop never removes a handoff label, so an issue sent back with it still on is eligible again and keeps the label until a human removes it.
 
-Agents never move to `open` or `closed` (Loop's prompt forbids it), but the tracker supports both: `PATCH /repos/{owner}/{repo}/issues/{number}` with `{"state":"closed"}` or `{"state":"open"}`.
+Agents never move to `open` or `closed` (Loop's prompt forbids it), but the tracker supports both: `PATCH /repos/{owner}/{repo}/issues/{number}` with `{"state":"closed"}` or `{"state":"open"}`. GitHub answers 422 `This issue was closed by another request. Reload it and try again.` to a PATCH that lands while it closes the issue itself, as `Closes #n` does about a second after a merge, reproduced on the playground in bl-68. So a 422 to the PATCH reads the issue once, `GET .../issues/{number}`: shown in the target state, the move succeeds; in another state, or when the read fails, the move fails with the 422.
 
 ## Writes
 
@@ -217,7 +217,7 @@ Every write sends the read headers plus `Content-Type: application/json`, once: 
 
 | Write | Request | Notes |
 |---|---|---|
-| `moveIssue` to `open` or `closed` | `PATCH .../issues/{number}` with `{"state":...}` | See [states](#states). |
+| `moveIssue` to `open` or `closed` | `PATCH .../issues/{number}` with `{"state":...}` | See [states](#states). A 422 reads the issue once and succeeds when it shows the target state (bl-68). |
 | `moveIssue` to `review` or `needs_info` | `POST .../issues/{number}/labels`, then one `DELETE .../issues/{number}/labels/{name}` per required label | See [states](#states). A state outside the four fails with `UndefinedState` without a request. |
 | `addComment` | `POST .../issues/{number}/comments` with `{"body":...}` | The text as given, already redacted by the orchestrator. A blank text fails with `BlankComment`; a text over GitHub's limit of 65,536 characters, counted as code points like GitHub, fails with `Rejected` and is never cut: `The comment has <n> characters, over GitHub's limit of 65536. Nothing was posted, shorten it and comment again`. |
 | `updateLabels` | one `POST .../labels` for the labels to add, then one `DELETE` per label to remove | Labels are trimmed, blanks ignored; a label given twice, or both added and removed, compared case insensitively, is added once and not removed. A removal 404 is success. |
@@ -305,7 +305,7 @@ Every call returns a result whose failure is a `TrackerError`. The adapter does 
 | `TrackerError` | When | Spec category (11.4) | Message |
 |---|---|---|---|
 | `Unavailable` | GitHub cannot be reached, the connection fails, or no answer within 30 seconds | `tracker_request` | The I/O error's message, such as `GitHub did not answer within 30s` |
-| `Status` | Any non success answer that is not a rate limit, and not a 404 or 410 of fetch by ids while the repository answers, nor a 404 of a label removal. A write answered 403 (a token without write access), 404 or 422 (a value GitHub refuses) is one too | `tracker_status` | `The tracker answered <status>: <GitHub's message>`, the message cut at 200 characters |
+| `Status` | Any non success answer that is not a rate limit, and not a 404 or 410 of fetch by ids while the repository answers, nor a 404 of a label removal. A write answered 403 (a token without write access), 404 or 422 (a value GitHub refuses) is one too | `tracker_status` | `The tracker answered <status>: <GitHub's message>`, followed by each `errors[].message` joined with `: ` (bl-68), cut at 200 characters |
 | `Malformed` | A body that is not JSON, a list body that is not an array, an issue body that is not an object, a requested issue that cannot be normalized | `tracker_response` | `Malformed issue at <url>` |
 | `Pagination` | A next page link on another origin, a repeated link, more than 100 pages, an issue on two pages | `tracker_pagination` | `The tracker pages are inconsistent: <detail>` |
 | `RateLimited` | A rate limit answer, or any call while requests are held | `tracker_rate_limited` | `The tracker rate limit is exhausted, requests resume at <time>` |

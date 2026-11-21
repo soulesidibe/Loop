@@ -133,7 +133,7 @@ class GitHubTracker(
         }
 
     /**
-     * Moves the issue (m2-23). A move to `open` or `closed` patches the issue state. A move to a handoff state,
+     * Moves the issue (m2-23). A move to `open` or `closed` patches the issue state, see [patchState]. A move to a handoff state,
      * `review` or `needs_info`, is a label change: its label from `handoff_labels` is added first, then every
      * `tracker.required_labels` label is removed, so the issue leaves the active set and keeps `open`. The move is
      * refused, with nothing sent, when there is no required label, or when the handoff label is one of them: the
@@ -146,12 +146,7 @@ class GitHubTracker(
     ): Result<Unit> {
         if (toState !in DEFINED_STATES) return Result.failure(TrackerError.UndefinedState(toState, definedStates))
         if (!ISSUE_NUMBER.matches(issueId)) return Result.failure(TrackerError.NotFound(issueId))
-        if (toState in ISSUE_STATES) {
-            return catching {
-                val body = JsonObject(mapOf("state" to JsonPrimitive(toState))).toString()
-                send("PATCH", URI("$repoPath/issues/$issueId"), absent = emptySet(), body = body)
-            }.map {}
-        }
+        if (toState in ISSUE_STATES) return catching { patchState(issueId, toState) }
         val required = requiredLabels().map { it.trim() }.filter { it.isNotEmpty() }
         if (required.isEmpty()) {
             return Result.failure(
@@ -171,6 +166,30 @@ class GitHubTracker(
             )
         }
         return updateLabels(issueId, add = listOf(label), remove = required)
+    }
+
+    /**
+     * Patches the state of issue [issueId] to [toState], sent once. GitHub answers 422 `This issue was closed by
+     * another request` to a PATCH that lands while it closes the issue itself, as `Closes #n` does right after a
+     * merge (bl-68). A 422 reads the issue once: shown in [toState], the move is done; otherwise, or when the read
+     * fails, the move fails with the 422 and GitHub's errors.
+     */
+    private suspend fun patchState(
+        issueId: String,
+        toState: String,
+    ) {
+        val url = URI("$repoPath/issues/$issueId")
+        val body = JsonObject(mapOf("state" to JsonPrimitive(toState))).toString()
+        val response = client.exchange("PATCH", url, expected = setOf(UNPROCESSABLE), body = body)
+        if (response.status != UNPROCESSABLE) return
+        val refusal = TrackerError.Status(UNPROCESSABLE, GitHubClient.detail(response.body))
+        val shown =
+            try {
+                send(url, absent = emptySet())?.let { (parse(it.body, url) as? JsonObject)?.string("state") }
+            } catch (e: TrackerError) {
+                null
+            }
+        if (!toState.equals(shown?.trim(), ignoreCase = true)) throw refusal
     }
 
     /**
@@ -453,6 +472,9 @@ class GitHubTracker(
 
         /** Answers to an issue request that mean it is no longer visible, not found or deleted, once the repository answers. */
         private val GONE = setOf(404, 410)
+
+        /** GitHub's answer to a write it refuses as invalid, `Validation Failed`. */
+        private const val UNPROCESSABLE = 422
 
         /** The answer to a label removal that means the issue does not carry the label: a success (m2-23). */
         private val LABEL_ABSENT = setOf(404)
