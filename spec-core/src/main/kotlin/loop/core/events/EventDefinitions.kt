@@ -65,6 +65,7 @@ object EventDefinitions {
             BaseFetchFailed,
             MergeCheckStarted,
             MergeCheckFinished,
+            MergeRequeued,
             CiWaiting,
             CiFinished,
             PullRequestMerged,

@@ -11,6 +11,8 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
+import loop.api.ActionsRun
+import loop.api.ActionsRuns
 import loop.api.AttemptId
 import loop.api.DeliveryError
 import loop.api.DeliveryExecutor
@@ -67,6 +69,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Instant
 
 /**
  * m2-26: the merge check and the merge of an approved pull request. With `merge`, an approved delivery stops after the
@@ -80,6 +84,7 @@ class MergeCheckOrchestratorTest {
     private val home: Path = Files.createDirectories(root.resolve("home-dir"))
     private val project: Path = Files.createDirectories(root.resolve("project"))
     private val workspace: Path = root.resolve("workspaces/t-1")
+    private val secondWorkspace: Path = root.resolve("workspaces/t-2")
     private val gitEnv = mapOf("PATH" to System.getenv("PATH").orEmpty(), "HOME" to home.toString(), "LANG" to "C")
     private val workspaceGit = WorkspaceGit(gitEnv)
     private val fingerprinter = WorkspaceFingerprinter(workspaceGit)
@@ -123,6 +128,12 @@ class MergeCheckOrchestratorTest {
         return commit(workspace, "work.txt", "work\n")
     }
 
+    /** The worktree of `loop/t-2` from `main`, with its own verified commit, after [verifiedWorktree]. Returns it. */
+    private fun secondWorktree(): String {
+        git(project, "worktree", "add", "-q", "-b", "loop/t-2", secondWorkspace.toString(), "main")
+        return commit(secondWorkspace, "work2.txt", "work two\n")
+    }
+
     private var upstream: String? = null
 
     /** A commit on the base, made on `upstream` so local `main` stays behind, as objects a fetch landed. */
@@ -145,6 +156,7 @@ class MergeCheckOrchestratorTest {
         method: MergeMethod = MergeMethod.Merge,
         maxAgents: Int = 10,
         tracker: String = "files",
+        ci: CiMode = CiMode.None,
         template: String = "Work on {{ issue.identifier }}. {{ loop.verify_findings }}",
     ): WorkflowFile =
         WorkflowFile(
@@ -159,7 +171,7 @@ class MergeCheckOrchestratorTest {
                                 delivery =
                                     DeliveryConfig(
                                         DeliveryPolicy.Human,
-                                        PullRequestConfig("acme/widgets", "LOOP_PR_TOKEN", merge = MergeConfig(method, CiMode.None)),
+                                        PullRequestConfig("acme/widgets", "LOOP_PR_TOKEN", merge = MergeConfig(method, ci)),
                                         onDeliveredMoveTo = "done",
                                     ),
                             ),
@@ -205,6 +217,9 @@ class MergeCheckOrchestratorTest {
 
         /** Refusals the next merges return, in order, before [mergeFailure] (send back 5). */
         val mergeFailures = ArrayDeque<DeliveryError>()
+
+        /** Moves the base to each merged head, as a merge on GitHub moves it (bl-172). */
+        var baseOnMerge = false
 
         override suspend fun push(
             sha: String,
@@ -275,10 +290,17 @@ class MergeCheckOrchestratorTest {
                 )
             }
             merges += Triple(number, sha, method)
+            if (baseOnMerge) lastBase = sha
             val branch = pulls.entries.single { it.value.number == number }.key
             pulls[branch] = pulls.getValue(branch).copy(state = PullRequestState.Merged, headSha = sha)
             return Result.success("feedface".repeat(5))
         }
+
+        /** Every merged head has one green Actions run. */
+        override suspend fun actionsRuns(sha: String): Result<ActionsRuns> =
+            Result.success(
+                ActionsRuns(1, listOf(ActionsRun(11, "build", 11, "push", 1, 1, "completed", "success", "https://example.com/runs/11"))),
+            )
     }
 
     private fun approvedWait(fingerprint: String): WaitingIssue =
@@ -305,13 +327,16 @@ class MergeCheckOrchestratorTest {
         fingerprint: String,
         extra: Map<String, String> = emptyMap(),
         identifier: String = "t-1",
+        number: Long = 7,
+        since: Instant = FIXED_NOW,
     ): WaitingIssue =
         approvedWait(fingerprint).let { approval ->
-            val merging = (Wait.of(approval) as Wait.Approval).merging(7, "https://github.com/acme/widgets/pull/7", approval.since)
+            val merging = (Wait.of(approval) as Wait.Approval).merging(number, "https://github.com/acme/widgets/pull/$number", since)
             approval.copy(
                 issueId = "id-$identifier",
                 identifier = identifier,
                 reason = WaitReason.Merge,
+                since = since,
                 data = merging.toRecord().data + extra,
             )
         }
@@ -1204,6 +1229,155 @@ class MergeCheckOrchestratorTest {
             assertEquals(1, remote.fetchCalls - attemptFetches, "one merge check runs")
             assertEquals(listOf("t-3"), runner.calls.map { it.first.issue.identifier }.distinct())
             loop.cancel()
+        }
+
+    /** One tick and every background job it started, after [after] milliseconds of the test clock. */
+    private suspend fun TestScope.tick(
+        orchestrator: Orchestrator,
+        after: Long = 0,
+    ) {
+        if (after > 0) advanceTimeBy(after)
+        orchestrator.tick()
+        testScheduler.runCurrent()
+    }
+
+    /** The identifiers of the merge check rounds that started, in order. */
+    private fun FakeSink.checksStarted(): List<String?> = events.filter { it.kind == MergeCheckStarted.name }.map { it.issueIdentifier }
+
+    /** A remote at `main` that moves the base on each merge, with the open pull requests 7 of `loop/t-1` and 8 of `loop/t-2`. */
+    private fun queueRemote(): FakeRemote =
+        FakeRemote().apply {
+            bases += git(project, "rev-parse", "main")
+            baseOnMerge = true
+            pulls["loop/t-1"] = PullRequest(7, "https://github.com/acme/widgets/pull/7", created = false)
+            pulls["loop/t-2"] = PullRequest(8, "https://github.com/acme/widgets/pull/8", created = false)
+        }
+
+    @Test
+    fun `two approved deliveries go one at a time, the second starts its merge check only after the first merged, one round each`() =
+        runTest {
+            val first = verifiedWorktree()
+            val second = secondWorktree()
+            val main = git(project, "rev-parse", "main")
+            val tracker = FakeTracker(listOf(issue("t-1"), issue("t-2")))
+            val remote = queueRemote()
+            val waiting =
+                FakeWaitingIssues(
+                    mergeWait(clean(first)),
+                    mergeWait(clean(second), identifier = "t-2", number = 8, since = FIXED_NOW + 1.seconds),
+                )
+            val sink = FakeSink()
+            val orchestrator = orchestrator(tracker, remote, waiting, sink, workflow(ci = CiMode.Actions))
+
+            tick(orchestrator)
+            tick(orchestrator, after = 1_000)
+
+            // t-1 waits for its CI: t-2 stays in phase check and does nothing.
+            assertEquals(listOf<String?>("t-1"), sink.checksStarted())
+            assertEquals("check", waiting.records.getValue(PROJECT.value to "id-t-2").data[WaitKeys.PHASE])
+
+            tick(orchestrator, after = 30_000)
+            assertEquals(listOf(7L), remote.merges.map { it.first })
+            tick(orchestrator, after = 1_000)
+            tick(orchestrator, after = 30_000)
+
+            assertEquals(listOf<String?>("t-1", "t-2"), sink.checksStarted())
+            assertEquals(listOf("1", "1"), sink.all(MergeCheckStarted.name).map { it["round"] })
+            assertEquals(listOf(main, first), remote.fetched, "t-2 checks against the base t-1's merge made")
+            val secondHead = git(project, "rev-parse", "loop/t-2")
+            assertEquals(listOf(7L to first, 8L to secondHead), remote.merges.map { it.first to it.second })
+            val merged = sink.events.indexOfFirst { it.kind == PullRequestMerged.name && it.issueIdentifier == "t-1" }
+            val started = sink.events.indexOfFirst { it.kind == MergeCheckStarted.name && it.issueIdentifier == "t-2" }
+            assertTrue(merged in 0 until started, "t-2's merge check starts after t-1 merged")
+            assertEquals(emptyMap(), waiting.records)
+        }
+
+    @Test
+    fun `a head that falls back lets the next one start, and its new approval goes behind it`() =
+        runTest {
+            val first = verifiedWorktree()
+            val second = secondWorktree()
+            val tracker = FakeTracker(listOf(issue("t-1"), issue("t-2")))
+            val remote = queueRemote().apply { mergeFailures += DeliveryError.Rejected("Cannot merge pull request #7 on acme/widgets: 405") }
+            val waiting =
+                FakeWaitingIssues(
+                    mergeWait(clean(first)),
+                    mergeWait(clean(second), identifier = "t-2", number = 8, since = FIXED_NOW + 1.seconds),
+                )
+            val sink = FakeSink()
+            val orchestrator = orchestrator(tracker, remote, waiting, sink, workflow(ci = CiMode.Actions))
+
+            tick(orchestrator)
+            tick(orchestrator, after = 30_000)
+            val fallback = waiting.records.getValue(PROJECT.value to "id-t-1")
+            assertEquals(WaitReason.Approval, fallback.reason)
+            assertEquals(listOf<String?>("t-1"), sink.checksStarted())
+
+            tick(orchestrator, after = 1_000)
+            assertEquals(listOf<String?>("t-1", "t-2"), sink.checksStarted(), "the next one starts once the head fell back")
+
+            // A new approval of t-1 starts a new merge wait, at the back of the queue.
+            waiting.records[PROJECT.value to "id-t-1"] =
+                fallback.copy(data = fallback.data + mapOf(WaitingIssue.APPROVED_BY to "soule", WaitingIssue.APPROVED_AT to FIXED_NOW.toString()))
+            tick(orchestrator, after = 1_000)
+            val requeued = waiting.records.getValue(PROJECT.value to "id-t-1")
+            assertEquals(WaitReason.Merge, requeued.reason)
+            assertEquals("check", requeued.data[WaitKeys.PHASE])
+            assertTrue(requeued.since > waiting.records.getValue(PROJECT.value to "id-t-2").since)
+            assertEquals(listOf<String?>("t-1", "t-2"), sink.checksStarted())
+
+            tick(orchestrator, after = 30_000)
+            assertEquals(listOf(8L), remote.merges.map { it.first })
+            tick(orchestrator, after = 1_000)
+
+            assertEquals(listOf<String?>("t-1", "t-2", "t-1"), sink.checksStarted())
+            assertEquals(listOf("1", "1", "1"), sink.all(MergeCheckStarted.name).map { it["round"] })
+        }
+
+    @Test
+    fun `merge waits with the same since go in issue id order, whatever the store's order`() =
+        runTest {
+            val first = verifiedWorktree()
+            val second = secondWorktree()
+            val tracker = FakeTracker(listOf(issue("t-1"), issue("t-2")))
+            val remote = queueRemote()
+            val waiting =
+                FakeWaitingIssues(
+                    mergeWait(clean(second), identifier = "t-2", number = 8),
+                    mergeWait(clean(first)),
+                )
+            val sink = FakeSink()
+            val orchestrator = orchestrator(tracker, remote, waiting, sink)
+
+            tick(orchestrator)
+
+            assertEquals(listOf<String?>("t-1"), sink.checksStarted())
+            assertEquals(listOf(7L), remote.merges.map { it.first })
+
+            tick(orchestrator, after = 1_000)
+
+            assertEquals(listOf<String?>("t-1", "t-2"), sink.checksStarted())
+            assertEquals(listOf(7L, 8L), remote.merges.map { it.first })
+        }
+
+    @Test
+    fun `an older merge wait goes first, whatever its issue id`() =
+        runTest {
+            val first = verifiedWorktree()
+            val second = secondWorktree()
+            val tracker = FakeTracker(listOf(issue("t-1"), issue("t-2")))
+            val remote = queueRemote()
+            val waiting =
+                FakeWaitingIssues(
+                    mergeWait(clean(first)),
+                    mergeWait(clean(second), identifier = "t-2", number = 8, since = FIXED_NOW - 1.seconds),
+                )
+            val sink = FakeSink()
+
+            tick(orchestrator(tracker, remote, waiting, sink))
+
+            assertEquals(listOf<String?>("t-2"), sink.checksStarted())
+            assertEquals(listOf(8L), remote.merges.map { it.first })
         }
 
     /** A sessionless runner whose one turn runs [work] in the workspace, then queues a move to review, the agent's result. */
