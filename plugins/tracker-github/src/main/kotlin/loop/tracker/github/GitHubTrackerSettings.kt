@@ -18,10 +18,15 @@ data class GitHubTrackerSettings(
     val tokenEnvName: String? = null,
     /** The label of each handoff state, `review` and `needs_info` (m2-23). */
     val handoffLabels: Map<String, String> = DEFAULT_HANDOFF_LABELS,
+    /**
+     * The `author_association` values whose issues and comments reach the agent (bl-157), upper case. An issue by
+     * another author is blocked, a comment by one is left out of [GitHubTracker.completeIssue].
+     */
+    val trustedAssociations: List<String> = DEFAULT_TRUSTED_ASSOCIATIONS,
 ) {
     override fun toString(): String =
         "GitHubTrackerSettings(repo=$owner/$repo, apiUrl=$apiUrl, scopeLabels=$scopeLabels, handoffLabels=$handoffLabels, " +
-            "token=${tokenEnvName?.let { "\$$it" } ?: "literal"})"
+            "trustedAssociations=$trustedAssociations, token=${tokenEnvName?.let { "\$$it" } ?: "literal"})"
 
     companion object {
         val DEFAULT_API_URL: URI = URI("https://api.github.com")
@@ -36,6 +41,9 @@ data class GitHubTrackerSettings(
 
         /** The labels m2-11 and the playground use for the two handoff states. */
         val DEFAULT_HANDOFF_LABELS: Map<String, String> = mapOf("review" to "needs-review", "needs_info" to "needs-info")
+
+        /** The repository's owner, the members of its organization and its collaborators. */
+        val DEFAULT_TRUSTED_ASSOCIATIONS: List<String> = listOf("OWNER", "MEMBER", "COLLABORATOR")
 
         /**
          * Reads the `tracker.provider` map, whose values are strings, lists, maps or null, as the
@@ -70,6 +78,7 @@ data class GitHubTrackerSettings(
                 scopeLabels = labels(provider["labels"]),
                 tokenEnvName = tokenEnvName,
                 handoffLabels = handoffLabels(provider["handoff_labels"]),
+                trustedAssociations = trustedAssociations(provider["trusted_associations"]),
             )
         }
 
@@ -162,6 +171,41 @@ data class GitHubTrackerSettings(
                 }
             return DEFAULT_HANDOFF_LABELS + written
         }
+
+        /**
+         * `trusted_associations` (bl-157): a non empty list of GitHub author associations, trimmed, compared case
+         * insensitively and kept upper case, each once. An unknown name is refused, as a typo would otherwise trust
+         * nobody it was meant to, or hide that a name was never trusted.
+         */
+        private fun trustedAssociations(value: Any?): List<String> {
+            if (value == null) return DEFAULT_TRUSTED_ASSOCIATIONS
+            val items = value as? List<*>
+            if (items == null || items.any { it !is String }) {
+                throw GitHubConfigError.Invalid(
+                    "tracker.provider.trusted_associations must be a list of author associations, got \"$value\"",
+                )
+            }
+            if (items.isEmpty()) {
+                throw GitHubConfigError.Invalid(
+                    "tracker.provider.trusted_associations must not be empty, list the author associations to trust",
+                )
+            }
+            return items
+                .map { item ->
+                    val name = (item as String).trim().uppercase()
+                    if (name !in AUTHOR_ASSOCIATIONS) {
+                        throw GitHubConfigError.Invalid(
+                            "tracker.provider.trusted_associations has \"$item\", which is not a GitHub author association, use " +
+                                AUTHOR_ASSOCIATIONS.dropLast(1).joinToString(", ") + " or " + AUTHOR_ASSOCIATIONS.last(),
+                        )
+                    }
+                    name
+                }.distinct()
+        }
+
+        /** Every `author_association` GitHub gives an issue or a comment. */
+        val AUTHOR_ASSOCIATIONS: List<String> =
+            listOf("OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "MANNEQUIN", "NONE")
 
         /** GitHub owner and repository names: letters, digits, `-`, `_` and `.`. */
         private val REPO = Regex("([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)")

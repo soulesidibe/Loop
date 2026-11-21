@@ -64,6 +64,13 @@ class GitHubRunCommandTest {
      */
     private var routed = true
 
+    /**
+     * The `author_association` a routed issue gets. The recorded issues are by `NONE`, an author the default
+     * `tracker.provider.trusted_associations` does not trust (bl-157), so a routed issue is by `OWNER` unless a test
+     * says otherwise.
+     */
+    private var author = "OWNER"
+
     /** The recorded answer to a label add, when set; the recorded add by default. */
     private var addLabelsAnswer: String = "add-labels-26"
 
@@ -119,13 +126,17 @@ class GitHubRunCommandTest {
         }
     }
 
-    /** [issue] with the label `ready-for-agent` and no comment, so it is eligible and needs no comments request. */
+    /**
+     * [issue] with the label `ready-for-agent`, no comment and [author] as its author's association, so it is eligible
+     * and needs no comments request.
+     */
     private fun routedIssue(issue: JsonObject): JsonObject =
         JsonObject(
             issue +
                 mapOf(
                     "labels" to JsonArray(listOf(JsonObject(mapOf("name" to JsonPrimitive("ready-for-agent"))))),
                     "comments" to JsonPrimitive(0),
+                    "author_association" to JsonPrimitive(author),
                 ),
         )
 
@@ -223,6 +234,28 @@ class GitHubRunCommandTest {
         assertTrue(sent.any { it.first.startsWith("GET /api/repos/octocat/Hello-World/issues?state=open") }, "$sent")
         assertTrue(sent.all { it.first.startsWith("GET ") && it.second == "Bearer $token" }, "$sent")
         assertFalse(token in result.stdout || token in result.stderr, "the token leaked\n$result")
+    }
+
+    @Test
+    fun `bl-157 a routed issue by an author outside trusted_associations is skipped with its reason and starts no attempt`() {
+        author = "NONE"
+        writeAgent()
+        writeWorkflow()
+
+        val result = fixture.loop("run", fixture.workflow.toString(), "--once", env = mapOf("GITHUB_TOKEN" to token))
+
+        assertEquals(0, result.exitCode, result.toString())
+        assertEquals(0, fixture.agentCalls(), result.toString())
+        assertEquals(0, fixture.query("SELECT 1 FROM events WHERE kind = 'attempt_started'").size)
+        val skipped = fixture.query("SELECT issue_id, data FROM events WHERE kind = 'candidate_skipped' ORDER BY issue_id")
+        assertEquals(listOf("26", "27", "28"), skipped.map { it["issue_id"] }, "$skipped")
+        for (event in skipped) {
+            val data = Json.parseToJsonElement(event["data"].orEmpty()) as JsonObject
+            assertEquals(JsonPrimitive("untrusted_author (NONE)"), data["reason"], "$event")
+        }
+        val trace = fixture.loop("trace", "26", "--workflow", fixture.workflow.toString(), env = mapOf("GITHUB_TOKEN" to token))
+        assertEquals(0, trace.exitCode, trace.toString())
+        assertTrue("untrusted_author (NONE)" in trace.stdout, trace.stdout)
     }
 
     @Test

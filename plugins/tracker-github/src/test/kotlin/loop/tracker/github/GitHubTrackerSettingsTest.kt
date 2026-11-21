@@ -1,5 +1,6 @@
 package loop.tracker.github
 
+import kotlinx.coroutines.test.runTest
 import java.net.URI
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -197,6 +198,91 @@ class GitHubTrackerSettingsTest {
             val error = failure(mapOf("repo" to "o/r", "token" to token, "handoff_labels" to value))
 
             assertIs<GitHubConfigError.Invalid>(error)
+            assertEquals(message, error.message)
+        }
+    }
+
+    @Test
+    fun `bl-157 trusted_associations defaults to OWNER, MEMBER and COLLABORATOR`() {
+        val settings = parse(mapOf("repo" to "o/r", "token" to token)).getOrThrow()
+
+        assertEquals(listOf("OWNER", "MEMBER", "COLLABORATOR"), settings.trustedAssociations)
+        assertEquals(listOf("OWNER", "MEMBER", "COLLABORATOR"), GitHubTrackerSettings.DEFAULT_TRUSTED_ASSOCIATIONS)
+    }
+
+    @Test
+    fun `bl-157 trusted_associations is read trimmed and case insensitively, duplicates once`() {
+        val settings =
+            parse(mapOf("repo" to "o/r", "token" to token, "trusted_associations" to listOf(" owner ", "Contributor", "OWNER")))
+                .getOrThrow()
+
+        assertEquals(listOf("OWNER", "CONTRIBUTOR"), settings.trustedAssociations)
+    }
+
+    @Test
+    fun `bl-157 a widened list keeps a CONTRIBUTOR comment, a narrowed one drops a COLLABORATOR comment`() =
+        runTest {
+            val github = FakeGitHub()
+            github.on(FakeGitHub.issueUrl(7), FakeGitHub.response(200, FakeGitHub.issue(7, comments = 2).toString()))
+            github.on(
+                FakeGitHub.commentsUrl(7),
+                FakeGitHub.json(
+                    listOf(
+                        FakeGitHub.comment("drive-by", "2026-11-08T07:00:00Z", "Contributor note.", association = "CONTRIBUTOR"),
+                        FakeGitHub.comment("helper", "2026-11-08T08:00:00Z", "Collaborator note.", association = "COLLABORATOR"),
+                    ),
+                ),
+            )
+
+            suspend fun comments(trusted: List<String>?): String {
+                val provider = mapOf("repo" to "octocat/Hello-World", "token" to token)
+                val settings = parse(if (trusted == null) provider else provider + ("trusted_associations" to trusted)).getOrThrow()
+                val tracker = GitHubTracker(settings, github)
+                val issue = tracker.fetchIssuesByIds(listOf("7")).getOrThrow().single()
+                return tracker
+                    .completeIssue(issue)
+                    .getOrThrow()
+                    .description
+                    .orEmpty()
+                    .substringAfter("## Comments\n\n")
+            }
+
+            assertEquals(
+                "1 comment from outside tracker.provider.trusted_associations is not shown.\n\n" +
+                    "2026-11-08 08:00Z helper: Collaborator note.",
+                comments(null),
+            )
+            assertEquals(
+                "1 comment from outside tracker.provider.trusted_associations is not shown.\n\n" +
+                    "2026-11-08 07:00Z drive-by: Contributor note.",
+                comments(listOf("OWNER", "CONTRIBUTOR")),
+            )
+            assertEquals(
+                "2 comments from outside tracker.provider.trusted_associations are not shown.",
+                comments(listOf("OWNER")),
+            )
+        }
+
+    @Test
+    fun `bl-157 an unknown association, an empty list or a value that is not a list of strings is invalid`() {
+        val names = "OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, FIRST_TIMER, MANNEQUIN or NONE"
+        val cases =
+            listOf(
+                listOf("OWNER", "MAINTAINER") to
+                    "tracker.provider.trusted_associations has \"MAINTAINER\", which is not a GitHub author association, use $names",
+                listOf("OWNER", " ") to
+                    "tracker.provider.trusted_associations has \" \", which is not a GitHub author association, use $names",
+                emptyList<String>() to "tracker.provider.trusted_associations must not be empty, list the author associations to trust",
+                "OWNER" to "tracker.provider.trusted_associations must be a list of author associations, got \"OWNER\"",
+                mapOf("a" to "b") to "tracker.provider.trusted_associations must be a list of author associations, got \"{a=b}\"",
+                listOf("OWNER", listOf("MEMBER")) to
+                    "tracker.provider.trusted_associations must be a list of author associations, got \"[OWNER, [MEMBER]]\"",
+            )
+        for ((value, message) in cases) {
+            val error = failure(mapOf("repo" to "o/r", "token" to token, "trusted_associations" to value))
+
+            assertIs<GitHubConfigError.Invalid>(error, value.toString())
+            assertEquals("invalid_tracker_config", error.category)
             assertEquals(message, error.message)
         }
     }
