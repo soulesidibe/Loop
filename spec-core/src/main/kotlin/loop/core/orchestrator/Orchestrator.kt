@@ -1579,9 +1579,15 @@ class Orchestrator(
         /** The `total_cost_usd` of the latest real usage report that had one, null before any. */
         private var costUsd: Double? = null
 
-        /** What the ledger counts of this attempt (m2-19), and the setup each of its lines and its row name. */
+        /**
+         * What the ledger counts of this attempt (m2-19), and the setup each of its lines and its row name, with the
+         * runner's configured model. A line names its session's reported model instead, the row the attempt's (bl-147).
+         */
         private val ledger = LedgerMeter()
         private val ledgerSetup = LedgerMeter.setupOf(workflow, runner.model)
+
+        /** The latest model a `context_usage` report of this attempt named, null before any (bl-147). */
+        private var reportedModel: String? = null
 
         /** The state this attempt last moved its issue to, so its own move is never taken for a human's. */
         private var movedTo: String? = null
@@ -1648,7 +1654,8 @@ class Orchestrator(
                     turnId = turn.turnId,
                     turn = turn.number,
                     outcome = if (turn.failure == null) "completed" else "failed",
-                    setup = ledgerSetup,
+                    // bl-147: the model the session's latest report named, else the configured one.
+                    setup = ledgerSetup.withModel(occupancy.model),
                     tokens = ledger.turnTokens(),
                     attemptTokens = ledger.tokens,
                     costUsd = ledger.turnCostUsd(),
@@ -1675,7 +1682,8 @@ class Orchestrator(
                     issueId = issue.id,
                     identifier = issue.identifier,
                     attemptId = attemptId,
-                    setup = ledgerSetup,
+                    // bl-147: the latest model a report of the attempt named, else the configured one.
+                    setup = ledgerSetup.withModel(reportedModel),
                     startedAt = startedAt,
                     finishedAt = clock.now(),
                     outcome = outcome,
@@ -3407,6 +3415,7 @@ class Orchestrator(
                     // Kept, not recorded: the turn end records the session's latest and peak (m3-08), and checks the soft
                     // limit (m3-11).
                     occupancy.record(event)
+                    event.model?.let { reportedModel = it }
                     warnUnknownWindow(event.model)
                     // m3-12: a session that can be rotated is interrupted at once at the hard limit.
                     if (turn.interrupted == null && session != null && runner.capabilities.occupancy) {
