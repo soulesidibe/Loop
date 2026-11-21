@@ -89,7 +89,8 @@ sealed class Wait(
 
         /**
          * The `Waiting(merge)` of pull request [number] at [url] that follows this approved delivery (m2-26), since
-         * [since]: every key of this wait, its approval included, plus the merge keys, phase `check`, round 1.
+         * [since]: every key of this wait, its approval included, plus the merge keys, phase `check`, round 1, with no
+         * candidate head (bl-174).
          */
         fun merging(
             number: Long,
@@ -101,7 +102,7 @@ sealed class Wait(
                     reason = WaitReason.Merge,
                     since = since,
                     data =
-                        data +
+                        data - WaitKeys.CANDIDATE_KEYS +
                             mapOf(
                                 WaitKeys.PULL_REQUEST to url,
                                 WaitKeys.PULL_REQUEST_NUMBER to number.toString(),
@@ -161,6 +162,13 @@ sealed class Wait(
         /** The commit that passed the merge check, null before. */
         val mergedHead: String? get() = data[WaitKeys.MERGED_HEAD]?.takeIf { it.isNotBlank() }
 
+        /** The merge commit the check of phase `check` made and pushes early (bl-174), null before it exists. */
+        val candidateHead: String? get() = data[WaitKeys.CANDIDATE_HEAD]?.takeIf { it.isNotBlank() }
+
+        /** True once [head] was pushed early as the candidate head (bl-174), so pushing it again records nothing. */
+        fun pushedEarly(head: String): Boolean =
+            data[WaitKeys.CANDIDATE_PUSHED] == "true" && candidateHead.equals(head, ignoreCase = true)
+
         /** The round of the merge check, from 1. */
         val round: Int get() = data[WaitKeys.ROUND]?.toIntOrNull() ?: 1
 
@@ -173,9 +181,17 @@ sealed class Wait(
         /** This wait holding [base] as the base its check is about to merge, so a stop after the merge commit finds it. */
         fun intending(base: String): Merge = Merge(with(data = data + (WaitKeys.BASE_SHA to base)))
 
+        /** This wait holding [head], the merge commit its check just made, as the candidate head, not pushed yet (bl-174). */
+        fun candidate(head: String): Merge =
+            Merge(with(data = data - WaitKeys.CANDIDATE_PUSHED + (WaitKeys.CANDIDATE_HEAD to head)))
+
+        /** This wait once its candidate head was pushed (bl-174). */
+        fun candidatePushed(): Merge = Merge(with(data = data + (WaitKeys.CANDIDATE_PUSHED to "true")))
+
         /**
          * This wait after a clean merge check against [base] (m2-26): phase `merge`, [head] the merged head and its
-         * clean fingerprint the one the merge goes on from, the round written, a refused merge forgotten.
+         * clean fingerprint the one the merge goes on from, the round written, a refused merge forgotten. The candidate
+         * head stays, so the push that starts the CI wait knows whether it was pushed early (bl-174).
          */
         fun checked(
             base: String,
@@ -195,10 +211,17 @@ sealed class Wait(
                 ),
             )
 
-        /** This wait back in phase `check` for [round], after the base moved before the merge; the CI wait starts anew. */
+        /**
+         * This wait back in phase `check` for [round], after the base moved before the merge; the CI wait starts anew and
+         * the candidate head goes, since the new round makes a new merge commit (bl-174).
+         */
         fun again(round: Int): Merge =
             Merge(
-                with(data = data - WaitKeys.CI_KEYS + mapOf(WaitKeys.PHASE to WaitKeys.PHASE_CHECK, WaitKeys.ROUND to round.toString())),
+                with(
+                    data =
+                        data - WaitKeys.CI_KEYS - WaitKeys.CANDIDATE_KEYS +
+                            mapOf(WaitKeys.PHASE to WaitKeys.PHASE_CHECK, WaitKeys.ROUND to round.toString()),
+                ),
             )
 
         /** This wait in phase `ci` (m3-15), its merged head pushed at [at], nothing counted yet. */

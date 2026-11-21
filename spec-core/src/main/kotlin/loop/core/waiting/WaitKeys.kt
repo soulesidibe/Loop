@@ -48,6 +48,19 @@ object WaitKeys {
      */
     const val MERGE_RETRY: String = "merge_retry"
 
+    /**
+     * The data key of the merge commit a merge check made in phase [PHASE_CHECK], stored right after the merge and before
+     * it is pushed early, so its Actions runs start while the checks run (bl-174). A pull request merged at it during the
+     * check is a human merge.
+     */
+    const val CANDIDATE_HEAD: String = "candidate_head"
+
+    /** The data key set to `true` once [CANDIDATE_HEAD] was pushed, so the later push of the same commit records nothing. */
+    const val CANDIDATE_PUSHED: String = "candidate_pushed"
+
+    /** The keys of the early push, dropped by every new round of the merge check (bl-174). */
+    internal val CANDIDATE_KEYS: Set<String> = setOf(CANDIDATE_HEAD, CANDIDATE_PUSHED)
+
     /** The data key of the time the merged head was pushed for the CI wait, phase [PHASE_CI] (m3-15). */
     const val CI_STARTED_AT: String = "ci_started_at"
 
@@ -71,5 +84,5 @@ object WaitKeys {
 
     /** The keys only a merge wait holds, dropped when it goes back to an approval wait. */
     internal val MERGE_KEYS: Set<String> =
-        setOf(PULL_REQUEST_NUMBER, PHASE, BASE_SHA, VERIFIED_FINGERPRINT, MERGED_HEAD, ROUND, MERGE_RETRY) + CI_KEYS
+        setOf(PULL_REQUEST_NUMBER, PHASE, BASE_SHA, VERIFIED_FINGERPRINT, MERGED_HEAD, ROUND, MERGE_RETRY) + CI_KEYS + CANDIDATE_KEYS
 }

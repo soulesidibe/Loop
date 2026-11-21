@@ -345,6 +345,34 @@ class CiWaitOrchestratorTest {
         }
 
     @Test
+    fun `bl-174, after the early push of the merge commit phase ci records no second branch_pushed`() =
+        runTest {
+            val setup = Setup()
+            val moved = baseCommit()
+            setup.remote.bases.clear()
+            setup.remote.bases += moved
+            setup.remote.answers += green
+            val orchestrator = orchestrator(setup.tracker, setup.remote, setup.waiting, setup.sink)
+
+            tick(orchestrator)
+
+            val wait = assertNotNull(setup.wait)
+            assertEquals("ci", wait.data[WaitKeys.PHASE])
+            val merged = assertNotNull(wait.data[WaitKeys.MERGED_HEAD])
+            assertTrue(merged != setup.verified)
+            assertEquals(merged, wait.data[WaitKeys.CANDIDATE_HEAD])
+            assertEquals(listOf(setup.verified, merged, merged), setup.remote.pushes, "the delivery, the early push, the CI push")
+            assertEquals(listOf(setup.verified, merged), setup.all("branch_pushed").map { it["sha"] })
+            assertEquals(listOf(merged), setup.all(CiWaiting.name).map { it["sha"] })
+
+            tick(orchestrator, after = 30_000)
+
+            assertEquals(listOf(merged), setup.remote.merges)
+            assertEquals(listOf(setup.verified, merged), setup.all("branch_pushed").map { it["sha"] }, "the merge phase records none")
+            assertNull(setup.wait)
+        }
+
+    @Test
     fun `pending runs keep the wait, all kept runs green merges with ci_finished green`() =
         runTest {
             val setup = Setup()

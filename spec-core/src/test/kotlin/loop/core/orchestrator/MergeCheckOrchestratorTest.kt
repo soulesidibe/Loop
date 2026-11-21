@@ -678,7 +678,8 @@ class MergeCheckOrchestratorTest {
             val finished = sink.data(MergeCheckFinished.name)
             assertEquals(MergeCheck.MERGED, finished["outcome"])
             assertEquals(merged, finished["head"])
-            assertEquals(listOf(verified to "loop/t-1", merged to "loop/t-1"), remote.pushes)
+            // bl-174: the early push of M before the checks, then the merge phase's, a no op.
+            assertEquals(listOf(verified to "loop/t-1", merged to "loop/t-1", merged to "loop/t-1"), remote.pushes)
             assertEquals(listOf(Triple(7L, merged, MergeMethod.Merge)), remote.merges)
             assertTrue(sink.all("verdict").all { it[MergeCheck.MARK] == "true" } && sink.all("verdict").size == 1)
             assertTrue(sink.all("check_started").all { it[MergeCheck.MARK] == "true" })
@@ -805,7 +806,7 @@ class MergeCheckOrchestratorTest {
         }
 
     @Test
-    fun `a failing recheck keeps the merge commit, comments, ends the wait and hands the findings over`() =
+    fun `a failing recheck after the early push keeps the merge commit, comments, ends the wait and hands the findings over`() =
         runTest {
             val verified = verifiedWorktree()
             val base = baseCommit()
@@ -830,7 +831,13 @@ class MergeCheckOrchestratorTest {
             )
             assertEquals(emptyMap(), waiting.records)
             assertEquals(emptyList(), remote.merges)
-            assertEquals(listOf(verified to "loop/t-1"), remote.pushes, "the refuted merge commit is never pushed")
+            // bl-174: M was pushed before the checks ran, the refusal leaves the branch and the pull request at M.
+            assertEquals(listOf(verified to "loop/t-1", head to "loop/t-1"), remote.pushes)
+            assertEquals(head, git(project, "rev-parse", "refs/heads/loop/t-1"))
+            assertEquals(head, remote.pulls.getValue("loop/t-1").headSha)
+            assertEquals(PullRequestState.Open, remote.pulls.getValue("loop/t-1").state)
+            assertEquals(listOf(verified, head), sink.all("branch_pushed").map { it["sha"] })
+            assertTrue(sink.events.none { it.kind == "delivery_failed" })
 
             advanceTimeBy(5_000)
             orchestrator.tick()
@@ -1168,6 +1175,179 @@ class MergeCheckOrchestratorTest {
         }
 
     @Test
+    fun `bl-174, the merge commit is stored as candidate_head and pushed unforced before the checks run`() =
+        runTest {
+            val verified = verifiedWorktree()
+            val base = baseCommit()
+            val tracker = FakeTracker(listOf(issue("t-1")))
+            val remote = FakeRemote().apply { bases += base }
+            val waiting = FakeWaitingIssues(approvedWait(clean(verified)))
+            val sink = FakeSink()
+            var pushedBeforeChecks: List<String>? = null
+            var storedBeforeChecks: Map<String, String>? = null
+            val checks =
+                CheckRunner { _, _, _ ->
+                    pushedBeforeChecks = remote.pushes.map { it.first }
+                    storedBeforeChecks = waiting.records.values.single().data
+                    CheckResult(0, timedOut = false, durationMs = 5)
+                }
+
+            orchestrator(tracker, remote, waiting, sink, checks = checks).tick()
+
+            val merged = git(project, "rev-parse", "refs/heads/loop/t-1")
+            assertEquals(listOf(verified, merged), pushedBeforeChecks, "the delivery push, then M before the checks")
+            assertEquals(merged, storedBeforeChecks?.get(WaitKeys.CANDIDATE_HEAD))
+            assertEquals(WaitKeys.PHASE_CHECK, storedBeforeChecks?.get(WaitKeys.PHASE), "nothing else changes in phase check")
+            assertEquals(listOf(verified, merged), sink.all("branch_pushed").map { it["sha"] }, "no second branch_pushed for M")
+            assertEquals(listOf(verified, merged, merged), remote.pushes.map { it.first }, "the merge phase push is a no op")
+            assertEquals(listOf(Triple(7L, merged, MergeMethod.Merge)), remote.merges)
+            assertEquals(listOf("id-t-1" to "done"), tracker.moves)
+        }
+
+    @Test
+    fun `bl-174, an early push that fails is not fatal, the check goes on and the merge phase pushes as before`() =
+        runTest {
+            val verified = verifiedWorktree()
+            val base = baseCommit()
+            val tracker = FakeTracker(listOf(issue("t-1")))
+            val remote = FakeRemote().apply { bases += base }
+            val waiting = FakeWaitingIssues(approvedWait(clean(verified)))
+            val sink = FakeSink()
+            // The first push of a commit other than V, the early push of M, is refused, even for good.
+            val failing =
+                object : DeliveryExecutor by remote {
+                    var failed = 0
+
+                    override suspend fun push(
+                        sha: String,
+                        branch: String,
+                    ): Result<Unit> {
+                        if (sha != verified && failed == 0) {
+                            failed++
+                            return Result.failure(DeliveryError.Rejected("the push was refused"))
+                        }
+                        return remote.push(sha, branch)
+                    }
+                }
+
+            orchestrator(tracker, failing, waiting, sink).tick()
+
+            val merged = git(project, "rev-parse", "refs/heads/loop/t-1")
+            assertEquals(1, failing.failed)
+            assertTrue(sink.events.none { it.kind == "delivery_failed" }, sink.events.toString())
+            assertEquals(MergeCheck.MERGED, sink.data(MergeCheckFinished.name)["outcome"])
+            assertEquals(listOf(verified, merged), sink.all("branch_pushed").map { it["sha"] }, "recorded once, by the merge phase")
+            assertEquals(listOf(Triple(7L, merged, MergeMethod.Merge)), remote.merges)
+        }
+
+    @Test
+    fun `bl-174, a restart between the early push and the end of the check resumes on M with no second merge commit`() =
+        runTest {
+            val verified = verifiedWorktree()
+            val base = baseCommit()
+            val tracker = FakeTracker(listOf(issue("t-1")))
+            val remote =
+                FakeRemote().apply {
+                    bases += base
+                    pulls["loop/t-1"] = PullRequest(7, "https://github.com/acme/widgets/pull/7", created = false, headSha = verified)
+                }
+            val waiting = FakeWaitingIssues(mergeWait(clean(verified)))
+            val sink = FakeSink()
+            val entered = CompletableDeferred<Unit>()
+            val stuck =
+                CheckRunner { _, _, _ ->
+                    entered.complete(Unit)
+                    awaitCancellation()
+                }
+
+            // A stop while the recheck runs, after the merge commit was made and pushed.
+            val first = launch { orchestrator(tracker, remote, waiting, sink, checks = stuck).tick() }
+            entered.await()
+            first.cancel()
+            first.join()
+
+            val merged = git(workspace, "rev-parse", "HEAD")
+            assertEquals("$verified $base", git(workspace, "log", "-1", "--format=%P"))
+            assertEquals(listOf(merged to "loop/t-1"), remote.pushes, "M was pushed before the checks")
+            val stopped = waiting.records.values.single()
+            assertEquals(WaitKeys.PHASE_CHECK, stopped.data[WaitKeys.PHASE])
+            assertEquals(merged, stopped.data[WaitKeys.CANDIDATE_HEAD])
+
+            val checks = Counting()
+            orchestrator(tracker, remote, waiting, sink, checks = checks).tick()
+
+            assertTrue(sink.events.none { it.kind == "delivery_failed" }, sink.events.toString())
+            assertEquals(1, remote.fetchCalls, "the resumed check fetches nothing")
+            assertEquals(listOf(null, "true"), sink.all(MergeCheckStarted.name).map { it["resumed"] })
+            assertEquals(1, checks.runs, "the merged result is rechecked")
+            assertEquals(merged, git(project, "rev-parse", "refs/heads/loop/t-1"), "no second merge commit")
+            assertEquals("$verified $base", git(project, "log", "-1", "--format=%P", merged))
+            assertEquals(listOf(merged), sink.all("branch_pushed").map { it["sha"] }, "one branch_pushed for M across the restart")
+            assertEquals(listOf(Triple(7L, merged, MergeMethod.Merge)), remote.merges)
+            assertEquals(listOf("id-t-1" to "done"), tracker.moves)
+        }
+
+    @Test
+    fun `bl-174, a pull request a human merged at candidate_head during phase check is delivered with a human touch`() =
+        runTest {
+            val verified = verifiedWorktree()
+            val base = baseCommit()
+            git(workspace, "merge", "-q", "--no-ff", "--no-edit", base)
+            val merged = git(workspace, "rev-parse", "HEAD")
+            val tracker = FakeTracker(listOf(issue("t-1")))
+            val remote =
+                FakeRemote().apply {
+                    pulls["loop/t-1"] =
+                        PullRequest(
+                            7,
+                            "https://github.com/acme/widgets/pull/7",
+                            created = false,
+                            state = PullRequestState.Merged,
+                            headSha = merged,
+                        )
+                }
+            val extra = mapOf(WaitKeys.BASE_SHA to base, WaitKeys.CANDIDATE_HEAD to merged)
+            val waiting = FakeWaitingIssues(mergeWait(clean(verified), extra))
+            val sink = FakeSink()
+
+            orchestrator(tracker, remote, waiting, sink).tick()
+
+            assertTrue(sink.events.none { it.kind == "delivery_failed" }, sink.events.toString())
+            assertEquals(emptyList(), remote.fetched, "no merge check runs")
+            assertEquals(emptyList(), remote.merges)
+            assertEquals(listOf("id-t-1" to "done"), tracker.moves)
+            assertEquals(MergeCheck.HUMAN_MERGE, sink.data("human_touch")["touch"])
+            assertEquals(emptyMap(), waiting.records)
+        }
+
+    @Test
+    fun `bl-174, a merge wait whose issue left the active states after a human merge at candidate_head is delivered with a human touch`() =
+        runTest {
+            val verified = verifiedWorktree()
+            val merged = "abcdef0123456789abcdef0123456789abcdef01"
+            val tracker = FakeTracker(listOf(issue("t-1", state = "closed"))).apply { filterByStates = true }
+            val remote =
+                FakeRemote().apply {
+                    pulls["loop/t-1"] =
+                        PullRequest(
+                            7,
+                            "https://github.com/acme/widgets/pull/7",
+                            created = false,
+                            state = PullRequestState.Merged,
+                            headSha = merged,
+                        )
+                }
+            val waiting = FakeWaitingIssues(mergeWait(clean(verified), mapOf(WaitKeys.CANDIDATE_HEAD to merged)))
+            val sink = FakeSink()
+
+            orchestrator(tracker, remote, waiting, sink).tick()
+
+            assertEquals(emptyMap(), waiting.records)
+            assertEquals(listOf(MergeCheck.HUMAN_MERGE), sink.all("human_touch").map { it["touch"] })
+            assertEquals(listOf("id-t-1" to "done"), tracker.moves)
+        }
+
+    @Test
     fun `one merge check at a time per project, holding an agent slot`() =
         runTest {
             verifiedWorktree()
@@ -1459,7 +1639,7 @@ class MergeCheckOrchestratorTest {
             assertEquals(1, checks.runs, "the merged result is rechecked")
             assertEquals(MergeCheck.MERGED, sink.data(MergeCheckFinished.name)["outcome"])
             assertEquals(merged, git(project, "rev-parse", "refs/heads/loop/t-1"), "no second merge commit")
-            assertEquals(listOf(merged to "loop/t-1"), remote.pushes)
+            assertEquals(listOf(merged to "loop/t-1", merged to "loop/t-1"), remote.pushes, "the early push before the stop, then the merge")
             assertEquals(listOf(Triple(7L, merged, MergeMethod.Merge)), remote.merges)
             assertEquals("soule", sink.all("issue_moved").single()["approved_by"])
             assertEquals(listOf("id-t-1" to "done"), tracker.moves)
