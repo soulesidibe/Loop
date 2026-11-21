@@ -226,8 +226,10 @@ class OwnWorkflowTest {
             assertContains(prompt, "loop tool move review")
             assertContains(prompt, "loop tool move needs_info")
         }
-        assertTrue("not the first attempt" !in first, first)
-        assertContains(retry, "This is not the first attempt")
+        assertTrue(EARLIER_WORK_HEADING !in first, first)
+        assertTrue(EARLIER_WORK_SENTENCE !in first, first)
+        assertContains(retry, "# $EARLIER_WORK_HEADING")
+        assertContains(retry, EARLIER_WORK_SENTENCE)
     }
 
     @Test
@@ -238,9 +240,15 @@ class OwnWorkflowTest {
         val reused = template.render(PromptVariables.of(issue, null, workspaceReused = true)).getOrThrow()
         val fresh = template.render(PromptVariables.of(issue, null, workspaceReused = false)).getOrThrow()
 
-        assertContains(reused, "This is not the first attempt")
-        assertContains(reused, "Read your progress file if it exists")
-        assertTrue("not the first attempt" !in fresh, fresh)
+        val both = template.render(PromptVariables.of(issue, 1, workspaceReused = true)).getOrThrow()
+
+        listOf(reused, both).forEach { prompt ->
+            assertEquals(1, prompt.lines().count { it == "# $EARLIER_WORK_HEADING" }, prompt)
+            assertContains(prompt, EARLIER_WORK_SENTENCE)
+            assertContains(prompt, "Read your progress file if it exists")
+        }
+        assertTrue(EARLIER_WORK_HEADING !in fresh, fresh)
+        assertTrue(EARLIER_WORK_SENTENCE !in fresh, fresh)
     }
 
     @Test
@@ -331,5 +339,8 @@ class OwnWorkflowTest {
 
     private companion object {
         const val TOKEN = "LOOP_PR_TOKEN"
+        const val EARLIER_WORK_HEADING = "Earlier work on this issue"
+        const val EARLIER_WORK_SENTENCE =
+            "An earlier attempt may have left work on this issue in this workspace or on the current branch."
     }
 }

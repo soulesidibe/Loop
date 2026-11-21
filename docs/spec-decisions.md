@@ -1085,14 +1085,14 @@ PLAN 8.9. The template variable `loop.workspace_reused` is a boolean: true when 
 
 ```
 {% if attempt or loop.workspace_reused %}
-# This is not the first attempt
+# Earlier work on this issue
 ...
 {% endif %}
 ```
 
 - **Preflight:** renders each of its samples (a first run, a retry, a retry with findings) with the variable false and true, so a template error in either branch fails preflight at startup.
 - **Slot:** what the variable shows counts in the template slot, like `attempt` (see [Context config and prompt slot sizes](#context-config-and-prompt-slot-sizes-extension-m1-17)).
-- **Loop's own template:** `WORKFLOW.md` is a protected path (story 100), so the template edit is a human step: the "This is not the first attempt" block shows when `attempt` is set or `loop.workspace_reused` is true, its wording covers an earlier Attempt that died before it wrote a progress file, and the golden copy `own-template.md` with an `OwnWorkflowTest` case follow it.
+- **Loop's own template:** `WORKFLOW.md` is a protected path (story 100), so the template edit is a human step: the earlier work block (heading "Earlier work on this issue") shows when `attempt` is set or `loop.workspace_reused` is true, its wording covers an earlier Attempt that died before it wrote a progress file, since bl-171 it says an earlier attempt may have left work, which also holds for a retry where no agent ran or the folder was created again, and the golden copy `own-template.md` with an `OwnWorkflowTest` case follow it.
 
 ### Session brief (extension, m3-10)
 

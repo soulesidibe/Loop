@@ -1,7 +1,7 @@
 ---
 id: bl-171
 title: "The earlier work block's heading is wrong in a reused workspace"
-state: todo
+state: done
 priority: 3
 labels: [ready-for-human]
 blocked_by: []
@@ -27,16 +27,18 @@ Area: `WORKFLOW.md` (lines 110 and 112), its copy `spec-core/src/test/resources/
 
 ## Acceptance criteria
 
-- [ ] `grep -q '^# Earlier work on this issue$' WORKFLOW.md && ! grep -rq 'not the first attempt' WORKFLOW.md spec-core/src/test docs/spec-decisions.md cli/src/test` passes.
-- [ ] `grep -q '^# Earlier work on this issue$' spec-core/src/test/resources/prompt/own-template.md` passes.
-- [ ] `! grep -qF 'already worked on this issue in this workspace' WORKFLOW.md` passes.
-- [ ] `./gradlew --no-daemon :cli:test --tests 'loop.cli.OwnWorkflowTest'` passes, with a retry and a reused workspace each rendering the new heading and sentence, and a fresh first dispatch rendering neither.
-- [ ] `./gradlew --no-daemon :spec-core:test --tests 'loop.core.orchestrator.PromptRenderUnchangedTest'` passes, with the golden file unchanged.
-- [ ] The text is true for a retry in the same workspace, a retry after a failed `after_create`, a first dispatch into a reused workspace, and both at once (judgment).
-- [ ] `./gradlew --no-daemon build` passes.
+- [x] `grep -q '^# Earlier work on this issue$' WORKFLOW.md && ! grep -rq 'not the first attempt' WORKFLOW.md spec-core/src/test docs/spec-decisions.md cli/src/test` passes.
+- [x] `grep -q '^# Earlier work on this issue$' spec-core/src/test/resources/prompt/own-template.md` passes.
+- [x] `! grep -qF 'already worked on this issue in this workspace' WORKFLOW.md` passes.
+- [x] `./gradlew --no-daemon :cli:test --tests 'loop.cli.OwnWorkflowTest'` passes, with a retry and a reused workspace each rendering the new heading and sentence, and a fresh first dispatch rendering neither.
+- [x] `./gradlew --no-daemon :spec-core:test --tests 'loop.core.orchestrator.PromptRenderUnchangedTest'` passes, with the golden file unchanged.
+- [x] The text is true for a retry in the same workspace, a retry after a failed `after_create`, a first dispatch into a reused workspace, and both at once (judgment).
+- [x] `./gradlew --no-daemon build` passes.
 
 ## Comments
 
 2026-11-21 soule: written in m4-00, from the product review of steps 5 to 7.
 
 2026-11-21 soule: triaged to ready-for-human, priority 3, after a Fable 5.2 review at high effort, which hedged the first sentence (no agent ran in a retry after a failed setup hook) and added the criterion on the second phrase.
+
+2026-11-21 soule: done in a human lane session. New heading and first sentence in `WORKFLOW.md` and `own-template.md`, `OwnWorkflowTest` asserts on them through shared constants (a fresh first dispatch renders neither, a reused workspace and a retry into a reused one render the heading once), `docs/spec-decisions.md` follows. Criteria 1 to 5 and 7 pass, criterion 6 judged true by the session and a Fable 5.2 review at high effort (a reused `loop/<id>` branch keeps earlier commits after a recreated folder).
