@@ -73,7 +73,10 @@ class InstallCommandTest {
         assertEquals("Installed loop $installedVersion at ${dest.toRealPath()}.", first.stdout.trim())
         assertTrue(Files.isExecutable(dest.resolve("bin/loop")), "bin/loop is not executable")
         assertTrue(Files.list(dest.resolve("lib")).use { files -> files.anyMatch { it.fileName.toString().endsWith(".jar") } })
-        assertEquals("version=$installedVersion", dest.resolve("build-info.properties").readText().trim())
+        // The build's own file, copied as is: the version and, since bl-159, the full commit.
+        val buildInfo = dest.resolve("build-info.properties").readText()
+        assertEquals(appHome.resolve("build-info.properties").readText(), buildInfo)
+        assertTrue(Regex("version=\\Q$installedVersion\\E\ncommit=[0-9a-f]{40}\n").matches(buildInfo), buildInfo)
         val version = runInstalled(dest, "--version")
         assertEquals(0, version.exitCode, version.toString())
         assertEquals("loop $installedVersion", version.stdout.trim())
