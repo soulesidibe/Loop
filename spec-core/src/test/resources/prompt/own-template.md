@@ -10,10 +10,10 @@ You are working on issue {{ issue.identifier }} of Loop, an issue execution harn
 
 {{ issue.description }}
 
-{% if attempt %}
+{% if attempt or loop.workspace_reused %}
 # This is not the first attempt
 
-An earlier attempt already ran on this issue. Read your progress file and `git log` on the current branch first, then build on that work. Do not start over and do not redo steps already marked as passing.
+An earlier attempt already worked on this issue in this workspace. Read your progress file if it exists, `git log` and `git status` on the current branch first, then build on that work. Do not start over and do not redo steps already marked as passing. If there is no progress file, create it from what the branch already holds.
 {% endif %}
 {% if loop.retry_kind == "rotation" %}
 # This session replaces a full one

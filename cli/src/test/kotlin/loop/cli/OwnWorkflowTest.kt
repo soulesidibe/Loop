@@ -230,6 +230,19 @@ class OwnWorkflowTest {
     }
 
     @Test
+    fun `bl-129 a first attempt in a reused workspace is told to build on the earlier work`() {
+        val template = TemplateEngine().parse(loaded().promptTemplate, PromptVariables.schema).getOrThrow()
+        val issue = PromptVariables.SAMPLE_ISSUE
+
+        val reused = template.render(PromptVariables.of(issue, null, workspaceReused = true)).getOrThrow()
+        val fresh = template.render(PromptVariables.of(issue, null, workspaceReused = false)).getOrThrow()
+
+        assertContains(reused, "This is not the first attempt")
+        assertContains(reused, "Read your progress file if it exists")
+        assertTrue("not the first attempt" !in fresh, fresh)
+    }
+
+    @Test
     fun `m2-17 the prompt names the MCP tracker tools, with loop tool as the fallback`() {
         val template = TemplateEngine().parse(loaded().promptTemplate, PromptVariables.schema).getOrThrow()
         val prompt = template.render(PromptVariables.of(PromptVariables.SAMPLE_ISSUE, null)).getOrThrow()
