@@ -1,7 +1,7 @@
 ---
 id: bl-68
 title: "The move to closed after a merge answers 422 once"
-state: todo
+state: done
 priority: 3
 labels: [ready-for-agent]
 blocked_by: []
@@ -31,3 +31,5 @@ Ideas: read the issue before the PATCH and skip it when it is already closed, or
 2026-11-14 filed from the bl-53 run.
 
 2026-11-18 soule: triaged ready-for-agent in m3-29, no blocker. Its criteria stand.
+
+2026-11-21 12:43Z loop: Loop opened pull request #7 for this issue: https://github.com/soulesidibe/Loop/pull/7

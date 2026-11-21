@@ -1,7 +1,7 @@
 ---
 id: bl-157
 title: "The GitHub tracker passes only maintainer text to the agent"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: []
@@ -52,3 +52,5 @@ Out of this issue: blockers (bl-158), pull request comments, filtering by login 
 Filed while preparing the public repository. Priority 1: it must land before Loop's own backlog moves to GitHub issues, and before Loop is promoted for use on public repositories.
 
 2026-11-20 soule: triaged to ready-for-agent. The open question is settled: the author check is enough, since only the author and collaborators with triage access can edit an issue body. Design in the What section.
+
+2026-11-21 12:42Z loop: Loop opened pull request #1 for this issue: https://github.com/soulesidibe/Loop/pull/1

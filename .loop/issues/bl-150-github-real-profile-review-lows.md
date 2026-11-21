@@ -1,7 +1,7 @@
 ---
 id: bl-150
 title: "Low findings of the m3-25 merge risk review, GitHub real smoke test cleanup and lag"
-state: todo
+state: done
 priority: 3
 labels: [ready-for-agent]
 blocked_by: []
@@ -29,3 +29,13 @@ Paths in `plugins/tracker-github/src/test/kotlin/loop/tracker/github/real/GitHub
 ## Comments
 
 2026-11-18 soule: triaged ready-for-agent in m3-29, no blocker. Its criteria stand.
+
+2026-11-20 16:42Z agent 34a5825c: bl-150 done in a71f2a6. The four cases are handled in plugins/tracker-github/src/test/kotlin/loop/tracker/github/real/GitHubRealRun.kt (the run, moved out of GitHubRealSmokeTest with a transport seam):
+  1. Lost issue create response: the cleanup lists issues?labels=<id>&state=all, read again while the list is empty, closes each open one, then deletes the labels. If the lookup fails, the labels are kept, since they are the only way to find the issue by hand, and leftBehind() says to look for issues labelled with the run id.
+  2. Lost label create response: each label goes into the cleanup list before its POST. The delete already accepts 404.
+  3. Review check: settle now waits until needs-review is there and the ready label is gone.
+  4. Close check: the state now comes from the PATCH response. The separate GET is gone.
+  Proof: GitHubRealRunTest runs six cases against FakeGitHub. Five failed before the fix and all six pass now. ./gradlew :plugins:tracker-github:test passes with the profile unset and the smoke test skipped. ktlintCheck passes. docs/spec-decisions.md is updated.
+  Still to do, by a human: one enabled run against the playground (LOOP_REAL_INTEGRATION=github with LOOP_PLAYGROUND_GITHUB_TOKEN set), with its output linked here. Agents never see that token.
+
+2026-11-21 12:43Z loop: Loop opened pull request #3 for this issue: https://github.com/soulesidibe/Loop/pull/3

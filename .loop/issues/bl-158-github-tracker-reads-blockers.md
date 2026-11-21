@@ -1,7 +1,7 @@
 ---
 id: bl-158
 title: "The GitHub tracker reads blockers"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-agent]
 blocked_by: [bl-157]
@@ -57,3 +57,12 @@ Out of this issue: writing dependencies, the `blocking` direction, and moving Lo
 Filed while preparing the public repository. With bl-157, it gates moving Loop's own backlog to GitHub issues, planned after the M4 exit so the milestone keeps the `files` tracker.
 
 2026-11-20 soule: triaged to ready-for-agent. Native dependencies only, no body line. Waits for bl-157, which edits `GitHubTracker.kt` too. Design in the What section.
+
+2026-11-21 14:33Z agent 505addf8: Done in 73abf68 (code) and 1a86285 (docs). What I decided along the way:
+  - Blockers are read only for candidates: open, in scope, trusted author, carrying every tracker.required_labels label. Closed or unlabeled issues cost no request, which matters for the rate limit at a 30 s poll.
+  - A summary present but null blocks with "blocked_by unreadable summary". Only a missing key counts as no blocker.
+  - A malformed blocker body gives "blocked_by unreadable (malformed)". A rate limit or an unreachable GitHub fails the call like any other request, so a refresh never stops a running attempt over a timeout.
+  - When a listed blocker holds the issue, its reason comes before the unreadable count.
+  - The REST docs give the four summary counts as integers with no description. A live check on 2026-11-21 against three public issues confirmed that total_blocked_by counts every blocker, blocked_by only the open ones, and that the list includes closed blockers. Recorded in the profile.
+
+2026-11-21 15:01Z loop: Loop opened pull request #8 for this issue: https://github.com/soulesidibe/Loop/pull/8

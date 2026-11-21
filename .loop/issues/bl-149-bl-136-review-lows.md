@@ -1,7 +1,7 @@
 ---
 id: bl-149
 title: "Low findings of the bl-136 merge risk review, grace deadline and working tree progress"
-state: todo
+state: done
 priority: 3
 labels: [ready-for-agent]
 blocked_by: []
@@ -41,3 +41,21 @@ Every weakness in the fingerprint errs towards progress, so the worst case is a 
 ## Comments
 
 2026-11-18 soule: triaged ready-for-agent in m3-29, no blocker.
+
+2026-11-20 17:27Z agent d189d0a3: bl-149 done on loop/bl-149 (a82ab3e, fa86ab5).
+  Handled:
+  - A failed git read is now logged on the operator log once per fact and attempt: `level=warn event=progress outcome=failed fact=workspace|head|working_tree`, plus the reason. The read still counts as progress.
+  - An unreadable file no longer turns the fingerprint into null. It reads as its size and modified time, so a change to it still shows.
+  - The fingerprint reads file content only. Status letters are left out and each path counts once, so `git add`, `git reset` and a stash with its pop read the same. The docs say so.
+  - The read is bounded and cancellable. `git status` is streamed and fails above 20000 entries. Files over 1 MiB read as size and modified time. HEAD and the working tree are read on their own daemon thread with a 30 second budget. A stop ends the wait at once and kills the read's git and hashing. A thread stuck on a FIFO open is abandoned, never awaited.
+  - Nested repos and submodules now read as their HEAD plus their own fingerprint, two levels down.
+  - New tests: a readable HEAD with a failed tree read, a HEAD read failure, deleted, staged, symlinked and unreadable files, index only changes, the byte and entry caps, a nested repo, a cancelled read, a read past its budget, and the stall timer edge after the interrupt grace.
+  Closed:
+  - Unstable untracked files: closed. It errs towards progress and `max_rotations` caps it. A target repo's ignores are its own `.gitignore`, and `.scratch/` is a convention of Loop's own WORKFLOW.md, not of the product.
+  - Clean filters from the agent writable `.git/config`: closed. It is the same bl-55 class as every workspace git command, owned by bl-55 and M5, and git has no single switch that turns clean filters off.
+  - Deadline proven under virtual time only: closed. The grace is a coroutine `delay`, so virtual time runs the same code a real clock does.
+  - Residual: `git rm --cached` and a staged change whose work tree is back at HEAD still read as a change. It errs towards progress.
+  Evidence: focused orchestrator and verify tests (871 passed), `loop.cli.ClaudeCodeRunCommandTest` (12 passed), ktlintCheck green.
+  Note: during the run I ran a broad `pkill -f "Gradle Test Executor"` to stop a hung test run. It may have killed a test run of another workspace on the same machine.
+
+2026-11-21 12:43Z loop: Loop opened pull request #4 for this issue: https://github.com/soulesidibe/Loop/pull/4

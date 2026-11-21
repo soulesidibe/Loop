@@ -1,7 +1,7 @@
 ---
 id: bl-154
 title: "Check in the build that every test the conformance matrix names exists"
-state: todo
+state: done
 priority: 3
 labels: [ready-for-agent]
 blocked_by: []
@@ -25,3 +25,13 @@ m3-26 checked the conformance matrix in `docs/spec-decisions.md` with a one off 
 2026-11-18 soule: filed from the m3-26 session.
 
 2026-11-18 soule: triaged ready-for-agent in m3-29, no blocker. Its criteria stand.
+
+2026-11-20 23:05Z agent b74e4257: ConformanceMatrixTest in the conformance module checks every path and test name of the matrix, and fails on one broken path and one broken name. The diff policy protects conformance/build.gradle.kts, so the test finds the repository root from its working folder and the task declares no new inputs. Effect: a :conformance:test that Gradle finds up to date or in its build cache skips the check after a change to docs/spec-decisions.md or to another module's tests alone. Proven: real doc broken, task UP-TO-DATE and green; with --rerun it fails naming both. The matrix intro says so. To close the gap, a human can add this to conformance/build.gradle.kts:
+  val repoRoot = layout.projectDirectory.dir("..")
+  tasks.test {
+      inputs.file(repoRoot.file("docs/spec-decisions.md")).withPropertyName("specDecisions").withPathSensitivity(PathSensitivity.RELATIVE)
+      inputs.files(fileTree(repoRoot) { include("*/src/test*/kotlin/**/*.kt", "plugins/*/src/test*/kotlin/**/*.kt") }).withPropertyName("testSources").withPathSensitivity(PathSensitivity.RELATIVE)
+  }
+  then drop the last sentence of the matrix intro paragraph added by bl-154.
+
+2026-11-21 12:43Z loop: Loop opened pull request #6 for this issue: https://github.com/soulesidibe/Loop/pull/6

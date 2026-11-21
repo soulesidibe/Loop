@@ -1,7 +1,7 @@
 ---
 id: bl-147
 title: "The ledger records model null when the runner config names no model"
-state: todo
+state: done
 priority: 3
 labels: [ready-for-agent]
 blocked_by: []
@@ -29,3 +29,7 @@ None. Backlog, not scheduled in a milestone. Found in the m3-28 Codex exit run o
 2026-11-17 soule: filed from m3-28.
 
 2026-11-18 soule: triaged ready-for-agent in m3-29, no blocker. It blocks m4-38, because `loop report` shows the model of each run.
+
+2026-11-21 12:43Z loop: Loop opened pull request #5 for this issue: https://github.com/soulesidibe/Loop/pull/5
+
+2026-11-21 15:40Z loop: Loop could not merge pull request #5, merge: the base moved during 3 merge checks, it is now at 3318fcaa097139606c903acad03b8f06ee21b18d. The pull request stays open and the result waits for a new approval.
