@@ -29,6 +29,11 @@ class GitHubTrackerProvider : TrackerProvider {
                         ProfileType.MAP,
                         default = GitHubTrackerSettings.DEFAULT_HANDOFF_LABELS.entries.joinToString(", ") { "${it.key}: ${it.value}" },
                     ),
+                    ProfileKey(
+                        "trusted_associations",
+                        ProfileType.LIST,
+                        default = GitHubTrackerSettings.DEFAULT_TRUSTED_ASSOCIATIONS.joinToString(", "),
+                    ),
                 ),
             secrets = setOf("token"),
         )

@@ -21,7 +21,8 @@ import kotlin.time.Instant
  * fail as a whole on any page error. After a rate limit answer, or a success that spends the last
  * request, no request is sent until GitHub's reset time, and every call, a write included, fails fast with
  * [TrackerError.RateLimited]. [completeIssue] appends the issue's comments to its description just before its
- * prompt is rendered (bl-06). Writes (m2-23): a move to a handoff state is a label change, a move to `open` or
+ * prompt is rendered (bl-06). Only authors in `trusted_associations` reach the agent (bl-157): an issue by another
+ * author is blocked, a comment by one is left out. Writes (m2-23): a move to a handoff state is a label change, a move to `open` or
  * `closed` patches the issue state, a comment is posted as given. A write is never retried inside a call.
  */
 class GitHubTracker(
@@ -49,6 +50,8 @@ class GitHubTracker(
     private val repoPath = "$base/repos/${settings.owner}/${settings.repo}"
 
     private val scope = settings.scopeLabels.map { it.lowercase() }
+
+    private val trusted = settings.trustedAssociations.map { it.uppercase() }.toSet()
 
     /** GitHub's comment count of every issue this tracker read, by id, as of its latest read (bl-06). */
     private val commentCounts = ConcurrentHashMap<String, Long>()
@@ -96,6 +99,8 @@ class GitHubTracker(
      * blank lines dropped (bl-06). One request: none when the latest read of the issue counted no comment, the last
      * page when it counted more than one page, so the newest comments are the ones kept. An issue this tracker never
      * read is asked for anyway. Blank comments are left out, and an issue with no other comment is returned as is.
+     * A comment whose `author_association` is missing or outside `trusted_associations` is left out too (bl-157):
+     * the section then opens with one line that counts them, and shows nothing of their text or author.
      */
     override suspend fun completeIssue(issue: Issue): Result<Issue> =
         catching {
@@ -110,14 +115,20 @@ class GitHubTracker(
                 )
             val response = send(url, absent = emptySet()) ?: error("no status is absent for comments")
             val items = parse(response.body, url) as? JsonArray ?: throw TrackerError.Malformed(url.toString())
-            val blocks =
+            val (kept, untrusted) =
                 items
                     .mapIndexed { index, element -> comment(element) ?: throw TrackerError.Malformed("$url, comment $index") }
-                    .sortedBy { it.at }
-                    .mapNotNull(::formatComment)
-            if (blocks.isEmpty()) return@catching issue
+                    .partition { isTrusted(it.association) }
+            val blocks = kept.map { it.comment }.sortedBy { it.at }.mapNotNull(::formatComment)
+            if (blocks.isEmpty() && untrusted.isEmpty()) return@catching issue
+            val hidden =
+                when (untrusted.size) {
+                    0 -> null
+                    1 -> "1 comment from outside tracker.provider.trusted_associations is not shown."
+                    else -> "${untrusted.size} comments from outside tracker.provider.trusted_associations are not shown."
+                }
             val older = page?.let { "${(it - 1) * MAX_PAGE_SIZE} older comments are not shown." }
-            val section = listOfNotNull("## Comments", older) + blocks
+            val section = listOfNotNull("## Comments", hidden, older) + blocks
             issue.copy(description = (listOfNotNull(issue.description) + section).joinToString("\n\n"))
         }
 
@@ -337,6 +348,7 @@ class GitHubTracker(
                     ?.get(1)
                     ?.toIntOrNull() != null
             }
+        val association = item.association()
         return Issue(
             id = "$number",
             identifier = "${settings.repo}-$number",
@@ -345,6 +357,7 @@ class GitHubTracker(
             priority = priorities.minOrNull(),
             labels = labels,
             blockedBy = emptyList(),
+            blockedReason = if (isTrusted(association)) null else "untrusted_author (${association ?: "missing"})",
             description = item.string("body")?.trim()?.takeIf { it.isNotEmpty() },
             createdAt = item.string("created_at")?.let { runCatching { Instant.parse(it) }.getOrNull() },
             nativeRef =
@@ -364,13 +377,28 @@ class GitHubTracker(
         return count?.takeIf { it >= 0 }
     }
 
-    /** One comment: its author's login (`ghost` for a deleted account), its creation time and its text; null when unusable. */
-    private fun comment(element: JsonElement): IssueComment? {
+    /** A comment as GitHub gives it, with its author's `author_association`, null when GitHub gives none (bl-157). */
+    private class GitHubComment(
+        val comment: IssueComment,
+        val association: String?,
+    )
+
+    /**
+     * One comment: its author's login (`ghost` for a deleted account), its creation time, its text and its author's
+     * association; null when unusable.
+     */
+    private fun comment(element: JsonElement): GitHubComment? {
         val item = element as? JsonObject ?: return null
         val at = item.string("created_at")?.let { runCatching { Instant.parse(it) }.getOrNull() } ?: return null
         val login = (item["user"] as? JsonObject)?.string("login")?.trim()?.takeIf { it.isNotEmpty() } ?: GHOST
-        return IssueComment(login, at, item.string("body").orEmpty())
+        return GitHubComment(IssueComment(login, at, item.string("body").orEmpty()), item.association())
     }
+
+    /** `author_association`, trimmed and upper case; null when missing, blank or not a string (bl-157). */
+    private fun JsonObject.association(): String? = string("author_association")?.trim()?.uppercase()?.takeIf { it.isNotEmpty() }
+
+    /** True when [association] is in `trusted_associations`; a missing one never is (bl-157). */
+    private fun isTrusted(association: String?): Boolean = association != null && association in trusted
 
     /** The comment's lines in the files tracker's shape; null when it is blank. */
     private fun formatComment(comment: IssueComment): String? {
