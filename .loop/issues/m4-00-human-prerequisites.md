@@ -36,11 +36,11 @@ Out of this issue: bl-129's low findings (`workspaceReused = false` defaults in 
 - [ ] Three runs in a row of `./gradlew --no-daemon :cli:test --rerun` are green, with the wall time before and after the forks in a comment (judgment).
 - [ ] `grep -q 'timeout-minutes: 45' .github/workflows/build.yml` passes, and the first Actions run after it finishes inside the limit (judgment).
 - [ ] `grep -qE '^ +ci: actions' WORKFLOW.md` passes, and the live shared checkout has no uncommitted `WORKFLOW.md` change.
-- [ ] `grep -q 'loop.workspace_reused' WORKFLOW.md && grep -q 'loop.workspace_reused' spec-core/src/test/resources/prompt/own-template.md` passes.
-- [ ] `./gradlew --no-daemon :cli:test --tests 'loop.cli.OwnWorkflowTest'` passes, with the `workspace_reused` case.
-- [ ] `test -s plugins/tracker-github/src/test/resources/github/recorded/actions-run-43779352010.json && test -s plugins/tracker-github/src/test/resources/github/recorded/actions-run-43779352010-jobs.json` passes.
-- [ ] `test -s plugins/runner-claude-code/src/test/resources/streams/wake_turns_10c2f759.jsonl` passes.
-- [ ] Both recordings are redacted, and how each was made is written down, in the recordings' `README.md` for the run and in the commit message for the runner lines (judgment).
+- [x] `grep -q 'loop.workspace_reused' WORKFLOW.md && grep -q 'loop.workspace_reused' spec-core/src/test/resources/prompt/own-template.md` passes.
+- [x] `./gradlew --no-daemon :cli:test --tests 'loop.cli.OwnWorkflowTest'` passes, with the `workspace_reused` case.
+- [x] `test -s plugins/tracker-github/src/test/resources/github/recorded/actions-run-43779352010.json && test -s plugins/tracker-github/src/test/resources/github/recorded/actions-run-43779352010-jobs.json` passes.
+- [x] `test -s plugins/runner-claude-code/src/test/resources/streams/wake_turns_10c2f759.jsonl` passes.
+- [x] Both recordings are redacted, and how each was made is written down, in the recordings' `README.md` for the run and in the commit message for the runner lines (judgment).
 - [ ] `./gradlew --no-daemon build` passes.
 
 ## Comments
@@ -48,3 +48,10 @@ Out of this issue: bl-129's low findings (`workspaceReused = false` defaults in 
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-21 soule: steps 5 to 7 are done, steps 1 to 4 remain.
+  Step 5: the earlier work block of `WORKFLOW.md` and `own-template.md` opens on `{% if attempt or loop.workspace_reused %}` with the text bl-129 proposed, and `OwnWorkflowTest` has the reused workspace case. The golden output is unchanged.
+  Step 6: run 43779352010, its jobs and the runs listing of its head are recorded with `gh api -i` from `soulesidibe/Loop-private`, emails replaced by ones at `example.com`, as the recordings' `README.md` says.
+  Step 7: `wake_turns_10c2f759.jsonl` holds the 365 runner lines of the attempt, redacted by an allowlist as its commit message says, and `wake_turns_10c2f759.turns.json` gives each line's arrival time and where Loop's six inputs fall.
+  The Fable 5.2 reviews found that m4-03's replay criterion does not match the recording (bl-170) and that the block's heading is wrong in a reused workspace (bl-171).
+  `./gradlew --no-daemon build` passed on the branch before the merge of main; the full build criterion stays open for the steps that remain.
