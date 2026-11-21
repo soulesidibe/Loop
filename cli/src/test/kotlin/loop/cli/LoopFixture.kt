@@ -290,7 +290,7 @@ class LoopFixture(
         val dir = attemptDir(attemptId)
         dir.resolve(REQUESTS_DIR).createDirectories()
         val loaded = WorkflowLoader(env = emptyMap(), home = homeDir).load(workflow).getOrThrow()
-        val states = checkNotNull(trackerFor(loaded, loopHome)).definedStates
+        val states = trackerFor(loaded, loopHome).definedStates
         val config = dir.resolve(TOOL_CONFIG_FILE)
         ToolConfigSnapshotWriter.write(config, ProjectId(projectId()), loaded, states)
         return attemptEnv(attemptId, issueId, runId) + mapOf("LOOP_WORKFLOW" to null, "LOOP_TOOL_CONFIG" to config.toString())
