@@ -3,6 +3,7 @@ package loop.core.verify
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.attribute.FileTime
 import java.nio.file.attribute.PosixFilePermissions
 import kotlin.io.path.createTempDirectory
 import kotlin.io.path.exists
@@ -273,6 +274,153 @@ class WorkspaceGitTest {
     @Test
     fun `bl-136 a folder that is not a git work tree has no fingerprint`() {
         assertFailsWith<IOException> { workspaceGit.workTree(Files.createDirectories(folder.resolve("plain"))) }
+    }
+
+    @Test
+    fun `bl-149 the work tree fingerprint reads file content only, so index only changes read the same`() {
+        git("init", "-q", "-b", "main")
+        commit("a.txt", "one\n", "first")
+        repo.resolve("a.txt").writeText("two\n")
+        repo.resolve("b.txt").writeText("new\n")
+        val changed = workspaceGit.workTree(repo)
+
+        git("add", "a.txt", "b.txt")
+        assertEquals(changed, workspaceGit.workTree(repo), "git add changes no content")
+        git("reset", "-q")
+        assertEquals(changed, workspaceGit.workTree(repo), "git reset changes no content")
+
+        // A stash takes the change out of the work tree, its pop puts the same content back.
+        git("stash", "push", "-q")
+        assertTrue(workspaceGit.workTree(repo) != changed, "the stash itself changes the content")
+        git("stash", "pop", "-q")
+        assertEquals(changed, workspaceGit.workTree(repo), "a stash and its pop change no content")
+    }
+
+    @Test
+    fun `bl-149 a deleted file reads as a change, staged or not`() {
+        git("init", "-q", "-b", "main")
+        commit("a.txt", "one\n", "first")
+        val clean = workspaceGit.workTree(repo)
+
+        Files.delete(repo.resolve("a.txt"))
+        val deleted = workspaceGit.workTree(repo)
+        assertTrue(deleted != clean)
+
+        git("rm", "-q", "a.txt")
+        assertEquals(deleted, workspaceGit.workTree(repo), "staging the deletion changes no content")
+    }
+
+    @Test
+    fun `bl-149 a symbolic link reads as the name of its target`() {
+        git("init", "-q", "-b", "main")
+        commit("a.txt", "one\n", "first")
+        commit("b.txt", "two\n", "second")
+        val clean = workspaceGit.workTree(repo)
+        val link = repo.resolve("link")
+
+        Files.createSymbolicLink(link, Path.of("a.txt"))
+        val linked = workspaceGit.workTree(repo)
+        assertTrue(linked != clean)
+
+        Files.delete(link)
+        Files.createSymbolicLink(link, Path.of("b.txt"))
+        assertTrue(workspaceGit.workTree(repo) != linked, "a new target reads differently")
+
+        Files.delete(link)
+        Files.createSymbolicLink(link, Path.of("missing.txt"))
+        assertTrue(workspaceGit.workTree(repo) != linked, "a dangling link reads too")
+    }
+
+    @Test
+    fun `bl-149 a file Loop cannot open leaves the fingerprint readable and still shows its changes`() {
+        git("init", "-q", "-b", "main")
+        commit("a.txt", "one\n", "first")
+        val secret = repo.resolve("secret.txt")
+        secret.writeText("first secret\n")
+        try {
+            Files.setPosixFilePermissions(secret, PosixFilePermissions.fromString("---------"))
+            val first = workspaceGit.workTree(repo)
+            assertEquals(first, workspaceGit.workTree(repo), "an unchanged unreadable file reads the same")
+
+            Files.setPosixFilePermissions(secret, PosixFilePermissions.fromString("rw-------"))
+            secret.writeText("a second, longer secret\n")
+            Files.setPosixFilePermissions(secret, PosixFilePermissions.fromString("---------"))
+            assertTrue(workspaceGit.workTree(repo) != first, "a changed unreadable file reads differently")
+        } finally {
+            Files.setPosixFilePermissions(secret, PosixFilePermissions.fromString("rw-------"))
+        }
+    }
+
+    @Test
+    fun `bl-149 a file over the byte cap is read by its size and modified time, not its content`() {
+        val capped = WorkspaceGit(hostEnv, workTreeLimits = WorkTreeLimits(fileBytes = 16))
+        git("init", "-q", "-b", "main")
+        commit("a.txt", "one\n", "first")
+        val big = repo.resolve("big.bin")
+        big.writeText("x".repeat(100))
+        val time = FileTime.fromMillis(1_700_000_000_000L)
+        Files.setLastModifiedTime(big, time)
+        val first = capped.workTree(repo)
+
+        big.writeText("y".repeat(100))
+        Files.setLastModifiedTime(big, time)
+        assertEquals(first, capped.workTree(repo), "the content past the cap is not read")
+
+        Files.setLastModifiedTime(big, FileTime.fromMillis(1_700_000_010_000L))
+        assertTrue(capped.workTree(repo) != first, "a new modified time reads differently")
+    }
+
+    @Test
+    fun `bl-149 a work tree listing more entries than the cap has no fingerprint`() {
+        val capped = WorkspaceGit(hostEnv, workTreeLimits = WorkTreeLimits(entries = 3))
+        git("init", "-q", "-b", "main")
+        commit("a.txt", "one\n", "first")
+        (1..3).forEach { repo.resolve("new-$it.txt").writeText("$it\n") }
+        capped.workTree(repo)
+        repo.resolve("new-4.txt").writeText("4\n")
+
+        val error = assertFailsWith<IOException> { capped.workTree(repo) }
+
+        assertTrue("more than 3" in error.message!!, error.message)
+    }
+
+    @Test
+    fun `bl-149 an edit inside a nested repository reads as a change`() {
+        git("init", "-q", "-b", "main")
+        commit("a.txt", "one\n", "first")
+        val nested = Files.createDirectories(repo.resolve("nested"))
+        git("init", "-q", "-b", "main", dir = nested)
+        nested.resolve("n.txt").writeText("one\n")
+        git("add", "n.txt", dir = nested)
+        git("commit", "-q", "-m", "nested", dir = nested)
+        val first = workspaceGit.workTree(repo)
+
+        nested.resolve("n.txt").writeText("two\n")
+        val edited = workspaceGit.workTree(repo)
+        assertTrue(edited != first, "an uncommitted edit inside reads differently")
+
+        git("commit", "-q", "-am", "nested work", dir = nested)
+        assertTrue(workspaceGit.workTree(repo) != edited, "a commit inside reads differently")
+    }
+
+    @Test
+    fun `bl-149 a cancelled work tree read stops its git at once`() {
+        val script = folder.resolve("slow-git")
+        script.writeText("#!/bin/sh\nexec sleep 30\n")
+        Files.setPosixFilePermissions(script, PosixFilePermissions.fromString("rwxr-xr-x"))
+        val slow = WorkspaceGit(hostEnv, git = script.toString())
+        val cancellation = WorkspaceGit.Cancellation()
+        Thread {
+            Thread.sleep(300)
+            cancellation.cancel()
+        }.apply { isDaemon = true }.start()
+        val started = System.nanoTime()
+
+        assertFailsWith<IOException> { slow.workTree(repo, cancellation) }
+
+        val elapsedMs = (System.nanoTime() - started) / 1_000_000
+        assertTrue(elapsedMs < 10_000, "the read took $elapsedMs ms")
+        assertTrue(cancellation.cancelled)
     }
 
     @Test
