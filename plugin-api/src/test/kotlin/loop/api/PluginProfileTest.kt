@@ -109,6 +109,30 @@ class PluginProfileTest {
     }
 
     @Test
+    fun `bl-104 a secret out of its limits is named with the range, never its value`() {
+        val secretPin =
+            PluginProfile(
+                keys = listOf(ProfileKey("pin", ProfileType.INTEGER)),
+                secrets = setOf("pin"),
+                limits = mapOf("pin" to 1L..9_999L),
+            )
+
+        val problem = assertIs<ProfileProblem.OutOfLimits>(secretPin.check("runners.fake", mapOf("pin" to "123456"), emptyMap()).problem)
+
+        assertTrue(problem.secret)
+        assertEquals("runners.fake.pin must be between 1 and 9999", problem.message)
+        assertFalse("123456" in problem.message)
+    }
+
+    @Test
+    fun `bl-104 the undeclared profile checks no key and reports none as unknown`() {
+        val report = PluginProfile.UNDECLARED.check("runners.old", mapOf("script" to "x", "extra" to 1), emptyMap())
+
+        assertNull(report.problem)
+        assertEquals(emptyList(), report.unknownKeys)
+    }
+
+    @Test
     fun `an unset secret is named by its key and variable`() {
         val problem = assertIs<ProfileProblem.UnresolvedSecret>(check(mapOf("command" to "x", "token" to "\$TOKEN")).problem)
 

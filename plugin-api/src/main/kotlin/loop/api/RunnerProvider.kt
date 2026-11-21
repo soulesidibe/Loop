@@ -18,9 +18,10 @@ public interface RunnerProvider {
     /**
      * The keys of the section `runners.<section>` (m3-05), checked on every load of `WORKFLOW.md` before [validate]
      * reads them: a missing required key, a wrong type, a value out of its limits or an unresolved secret fails
-     * preflight, an unknown key gives a startup warning.
+     * preflight, an unknown key gives a startup warning. Defaults to [PluginProfile.UNDECLARED] (bl-104), so a
+     * runner built against m3-04, which had no profile, still loads.
      */
-    public val profile: PluginProfile
+    public val profile: PluginProfile get() = PluginProfile.UNDECLARED
 
     /**
      * Reads [config], the provider's section `runners.<section>` as written (string, list, map or null values, an

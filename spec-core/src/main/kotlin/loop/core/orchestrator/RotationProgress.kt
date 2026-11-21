@@ -7,10 +7,10 @@ package loop.core.orchestrator
  * previous rotation, the one at the attempt's first prompt for the first. [rotation] counts the rotations in a row
  * without it; two park the issue with `split_issue`.
  *
- * The working tree is a fingerprint of the tracked and untracked files git does not ignore, so an edit under a
- * gitignored folder such as `.scratch/` is no progress. A HEAD or a working tree Loop could not read, null, in a
- * workspace that is not a git work tree or after a failed read, counts as progress: Loop never parks on a fact it did
- * not read.
+ * The working tree is a fingerprint of the content of the tracked and untracked files git does not ignore, never the
+ * index (bl-149), so an edit under a gitignored folder such as `.scratch/` or a `git add` alone is no progress. A HEAD
+ * or a working tree Loop could not read, null, in a workspace that is not a git work tree or after a failed read,
+ * counts as progress: Loop never parks on a fact it did not read, and logs the failed read once per attempt.
  */
 internal class RotationProgress(
     startHead: String?,

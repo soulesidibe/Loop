@@ -17,10 +17,14 @@ public data class LedgerTokens(
 }
 
 /**
- * What the ledger knows of the attempt's setup, the same on every line and row of it: the [tracker] kind, the
- * issue [kind] (null in Symphony mode), the [runner] kind, its [model] (null when the runner has none set), the
- * [templateVersion] (SHA-256 of the prompt template) and the [configVersion] (SHA-256 of `WORKFLOW.md`, null when
- * the workflow was not read from a file).
+ * What the ledger knows of the attempt's setup: the [tracker] kind, the issue [kind] (null in Symphony mode), the
+ * [runner] kind, its [model], the [templateVersion] (SHA-256 of the prompt template) and the [configVersion]
+ * (SHA-256 of `WORKFLOW.md`, null when the workflow was not read from a file).
+ *
+ * Since bl-147 [model] is the model the runtime reported, as `context.windows` keys it, `<provider>/<model>`: on a
+ * line, its session's latest report; on a row, the attempt's latest. Without a report it is the runner's configured
+ * model as written, null when the runner has none set. So [model] can differ between the lines of one attempt, the
+ * other keys never do.
  */
 public data class LedgerSetup(
     public val tracker: String,

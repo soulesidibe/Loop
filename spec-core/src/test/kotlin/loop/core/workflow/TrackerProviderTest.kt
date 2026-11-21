@@ -101,6 +101,24 @@ class TrackerProviderTest {
     }
 
     @Test
+    fun `bl-104 a tracker secret out of its limits fails with invalid_tracker_config, never printing its value`() {
+        val pinned =
+            FakeTrackerProvider(
+                profile =
+                    PluginProfile(
+                        keys = listOf(ProfileKey("pin", ProfileType.INTEGER)),
+                        secrets = setOf("pin"),
+                        limits = mapOf("pin" to 1L..9_999L),
+                    ),
+            )
+
+        assertEquals(
+            PreflightResult.Failed("invalid_tracker_config", "tracker.provider.pin must be between 1 and 9999"),
+            preflight(write("  kind: fake\n  provider:\n    pin: 123456\n"), listOf(pinned)),
+        )
+    }
+
+    @Test
     fun `m3-05 an unknown key of the tracker section is a warning on the workflow, not a failure`() {
         val path = write("  kind: fake\n  provider:\n    repo: o/r\n    token: literal-token\n    repoo: x\n")
 

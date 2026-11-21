@@ -195,7 +195,9 @@ class WorkflowLoader(
                 val trackerEnv = secretEnv(kind.profile, "tracker.provider", plain, deferred)
                 configWarnings +=
                     checkProfile(kind.profile, "tracker.provider", plain, "the ${kind.kind} tracker", trackerEnv) { problem ->
-                        WorkflowError.TrackerConfig(if (problem.secret) MISSING_TRACKER_SECRET else INVALID_TRACKER_CONFIG, problem.message)
+                        // bl-104: a secret out of its limits is there and resolved, so it is invalid, not missing.
+                        val missing = problem.secret && problem !is ProfileProblem.OutOfLimits
+                        WorkflowError.TrackerConfig(if (missing) MISSING_TRACKER_SECRET else INVALID_TRACKER_CONFIG, problem.message)
                     }
                 try {
                     // bl-70: the plugin checks the rest of its section with a stand in, whose settings are dropped.

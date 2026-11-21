@@ -70,6 +70,8 @@ class CodexRotationRunTest {
         assertEquals(2, lines.size, "$lines")
         assertPeak(lines[0], THREAD_1, peak = 220, fraction = "0.22", rotations = 0)
         assertPeak(lines[1], THREAD_2, peak = 50, fraction = "0.05", rotations = 1)
+        // bl-147: the workflow names no model, so each line holds the model the thread/start answer named.
+        lines.forEach { assertContains(it, "\"model\":\"openai/gpt-5.1-codex-max\"") }
         val trace = LoopCommand(host()).test(listOf("trace", "t-1", "--workflow", fixture.workflow.toString()))
         assertContains(
             trace.stdout,

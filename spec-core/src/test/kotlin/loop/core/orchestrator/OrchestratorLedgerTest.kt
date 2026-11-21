@@ -532,6 +532,111 @@ class OrchestratorLedgerTest {
             assertEquals(listOf(null, null), lines.map { it.peak })
         }
 
+    /**
+     * One turn on [thread] that reports one `context_usage` naming [model] when [report] is true, else none, then
+     * completes. A turn on a new thread opens it with `SessionStarted`.
+     */
+    private fun modelTurn(
+        turn: Int,
+        thread: String,
+        newSession: Boolean,
+        report: Boolean,
+        model: String? = null,
+    ) = flow {
+        val turnId = TurnId("tu$turn")
+        val sessionId = SessionId("$thread-tu$turn")
+        if (newSession) {
+            emit(RunnerEvent.SessionStarted(sessionId, threadId = thread, turnId = turnId))
+        } else {
+            emit(RunnerEvent.TurnStarted(sessionId, threadId = thread, turnId = turnId, turn = turn))
+        }
+        if (report) emit(RunnerEvent.ContextUsage(sessionId, turnId, 1_000L, model))
+        emit(RunnerEvent.TurnCompleted(sessionId, turnId, exitCode = 0))
+    }
+
+    @Test
+    fun `bl-147 a Codex turn records the model the runtime reported, though the runner is configured with none`() =
+        runTest {
+            val runner = FakeRunner()
+            runner.sessionScript = { turn, _ -> modelTurn(turn, "th1", newSession = true, report = true, model = SOL) }
+
+            orchestrator(FakeTracker(listOf(issue("bl-147"))), runner, workflow(runner = RunnerSettings("codex-app-server"))).tick()
+
+            val line = lines.single()
+            assertEquals("codex-app-server", line.setup.runner)
+            assertEquals(SOL, line.setup.model)
+            assertEquals(
+                SOL,
+                rows.recorded
+                    .single()
+                    .setup.model,
+            )
+        }
+
+    @Test
+    fun `bl-147 a claude-code turn whose workflow names no model records the model the runtime reported`() =
+        runTest {
+            val runner = FakeRunner()
+            runner.sessionScript = { turn, _ -> modelTurn(turn, "th1", newSession = true, report = true, model = OPUS) }
+
+            orchestrator(FakeTracker(listOf(issue("bl-147"))), runner, workflow(runner = RunnerSettings("claude-code"))).tick()
+
+            val line = lines.single()
+            assertEquals("claude-code", line.setup.runner)
+            assertEquals(OPUS, line.setup.model)
+            assertEquals(
+                OPUS,
+                rows.recorded
+                    .single()
+                    .setup.model,
+            )
+        }
+
+    @Test
+    fun `bl-147 a turn with no report takes its session's model, a session with none or an unnamed one the configured model`() =
+        runTest {
+            val runner = FakeRunner().apply { model = "opus" }
+            runner.sessionScript = { turn, _ ->
+                when (turn) {
+                    1 -> modelTurn(1, "th1", newSession = true, report = true, model = OPUS)
+                    2 -> modelTurn(2, "th1", newSession = false, report = false)
+                    3 -> modelTurn(3, "th2", newSession = true, report = false)
+                    else -> modelTurn(turn, "th3", newSession = true, report = true, model = null)
+                }
+            }
+
+            orchestrator(
+                FakeTracker(listOf(issue("bl-147"))),
+                runner,
+                workflow(maxTurns = 4, runner = RunnerSettings("claude-code")),
+            ).tick()
+
+            assertEquals(listOf(OPUS, OPUS, "opus", "opus"), lines.map { it.setup.model })
+            // The row names the latest model a report of the attempt named.
+            assertEquals(
+                OPUS,
+                rows.recorded
+                    .single()
+                    .setup.model,
+            )
+        }
+
+    @Test
+    fun `bl-147 an attempt with no report names the configured model on its lines and its row, null without one`() =
+        runTest {
+            val runner = FakeRunner()
+            runner.sessionScript = { turn, _ -> usageTurn(turn, 100L to null) }
+
+            orchestrator(FakeTracker(listOf(issue("bl-147"))), runner, workflow(maxTurns = 2)).tick()
+
+            assertEquals(listOf(null, null), lines.map { it.setup.model })
+            assertNull(
+                rows.recorded
+                    .single()
+                    .setup.model,
+            )
+        }
+
     /** Keeps every row written; [previous] are rows a past process wrote, read before the new ones. */
     private class FakeAttemptLedger : AttemptLedger {
         val previous = mutableListOf<LedgerRow>()
@@ -560,5 +665,6 @@ class OrchestratorLedgerTest {
     private companion object {
         val PROJECT = ProjectId("p1")
         const val OPUS = "anthropic/claude-opus-5-5"
+        const val SOL = "openai/gpt-6.1-sol"
     }
 }
