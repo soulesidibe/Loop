@@ -67,8 +67,61 @@ class GitHubTrackerTest {
             assertEquals(Instant.parse("2012-03-18T17:53:15Z"), first.createdAt)
             assertEquals(emptyList(), first.labels)
             assertNull(first.priority)
-            assertTrue(first.dispatchable)
+            // bl-157: the recorded issue is by an author with no access to the repository.
+            assertEquals("untrusted_author (NONE)", first.blockedReason)
+            assertFalse(first.dispatchable)
             assertEquals(emptyList(), first.blockedBy)
+        }
+
+    @Test
+    fun `bl-157 an issue by an untrusted or unknown author keeps its labels and state but is blocked, from both reads`() =
+        runTest {
+            simulate(
+                FakeGitHub.issue(1, labels = listOf("ready-for-agent"), authorAssociation = "OWNER"),
+                FakeGitHub.issue(2, labels = listOf("ready-for-agent"), authorAssociation = "NONE"),
+                FakeGitHub.issue(3, labels = listOf("ready-for-agent"), authorAssociation = "CONTRIBUTOR"),
+                FakeGitHub.issue(4, labels = listOf("ready-for-agent"), authorAssociation = null),
+                FakeGitHub.issue(5, labels = listOf("ready-for-agent"), authorAssociation = "collaborator"),
+            )
+            val expected =
+                listOf(
+                    "1" to null,
+                    "2" to "untrusted_author (NONE)",
+                    "3" to "untrusted_author (CONTRIBUTOR)",
+                    "4" to "untrusted_author (missing)",
+                    "5" to null,
+                )
+
+            val listed = tracker().fetchIssuesByStates(listOf("open")).getOrThrow()
+            val byId = tracker().fetchIssuesByIds(listOf("1", "2", "3", "4", "5")).getOrThrow()
+
+            for (issues in listOf(listed, byId)) {
+                assertEquals(expected, issues.map { it.id to it.blockedReason })
+                assertTrue(issues.all { it.labels == listOf("ready-for-agent") && it.state == "open" }, "$issues")
+            }
+            assertEquals(emptyList(), malformed)
+        }
+
+    @Test
+    fun `bl-157 the author check follows the configured list`() =
+        runTest {
+            simulate(FakeGitHub.issue(1, authorAssociation = "CONTRIBUTOR"), FakeGitHub.issue(2, authorAssociation = "COLLABORATOR"))
+            val tracker =
+                GitHubTracker(
+                    GitHubTrackerSettings(
+                        owner = "octocat",
+                        repo = "Hello-World",
+                        token = token,
+                        apiUrl = URI(FakeGitHub.API),
+                        trustedAssociations = listOf("OWNER", "CONTRIBUTOR"),
+                    ),
+                    github,
+                    clock,
+                )
+
+            val issues = tracker.fetchIssuesByStates(listOf("open")).getOrThrow()
+
+            assertEquals(listOf(null, "untrusted_author (COLLABORATOR)"), issues.map { it.blockedReason })
         }
 
     @Test
@@ -521,7 +574,7 @@ class GitHubTrackerTest {
         )) {
             assertTrue(section in headings, "the profile has no \"## $section\" section: $headings")
         }
-        for (key in listOf("repo", "token", "api_url", "labels", "handoff_labels")) {
+        for (key in listOf("repo", "token", "api_url", "labels", "handoff_labels", "trusted_associations")) {
             assertTrue("| `tracker.provider.$key` |" in profile, "the profile does not document tracker.provider.$key")
         }
         for (state in GitHubTracker.DEFINED_STATES) {
