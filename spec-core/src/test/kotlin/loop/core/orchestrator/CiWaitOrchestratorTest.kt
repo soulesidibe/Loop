@@ -13,6 +13,7 @@ import loop.api.MergeMethod
 import loop.api.ProjectId
 import loop.api.PullRequest
 import loop.api.PullRequestState
+import loop.api.RecordedEvent
 import loop.api.Redactor
 import loop.api.RunId
 import loop.api.SecretRedactor
@@ -22,6 +23,8 @@ import loop.core.delivery.MergeCheck
 import loop.core.events.CiFinished
 import loop.core.events.CiWaiting
 import loop.core.events.DeliveryFailed
+import loop.core.events.DeliveryQueuePaused
+import loop.core.events.DeliveryQueueResumed
 import loop.core.events.PullRequestMerged
 import loop.core.log.KeyValueLog
 import loop.core.verify.CheckResult
@@ -58,6 +61,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
@@ -270,6 +274,7 @@ class CiWaitOrchestratorTest {
         waiting: FakeWaitingIssues,
         sink: FakeSink,
         workflow: WorkflowFile = workflow(),
+        pausedBefore: RecordedEvent? = null,
     ): Orchestrator {
         var next = 0
         val clock = SchedulerClock(testScheduler)
@@ -295,6 +300,7 @@ class CiWaitOrchestratorTest {
             fingerprinter = fingerprinter,
             deliveryFor = { remote },
             workspaceGit = workspaceGit,
+            queuePausedBefore = { pausedBefore },
         )
     }
 
@@ -718,5 +724,122 @@ class CiWaitOrchestratorTest {
             assertEquals(listOf("2", "1"), requeued.map { it.data["round"] })
             assertEquals(listOf("t-1", "t-1"), requeued.map { it.data["head_issue"] })
             assertTrue(setup.remote.listed.none { it == second }, "a demoted wait is not polled")
+        }
+
+    /**
+     * bl-175: t-1 at the head and t-2 behind it, both approved merge waits in phase `check` with their pull requests
+     * open, the Actions listing answering [answers] in turn. Returns the orchestrator.
+     */
+    private fun TestScope.queueOfTwo(
+        setup: Setup,
+        answers: List<Result<ActionsRuns>>,
+        pausedBefore: RecordedEvent? = null,
+    ): Orchestrator {
+        val second = secondWorktree()
+        setup.remote.pulls["loop/t-1"] = PullRequest(7, "https://github.com/acme/widgets/pull/7", created = false)
+        setup.remote.pulls["loop/t-2"] = PullRequest(8, "https://github.com/acme/widgets/pull/8", created = false)
+        setup.store(mergeWait("t-1", 7, setup.verified, FIXED_NOW), mergeWait("t-2", 8, second, FIXED_NOW + 1.seconds))
+        setup.remote.answers += answers
+        return orchestrator(setup.tracker, setup.remote, setup.waiting, setup.sink, pausedBefore = pausedBefore)
+    }
+
+    /** Ticks 30 seconds apart until the head's CI wait records `ci_finished`, at most 10 times. */
+    private suspend fun TestScope.untilCiFinished(
+        setup: Setup,
+        orchestrator: Orchestrator,
+    ) {
+        tick(orchestrator)
+        repeat(10) {
+            if (setup.all(CiFinished.name).isNotEmpty()) return
+            tick(orchestrator, after = 30_000)
+        }
+    }
+
+    private fun Setup.queueEvents(): List<RecordedEvent> =
+        sink.events.filter { it.kind == DeliveryQueuePaused.name || it.kind == DeliveryQueueResumed.name }
+
+    @Test
+    fun `a CI timeout at the head pauses the queue, the next merge wait does not start its merge check`() =
+        runTest {
+            val setup = Setup(identifiers = listOf("t-1", "t-2"))
+            val orchestrator = queueOfTwo(setup, listOf(pending))
+
+            untilCiFinished(setup, orchestrator)
+            assertEquals("timeout", setup.all(CiFinished.name).single()["outcome"])
+            assertEquals(WaitReason.Approval, setup.record("t-1").reason, "the head falls back to approval as before")
+            repeat(3) { tick(orchestrator, after = 30_000) }
+
+            assertEquals("check", setup.record("t-2").data[WaitKeys.PHASE])
+            assertTrue(setup.sink.events.none { it.kind == CiWaiting.name && it.issueIdentifier == "t-2" })
+            assertTrue(setup.sink.events.none { it.kind == "merge_check_started" && it.issueIdentifier == "t-2" })
+            val paused = setup.queueEvents().single()
+            assertEquals(DeliveryQueuePaused.name, paused.kind)
+            assertEquals("t-1", paused.issueIdentifier)
+            assertEquals(mapOf("issue" to "t-1", "reason" to "ci_timeout"), paused.data)
+        }
+
+    @Test
+    fun `a red CI at the head does not pause the queue`() =
+        runTest {
+            val setup = Setup(identifiers = listOf("t-1", "t-2"))
+            val orchestrator = queueOfTwo(setup, listOf(red, pending))
+
+            untilCiFinished(setup, orchestrator)
+            assertEquals("red", setup.all(CiFinished.name).single()["outcome"])
+            tick(orchestrator, after = 1_000)
+
+            assertEquals("ci", setup.record("t-2").data[WaitKeys.PHASE], "the next merge wait starts its merge check")
+            assertEquals(emptyList(), setup.queueEvents())
+        }
+
+    @Test
+    fun `loop approve of an issue of the project resumes a paused queue`() =
+        runTest {
+            val setup = Setup(identifiers = listOf("t-1", "t-2"))
+            val orchestrator = queueOfTwo(setup, listOf(pending))
+            untilCiFinished(setup, orchestrator)
+            tick(orchestrator, after = 30_000)
+            assertEquals("check", setup.record("t-2").data[WaitKeys.PHASE])
+
+            val fallback = setup.record("t-1")
+            val now = FIXED_NOW + testScheduler.currentTime.milliseconds
+            setup.waiting.records[PROJECT.value to "id-t-1"] =
+                fallback.copy(data = fallback.data + mapOf(WaitingIssue.APPROVED_BY to "soule", WaitingIssue.APPROVED_AT to now.toString()))
+            tick(orchestrator, after = 1_000)
+
+            val resumed = setup.queueEvents().last()
+            assertEquals(DeliveryQueueResumed.name, resumed.kind)
+            assertEquals(mapOf("by" to "approve"), resumed.data)
+            assertEquals("t-1", resumed.issueIdentifier, "recorded on the issue that paused the queue")
+            assertEquals("ci", setup.record("t-2").data[WaitKeys.PHASE], "the next merge wait starts its merge check")
+            assertEquals(WaitReason.Merge, setup.record("t-1").reason, "the approved delivery queues again, behind t-2")
+            assertEquals("check", setup.record("t-1").data[WaitKeys.PHASE])
+        }
+
+    @Test
+    fun `a restart resumes the queue a previous run left paused`() =
+        runTest {
+            val setup = Setup(identifiers = listOf("t-1", "t-2"))
+            val paused =
+                DeliveryQueuePaused.event(
+                    ts = FIXED_NOW,
+                    projectId = PROJECT,
+                    runId = RunId("r0"),
+                    issueId = "id-t-0",
+                    issueIdentifier = "t-0",
+                    attemptId = AttemptId("dead0"),
+                    data = mapOf("issue" to "t-0", "reason" to "ci_timeout"),
+                )
+            val orchestrator = queueOfTwo(setup, listOf(pending), pausedBefore = paused)
+
+            tick(orchestrator)
+            tick(orchestrator, after = 30_000)
+
+            val resumed = setup.queueEvents().single()
+            assertEquals(DeliveryQueueResumed.name, resumed.kind)
+            assertEquals(mapOf("by" to "restart"), resumed.data)
+            assertEquals("t-0", resumed.issueIdentifier)
+            assertEquals(RunId("r1"), resumed.runId)
+            assertEquals("ci", setup.record("t-1").data[WaitKeys.PHASE], "the head starts its merge check")
         }
 }

@@ -67,8 +67,8 @@ import kotlin.time.Instant
  * [advance] run what a wait needs without a slot, the CI poll, once per tick, and launches [run] in one background job
  * on a free slot, the loop to the end (check, merge, check again on a moved base) inside it. It passes in the rerun of
  * the checks ([recheck]), the live workflow and its rejected reload ([workflow], [rejected]), where the findings of a
- * failed check go ([onFindings]), the removal of a merged issue's workspace ([removeWorkspace]) and the wake of its
- * poll sleep ([wake]).
+ * failed check go ([onFindings]), the removal of a merged issue's workspace ([removeWorkspace]), the wake of its
+ * poll sleep ([wake]) and the pause of the queue after a CI timeout ([onCiTimeout], bl-175).
  *
  * Not thread safe: like the orchestrator, it runs on one single threaded dispatcher, so the tick's calls and the one
  * background [run] interleave only where they suspend, and the tick leaves the wait of a running check alone.
@@ -94,6 +94,8 @@ internal class Merges(
     private val removeWorkspace: suspend (Issue) -> Unit,
     /** Wakes the poll sleep once a wait ended. */
     private val wake: () -> Unit,
+    /** Told once a CI wait ended in `timeout` and fell back to approval, so the orchestrator pauses the queue (bl-175). */
+    private val onCiTimeout: suspend (Wait.Merge) -> Unit = {},
     private val sink: EventSink,
     private val sinkName: String,
     private val log: KeyValueLog,
@@ -349,7 +351,7 @@ internal class Merges(
                 val lines = CiWait.failedRunLines(failed) { redactor.redact(it) }
                 mergeRefused(counted, CiWait.STEP, decision.reason) { reason ->
                     CiWait.failedComment(wait.numberText, reason, lines) to IssueCommented.CI
-                }
+                }.also { if (decision.outcome == CiWait.TIMEOUT) onCiTimeout(wait) }
             }
         }
     }

@@ -90,6 +90,8 @@ import loop.core.events.IssueCommented
 import loop.core.events.IssueLabeled
 import loop.core.events.IssueMoved
 import loop.core.events.IssueParked
+import loop.core.events.DeliveryQueuePaused
+import loop.core.events.DeliveryQueueResumed
 import loop.core.events.MergeRequeued
 import loop.core.events.Phase
 import loop.core.events.PromptRecordFailed
@@ -389,6 +391,11 @@ class Orchestrator(
     private val riskReviewerFor: (WorkflowFile) -> RiskReviewer? = { null },
     /** m3-16: the machine limits, read every tick, and the machine slots of the shared store. */
     private val machine: Machine = Machine.NONE,
+    /**
+     * bl-175: the `delivery_queue_paused` an earlier run left with no `delivery_queue_resumed` after it, read once at the
+     * first tick, which records the resume by the restart; null when none, or when this host cannot read it.
+     */
+    private val queuePausedBefore: suspend () -> RecordedEvent? = { null },
 ) {
     /** The HEAD and working tree reads for the progress between rotations (bl-136), bounded and cancellable (bl-149). */
     private val workspaceFacts = WorkspaceFacts(workspaceGit)
@@ -428,6 +435,7 @@ class Orchestrator(
             onFindings = { issueId, text -> verifyFindings[issueId] = text },
             removeWorkspace = { removeWorkspace(it) },
             wake = { attemptEnded.trySend(Unit) },
+            onCiTimeout = { pauseQueue(it) },
             sink = this.sink,
             sinkName = sinkName,
             log = log,
@@ -493,6 +501,9 @@ class Orchestrator(
 
     /** bl-39: the run level hold of a runner that cannot reach its model; it gates every dispatch. */
     private val hold = RunnerHold(clock)
+
+    /** bl-175: the pause of the delivery queue after the head's CI timed out; it stops every merge check from starting. */
+    private val queuePause = DeliveryQueuePause()
 
     /** The spec attempt of each issue dispatched by a retry, for the `attempt` template variable. */
     private val dispatchAttempts = mutableMapOf<String, Int>()
@@ -4480,6 +4491,7 @@ class Orchestrator(
         if (waitingRestored) return emptyList()
         waitingRestored = true
         requeueBehindHead()
+        resumeAfterRestart()
         val byId = candidates.associateBy { it.id }
         return waits.current().mapNotNull { record -> resumeWait(scope, record, byId[record.issueId]) }
     }
@@ -4510,6 +4522,64 @@ class Orchestrator(
                 "behind ${head.identifier} in the delivery queue",
             )
         }
+    }
+
+    /**
+     * bl-175: the pause an earlier run left on the delivery queue ends with this restart, since the pause is held in
+     * memory only. Records `delivery_queue_resumed` with `by` = `restart` on the issue that paused it.
+     */
+    private suspend fun resumeAfterRestart() {
+        val paused = queuePausedBefore() ?: return
+        val context = pollContext.copy(issueId = paused.issueId, issueIdentifier = paused.issueIdentifier, attemptId = paused.attemptId)
+        recordQueueResumed(context, DeliveryQueueResumed.RESTART)
+    }
+
+    /**
+     * bl-175: the CI wait of [wait], the head of the delivery queue, timed out and fell back to approval: the queue
+     * pauses, records `delivery_queue_paused` and starts no merge check until [resumeOnApproval] or a restart.
+     */
+    private suspend fun pauseQueue(wait: Wait.Merge) {
+        if (!queuePause.pause(wait, clock.now())) return
+        recordWaitEvent(
+            wait,
+            DeliveryQueuePaused,
+            mapOf(DeliveryQueuePaused.ISSUE to wait.identifier, Delivery.REASON to DeliveryQueuePaused.CI_TIMEOUT),
+        )
+        log.log(
+            LogLevel.WARN,
+            DELIVERY_QUEUE,
+            LogOutcome.STARTED,
+            waitContext(wait),
+            reason = "the CI wait timed out, no merge check starts until loop approve or a restart",
+        )
+    }
+
+    /**
+     * bl-175: a paused delivery queue resumes when one of [approvals] was approved with `loop approve` since the pause,
+     * whatever its issue. Records `delivery_queue_resumed` with `by` = `approve` on the issue that paused it.
+     */
+    private suspend fun resumeOnApproval(approvals: List<Wait.Approval>) {
+        val paused = queuePause.resumeOnApproval(approvals) ?: return
+        val context = pollContext.copy(issueId = paused.issueId, issueIdentifier = paused.identifier, attemptId = paused.attemptId)
+        recordQueueResumed(context, DeliveryQueueResumed.APPROVE)
+    }
+
+    private suspend fun recordQueueResumed(
+        context: LogContext,
+        by: String,
+    ) {
+        val event =
+            DeliveryQueueResumed.event(
+                ts = clock.now(),
+                projectId = projectId,
+                runId = runId,
+                issueId = context.issueId,
+                issueIdentifier = context.issueIdentifier,
+                attemptId = context.attemptId,
+                data = mapOf(Delivery.BY to by),
+            )
+        log.guardSink(sinkName, context) { sink.record(event).getOrThrow() }
+        log.log(LogLevel.INFO, DELIVERY_QUEUE, LogOutcome.RESUMED, context, fields = mapOf("by" to by))
     }
 
     /** Where the issue of a wait stands this tick, see [standings]. */
@@ -4579,6 +4649,8 @@ class Orchestrator(
      */
     private suspend fun syncApprovals(candidates: List<Issue>): Set<String> {
         val approvals = waits.current(WaitReason.Approval).filterIsInstance<Wait.Approval>()
+        // bl-175: a `loop approve` since the pause resumes the delivery queue, before this tick's merge waits run.
+        resumeOnApproval(approvals)
         val standing = standings(approvals, candidates)
         val delivered = mutableSetOf<String>()
         for (wait in approvals) {
@@ -4794,6 +4866,8 @@ class Orchestrator(
             headFound = true
             // m3-15: a CI wait is polled here, with no slot; once CI allows the merge, the merge phase starts below.
             val wait = merges.advance(stored) ?: continue
+            // bl-175: while the queue is paused after a CI timeout, no merge check starts.
+            if (wait.phase == MergePhase.Check && queuePause.paused != null) continue
             // bl-86: step one of the slot plan, for the merge check work that holds a slot, before the parked read and
             // the due retries of [dispatch].
             if (!SlotPlan.mergeCheckFits(effective.config.agent, slotUse())) continue
@@ -5177,6 +5251,9 @@ class Orchestrator(
 
         /** The operator log event of a delivery: an approval wait started, an approved result delivered (m2-24). */
         const val DELIVERY = "delivery"
+
+        /** The operator log event of a pause of the delivery queue and its resume (bl-175). */
+        const val DELIVERY_QUEUE = "delivery_queue"
 
         /** The `reason` of the `issue_commented` event of an evidence summary (m2-24). */
         const val EVIDENCE_SUMMARY = IssueCommented.EVIDENCE_SUMMARY
