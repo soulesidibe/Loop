@@ -1,9 +1,9 @@
 ---
 id: bl-170
 title: "m4-03's wake turn criterion does not match the recorded attempt 10c2f759"
-state: todo
+state: done
 priority: 2
-labels: [needs-triage]
+labels: [ready-for-human]
 blocked_by: []
 ---
 
@@ -27,3 +27,7 @@ Decide before m4-03 is dispatched: what a wake turn is when the wake arrives aft
 ## Comments
 
 2026-11-21 soule: written in m4-00, from the Kotlin review of steps 5 to 7.
+
+2026-11-21 soule: decided, option E, after a decision brief and a Fable 5.2 review at high effort. A turn that reads the `task_notification` of a background task run started in an earlier turn is a wake turn, wherever it reads it. On attempt 10c2f759 that frees turns 2, 3, 4 and 6 (notifications at lines 197, 260, 289 and 350) and leaves 2 of 10 turns used after turn 6. m4-03's rule and criteria are rewritten to match.
+  Options set aside: A (a `result` with `origin.kind` `task-notification` marks a wake turn, 4 of 10) frees turns only while the runner holds Loop's input for a running wake, which m4-03 removes, so live it would likely free none; B (m4-03 as written, 6 of 10) lets wake results end turns early; C (any turn started while a task is pending, 1 of 10) empties `agent.max_turns` of meaning; D (wakes counted apart, 6 of 10) gives no relief.
+  Corrections to the What above: `input_ms` in the sidecar is the turn start, not when Loop wrote its input. In turns 2 and 4 the runner read the running wake to its result first and wrote the input after it, the hold the subagent lines 191 and 280 started (written 96 ms and 385 ms after the previous result, while idle). The other results carry no `origin` key. The sidecar's description now says so.

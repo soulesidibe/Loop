@@ -1,6 +1,6 @@
 {
  "fixture": "wake_turns_10c2f759.jsonl",
- "how": "line_ms is the arrival time of each fixture line in ms after Loop wrote the first prompt, taken from the attempt log. Each turn gives when Loop wrote its input (input_ms, after fixture line input_after_line, 0 for the first prompt), the last fixture line of the turn and its outcome and tokens, taken from the ledger line of the turn (its end time minus its wall time). Lines are numbered from 1.",
+ "how": "line_ms is the time in ms, after Loop wrote the first prompt, at which Loop read each fixture line, taken from the attempt log; a line's own timestamp field, where it has one, is when Claude Code wrote it. Each turn gives its start (input_ms, the ledger end time minus the wall time, taken before the runner reads any idle line), the last line of the previous turn (input_after_line, 0 for the first turn), its last line, its outcome and its tokens, from the ledger line of the turn. input_ms is not when Loop wrote its input: in turns 2 and 4 the runner first read a running wake to its result (lines 209 and 302) and wrote the input after it. Lines are numbered from 1.",
  "max_turns": 10,
  "turns": [
   {
