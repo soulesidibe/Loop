@@ -386,6 +386,9 @@ class Orchestrator(
     /** m3-16: the machine limits, read every tick, and the machine slots of the shared store. */
     private val machine: Machine = Machine.NONE,
 ) {
+    /** The HEAD and working tree reads for the progress between rotations (bl-136), bounded and cancellable (bl-149). */
+    private val workspaceFacts = WorkspaceFacts(workspaceGit)
+
     /**
      * The merge waits (m2-26, m2-28, m3-15, bl-85): the merge check, the CI wait, the merge and the auto merge gate, in
      * their own module. This class keeps the slot decision and the background launch, see [syncMerges].
@@ -1553,6 +1556,9 @@ class Orchestrator(
 
         /** The progress between this attempt's rotations (m3-12), from the workspace's HEAD at its first prompt. */
         private var progress = RotationProgress(startHead = null, startTree = null)
+
+        /** The facts whose failed read this attempt already logged (bl-149), so each is logged once per attempt. */
+        private val loggedFactFailures = mutableSetOf<String>()
 
         /** The attempt's spend budgets, read once when the attempt starts (m2-20). */
         private val budgets = BudgetMeter(workflow.config.budgets)
@@ -3495,24 +3501,25 @@ class Orchestrator(
         /**
          * The commit HEAD of [workspace] is at and the fingerprint of its working tree (bl-136) when the workspace is the
          * top level of a git work tree, for the progress between rotations (m3-12); each null otherwise and when its git
-         * read fails, which never counts against the agent.
+         * read fails, which never counts against the agent. bl-149: the read is bounded and cancellable, and a failed read
+         * is logged on the operator log once per fact and attempt, so a workspace that never parks says why.
          */
-        private suspend fun workspaceFacts(workspace: Path): Pair<String?, String?> =
-            try {
-                withContext(io) {
-                    val top = workspaceGit.run(workspace, "rev-parse", "--show-toplevel")
-                    val path = top.stdout.trim()
-                    val topLevel = top.code == 0 && runCatching { Path.of(path).toRealPath() == workspace.toRealPath() }.getOrDefault(false)
-                    if (!topLevel) return@withContext null to null
-                    val head = runCatching { workspaceGit.head(workspace) }.getOrNull()
-                    val tree = runCatching { workspaceGit.workTree(workspace) }.getOrNull()
-                    head to tree
+        private suspend fun workspaceFacts(workspace: Path): Pair<String?, String?> {
+            val facts = workspaceFacts.of(workspace)
+            facts.failures.forEach { (fact, reason) ->
+                if (loggedFactFailures.add(fact)) {
+                    log.log(
+                        LogLevel.WARN,
+                        "progress",
+                        LogOutcome.FAILED,
+                        logContext(),
+                        fields = mapOf("fact" to fact),
+                        reason = redactor.redact("$reason, counted as progress").take(REASON_MAX),
+                    )
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                null to null
             }
+            return facts.head to facts.tree
+        }
 
         /** The commit `refs/loop/base/[base]` of the project repository is at, null when it has none or git fails (bl-59). */
         private suspend fun lastFetchedBase(base: String): String? =

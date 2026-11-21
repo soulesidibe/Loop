@@ -25,7 +25,8 @@ public class PluginProfile(
      * whose keys are named `[section].<key>` in messages. Keys are checked in profile order and the first problem
      * wins: a required key missing or blank, a value of the wrong type, a `$NAME` secret unset or blank in [env], an
      * integer out of its limits. A literal secret is left to the plugin. A message never holds the value of a string,
-     * list or map, only an integer out of its limits. Keys the profile does not list are reported, not refused.
+     * list or map, only an integer out of its limits that is not a secret (bl-104). Keys the profile does not list
+     * are reported, not refused, except under [UNDECLARED].
      */
     public fun check(
         section: String,
@@ -34,7 +35,7 @@ public class PluginProfile(
     ): ProfileReport {
         val problem = keys.firstNotNullOfOrNull { problemOf(it, "$section.${it.name}", config[it.name], env) }
         val known = keys.map { it.name }.toSet()
-        val unknown = config.keys.filter { it !in known }.map { "$section.$it" }
+        val unknown = if (this === UNDECLARED) emptyList() else config.keys.filter { it !in known }.map { "$section.$it" }
         return ProfileReport(problem, unknown)
     }
 
@@ -57,12 +58,19 @@ public class PluginProfile(
         }
         val range = limits[key.name] ?: return null
         val number = ProfileType.integerOf(value) ?: return null
-        return if (number in range) null else ProfileProblem.OutOfLimits(path, range, number)
+        return if (number in range) null else ProfileProblem.OutOfLimits(path, range, number, secret)
     }
 
-    private companion object {
+    public companion object {
+        /**
+         * The profile of a runner plugin that declares none, one built against m3-04 (bl-104): it checks no key and
+         * reports no key as unknown, so the plugin's own `validate` is the only check of its section.
+         */
+        @JvmField
+        public val UNDECLARED: PluginProfile = PluginProfile(emptyList())
+
         /** A whole value `$NAME`, the rule of every `$VAR` in `WORKFLOW.md` (plan D3). */
-        val ENV_REF = Regex("""\$([A-Za-z_][A-Za-z0-9_]*)""")
+        private val ENV_REF = Regex("""\$([A-Za-z_][A-Za-z0-9_]*)""")
     }
 }
 
@@ -147,12 +155,13 @@ public sealed class ProfileProblem(
         secret: Boolean,
     ) : ProfileProblem(key, secret, "$key must be ${type.description}")
 
-    /** An integer outside its [range]. */
+    /** An integer outside its [range]. The message prints [value] unless the key is a [secret] (bl-104). */
     public class OutOfLimits(
         key: String,
         public val range: LongRange,
         public val value: Long,
-    ) : ProfileProblem(key, false, "$key must be between ${range.first} and ${range.last}, got $value")
+        secret: Boolean = false,
+    ) : ProfileProblem(key, secret, "$key must be between ${range.first} and ${range.last}" + if (secret) "" else ", got $value")
 
     /** A secret written `$NAME` whose variable [envName] is unset, or [empty] (blank) in the host env. */
     public class UnresolvedSecret(

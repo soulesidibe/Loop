@@ -151,7 +151,8 @@ fun workflowLoader(
 
 /**
  * The tracker named by `tracker.kind` (m3-05): the provider of [plugins] whose kind matches builds it from the
- * settings the loader read, or null when no provider answers to the kind. [onWarning] gets the adapter's operator
+ * settings the loader read. Throws [IllegalStateException] when no provider answers to the kind (bl-104), which a
+ * workflow loaded through [plugins] never has. [onWarning] gets the adapter's operator
  * warnings, such as a `blocked_by` id with no issue file (m1-09). A move to a handoff state removes [requiredLabels],
  * by default the workflow's, read at each move (m2-23).
  */
@@ -162,8 +163,8 @@ fun trackerFor(
     onMalformed: (TrackerError.Malformed) -> Unit = {},
     requiredLabels: () -> List<String> = { workflow.requiredLabels },
     plugins: TrackerPlugins = TrackerPlugins.classpath,
-): TrackerAdapter? =
-    plugins.provider(workflow.trackerKind)?.create(
+): TrackerAdapter =
+    (plugins.provider(workflow.trackerKind) ?: throw IllegalStateException(plugins.unsupported(workflow.trackerKind))).create(
         workflow.trackerSettings,
         TrackerContext(workflow.trackerDir, loopHome.resolve("locks"), onMalformed, onWarning, requiredLabels),
     )

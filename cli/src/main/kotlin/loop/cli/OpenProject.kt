@@ -87,10 +87,11 @@ class OpenedProject internal constructor(
         onWarning: (String) -> Unit = {},
         onMalformed: (TrackerError.Malformed) -> Unit = {},
         requiredLabels: () -> List<String> = { workflow.requiredLabels },
-    ): TrackerAdapter =
+    ): TrackerAdapter {
         trackerSecret?.let { throw StartupFailure(it.sentence) }
-            ?: trackerFor(workflow, loopHome, onWarning, onMalformed, requiredLabels, trackers)
-            ?: throw StartupFailure(unsupportedTracker(workflow, trackers))
+        if (trackers.provider(workflow.trackerKind) == null) throw StartupFailure(unsupportedTracker(workflow, trackers))
+        return trackerFor(workflow, loopHome, onWarning, onMalformed, requiredLabels, trackers)
+    }
 
     /**
      * Opens the machine store for this project, as a writer through [redactor] or as a reader with [Redactor.NONE]
