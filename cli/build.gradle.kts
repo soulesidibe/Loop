@@ -134,9 +134,32 @@ tasks.startScripts {
         // DEFAULT_JVM_OPTS is single quoted in the unix script: close the quote, expand
         // APP_HOME (computed earlier in the script), reopen.
         val unix = scripts.unixScript
-        unix.writeText(unix.readText().replace("__APP_HOME__", "'\"\$APP_HOME\"'"))
+        // bl-159: the Java of `$APP_HOME/runtime/` first (Homebrew links its JDK there), then JAVA_HOME, then
+        // java on the PATH. Nothing is exported: agents inherit Loop's environment and must keep their own JAVA_HOME.
+        val javaAnchor = "if [ -n \"\$JAVA_HOME\" ] ; then\n"
+        val runtimeJava =
+            "if [ -x \"\$APP_HOME/runtime/bin/java\" ] ; then\n" +
+                "    JAVACMD=\$APP_HOME/runtime/bin/java\n" +
+                "elif [ -n \"\$JAVA_HOME\" ] ; then\n"
+        val text = unix.readText()
+        // A Gradle upgrade that changes the template must fail here, not silently drop the runtime lookup.
+        check(text.split(javaAnchor).size == 2) { "the start script template changed: no single JAVA_HOME check" }
+        unix.writeText(text.replace(javaAnchor, runtimeJava).replace("__APP_HOME__", "'\"\$APP_HOME\"'"))
         val windows = scripts.windowsScript
         windows.writeText(windows.readText().replace("__APP_HOME__", "%APP_HOME%"))
+    }
+}
+
+// The release archives (bl-159): loop-<version>.tar.gz and loop-<version>.zip, top folder loop-<version>/, no
+// Windows launcher. installDist keeps loop.bat. The excludes match the source path of the start script.
+tasks.distTar {
+    compression = Compression.GZIP
+    archiveExtension.set("tar.gz")
+}
+listOf(tasks.distTar, tasks.distZip).forEach { archive ->
+    archive.configure {
+        archiveVersion.set(gitVersion.map { it.version })
+        exclude("**/loop.bat")
     }
 }
 
