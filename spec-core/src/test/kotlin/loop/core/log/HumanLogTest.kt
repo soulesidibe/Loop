@@ -486,9 +486,8 @@ class HumanLogTest {
     fun `bl-178 an early conflict of a queued merge wait reads as a sentence of its issue`() {
         val log = humanLog()
 
-        log.recorded(
-            event("merge_conflict_early", mapOf("issue" to "m1-13", "base" to "89abcdef0123456789", "paths" to "a.txt,b.txt"), attempt = null),
-        )
+        val data = mapOf("issue" to "m1-13", "base" to "89abcdef0123456789", "paths" to "a.txt,b.txt")
+        log.recorded(event("merge_conflict_early", data, attempt = null))
 
         assertEquals(
             listOf(

@@ -227,7 +227,12 @@ object MergeRoundSkipped : KeyedEvent("merge_round_skipped", Delivery.BASE_SHA, 
  * its agent before its turn, with the merge check's conflict comment. [PATHS] lists at most [PATHS_MAX] paths, comma
  * separated.
  */
-object MergeConflictEarly : KeyedEvent("merge_conflict_early", MergeConflictEarly.ISSUE, MergeConflictEarly.BASE, MergeConflictEarly.PATHS) {
+object MergeConflictEarly : KeyedEvent(
+    "merge_conflict_early",
+    MergeConflictEarly.ISSUE,
+    MergeConflictEarly.BASE,
+    MergeConflictEarly.PATHS,
+) {
     /** The identifier of the queued issue whose merge conflicts. */
     const val ISSUE = "issue"
 

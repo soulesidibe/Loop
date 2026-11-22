@@ -1770,7 +1770,7 @@ class MergeCheckOrchestratorTest {
     private fun List<String>.earlyCheckFailures(): List<String> = filter { "level=warn" in it && "early conflict check" in it }
 
     @Test
-    fun `bl-178, a queued merge wait that conflicts with the fetched base goes back to its agent with the conflict comment before its turn`() =
+    fun `bl-178, a queued merge wait that conflicts with the base goes back to its agent with the conflict comment before its turn`() =
         runTest {
             val first = verifiedWorktree()
             val second = secondWorktree()
@@ -1790,7 +1790,10 @@ class MergeCheckOrchestratorTest {
             assertEquals("t-2", sink.events.single { it.kind == "merge_conflict_early" }.issueIdentifier)
             assertNull(waiting.records[PROJECT.value to "id-t-2"], "the wait of t-2 ended, it left the queue")
             assertEquals(WaitReason.Merge, waiting.records.getValue(PROJECT.value to "id-t-1").reason, "the head is untouched")
-            val comment = tracker.comments.single { it.first == "id-t-2" }.second.text
+            val comment =
+                tracker.comments
+                    .single { it.first == "id-t-2" }
+                    .second.text
             assertContains(comment, "pull request #8")
             assertContains(comment, base)
             assertContains(comment, "work2.txt")
