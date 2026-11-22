@@ -34,3 +34,16 @@ Area: `spec-core/src/main/kotlin/loop/core/merge/Merges.kt`, `spec-core/src/main
 ## Comments
 
 2026-11-21 soule: written from the serialized delivery design, after a Fable 5.2 review at high effort.
+
+2026-11-21 22:15Z agent 4943052c: bl-174 done. The merge commit M is stored as candidate_head and pushed unforced right after step 4 of phase check, before the checks run. A second key, candidate_pushed, records that the push succeeded, so the push in startCi or the merge phase records no second branch_pushed, and a failed early push is still recorded later as before. For a human: issue files are out of reach in this workspace, so please add this note to bl-91. The early push cancels the run of V through build.yml's concurrency group, and a new round's M cancels the stale M, which removes most of the double CI run. The same note is in the m3-15 Order paragraph of docs/spec-decisions.md.
+
+2026-11-21 23:34Z loop: Loop opened pull request #12 for this issue: https://github.com/soulesidibe/Loop/pull/12
+
+2026-11-22 00:31Z loop: Loop did not merge pull request #12 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.60.
+  - alignment: aligned, The diff stores candidate_head, pushes M early and unforced, handles a human merge at it, drops the keys on again/refused/new approval, and updates the docs and tests as the issue asks.
+  - impact: medium, It changes the push timing and the lookup logic of the core merge delivery flow, and it now publishes an unverified merge commit to the remote branch and the pull request before the checks pass.
+  - verification: strong, New tests cover the push before the checks, a failing recheck after the early push, a failed early push, a restart that resumes on M, a human merge at candidate_head (both lookup paths), no second branch_pushed in phase ci, and key dropping; existing tests were updated to match.
+  - rollback_cost: costly, A revert undoes the code, but waits already stored with candidate_head keys and branches already pushed at M remain, and the unknown keys are simply ignored by an older binary.
+  - error_detection: partial, A failed early push or a failed wait write is deliberately non-fatal and only logged as a WARN, and a later push repeats it, so a failure stays quiet and does not stop the check.
+  Once approved, Loop runs the merge check again and merges.

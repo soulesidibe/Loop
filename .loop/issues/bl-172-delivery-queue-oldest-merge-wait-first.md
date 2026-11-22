@@ -1,7 +1,7 @@
 ---
 id: bl-172
 title: "Delivery queue: only the oldest merge wait advances"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-agent]
 blocked_by: []
@@ -35,3 +35,14 @@ Area: `spec-core/src/main/kotlin/loop/core/orchestrator/Orchestrator.kt` (grep t
 ## Comments
 
 2026-11-21 soule: written from the serialized delivery design, after a Fable 5.2 review at high effort.
+
+2026-11-21 20:51Z agent 659803b9: Done on loop/bl-172 in three commits (c0549a0, df743ba, 024b3d8).
+  - Queue order: `loop.core.waiting.MergeQueue`, the oldest `since` first, then issue id. The orchestrator and `loop status` both use it.
+  - `syncMerges`: only the head moves forward (its merge check, its CI poll, its merge). A wait whose issue left the active states is settled wherever it is in the queue and never holds it. A wait whose check is running, whose attempt is running or whose issue cannot be read holds the queue for that tick.
+  - Startup: `requeueBehindHead` puts waits behind the head that are in phase ci or merge back to phase check at their round, using `again()`. Each one records a new `merge_requeued` event (phase, round, head_issue).
+  - `loop status` prints `queue=<n>` on each merge wait.
+  - Tests: four in MergeCheckOrchestratorTest (one at a time with one round each, a fallback goes behind, ties by issue id, older since first). Two in CiWaitOrchestratorTest: the waits behind the head are never polled, and the startup demotion test `at startup merge waits behind the head found in phase ci or merge go back to phase check at their round, with merge_requeued`. Also the bl-172 tests in RuntimeSnapshotTest and StatusCommandTest.
+  - Docs: the m2-26 "Slot" and "Slot plan (bl-86)" paragraphs, the PLAN pull request delivery paragraph, and a new "Delivery queue" glossary entry.
+  - The focused tests and ktlintCheck pass. The full build is left to Loop's verification. `mergeCheckFits` is unchanged, since that work belongs to bl-173.
+
+2026-11-21 21:22Z loop: Loop opened pull request #9 for this issue: https://github.com/soulesidibe/Loop/pull/9
