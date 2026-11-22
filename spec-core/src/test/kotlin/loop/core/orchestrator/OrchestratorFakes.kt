@@ -591,6 +591,9 @@ class FakeMachine(
 ) : Machine {
     var limitsFailure: Throwable? = null
     var claimFailure: Throwable? = null
+
+    /** Called after each claim that took a slot, with its holder (bl-180: cancels the tick right after the claim). */
+    var onClaimed: (String) -> Unit = {}
     val slots = mutableListOf<String>()
     val rows = mutableListOf<LedgerRow>()
     val log = mutableListOf<String>()
@@ -608,6 +611,7 @@ class FakeMachine(
         }
         slots += holder
         log += "claimed $holder"
+        onClaimed(holder)
         return Result.success(true)
     }
 
