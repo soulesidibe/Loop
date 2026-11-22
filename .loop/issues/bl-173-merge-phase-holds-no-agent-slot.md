@@ -1,7 +1,7 @@
 ---
 id: bl-173
 title: "The merge phase of a delivery holds no agent slot"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-agent]
 blocked_by: [bl-172]
@@ -31,3 +31,5 @@ Area: `Orchestrator.kt` (grep, never read it whole), `spec-core/src/main/kotlin/
 ## Comments
 
 2026-11-21 soule: written from the serialized delivery design, after a Fable 5.2 review at high effort.
+
+2026-11-21 22:45Z loop: Loop opened pull request #10 for this issue: https://github.com/soulesidibe/Loop/pull/10

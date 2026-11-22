@@ -32,3 +32,7 @@ Area: `spec-core/src/main/kotlin/loop/core/merge/Merges.kt`, the workflow config
 ## Comments
 
 2026-11-21 soule: written from the serialized delivery design, after a Fable 5.2 review at high effort.
+
+2026-11-22 00:49Z agent bf3a8ea4: Done in 3931391. New key kinds.code.delivery.pull_request.merge.recheck_skip_paths (globs anchored like guards.protect, matched case sensitive, empty by default; a blank glob or a value that is not a list of strings is a workflow error). At the base read of phase merge, a moved tip is fetched host side and the merge goes on with no new round only when base_sha is an ancestor of the tip, every file of the base diff matches a glob, and none is in the pull request's diff against its merge base with the tip. A failed fetch or git read starts a round. A skip records merge_round_skipped (base_sha, tip, files cut at 20), and the auto merge gate still runs. Tests: MergeCheckOrchestratorTest (4 bl-176 tests), AutoMergeOrchestratorTest (1), MergeConfigTest (`bl-176, a blank recheck_skip_paths glob is refused`, `bl-176, a recheck_skip_paths that is not a list is refused`, plus the default). Human step, since WORKFLOW.md is protected: add `recheck_skip_paths: [".loop/issues/**"]` under kinds.code.delivery.pull_request.merge in Loop's own WORKFLOW.md.
+
+2026-11-22 01:14Z loop: Loop opened pull request #13 for this issue: https://github.com/soulesidibe/Loop/pull/13
