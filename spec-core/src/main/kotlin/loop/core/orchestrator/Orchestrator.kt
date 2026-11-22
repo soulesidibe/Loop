@@ -4869,7 +4869,7 @@ class Orchestrator(
                 }
             if (headFound) {
                 // bl-178: a wait behind the head only gets the early conflict check, against the base tip fetched last.
-                merges.checkEarly(stored)
+                merges.checkEarly(stored, candidate)
                 continue
             }
             headFound = true

@@ -159,10 +159,14 @@ internal class Merges(
      * the tick with no slot: `git merge-tree` of the base tip last fetched and the committed head of the wait's
      * fingerprint, in the issue's own workspace, read only. It runs once per head and base tip, a failed call included.
      * A conflict ends the wait as a conflict of the merge check does, the m2-26 comment, the findings for the next
-     * attempt, and records `merge_conflict_early`; the issue then leaves the queue. A clean merge changes nothing, and
+     * attempt, and records `merge_conflict_early`; the issue then leaves the queue. As for the merge check, a pull request
+     * a human merged meanwhile is read first and never sent back (bl-181). A clean merge changes nothing, and
      * a call that fails logs a warning and changes nothing: the merge check finds the conflict in its turn.
      */
-    suspend fun checkEarly(wait: Wait.Merge) {
+    suspend fun checkEarly(
+        wait: Wait.Merge,
+        issue: Issue,
+    ) {
         val workflow = workflow()
         val base =
             workflow.config.kinds
@@ -197,6 +201,8 @@ internal class Merges(
         val branch = PullRequestDelivery.branch(WorkspaceKey.of(wait.identifier).value)
         mergeCheckFailed(
             wait,
+            issue,
+            workflow,
             MergeCheck.conflictComment(wait.numberText, base, tip, branch, detail),
             MergeCheck.conflictFindings(base, tip, detail),
             "merging the base conflicts, found while queued: $detail",
