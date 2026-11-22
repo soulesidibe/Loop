@@ -203,6 +203,38 @@ class WaitsTest {
     }
 
     @Test
+    fun `bl-174, the candidate head is kept by a passing check and dropped by a new round, a refusal and a new approval`() {
+        val check = assertIs<Wait.Merge>(Wait.of(record(WaitReason.Merge, mergeData + ("phase" to "check"))))
+        val candidate = check.candidate("head9")
+        assertEquals("head9", candidate.candidateHead)
+        assertFalse(candidate.pushedEarly("head9"), "stored before the push")
+        val pushed = candidate.candidatePushed()
+        assertTrue(pushed.pushedEarly("HEAD9"))
+        assertFalse(pushed.pushedEarly("head8"))
+        assertEquals(mapOf("candidate_head" to "head9", "candidate_pushed" to "true"), pushed.toRecord().data - mergeData.keys)
+        assertFalse(pushed.candidate("head10").pushedEarly("head10"), "a new candidate is not pushed yet")
+
+        val checked = pushed.checked("base9", "head9")
+        assertTrue(checked.pushedEarly("head9"), "the push that starts the CI wait knows it was pushed early")
+        assertTrue(Wait.of(checked.waitingForCi(later).toRecord()).let { it is Wait.Merge && it.pushedEarly("head9") })
+
+        val again = checked.again(3).toRecord().data
+        assertFalse(again.containsKey("candidate_head") || again.containsKey("candidate_pushed"))
+        val refused = checked.refused(later)
+        assertFalse(refused.toRecord().data.containsKey("candidate_head") || refused.toRecord().data.containsKey("candidate_pushed"))
+        val approved =
+            assertIs<Wait.Approval>(
+                Wait.of(
+                    record(
+                        WaitReason.Approval,
+                        approvalData + pushed.toRecord().data.filterKeys { it.startsWith("candidate_") },
+                    ),
+                ),
+            )
+        assertNull(approved.merging(7, "https://github.com/acme/widgets/pull/7", later).candidateHead)
+    }
+
+    @Test
     fun `a refused merge falls back to an unapproved approval wait at the fingerprint it holds`() {
         val merge = assertIs<Wait.Merge>(Wait.of(record(WaitReason.Merge, mergeData + ("fingerprint" to "git:head2:e:e"))))
         val refused = merge.refused(later)

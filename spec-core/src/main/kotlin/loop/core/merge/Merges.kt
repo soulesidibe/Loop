@@ -10,6 +10,7 @@ import loop.api.Issue
 import loop.api.IssueComment
 import loop.api.MergeMethod
 import loop.api.ProjectId
+import loop.api.PullRequest
 import loop.api.PullRequestState
 import loop.api.RunId
 import loop.api.SecretRedactor
@@ -159,6 +160,20 @@ internal class Merges(
         return after(start)
     }
 
+    /**
+     * True when [found] was merged at the stored head of [wait], or, in phase `check`, at the candidate head the check
+     * pushed early (bl-174): only a human merges then, so both count as a merge at the stored head.
+     */
+    private fun mergedAtStoredHead(
+        wait: Wait.Merge,
+        found: PullRequest,
+    ): Boolean {
+        val head = WorkspaceFingerprint.committedHead(wait.fingerprint.orEmpty())
+        if (head != null && PullRequestDelivery.delivered(found, head)) return true
+        val candidate = wait.candidateHead.takeIf { wait.phase == MergePhase.Check } ?: return false
+        return PullRequestDelivery.delivered(found, candidate)
+    }
+
     private fun after(wait: Wait): MergeWait = if (waits.isBusy(wait.issueId)) MergeWait.Continues else MergeWait.Ended
 
     private suspend fun settleInactiveMerge(
@@ -178,8 +193,7 @@ internal class Merges(
                 )
                 return
             }
-        val head = WorkspaceFingerprint.committedHead(wait.fingerprint.orEmpty())
-        if (issue != null && found != null && head != null && PullRequestDelivery.delivered(found, head)) {
+        if (issue != null && found != null && mergedAtStoredHead(wait, found)) {
             finishMerged(wait, issue, humanMerge = wait.phase != MergePhase.Merge)
             return
         }
@@ -224,11 +238,10 @@ internal class Merges(
                 mergeStepFailed(start, PullRequestDelivery.STEP_PULL_REQUEST, it)
                 return
             }
-        val head = WorkspaceFingerprint.committedHead(start.fingerprint.orEmpty())
         val refusal =
             when {
                 found == null -> "no pull request has the head $branch"
-                head != null && PullRequestDelivery.delivered(found, head) -> {
+                mergedAtStoredHead(start, found) -> {
                     finishMerged(start, issue, humanMerge = start.phase != MergePhase.Merge)
                     return
                 }
@@ -261,7 +274,7 @@ internal class Merges(
 
     /**
      * Starts the CI wait of [wait] after a passing merge check (m3-15): pushes the merged head unforced, so its Actions
-     * runs start (`branch_pushed` when it is not the verified commit), stores the wait in phase `ci` from now, records
+     * runs start (`branch_pushed` when it is not the verified commit and was not pushed early, bl-174), stores the wait in phase `ci` from now, records
      * `ci_waiting` and counts the time from the push. Null: the tick polls from now on. A failed push is a merge step
      * that failed.
      */
@@ -274,7 +287,7 @@ internal class Merges(
         deliveryStep { executorFor(workflow).push(mergedHead, branch) }
             .getOrElse { return mergeStepFailed(wait, PullRequestDelivery.STEP_PUSH, it) }
         val verifiedHead = WorkspaceFingerprint.committedHead(wait.verifiedFingerprint.orEmpty())
-        if (!mergedHead.equals(verifiedHead, ignoreCase = true)) {
+        if (!mergedHead.equals(verifiedHead, ignoreCase = true) && !wait.pushedEarly(mergedHead)) {
             recordWaitEvent(wait, BranchPushed, mapOf(Delivery.SHA to mergedHead, Delivery.BRANCH to branch))
         }
         val now = clock.now()
@@ -369,7 +382,8 @@ internal class Merges(
      * fetched commit is already in the branch, only the `diff_policy` checks run again, against it (bl-32). The fetched
      * commit is stored as `base_sha` before the merge, so a stop between the merge commit and the next write is
      * resumed: a workspace at a clean merge commit whose parents are the stored head and that base is Loop's own merge,
-     * found before the fetch and rechecked as it is, against that base (send back 1). A clean pass gives the next wait, phase `merge`, its merged head the delivered
+     * found before the fetch and rechecked as it is, against that base (send back 1). A merge commit, made or resumed, is
+     * pushed before the checks run, see [pushEarly] (bl-174). A clean pass gives the next wait, phase `merge`, its merged head the delivered
      * commit everywhere; null when the wait ended, waits for a new approval or the next tick.
      */
     private suspend fun checkPhase(
@@ -462,6 +476,8 @@ internal class Merges(
                     }
                 }
             }
+        // bl-174: CI runs on the merge commit while the checks run.
+        if (mergedHead != null) current = pushEarly(current, workflow, mergedHead)
         if (mergedHead == null) {
             // bl-32: the verdict the approval rests on read a base the agent could move, so diff_policy runs again.
             val findings = recheck(current, issue, workflow, workspace, checkedBase, head, diffPolicyOnly = true)
@@ -498,6 +514,35 @@ internal class Merges(
         val next = current.checked(checkedBase, delivered)
         storeWait(next, context)
         return next
+    }
+
+    /**
+     * Pushes [head], the merge commit the check of [wait] made or resumed, unforced to the branch before the checks run
+     * (bl-174), so its Actions runs start meanwhile: [head] is stored as the candidate head first, so a lookup after a
+     * stop knows a pull request merged at it, then pushed, `branch_pushed` recorded and the push stored. Nothing is
+     * pushed again when the stored wait says it was. Never fatal: a wait that cannot be written is not pushed, and a push
+     * that fails is logged, the check goes on and the push that follows a passing check pushes it as before. The wait
+     * the check goes on with.
+     */
+    private suspend fun pushEarly(
+        wait: Wait.Merge,
+        workflow: WorkflowFile,
+        head: String,
+    ): Wait.Merge {
+        if (wait.pushedEarly(head)) return wait
+        val context = waitContext(wait)
+        val candidate = wait.candidate(head)
+        if (!wait.candidateHead.equals(head, ignoreCase = true) && !storeWait(candidate, context)) return wait
+        val branch = PullRequestDelivery.branch(WorkspaceKey.of(wait.identifier).value)
+        deliveryStep { executorFor(workflow).push(head, branch) }.getOrElse { error ->
+            val reason = redactor.redact("the merge commit is pushed after the checks: ${error.describe()}").take(REASON_MAX)
+            log.log(LogLevel.WARN, DELIVERY, LogOutcome.FAILED, context, reason = reason)
+            return candidate
+        }
+        recordWaitEvent(candidate, BranchPushed, mapOf(Delivery.SHA to head, Delivery.BRANCH to branch))
+        val pushed = candidate.candidatePushed()
+        storeWait(pushed, context)
+        return pushed
     }
 
     /**
@@ -630,8 +675,8 @@ internal class Merges(
         val branch = PullRequestDelivery.branch(WorkspaceKey.of(wait.identifier).value)
         deliveryStep { executor.push(mergedHead, branch) }.getOrElse { return mergeStepFailed(wait, PullRequestDelivery.STEP_PUSH, it) }
         val verifiedHead = WorkspaceFingerprint.committedHead(wait.verifiedFingerprint.orEmpty())
-        // m3-15: a head the CI wait pushed was recorded then.
-        if (!mergedHead.equals(verifiedHead, ignoreCase = true) && wait.ciStartedAt == null) {
+        // m3-15 and bl-174: a head the CI wait or the early push pushed was recorded then.
+        if (!mergedHead.equals(verifiedHead, ignoreCase = true) && wait.ciStartedAt == null && !wait.pushedEarly(mergedHead)) {
             recordWaitEvent(wait, BranchPushed, mapOf(Delivery.SHA to mergedHead, Delivery.BRANCH to branch))
         }
         val shownHead = awaitHead(executor, branch, mergedHead).getOrElse { return mergeStepFailed(wait, MergeCheck.STEP_MERGE, it) }

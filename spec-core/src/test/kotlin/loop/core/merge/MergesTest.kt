@@ -502,7 +502,8 @@ class MergesTest {
             assertEquals(BASE, intent, "the base is saved as the intent before the merge commit")
             assertEquals(listOf(BASE), setup.git.merged)
             assertEquals(listOf(BASE to false), setup.recheck.runs)
-            assertEquals(listOf(MERGED), setup.remote.pushes)
+            // bl-174: the early push before the checks, then the merge phase's, a no op.
+            assertEquals(listOf(MERGED, MERGED), setup.remote.pushes)
             assertEquals(listOf(7L to MERGED), setup.remote.merges)
             assertEquals(MergeCheck.MERGED, setup.one(MergeCheckFinished.name)["outcome"])
             assertEquals(MERGED, setup.one(PullRequestMerged.name)["sha"])
@@ -511,7 +512,7 @@ class MergesTest {
             assertEquals(listOf("t-1"), setup.removed)
             assertTrue(setup.woken > 0, "the end of the wait wakes the poll sleep")
             assertEquals(
-                listOf(BaseFetched.name, MergeCheckStarted.name, MergeCheckFinished.name, BranchPushed.name, PullRequestMerged.name),
+                listOf(BaseFetched.name, MergeCheckStarted.name, BranchPushed.name, MergeCheckFinished.name, PullRequestMerged.name),
                 setup.kinds.filter { it != "issue_moved" },
             )
         }
@@ -580,7 +581,9 @@ class MergesTest {
             assertContains(comment, "the checks failed on the result (check 0, ./gradlew test failed with exit code 1)")
             assertContains(setup.findings.getValue("id-t-1"), "Check 0 failed on the merge.")
             assertTrue(setup.waiting.records.isEmpty())
-            assertTrue(setup.remote.pushes.isEmpty() && setup.remote.merges.isEmpty())
+            // bl-174: the merge commit was pushed before the checks ran, the refusal merges nothing.
+            assertEquals(listOf(MERGED), setup.remote.pushes)
+            assertTrue(setup.remote.merges.isEmpty())
         }
 
     @Test
@@ -611,7 +614,8 @@ class MergesTest {
             assertEquals(listOf(BASE, MOVED_BASE), setup.git.merged)
             assertEquals(listOf<String?>("1", "2"), saved, "the moved base is saved as round 2 before the second merge")
             assertEquals(listOf("1", "2"), setup.all(MergeCheckStarted.name).map { it["round"] })
-            assertEquals(listOf(MERGED, MERGED_AGAIN), setup.remote.pushes)
+            // bl-174: each round pushes its merge commit early, then again at the merge.
+            assertEquals(listOf(MERGED, MERGED, MERGED_AGAIN, MERGED_AGAIN), setup.remote.pushes)
             assertEquals(listOf(7L to MERGED_AGAIN), setup.remote.merges)
             assertTrue(setup.waiting.records.isEmpty())
         }
@@ -805,7 +809,7 @@ class MergesTest {
 
             assertEquals(MergeWait.Continues, runOnce(setup))
 
-            assertEquals(listOf(MERGED), setup.remote.pushes)
+            assertEquals(listOf(MERGED, MERGED), setup.remote.pushes, "the early push, then the push that starts the CI wait")
             assertEquals(WaitKeys.PHASE_CI, setup.stored.data[WaitKeys.PHASE])
             assertEquals(MERGED, setup.one(CiWaiting.name)["sha"])
             assertEquals(MERGED, setup.one(BranchPushed.name)["sha"])
