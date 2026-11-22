@@ -3,7 +3,7 @@ id: bl-181
 title: "Low findings of the bl-174 review, the early push of the merged head"
 state: todo
 priority: 3
-labels: [needs-triage]
+labels: [ready-for-agent]
 blocked_by: []
 ---
 
@@ -13,19 +13,30 @@ None. Backlog, not scheduled in a milestone. Low findings of the merge risk revi
 
 ## What
 
-- **Unverified head on a refuted recheck.** When the recheck fails after the early push, the pull request and the remote branch stay at the merged head M, where before they stayed at the verified V (`Merges.kt` around line 472, `MergeCheckOrchestratorTest` around line 895). Loop never merges it, but a human click or a CI only branch protection could. The tree is the same as a GitHub merge of V.
-- **Duplicate event after a crash.** A crash after the push but before `candidate_pushed` is stored records a second `branch_pushed` for M on resume. The push is idempotent. Untested (`Merges.kt` around lines 525 to 535).
-- **A failed early push only logs.** It is a WARN log with no event (`Merges.kt` around line 528). The later push in `startCi` still fails loudly.
-- **bl-91 note missing.** The issue asked for a note in bl-91 that the early push cancels V's run through `build.yml`'s concurrency group. The agent could not reach issue files. The same text is in the m3-15 Order paragraph of `docs/spec-decisions.md`.
-- **CI timeout clock.** `ci_started_at` is the start of phase ci, not the early push, so the timeout is conservative.
-- **Human merge during ci or merge.** A human merge of M in phase ci or merge is recorded as Loop's own merge, with no `human_touch` (`humanMerge = start.phase != Merge`, `Merges.kt` around line 238). Older than bl-174, which only lengthens the time M is mergeable.
-- **History rewrite after a refuted recheck.** The remote is at M, so a next attempt that amends or resets would fail its unforced push with `delivery_failed`. `WORKFLOW.md` forbids rewrites; loud, not unsafe.
-- **Human merge then refuted recheck.** If a human merges M during the check and the recheck is then refuted, the wait ends and the issue is dispatched again although the pull request is merged. Same as with V before.
-- **Loop's reviewer and rollback cost.** Loop's reviewer rated rollback costly for additive wait keys and a fast forward push. Worth checking whether its prompt weighs stored state too heavily.
+Low findings of the bl-174 review. Three are fixed, the others are closed with their reason, and the bl-91 note was written during triage.
+
+**Fix 1, a failed early push is recorded.** When the early push of the merged head M fails (bl-174), Loop only logs a WARN. Desired: it also records an event, `branch_push_failed` (`issue`, `head`, `reason`, `early` = true), shown by `loop trace` and the human log. The behavior is otherwise unchanged: the merge check goes on, and the later push that starts the CI wait still fails loudly if the remote refuses it.
+
+**Fix 2, a merge Loop did not make is a human merge.** A merge wait that finds its pull request already merged records a `human_touch` (`human_merge`) only when the wait's phase is not merge. A human merge of M while the wait is in phase ci, or in phase merge before Loop called the merge, is recorded as Loop's own merge, with no human touch. Desired: the human touch depends on whether Loop itself called the merge of this pull request in this round, not on the phase. Loop's own merge never records a human touch. Every path that finds the pull request merged (the start of a run, the CI wait, the merge phase, a restart) follows the same rule.
+
+**Fix 3, a merged pull request is never dispatched again.** If a human merges the pull request while the merge check runs and the recheck is then refuted, the wait ends and the issue is dispatched again although its pull request is merged. Desired: before a refusal sends the issue back to its agent, Loop reads the pull request's state. When it is merged, the wait ends as a merged delivery (with the human touch of fix 2) instead of a refusal, and the issue is not dispatched again.
+
+**Closed, each for its reason:**
+
+- An unverified M left on the pull request after a refuted recheck: Loop never merges it, and its tree is the same as a GitHub merge of the verified commit.
+- A second `branch_pushed` after a crash between the early push and `candidate_pushed`: the push is idempotent, and only the event is doubled.
+- `ci_started_at` set at phase ci, not at the early push: the CI timeout is only more conservative.
+- A history rewrite failing its unforced push after a refuted recheck: `WORKFLOW.md` forbids rewrites, and the failure is loud (`delivery_failed`), not unsafe.
+- Loop's reviewer rating rollback costly for additive wait keys: one occurrence so far. If it causes another approval fallback, file it as its own issue with the reviewer prompt.
+
+Area: `Merges.kt`, the CI wait, the events and log texts. In `Orchestrator.kt` grep, never read it whole.
+
+Out of scope: the closed findings above, any change to the early push itself, the reviewer prompt.
 
 ## Acceptance criteria
 
-- [ ] Each finding above is fixed with a test, or closed with a one line reason in a comment (judgment).
+- [ ] `./gradlew --no-daemon :spec-core:test --tests 'loop.core.orchestrator.CiWaitOrchestratorTest' --tests 'loop.core.orchestrator.MergeCheckOrchestratorTest'` passes, with tests for: a failed early push records `branch_push_failed`; a pull request merged by a human in phase ci records a human touch; one merged by a human in phase merge before Loop's merge call records a human touch; Loop's own merge records none; a pull request merged by a human before a refuted recheck ends the wait as merged, and the issue is not dispatched again.
+- [ ] The m3-15 section of `docs/spec-decisions.md` describes fixes 1 to 3.
 - [ ] `./gradlew --no-daemon build` passes.
 
 ## Comments
@@ -35,3 +46,9 @@ None. Backlog, not scheduled in a milestone. Low findings of the merge risk revi
 > *This was generated by AI during triage.*
 
 Filed from the merge risk reviews of bl-174. Triage decides which findings are worth fixing.
+
+2026-11-22 triage:
+
+> *This was generated by AI during triage.*
+
+Ready for agent: fixes 1 to 3 as above, the other findings closed with their reason. The bl-91 note asked by bl-174 was added to bl-91 during this triage.
