@@ -9,7 +9,7 @@ blocked_by: []
 
 ## Parent
 
-None. Backlog, not scheduled in a milestone. Low findings of the merge risk review of pull request #14 (bl-178), Sonnet 5.5 then Fable 5.2, on 2026-11-22. All three passes (Loop's reviewer included) rated it medium, 1.53, from the merge code impact floor and two alignment gaps; no medium or high finding. Approved by hand.
+None. Backlog, not scheduled in a milestone. Low findings of the merge risk review of pull request #14 (bl-178), Sonnet 5.5 then Fable 5.2, on 2026-11-22. All three passes (Loop's reviewer included) rated it medium, 1.53, from the merge code impact floor and two alignment gaps; no medium or high finding. Approved by hand, twice: attempt 2 resolved a conflict with bl-181.
 
 ## What
 
@@ -22,6 +22,7 @@ None. Backlog, not scheduled in a milestone. Low findings of the merge risk revi
 - **Early checks run while the queue is paused** (bl-175). Arguably wanted, but undocumented and untested.
 - **Stranded merge commit.** A queued wait holding a bl-174 candidate head is checked at its verified head; a conflict ends the wait with the workspace at Loop's merge commit. Same outcome one round later on the normal path.
 - **`ciPolls` not cleared** on the early refusal path (`mergeCheckFailed`, unlike `mergeRefused`). Only for a wait behind the head in phase ci.
+- **Early refusal of a merged pull request.** Attempt 2 made `checkEarly` read a pull request a human merged meanwhile before sending the issue back (bl-181's rule). It reuses bl-181's tested path, but no test covers it on the early path.
 - **Untested paths.** The bl-176 round skip as the tip's source, a paused queue, a queue three deep, a wait holding a merged fingerprint. The `MergesTest` fake always answers clean.
 
 ## Acceptance criteria
