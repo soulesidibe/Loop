@@ -218,6 +218,23 @@ class WorkspaceGit(
     }
 
     /**
+     * The paths of the files that differ from [from] to [to] (bl-176), or, with [sinceMergeBase], from the merge base of
+     * [from] and [to] to [to]. No rename detection, so a renamed file counts under both of its paths. A git failure is
+     * an [IOException].
+     */
+    fun changedFiles(
+        root: Path,
+        from: String,
+        to: String,
+        sinceMergeBase: Boolean,
+    ): List<String> {
+        val range = if (sinceMergeBase) listOf("$from...$to") else listOf(from, to)
+        val outcome = run(root, *NO_ATTRIBUTES, "diff", "--name-only", "-z", "--no-renames", *range.toTypedArray(), "--")
+        if (outcome.code != 0) throw IOException("git diff exited with code ${outcome.code}: ${outcome.firstLine()}")
+        return outcome.stdout.split('\u0000').filter { it.isNotEmpty() }
+    }
+
+    /**
      * The paths of the files [commit] holds under the folder [dir] (m2-28), read from the commit, not the work tree;
      * empty when it holds none. A git failure is an [IOException].
      */

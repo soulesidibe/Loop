@@ -28,8 +28,10 @@ import loop.api.WaitingIssue
 import loop.core.delivery.AutoMerge
 import loop.core.delivery.MergeCheck
 import loop.core.events.BaseFetched
+import loop.core.events.Delivery
 import loop.core.events.MergeCheckFinished
 import loop.core.events.MergeCheckStarted
+import loop.core.events.MergeRoundSkipped
 import loop.core.events.PullRequestMerged
 import loop.core.log.KeyValueLog
 import loop.core.machine.MachineLimits
@@ -159,6 +161,7 @@ class MergeCheckOrchestratorTest {
         tracker: String = "files",
         ci: CiMode = CiMode.None,
         template: String = "Work on {{ issue.identifier }}. {{ loop.verify_findings }}",
+        skipPaths: List<String> = emptyList(),
     ): WorkflowFile =
         WorkflowFile(
             config =
@@ -172,7 +175,11 @@ class MergeCheckOrchestratorTest {
                                 delivery =
                                     DeliveryConfig(
                                         DeliveryPolicy.Human,
-                                        PullRequestConfig("acme/widgets", "LOOP_PR_TOKEN", merge = MergeConfig(method, ci)),
+                                        PullRequestConfig(
+                                            "acme/widgets",
+                                            "LOOP_PR_TOKEN",
+                                            merge = MergeConfig(method, ci, recheckSkipPaths = skipPaths),
+                                        ),
                                         onDeliveredMoveTo = "done",
                                     ),
                             ),
@@ -987,6 +994,107 @@ class MergeCheckOrchestratorTest {
             assertFalse(fallback.approved)
             assertEquals(clean(git(project, "rev-parse", "loop/t-1")), fallback.data[WaitKeys.FINGERPRINT])
             assertEquals(emptyList(), tracker.moves)
+        }
+
+    @Test
+    fun `a base move only in recheck_skip_paths merges with no new round and records merge_round_skipped (bl-176)`() =
+        runTest {
+            val verified = verifiedWorktree()
+            val base = baseCommit()
+            val moved = baseCommit(".loop/issues/t-9.md", "state: done\n")
+            val tracker = FakeTracker(listOf(issue("t-1")))
+            val remote =
+                FakeRemote().apply {
+                    bases += listOf(base, moved)
+                    tip = { moved }
+                }
+            val waiting = FakeWaitingIssues(approvedWait(clean(verified)))
+            val sink = FakeSink()
+
+            orchestrator(tracker, remote, waiting, sink, workflow(skipPaths = listOf(".loop/issues/**"))).tick()
+
+            val merged = git(project, "rev-parse", "refs/heads/loop/t-1")
+            assertEquals("$verified $base", git(project, "log", "-1", "--format=%P", merged))
+            assertEquals(listOf(base, moved), remote.fetched, "the new tip is fetched host side")
+            assertEquals(listOf("1"), sink.all(MergeCheckStarted.name).map { it["round"] })
+            assertEquals(
+                mapOf("base_sha" to base, "tip" to moved, "files" to ".loop/issues/t-9.md"),
+                sink.data(MergeRoundSkipped.name).filterKeys { it in setOf("base_sha", "tip", "files") },
+            )
+            assertEquals(listOf(Triple(7L, merged, MergeMethod.Merge)), remote.merges)
+            assertEquals(listOf("id-t-1" to "done"), tracker.moves)
+        }
+
+    @Test
+    fun `a base move in recheck_skip_paths that the pull request also changed starts a new round (bl-176)`() =
+        runTest {
+            verifiedWorktree()
+            val verified = commit(workspace, ".loop/issues/t-1.md", "state: review\n")
+            val base = baseCommit()
+            val moved = baseCommit(".loop/issues/t-1.md", "state: review\n")
+            val tracker = FakeTracker(listOf(issue("t-1")))
+            val remote =
+                FakeRemote().apply {
+                    bases += listOf(base, moved)
+                    tip = { moved }
+                }
+            val waiting = FakeWaitingIssues(approvedWait(clean(verified)))
+            val sink = FakeSink()
+
+            orchestrator(tracker, remote, waiting, sink, workflow(skipPaths = listOf(".loop/issues/**"))).tick()
+
+            assertEquals(listOf("1", "2"), sink.all(MergeCheckStarted.name).map { it["round"] })
+            assertEquals(moved, sink.all(MergeCheckStarted.name).last()[Delivery.BASE_SHA])
+            assertTrue(sink.all(MergeRoundSkipped.name).isEmpty())
+            val merged = git(project, "rev-parse", "refs/heads/loop/t-1")
+            assertEquals(listOf(Triple(7L, merged, MergeMethod.Merge)), remote.merges)
+        }
+
+    @Test
+    fun `a tip that does not descend from the checked base starts a new round, even in recheck_skip_paths (bl-176)`() =
+        runTest {
+            val verified = verifiedWorktree()
+            val base = baseCommit()
+            git(project, "checkout", "-q", "-B", "rewritten", "main")
+            val moved = commit(project, ".loop/issues/t-9.md", "state: done\n")
+            git(project, "checkout", "-q", "main")
+            val tracker = FakeTracker(listOf(issue("t-1")))
+            val remote =
+                FakeRemote().apply {
+                    bases += listOf(base, moved)
+                    tip = { moved }
+                }
+            val waiting = FakeWaitingIssues(approvedWait(clean(verified)))
+            val sink = FakeSink()
+
+            orchestrator(tracker, remote, waiting, sink, workflow(skipPaths = listOf(".loop/issues/**"))).tick()
+
+            assertEquals(listOf("1", "2"), sink.all(MergeCheckStarted.name).map { it["round"] })
+            assertTrue(sink.all(MergeRoundSkipped.name).isEmpty())
+            assertEquals(1, remote.merges.size)
+        }
+
+    @Test
+    fun `a base move outside recheck_skip_paths starts a new round (bl-176)`() =
+        runTest {
+            val verified = verifiedWorktree()
+            val base = baseCommit()
+            baseCommit(".loop/issues/t-9.md", "state: done\n")
+            val moved = baseCommit("src/Main.kt", "fun main() {}\n")
+            val tracker = FakeTracker(listOf(issue("t-1")))
+            val remote =
+                FakeRemote().apply {
+                    bases += listOf(base, moved)
+                    tip = { moved }
+                }
+            val waiting = FakeWaitingIssues(approvedWait(clean(verified)))
+            val sink = FakeSink()
+
+            orchestrator(tracker, remote, waiting, sink, workflow(skipPaths = listOf(".loop/issues/**"))).tick()
+
+            assertEquals(listOf("1", "2"), sink.all(MergeCheckStarted.name).map { it["round"] })
+            assertTrue(sink.all(MergeRoundSkipped.name).isEmpty())
+            assertEquals(1, remote.merges.size)
         }
 
     @Test

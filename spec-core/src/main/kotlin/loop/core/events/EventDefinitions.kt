@@ -66,6 +66,7 @@ object EventDefinitions {
             MergeCheckStarted,
             MergeCheckFinished,
             MergeRequeued,
+            MergeRoundSkipped,
             CiWaiting,
             CiFinished,
             PullRequestMerged,

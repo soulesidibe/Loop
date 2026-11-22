@@ -175,6 +175,39 @@ class MergeConfigTest {
     }
 
     @Test
+    fun `bl-176, recheck_skip_paths is empty by default and read anchored at the workspace root`() {
+        assertEquals(emptyList(), delivery("{ ci: none }").pullRequest?.merge?.recheckSkipPaths)
+        assertEquals(
+            listOf(".loop/issues/**", "notes/*.md"),
+            delivery("{ ci: none, recheck_skip_paths: [\".loop/issues/**\", \" /notes/*.md \"] }").pullRequest?.merge?.recheckSkipPaths,
+        )
+        assertEquals(
+            listOf(".loop/issues/**"),
+            delivery("{ ci: actions, recheck_skip_paths: [\".loop/issues/**\"] }").pullRequest?.merge?.recheckSkipPaths,
+        )
+    }
+
+    @Test
+    fun `bl-176, a blank recheck_skip_paths glob is refused`() {
+        assertEquals(
+            "kinds.code.delivery.pull_request.merge.recheck_skip_paths must not hold a blank path",
+            error("{ ci: none, recheck_skip_paths: [\".loop/issues/**\", \" \"] }"),
+        )
+    }
+
+    @Test
+    fun `bl-176, a recheck_skip_paths that is not a list is refused`() {
+        assertEquals(
+            "kinds.code.delivery.pull_request.merge.recheck_skip_paths must be a list of strings",
+            error("{ ci: none, recheck_skip_paths: .loop/issues/** }"),
+        )
+        assertEquals(
+            "kinds.code.delivery.pull_request.merge.recheck_skip_paths must be a list of strings",
+            error("{ ci: none, recheck_skip_paths: [[a]] }"),
+        )
+    }
+
+    @Test
     fun `merge must be a map`() {
         assertEquals("kinds.code.delivery.pull_request.merge must be a map", error("~"))
     }

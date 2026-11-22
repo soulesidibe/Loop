@@ -763,7 +763,8 @@ class WorkflowLoader(
      * default, or `squash`, never `rebase`, and whose `ci` is required, `none` or, since m3-15, `actions`. With
      * `actions`, `ci_timeout_ms` and `ci_no_run_grace_ms` are positive, the grace below the timeout, and `ci_no_run` is
      * `fail`, the default, or `pass`. Under `none` no `ci_*` key is allowed, so a key that would change nothing is never
-     * read as a CI wait.
+     * read as a CI wait. The optional `recheck_skip_paths` (bl-176) is a list of path globs with no blank one, anchored like
+     * `guards.protect`, empty when absent.
      */
     private fun parseMerge(pullRequest: YamlMap): MergeConfig? {
         val prefix = "kinds.code.delivery.pull_request.merge"
@@ -779,12 +780,13 @@ class WorkflowLoader(
                 CiMode.entries.firstOrNull { it.wire == written.trim().lowercase() }
                     ?: throw WorkflowError.InvalidConfig("$prefix.ci must be none or actions, got \"$written\"")
             } ?: throw WorkflowError.InvalidConfig("$prefix.ci is required, none or actions")
+        val skipPaths = merge.paths("$prefix.recheck_skip_paths", "recheck_skip_paths").orEmpty()
         if (ci == CiMode.None) {
             val written = CI_KEYS.filter { key -> merge.entries.keys.any { it.content == key } }
             if (written.isNotEmpty()) {
                 throw WorkflowError.InvalidConfig("$prefix.${written.joinToString(", ")} need ci: actions, ci is none")
             }
-            return MergeConfig(method, ci)
+            return MergeConfig(method, ci, recheckSkipPaths = skipPaths)
         }
         val timeout = merge.positiveLong("$prefix.ci_timeout_ms", "ci_timeout_ms") ?: MergeConfig.DEFAULT_CI_TIMEOUT_MS
         val grace = merge.positiveLong("$prefix.ci_no_run_grace_ms", "ci_no_run_grace_ms") ?: MergeConfig.DEFAULT_CI_NO_RUN_GRACE_MS
@@ -796,7 +798,7 @@ class WorkflowLoader(
         if (grace >= timeout) {
             throw WorkflowError.InvalidConfig("$prefix.ci_no_run_grace_ms ($grace) must be below $prefix.ci_timeout_ms ($timeout)")
         }
-        return MergeConfig(method, ci, timeout, noRun, grace)
+        return MergeConfig(method, ci, timeout, noRun, grace, skipPaths)
     }
 
     /**

@@ -39,6 +39,7 @@ import loop.core.delivery.MergeCheck
 import loop.core.events.AutoMergeFallback
 import loop.core.events.MergeCheckStarted
 import loop.core.events.MergeRiskAssessed
+import loop.core.events.MergeRoundSkipped
 import loop.core.events.PullRequestMerged
 import loop.core.log.KeyValueLog
 import loop.core.merge.AutoMergeGate
@@ -979,6 +980,32 @@ class AutoMergeOrchestratorTest {
                     .single()
                     .second
             git(project, "merge-base", "--is-ancestor", checkNotNull(moved), merged)
+            assertTrue(run.sink.events.none { it.kind == AutoMergeFallback.name })
+        }
+
+    @Test
+    fun `a base that moves while the reviewer runs only in recheck_skip_paths merges with no new round (bl-176)`() =
+        runTest {
+            lateinit var remote: FakeRemote
+            var moved: String? = null
+            val reviewer =
+                reviewer().apply {
+                    during = {
+                        if (requests.size == 1) {
+                            moved = commit(project, ".loop/issues/t-9.md", "state: done\n")
+                            remote.base = moved
+                        }
+                    }
+                }
+            val skipping = workflow(merge = MergeConfig(MergeMethod.Merge, CiMode.None, recheckSkipPaths = listOf(".loop/issues/**")))
+            val run = autoMerge(workflow = skipping, reviewer = reviewer, prepare = { remote = it })
+
+            assertEquals(listOf("1"), run.sink.all(MergeCheckStarted.name).map { it["round"] }, "no new round")
+            assertEquals(1, reviewer.requests.size, "the gate ran once, on the merged head")
+            val skipped = run.sink.all(MergeRoundSkipped.name).single()
+            assertEquals(moved, skipped[MergeRoundSkipped.TIP])
+            assertEquals(".loop/issues/t-9.md", skipped[MergeRoundSkipped.FILES])
+            assertEquals(1, run.remote.merges.size)
             assertTrue(run.sink.events.none { it.kind == AutoMergeFallback.name })
         }
 
