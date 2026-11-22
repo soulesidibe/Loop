@@ -26,7 +26,8 @@ import kotlin.time.Instant
  * `loop run` works in another process. With a machine config (m3-16) it also prints the machine slots in use, the cap
  * and the machine day spend. Since m3-09 a running attempt shows its running session's latest and peak occupancy, and
  * an attempt whose runner declares no occupancy gets a line saying only the prompt limit and the turn cap hold for it.
- * Since bl-172 a merge wait shows its place in the delivery queue, `queue=1` for the head.
+ * Since bl-172 a merge wait shows its place in the delivery queue, `queue=1` for the head, and since bl-175 one line says
+ * when the live run keeps the delivery queue paused after a CI timeout.
  */
 class StatusCommand(
     private val host: Host,
@@ -84,9 +85,14 @@ class StatusCommand(
             val details = details("hold" to hold.hold, "next_probe" to hold.probeAt?.let(::clock), "reason" to hold.reason)
             echo("${HELD.padEnd(STATE_WIDTH)}runner unavailable  $details".trimEnd())
         }
+        // bl-175: one line while the live run keeps the delivery queue paused after a CI timeout.
+        snapshot.queuePause?.let { pause ->
+            val details = details("issue" to pause.issue, "reason" to pause.reason, "since" to seconds(pause.since))
+            echo("${PAUSED.padEnd(STATE_WIDTH)}delivery queue  $details  resume with loop approve or a restart".trimEnd())
+        }
         val rows = rows(snapshot)
         if (rows.isEmpty()) {
-            if (snapshot.hold == null) echo("Nothing running, retrying, waiting or parked.")
+            if (snapshot.hold == null && snapshot.queuePause == null) echo("Nothing running, retrying, waiting or parked.")
             return
         }
         val identifierWidth = rows.maxOf { it.identifier.length }
@@ -223,6 +229,7 @@ class StatusCommand(
         const val WAITING = "waiting"
         const val PARKED = "parked"
         const val HELD = "held"
+        const val PAUSED = "paused"
         const val NO_OCCUPANCY =
             "the runner reports no context occupancy, so only the prompt limit and the turn cap (agent.max_turns) hold for this attempt"
         const val STATE_WIDTH = 10
