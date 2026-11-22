@@ -24,6 +24,13 @@ internal interface MergeGit {
         message: String,
     ): WorkspaceGit.MergeOutcome
 
+    /** Whether merging [base] into [head] conflicts, read only with `git merge-tree` (bl-178). */
+    fun mergeTree(
+        root: Path,
+        base: String,
+        head: String,
+    ): WorkspaceGit.MergeTreeOutcome
+
     /** Aborts a merge a stop left in progress in [root] at [head]; true when there was one. */
     fun abortStrandedMerge(
         root: Path,
@@ -85,6 +92,12 @@ internal class WorkspaceMergeGit(
         sha: String,
         message: String,
     ): WorkspaceGit.MergeOutcome = git.merge(root, sha, message)
+
+    override fun mergeTree(
+        root: Path,
+        base: String,
+        head: String,
+    ): WorkspaceGit.MergeTreeOutcome = git.mergeTree(root, base, head)
 
     override fun abortStrandedMerge(
         root: Path,

@@ -249,6 +249,12 @@ class MergesTest {
             return WorkspaceGit.MergeOutcome.Merged(head)
         }
 
+        override fun mergeTree(
+            root: Path,
+            base: String,
+            head: String,
+        ): WorkspaceGit.MergeTreeOutcome = WorkspaceGit.MergeTreeOutcome.Clean
+
         override fun abortStrandedMerge(
             root: Path,
             head: String,

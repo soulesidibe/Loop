@@ -36,6 +36,7 @@ import loop.core.events.IssueCommented
 import loop.core.events.IssueMoved
 import loop.core.events.MergeCheckFinished
 import loop.core.events.MergeCheckStarted
+import loop.core.events.MergeConflictEarly
 import loop.core.events.MergeRoundSkipped
 import loop.core.events.PullRequestMerged
 import loop.core.events.Tracker
@@ -124,6 +125,15 @@ internal class Merges(
     private val ciPolls = mutableMapOf<String, CiPoll>()
 
     /**
+     * The base tip the merge waits fetched last in this process, with the base branch it was fetched for (bl-178): the
+     * merge check's fetch and the round skip's. Null before the first fetch.
+     */
+    private var fetchedBase: Pair<String, String>? = null
+
+    /** The head and the base tip of the last early conflict check of each queued merge wait, by issue id (bl-178). */
+    private val earlyChecked = mutableMapOf<String, Pair<String, String>>()
+
+    /**
      * Settles the merge [wait] of an issue no longer active (m2-26), [issue] as the by-id read shows it, null when it is
      * gone. The pull request is looked up first: merged at the stored head, the merge is delivered, a human touch only
      * when Loop did not call the merge in this round (bl-181), since `Closes #n` may close the issue as Loop merges. Otherwise
@@ -143,6 +153,61 @@ internal class Merges(
      * nothing more runs this tick.
      */
     suspend fun advance(wait: Wait.Merge): Wait.Merge? = if (wait.phase == MergePhase.Ci) pollCi(wait) else wait
+
+    /**
+     * The early conflict check of [wait], a merge wait queued behind the head of the delivery queue (bl-178), inline in
+     * the tick with no slot: `git merge-tree` of the base tip last fetched and the committed head of the wait's
+     * fingerprint, in the issue's own workspace, read only. It runs once per head and base tip, a failed call included.
+     * A conflict ends the wait as a conflict of the merge check does, the m2-26 comment, the findings for the next
+     * attempt, and records `merge_conflict_early`; the issue then leaves the queue. As for the merge check, a pull request
+     * a human merged meanwhile is read first and never sent back (bl-181). A clean merge changes nothing, and
+     * a call that fails logs a warning and changes nothing: the merge check finds the conflict in its turn.
+     */
+    suspend fun checkEarly(
+        wait: Wait.Merge,
+        issue: Issue,
+    ) {
+        val workflow = workflow()
+        val base =
+            workflow.config.kinds
+                ?.code
+                ?.delivery
+                ?.pullRequest
+                ?.base ?: return
+        val (fetchedFor, tip) = fetchedBase ?: return
+        if (fetchedFor != base) return
+        val head = WorkspaceFingerprint.committedHead(wait.fingerprint.orEmpty()) ?: return
+        if (earlyChecked[wait.issueId] == head to tip) return
+        earlyChecked[wait.issueId] = head to tip
+        val failed: (String) -> Unit = { reason ->
+            val text = redactor.redact("the early conflict check failed, the wait stays queued: $reason").take(REASON_MAX)
+            log.log(LogLevel.WARN, MergeCheck.MARK, LogOutcome.FAILED, waitContext(wait), reason = text)
+        }
+        val workspace =
+            locate(workflow, WorkspaceKey.of(wait.identifier)).getOrElse {
+                failed("cannot locate the workspace: ${it.describe()}")
+                return
+            } ?: return failed("the workspace of ${wait.identifier} is gone")
+        val outcome = gitStep { git.mergeTree(workspace, tip, head) }.getOrElse { return failed(it.describe()) }
+        val conflict = outcome as? WorkspaceGit.MergeTreeOutcome.Conflict ?: return
+        earlyChecked.remove(wait.issueId)
+        val paths = redactor.redact(conflict.paths.take(MergeConflictEarly.PATHS_MAX).joinToString(","))
+        recordWaitEvent(
+            wait,
+            MergeConflictEarly,
+            mapOf(MergeConflictEarly.ISSUE to wait.identifier, MergeConflictEarly.BASE to tip, MergeConflictEarly.PATHS to paths),
+        )
+        val detail = redactor.redact(conflict.detail).take(REASON_MAX)
+        val branch = PullRequestDelivery.branch(WorkspaceKey.of(wait.identifier).value)
+        mergeCheckFailed(
+            wait,
+            issue,
+            workflow,
+            MergeCheck.conflictComment(wait.numberText, base, tip, branch, detail),
+            MergeCheck.conflictFindings(base, tip, detail),
+            "merging the base conflicts, found while queued: $detail",
+        )
+    }
 
     /**
      * The merge check and the merge of one approved pull request (m2-26), run in the background on one slot. Without
@@ -413,6 +478,7 @@ internal class Merges(
                     deliveryStep { executorFor(workflow).fetchBase() }
                         .getOrElse { return mergeStepFailed(wait, MergeCheck.STEP_FETCH, it) }
                 recordWaitEvent(wait, BaseFetched, mapOf(Delivery.SHA to fetched, Delivery.BASE to base))
+                fetchedBase = base to fetched
                 fetched
             }
         val located = locate(workflow, WorkspaceKey.of(wait.identifier))
@@ -845,6 +911,7 @@ internal class Merges(
         }
         val tip = deliveryStep { executor.fetchBase() }.getOrElse { return stop("cannot fetch the base: ${it.describe()}") }
         recordWaitEvent(wait, BaseFetched, mapOf(Delivery.SHA to tip, Delivery.BASE to pullRequest.base))
+        fetchedBase = pullRequest.base to tip
         val workspace =
             locate(workflow, WorkspaceKey.of(wait.identifier)).getOrNull()
                 ?: return stop("cannot locate the workspace of ${wait.identifier}")

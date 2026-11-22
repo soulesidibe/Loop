@@ -347,6 +347,23 @@ class TraceCommandTest {
     }
 
     @Test
+    fun `bl-178 an early conflict of a queued merge wait shows in the attempt's timeline`() {
+        val lines =
+            trace(
+                event("attempt_started", "13:48:40", "a1"),
+                event("attempt_finished", "13:48:42", "a1", data = mapOf("outcome" to "succeeded", "reason" to "waiting_approval")),
+                event(
+                    "merge_conflict_early",
+                    "14:35:06",
+                    "a1",
+                    data = mapOf("issue" to "t-2", "base" to "0123456789abcdef", "paths" to "a.txt,b.txt"),
+                ),
+            )
+
+        assertContains(lines, line("14:35:06", "merge_conflict_early", "issue=t-2 base=0123456789abcdef paths=a.txt,b.txt"))
+    }
+
+    @Test
     fun `m2-28 the merge risk assessment and an auto merge fallback show in the attempt's timeline`() {
         val lines =
             trace(

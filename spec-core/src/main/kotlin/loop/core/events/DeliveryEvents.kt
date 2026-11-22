@@ -249,6 +249,39 @@ object MergeRoundSkipped : KeyedEvent("merge_round_skipped", Delivery.BASE_SHA, 
     ) = "the base moved to ${data[TIP]?.take(SHORT_SHA)} only in recheck_skip_paths, merges with no new round: ${data[FILES]}"
 }
 
+/**
+ * bl-178: the early conflict check of a merge wait queued behind the head of the delivery queue found, with
+ * `git merge-tree`, that merging the fetched base tip [BASE] into its head conflicts in [PATHS]. The issue goes back to
+ * its agent before its turn, with the merge check's conflict comment. [PATHS] lists at most [PATHS_MAX] paths, comma
+ * separated.
+ */
+object MergeConflictEarly : KeyedEvent(
+    "merge_conflict_early",
+    MergeConflictEarly.ISSUE,
+    MergeConflictEarly.BASE,
+    MergeConflictEarly.PATHS,
+) {
+    /** The identifier of the queued issue whose merge conflicts. */
+    const val ISSUE = "issue"
+
+    /** The fetched base tip, a commit. */
+    const val BASE = "base"
+
+    /** The conflicted paths. */
+    const val PATHS = "paths"
+
+    /** At most this many paths are listed. */
+    const val PATHS_MAX = 20
+
+    override val sample = mapOf(ISSUE to "bl-3", BASE to "0123456789abcdef", PATHS to "src/main/kotlin/App.kt")
+
+    override fun humanSentence(
+        data: Map<String, String>,
+        facts: HumanFacts,
+    ) = "merging the base at ${data[BASE]?.take(SHORT_SHA)} conflicts in ${data[PATHS]}, " +
+        "found while queued, the issue goes back to its agent before its turn"
+}
+
 /** m3-15: the merge waits for the Actions runs of the merged head [Delivery.SHA], pushed for them. */
 object CiWaiting : KeyedEvent("ci_waiting", Delivery.SHA) {
     override val sample = mapOf(Delivery.SHA to "0123456789abcdef")

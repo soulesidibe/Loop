@@ -389,6 +389,7 @@ class MergeCheckOrchestratorTest {
         runner: FakeRunner = FakeRunner(),
         machine: FakeMachine = FakeMachine(),
         parked: FakeParkedIssues = FakeParkedIssues(),
+        logLines: MutableList<String> = mutableListOf(),
     ): Orchestrator {
         var next = 0
         val clock = SchedulerClock(testScheduler)
@@ -397,7 +398,7 @@ class MergeCheckOrchestratorTest {
             tracker = tracker,
             runner = runner,
             sink = sink,
-            log = KeyValueLog(out = {}, clock = clock, redactor = Redactor.NONE),
+            log = KeyValueLog(out = { logLines += it }, clock = clock, redactor = Redactor.NONE),
             clock = clock,
             workspaces = WorkspaceManager(Workspaces(workflow.workspaceRoot), HooksConfig(), FakeHookRunner()),
             newId = { "a${++next}" },
@@ -2009,6 +2010,186 @@ class MergeCheckOrchestratorTest {
 
             assertEquals(listOf<String?>("t-2"), sink.checksStarted())
             assertEquals(listOf(8L), remote.merges.map { it.first })
+        }
+
+    /**
+     * bl-178: t-1 at the head of the queue under `ci: actions`, so it holds the queue in its CI wait after its merge
+     * check fetched [base], and t-2 queued behind it with the open pull requests 7 and 8.
+     */
+    private fun earlyRemote(base: String): FakeRemote =
+        FakeRemote().apply {
+            bases += base
+            pulls["loop/t-1"] = PullRequest(7, "https://github.com/acme/widgets/pull/7", created = false)
+            pulls["loop/t-2"] = PullRequest(8, "https://github.com/acme/widgets/pull/8", created = false)
+        }
+
+    /** The queue of t-1 at the head and t-2 behind it, t-2 at [secondFingerprint]. */
+    private fun earlyQueue(
+        first: String,
+        secondFingerprint: String,
+    ): FakeWaitingIssues =
+        FakeWaitingIssues(
+            mergeWait(clean(first)),
+            mergeWait(secondFingerprint, identifier = "t-2", number = 8, since = FIXED_NOW + 1.seconds),
+        )
+
+    /** The warn lines of a failed early conflict check (bl-178). */
+    private fun List<String>.earlyCheckFailures(): List<String> = filter { "level=warn" in it && "early conflict check" in it }
+
+    @Test
+    fun `bl-178, a queued merge wait that conflicts with the base goes back to its agent with the conflict comment before its turn`() =
+        runTest {
+            val first = verifiedWorktree()
+            val second = secondWorktree()
+            val base = baseCommit("work2.txt", "conflicting\n")
+            val tracker = FakeTracker(listOf(issue("t-1"), issue("t-2")))
+            val remote = earlyRemote(base)
+            val waiting = earlyQueue(first, clean(second))
+            val sink = FakeSink()
+            val runner = FakeRunner()
+            val orchestrator = orchestrator(tracker, remote, waiting, sink, workflow(ci = CiMode.Actions), runner = runner)
+
+            tick(orchestrator)
+            tick(orchestrator, after = 1_000)
+
+            assertEquals(listOf<String?>("t-1"), sink.checksStarted(), "t-2 never ran a merge check")
+            assertEquals(mapOf("issue" to "t-2", "base" to base, "paths" to "work2.txt"), sink.data("merge_conflict_early"))
+            assertEquals("t-2", sink.events.single { it.kind == "merge_conflict_early" }.issueIdentifier)
+            assertNull(waiting.records[PROJECT.value to "id-t-2"], "the wait of t-2 ended, it left the queue")
+            assertEquals(WaitReason.Merge, waiting.records.getValue(PROJECT.value to "id-t-1").reason, "the head is untouched")
+            val comment =
+                tracker.comments
+                    .single { it.first == "id-t-2" }
+                    .second.text
+            assertContains(comment, "pull request #8")
+            assertContains(comment, base)
+            assertContains(comment, "work2.txt")
+            assertContains(comment, "refs/loop/base/main")
+            assertEquals(second, git(secondWorkspace, "rev-parse", "HEAD"), "the workspace of t-2 is untouched")
+            assertEquals("", git(secondWorkspace, "status", "--porcelain"))
+            assertEquals(emptyList(), remote.merges)
+
+            advanceTimeBy(5_000)
+            orchestrator.tick()
+            testScheduler.advanceUntilIdle()
+
+            val prompt = runner.calls.first { it.first.issue.identifier == "t-2" }.second
+            assertContains(prompt, "git merge refs/loop/base/main")
+            assertContains(prompt, base)
+            assertContains(prompt, "work2.txt")
+        }
+
+    @Test
+    fun `bl-178, a queued merge wait that merges cleanly with the fetched base stays queued`() =
+        runTest {
+            val first = verifiedWorktree()
+            val second = secondWorktree()
+            val base = baseCommit("c.txt", "base\n")
+            val tracker = FakeTracker(listOf(issue("t-1"), issue("t-2")))
+            val remote = earlyRemote(base)
+            val waiting = earlyQueue(first, clean(second))
+            val sink = FakeSink()
+            val logLines = mutableListOf<String>()
+            val orchestrator = orchestrator(tracker, remote, waiting, sink, workflow(ci = CiMode.Actions), logLines = logLines)
+
+            tick(orchestrator)
+            tick(orchestrator, after = 1_000)
+            tick(orchestrator, after = 1_000)
+
+            assertEquals(emptyList(), sink.all("merge_conflict_early"))
+            assertEquals(emptyList(), logLines.earlyCheckFailures())
+            val queued = waiting.records.getValue(PROJECT.value to "id-t-2")
+            assertEquals(WaitReason.Merge, queued.reason)
+            assertEquals("check", queued.data[WaitKeys.PHASE])
+            assertEquals(clean(second), queued.data[WaitKeys.FINGERPRINT])
+            assertEquals(emptyList(), tracker.comments.filter { it.first == "id-t-2" })
+            assertEquals(listOf<String?>("t-1"), sink.checksStarted())
+            assertEquals(second, git(secondWorkspace, "rev-parse", "HEAD"))
+            assertEquals("", git(secondWorkspace, "status", "--porcelain"))
+        }
+
+    @Test
+    fun `bl-178, the head of the queue is not checked early, its conflict is found by the normal merge check`() =
+        runTest {
+            val first = verifiedWorktree()
+            val second = secondWorktree()
+            val base = baseCommit("work2.txt", "conflicting\n")
+            val tracker = FakeTracker(listOf(issue("t-1"), issue("t-2")))
+            // ci: none, so t-1 merges in the first tick and t-2 heads the queue in the second, with a known base tip.
+            val remote = earlyRemote(base).apply { baseOnMerge = true }
+            val waiting = earlyQueue(first, clean(second))
+            val sink = FakeSink()
+            val orchestrator = orchestrator(tracker, remote, waiting, sink)
+
+            tick(orchestrator)
+            assertEquals(listOf(7L), remote.merges.map { it.first })
+            tick(orchestrator, after = 1_000)
+
+            assertEquals(emptyList(), sink.all("merge_conflict_early"))
+            assertEquals(listOf<String?>("t-1", "t-2"), sink.checksStarted())
+            val finished = sink.events.filter { it.kind == MergeCheckFinished.name && it.issueIdentifier == "t-2" }
+            assertEquals(listOf(MergeCheck.CONFLICT), finished.map { it.data["outcome"] })
+            assertNull(waiting.records[PROJECT.value to "id-t-2"])
+        }
+
+    @Test
+    fun `bl-178, a merge-tree call that fails logs a warning and leaves the queued wait as it is`() =
+        runTest {
+            val first = verifiedWorktree()
+            secondWorktree()
+            val base = baseCommit("work2.txt", "conflicting\n")
+            val tracker = FakeTracker(listOf(issue("t-1"), issue("t-2")))
+            val remote = earlyRemote(base)
+            // A head the repository does not hold: git merge-tree cannot read it.
+            val missing = clean("0123456789".repeat(4))
+            val waiting = earlyQueue(first, missing)
+            val sink = FakeSink()
+            val logLines = mutableListOf<String>()
+            val orchestrator = orchestrator(tracker, remote, waiting, sink, workflow(ci = CiMode.Actions), logLines = logLines)
+
+            tick(orchestrator)
+            tick(orchestrator, after = 1_000)
+
+            assertEquals(1, logLines.earlyCheckFailures().size, logLines.joinToString("\n"))
+            assertEquals(emptyList(), sink.all("merge_conflict_early"))
+            val queued = waiting.records.getValue(PROJECT.value to "id-t-2")
+            assertEquals(WaitReason.Merge, queued.reason)
+            assertEquals("check", queued.data[WaitKeys.PHASE])
+            assertEquals(emptyList(), tracker.comments.filter { it.first == "id-t-2" })
+            assertEquals(listOf<String?>("t-1"), sink.checksStarted())
+        }
+
+    @Test
+    fun `bl-178, a queued wait whose head and base tip did not change is not checked again`() =
+        runTest {
+            val first = verifiedWorktree()
+            secondWorktree()
+            val base = baseCommit("c.txt", "base\n")
+            val tracker = FakeTracker(listOf(issue("t-1"), issue("t-2")))
+            val remote = earlyRemote(base)
+            // A failing call is the one an observer sees: each check that runs logs one warning.
+            val missing = clean("0123456789".repeat(4))
+            val waiting = earlyQueue(first, missing)
+            val sink = FakeSink()
+            val logLines = mutableListOf<String>()
+            val orchestrator = orchestrator(tracker, remote, waiting, sink, workflow(ci = CiMode.Actions), logLines = logLines)
+
+            tick(orchestrator)
+            tick(orchestrator, after = 1_000)
+            tick(orchestrator, after = 1_000)
+            tick(orchestrator, after = 1_000)
+
+            assertEquals(1, logLines.earlyCheckFailures().size, "one check for one head and one base tip")
+
+            // A new head is checked once more.
+            val key = PROJECT.value to "id-t-2"
+            val record = waiting.records.getValue(key)
+            val otherMissing = clean("abcdef0123".repeat(4))
+            waiting.records[key] = record.copy(data = record.data + (WaitKeys.FINGERPRINT to otherMissing))
+            tick(orchestrator, after = 1_000)
+            tick(orchestrator, after = 1_000)
+
+            assertEquals(2, logLines.earlyCheckFailures().size)
         }
 
     /** A sessionless runner whose one turn runs [work] in the workspace, then queues a move to review, the agent's result. */

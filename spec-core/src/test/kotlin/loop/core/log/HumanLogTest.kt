@@ -483,6 +483,22 @@ class HumanLogTest {
     }
 
     @Test
+    fun `bl-178 an early conflict of a queued merge wait reads as a sentence of its issue`() {
+        val log = humanLog()
+
+        val data = mapOf("issue" to "m1-13", "base" to "89abcdef0123456789", "paths" to "a.txt,b.txt")
+        log.recorded(event("merge_conflict_early", data, attempt = null))
+
+        assertEquals(
+            listOf(
+                "17:02:11  m1-13  merging the base at 89abcdef0123 conflicts in a.txt,b.txt, found while queued, " +
+                    "the issue goes back to its agent before its turn",
+            ),
+            lines,
+        )
+    }
+
+    @Test
     fun `a continuation is silent until it starts, a dropped one stays silent, a dropped retry is told`() {
         val log = humanLog()
 
