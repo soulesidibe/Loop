@@ -4835,8 +4835,9 @@ class Orchestrator(
      * first runs the CI poll (m3-15), which needs no slot, through [Merges.advance]; then its merge check and merge run
      * in one background job in [scope] through [Merges.run]. A job in phase `check` waits for a free agent slot and a
      * machine slot; a job in phase `merge` takes no agent slot, and a machine slot only for the auto merge gate's
-     * reviewer (bl-173). The waits behind the head stay in phase `check` and do nothing. The running jobs are returned so
-     * `--once` waits for them.
+     * reviewer (bl-173). The waits behind the head stay in phase `check` and do nothing, but for the early conflict check
+     * of [Merges.checkEarly] against the base tip last fetched (bl-178). The running jobs are returned so `--once` waits
+     * for them.
      */
     private suspend fun syncMerges(
         scope: CoroutineScope,
@@ -4864,7 +4865,11 @@ class Orchestrator(
                         continue
                     }
                 }
-            if (headFound) continue
+            if (headFound) {
+                // bl-178: a wait behind the head only gets the early conflict check, against the base tip fetched last.
+                merges.checkEarly(stored)
+                continue
+            }
             headFound = true
             // m3-15: a CI wait is polled here, with no slot; once CI allows the merge, the merge phase starts below.
             val wait = merges.advance(stored) ?: continue

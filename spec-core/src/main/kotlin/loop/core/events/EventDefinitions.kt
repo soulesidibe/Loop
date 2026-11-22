@@ -67,6 +67,7 @@ object EventDefinitions {
             MergeCheckFinished,
             MergeRequeued,
             MergeRoundSkipped,
+            MergeConflictEarly,
             CiWaiting,
             CiFinished,
             DeliveryQueuePaused,

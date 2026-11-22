@@ -446,6 +446,39 @@ class WorkspaceGit(
         throw IOException(cleanup?.let { "$failed, then ${it.message}" } ?: failed)
     }
 
+    /** How a [mergeTree] ended: [Clean], or a [Conflict] in [Conflict.paths], [Conflict.detail] as a [merge] shows it. */
+    sealed interface MergeTreeOutcome {
+        data object Clean : MergeTreeOutcome
+
+        data class Conflict(
+            val paths: List<String>,
+            val detail: String,
+        ) : MergeTreeOutcome
+    }
+
+    /**
+     * Whether merging [base] into [head] conflicts (bl-178), read with `git merge-tree --write-tree` (git 2.38 or later)
+     * under the same pins as [merge]. It writes objects only, never the work tree, the index or a ref. Exit 0 is
+     * [MergeTreeOutcome.Clean]; exit 1 with a tree id first is a [MergeTreeOutcome.Conflict] naming the conflicted
+     * paths. Anything else, a missing object, a git too old for `--write-tree` or a conflict that names no path, is an
+     * [IOException].
+     */
+    fun mergeTree(
+        root: Path,
+        base: String,
+        head: String,
+    ): MergeTreeOutcome {
+        val outcome = run(root, "merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", base, head)
+        if (outcome.code == 0) return MergeTreeOutcome.Clean
+        val fields = outcome.stdout.split('\u0000')
+        val paths = fields.drop(1).filter { it.isNotEmpty() }
+        if (outcome.code == 1 && TREE_ID.matches(fields.first()) && paths.isNotEmpty()) {
+            val conflicted = paths.distinct()
+            return MergeTreeOutcome.Conflict(conflicted, conflictDetail(conflicted))
+        }
+        throw IOException("git merge-tree exited with code ${outcome.code}: ${outcome.firstLine()}")
+    }
+
     /** Fails when `HEAD` of [root] is no longer [before] after a merge was undone. */
     private fun checkHead(
         root: Path,
@@ -562,6 +595,9 @@ class WorkspaceGit(
 
         /** Patches as text, no rename pairing, no external diff and no text conversion (m2-28); numstat ignores `--text`. */
         private val DIFF_AS_TEXT = arrayOf("--text", "--no-renames", "--no-ext-diff", "--no-textconv")
+
+        /** The tree id `git merge-tree --write-tree` prints first, SHA-1 or SHA-256. */
+        private val TREE_ID = Regex("[0-9a-f]{40}|[0-9a-f]{64}")
 
         /** The most of an unexpected git line an error shows. */
         private const val LINE_MAX: Int = 200

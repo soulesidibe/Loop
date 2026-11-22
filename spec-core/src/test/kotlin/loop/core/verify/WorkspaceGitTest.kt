@@ -461,6 +461,45 @@ class WorkspaceGitTest {
         assertFalse(marker.exists(), "a hook ran")
     }
 
+    /** The work tree, the index, `HEAD` and every ref of [repo], to show a read only call left them as they were. */
+    private fun state(): List<String> =
+        listOf(git("rev-parse", "HEAD"), git("status", "--porcelain"), git("ls-files", "--stage"), git("for-each-ref"))
+
+    @Test
+    fun `bl-178, merge-tree reads a clean merge and writes no work tree, index or ref`() {
+        val (work, base) = forked()
+        plantHooks()
+        val before = state()
+
+        assertEquals(WorkspaceGit.MergeTreeOutcome.Clean, workspaceGit.mergeTree(repo, base, work))
+
+        assertEquals(before, state())
+        assertFalse(marker.exists(), "a hook ran")
+    }
+
+    @Test
+    fun `bl-178, merge-tree names the conflicted paths and leaves the workspace as it was`() {
+        val (work, base) = forked(conflict = true)
+        plantHooks()
+        val before = state()
+
+        val conflict = assertIs<WorkspaceGit.MergeTreeOutcome.Conflict>(workspaceGit.mergeTree(repo, base, work))
+
+        assertEquals(listOf("b.txt"), conflict.paths)
+        assertEquals("conflict in b.txt", conflict.detail)
+        assertEquals(before, state())
+        assertFalse(marker.exists(), "a hook ran")
+    }
+
+    @Test
+    fun `bl-178, merge-tree of a commit the repository does not hold is an error, not a conflict`() {
+        val (work, _) = forked()
+
+        val error = assertFailsWith<IOException> { workspaceGit.mergeTree(repo, "0123456789".repeat(4), work) }
+
+        assertTrue(error.message!!.startsWith("git merge-tree exited with code"), error.message)
+    }
+
     @Test
     fun `the restore and the fingerprint run no planted hook or fsmonitor`() {
         forked()
