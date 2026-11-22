@@ -3,7 +3,7 @@ id: bl-182
 title: "Low findings of the bl-178 review, the early conflict check"
 state: todo
 priority: 3
-labels: [needs-triage]
+labels: [ready-for-agent]
 blocked_by: []
 ---
 
@@ -13,21 +13,35 @@ None. Backlog, not scheduled in a milestone. Low findings of the merge risk revi
 
 ## What
 
-- **Stale base tip.** `fetchedBase` in `Merges.kt` can be hours old while the head sits in a CI wait or the queue is paused (bl-175), since no fetch happens then. A wait joining later is checked against it. A wrong refusal needs main to have removed the conflict since. Rare; the comment names the tip it used.
-- **No fetch of its own.** The issue asked for a check after each base fetch; the agent reuses the last fetched tip. A queue of two is only ever checked against the base from before the head's merge.
-- **Tick blocking.** `git merge-tree` (5 minute `WorkspaceGit` timeout) and the tracker comment run inline in the tick, once per wait per head and tip.
-- **Failed call not retried, not traced.** `earlyChecked` is set before the call, so a transient failure is not retried until the tip or head moves, and only a WARN log records it, no event.
-- **`earlyChecked` grows.** Entries are removed only on a conflict, one pair per issue for the life of the process. Harmless.
-- **Double comment after a restart** between the comment and the end of the wait. Same window as the merge check's conflict path.
-- **Early checks run while the queue is paused** (bl-175). Arguably wanted, but undocumented and untested.
-- **Stranded merge commit.** A queued wait holding a bl-174 candidate head is checked at its verified head; a conflict ends the wait with the workspace at Loop's merge commit. Same outcome one round later on the normal path.
-- **`ciPolls` not cleared** on the early refusal path (`mergeCheckFailed`, unlike `mergeRefused`). Only for a wait behind the head in phase ci.
-- **Early refusal of a merged pull request.** Attempt 2 made `checkEarly` read a pull request a human merged meanwhile before sending the issue back (bl-181's rule). It reuses bl-181's tested path, but no test covers it on the early path.
-- **Untested paths.** The bl-176 round skip as the tip's source, a paused queue, a queue three deep, a wait holding a merged fingerprint. The `MergesTest` fake always answers clean.
+Low findings of the bl-178 review. Five are fixed, the others are closed with their reason.
+
+**Fix 1, a failed early check is retried and recorded.** In `Merges.kt`, `earlyChecked` is set before the `git merge-tree` call, so a failed call (timeout, git error) is not tried again until the base tip or the head moves, and only a WARN log records it. Desired: a failed call does not count as checked, so the next tick tries again, and it records an event, `early_check_failed` (`issue`, `head`, `base`, `reason`), shown by `loop trace` and the human log. A clean or conflicting answer is still checked once per head and tip. The sentence "a failed call included" of the "Early conflict check (bl-178)" paragraph changes accordingly.
+
+**Fix 2, the early refusal of a merged pull request is tested.** Attempt 2 of bl-178 made `checkEarly` read the pull request's state before it sends the issue back, so a pull request a human merged meanwhile ends the wait as a merged delivery (bl-181's rule). Add a test on the early path: a queued wait whose pull request is merged when its conflict is found ends as merged, records the human touch, and the issue is not dispatched again.
+
+**Fix 3, the early refusal leaves no state behind.** The early refusal path does not clear `ciPolls` for the issue (`mergeCheckFailed`, unlike `mergeRefused`), and `earlyChecked` entries are removed only on a conflict. Desired: when a wait ends, by any path, its `ciPolls` and `earlyChecked` entries are dropped.
+
+**Fix 4, early checks during a paused queue are written down.** Early checks keep running while the delivery queue is paused (bl-175). This is wanted: a conflict found early saves a round once the queue resumes. Say so in the "Early conflict check (bl-178)" paragraph of the m3-15 section of `docs/spec-decisions.md`, and add a test that a paused queue still refuses a conflicting queued wait early. The matching section of `.loop/specs/serialized-delivery.md` is a protected path, a human updates it after the merge.
+
+**Fix 5, the tip's source is tested.** Add a test where the base tip used by the early check comes from bl-176's round skip (main moved only by `.loop/issues/**` changes), and one with a queue three deep, where only the conflicting wait is sent back.
+
+**Closed, each for its reason:**
+
+- A stale base tip while the head waits on CI or the queue is paused: a wrong refusal needs main to have removed the conflict since, which is rare, and the tracker comment names the tip used.
+- No fetch of its own: reusing the last fetched base tip is the accepted design, written in the spec section of bl-178.
+- Tick blocking by the inline `merge-tree` call: it runs at most once per wait per head and tip, bounded by the 5 minute `WorkspaceGit` timeout.
+- A double comment after a restart between the comment and the end of the wait: the same window as the merge check's conflict path, and only the comment is doubled.
+- A stranded merge commit when a queued wait holds a bl-174 candidate head: the same outcome as the normal path one round later.
+- A wait holding a merged fingerprint: covered by the merged pull request read of fix 2.
+
+Area: `Merges.kt`, the events and log texts, `docs/spec-decisions.md`. In `Orchestrator.kt` grep, never read it whole.
+
+Out of scope: the closed findings above, a fetch of its own for the early check, any change to when the early check runs.
 
 ## Acceptance criteria
 
-- [ ] Each finding above is fixed with a test, or closed with a one line reason in a comment (judgment).
+- [ ] `./gradlew --no-daemon :spec-core:test --tests 'loop.core.orchestrator.MergeCheckOrchestratorTest' --tests 'loop.core.orchestrator.CiWaitOrchestratorTest'` passes, with tests for: a failed `merge-tree` call is tried again at the next tick and records `early_check_failed`; a queued wait whose pull request a human merged ends as merged with a human touch and is not dispatched again; a wait that ends leaves no `ciPolls` or `earlyChecked` entry; a paused queue still refuses a conflicting queued wait early; a base tip from bl-176's round skip is used; in a queue three deep only the conflicting wait is sent back.
+- [ ] `docs/spec-decisions.md` (m3-15 section) describes fixes 1, 3 and 4.
 - [ ] `./gradlew --no-daemon build` passes.
 
 ## Comments
@@ -37,3 +51,9 @@ None. Backlog, not scheduled in a milestone. Low findings of the merge risk revi
 > *This was generated by AI during triage.*
 
 Filed from the merge risk reviews of bl-178. Triage decides which findings are worth fixing. The `.loop/specs/serialized-delivery.md` section the agent could not write (protected path) was added by hand on 2026-11-22.
+
+2026-11-22 triage:
+
+> *This was generated by AI during triage.*
+
+Ready for agent: fixes 1 to 5 as above, the other findings closed with their reason.
