@@ -4,6 +4,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
@@ -13,6 +14,7 @@ import kotlinx.coroutines.channels.ChannelResult
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.produceIn
 import kotlinx.coroutines.isActive
@@ -4879,9 +4881,14 @@ class Orchestrator(
             // reviewer, the auto merge gate's; with none free the work waits for a later tick.
             val slot = if (checks || wait.approvedBy == AutoMerge.AUTO) machineGate.claim(waitContext(wait)) else null
             if (slot == SlotClaim.Refused) continue
+            waits.checkStarted(wait.issueId, holdsSlot = checks)
+            // bl-180: the slot and the running check are taken before the job, so the job starts atomically: its body
+            // runs even on a scope cancelled meanwhile, stops at once there, and its finally releases both.
+            @OptIn(DelicateCoroutinesApi::class)
             val job =
-                scope.async(start = CoroutineStart.LAZY) {
+                scope.async(start = CoroutineStart.ATOMIC) {
                     try {
+                        ensureActive()
                         // The wait itself says what follows: the tick reads it again, so what the run left is not needed here.
                         merges.run(wait, candidate)
                         Unit
@@ -4895,8 +4902,6 @@ class Orchestrator(
                         attemptEnded.trySend(Unit)
                     }
                 }
-            waits.checkStarted(wait.issueId, holdsSlot = checks)
-            job.start()
             launched += job
         }
         return launched
