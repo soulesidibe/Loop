@@ -465,6 +465,24 @@ class HumanLogTest {
     }
 
     @Test
+    fun `bl-175 the pause of the delivery queue and its resumes are run level lines`() {
+        val log = humanLog()
+
+        log.recorded(event("delivery_queue_paused", mapOf("issue" to "m1-13", "reason" to "ci_timeout")))
+        log.recorded(event("delivery_queue_resumed", mapOf("by" to "approve")))
+        log.recorded(event("delivery_queue_resumed", mapOf("by" to "restart"), attempt = null))
+
+        assertEquals(
+            listOf(
+                "17:02:11  delivery queue paused, the CI of m1-13 timed out, no merge check starts until loop approve or a restart",
+                "17:02:11  delivery queue resumed by loop approve",
+                "17:02:11  delivery queue resumed by a restart",
+            ),
+            lines,
+        )
+    }
+
+    @Test
     fun `a continuation is silent until it starts, a dropped one stays silent, a dropped retry is told`() {
         val log = humanLog()
 

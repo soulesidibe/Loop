@@ -332,6 +332,21 @@ class TraceCommandTest {
     }
 
     @Test
+    fun `bl-175 the pause of the delivery queue and its resume show in the attempt's timeline`() {
+        val lines =
+            trace(
+                event("attempt_started", "13:48:40", "a1"),
+                event("attempt_finished", "13:48:42", "a1", data = mapOf("outcome" to "succeeded", "reason" to "waiting_approval")),
+                event("ci_finished", "14:35:05", "a1", data = mapOf("outcome" to "timeout", "runs" to "30433642")),
+                event("delivery_queue_paused", "14:35:06", "a1", data = mapOf("issue" to "t-1", "reason" to "ci_timeout")),
+                event("delivery_queue_resumed", "15:02:00", "a1", data = mapOf("by" to "approve")),
+            )
+
+        assertContains(lines, line("14:35:06", "delivery_queue_paused", "issue=t-1 reason=ci_timeout"))
+        assertContains(lines, line("15:02:00", "delivery_queue_resumed", "by=approve"))
+    }
+
+    @Test
     fun `m2-28 the merge risk assessment and an auto merge fallback show in the attempt's timeline`() {
         val lines =
             trace(

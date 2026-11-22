@@ -69,6 +69,8 @@ object EventDefinitions {
             MergeRoundSkipped,
             CiWaiting,
             CiFinished,
+            DeliveryQueuePaused,
+            DeliveryQueueResumed,
             PullRequestMerged,
             MergeRiskAssessed,
             AutoMergeFallback,

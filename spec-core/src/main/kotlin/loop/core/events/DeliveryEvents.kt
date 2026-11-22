@@ -254,6 +254,59 @@ object CiFinished : KeyedEvent("ci_finished", Delivery.OUTCOME, Delivery.RUNS) {
     }
 }
 
+/**
+ * bl-175: the CI wait of the head of the delivery queue, [ISSUE], ended in `timeout`, so the queue of the project
+ * pauses: no merge wait starts its merge check until `loop approve` or a restart. Held in memory, like the runner hold.
+ */
+object DeliveryQueuePaused : KeyedEvent("delivery_queue_paused", DeliveryQueuePaused.ISSUE, Delivery.REASON) {
+    /** The identifier of the issue whose CI wait timed out. */
+    const val ISSUE = "issue"
+
+    /** The only reason so far: the head's CI wait timed out. */
+    const val CI_TIMEOUT = "ci_timeout"
+
+    override val trace = TraceShow.TIMELINE_AND_ISSUE_LEVEL
+    override val human = HumanShow.RUN
+    override val sample = mapOf(ISSUE to "bl-2", Delivery.REASON to CI_TIMEOUT)
+
+    override fun humanSentence(
+        data: Map<String, String>,
+        facts: HumanFacts,
+    ) = when (data[Delivery.REASON]) {
+        CI_TIMEOUT ->
+            "delivery queue paused, the CI of ${data[ISSUE]} timed out, no merge check starts until loop approve or a restart"
+        else -> "delivery queue paused after ${data[ISSUE]}, ${data[Delivery.REASON]}"
+    }
+
+    /** The kinds [openIn] reads: this one and [DeliveryQueueResumed]. */
+    val QUEUE_KINDS: Set<String> get() = setOf(name, DeliveryQueueResumed.name)
+
+    /**
+     * The `delivery_queue_paused` among [events], in recording order, with no `delivery_queue_resumed` after it: the
+     * pause still in effect, or the one an earlier run left, which a restart ends. Null when none.
+     */
+    fun openIn(events: List<RecordedEvent>): RecordedEvent? = events.lastOrNull { it.kind in QUEUE_KINDS }?.takeIf { it.kind == name }
+}
+
+/** bl-175: the paused delivery queue resumed, [Delivery.BY] [APPROVE] (`loop approve` of any issue) or [RESTART]. */
+object DeliveryQueueResumed : KeyedEvent("delivery_queue_resumed", Delivery.BY) {
+    const val APPROVE = "approve"
+    const val RESTART = "restart"
+
+    override val trace = TraceShow.TIMELINE_AND_ISSUE_LEVEL
+    override val human = HumanShow.RUN
+    override val sample = mapOf(Delivery.BY to APPROVE)
+
+    override fun humanSentence(
+        data: Map<String, String>,
+        facts: HumanFacts,
+    ) = when (data[Delivery.BY]) {
+        APPROVE -> "delivery queue resumed by loop approve"
+        RESTART -> "delivery queue resumed by a restart"
+        else -> "delivery queue resumed, ${data[Delivery.BY]}"
+    }
+}
+
 /** m2-26: the pull request merged with a sha guard. */
 object PullRequestMerged : KeyedEvent("pull_request_merged", Delivery.NUMBER, Delivery.SHA, Delivery.METHOD) {
     /** The commit the merge made on the base. */

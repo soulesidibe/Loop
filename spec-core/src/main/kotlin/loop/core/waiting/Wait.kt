@@ -81,6 +81,9 @@ sealed class Wait(
         /** True once it was approved. */
         val approved: Boolean get() = toRecord().approved
 
+        /** When it was approved (bl-175), null before `loop approve` or when the record holds no readable time. */
+        val approvedAt: Instant? get() = data[WaitingIssue.APPROVED_AT]?.let { runCatching { Instant.parse(it) }.getOrNull() }
+
         /** This wait holding the [url] of the pull request a delivery commented on the issue (m2-25). */
         fun commented(url: String): Approval = Approval(with(data = data + (WaitKeys.PULL_REQUEST to url)))
 
