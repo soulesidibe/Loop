@@ -93,7 +93,7 @@ sealed class Wait(
         /**
          * The `Waiting(merge)` of pull request [number] at [url] that follows this approved delivery (m2-26), since
          * [since]: every key of this wait, its approval included, plus the merge keys, phase `check`, round 1, with no
-         * candidate head (bl-174).
+         * candidate head (bl-174) and no merge called (bl-181).
          */
         fun merging(
             number: Long,
@@ -105,7 +105,7 @@ sealed class Wait(
                     reason = WaitReason.Merge,
                     since = since,
                     data =
-                        data - WaitKeys.CANDIDATE_KEYS +
+                        data - WaitKeys.CANDIDATE_KEYS - WaitKeys.MERGE_CALLED +
                             mapOf(
                                 WaitKeys.PULL_REQUEST to url,
                                 WaitKeys.PULL_REQUEST_NUMBER to number.toString(),
@@ -171,6 +171,9 @@ sealed class Wait(
         /** True once [head] was pushed early as the candidate head (bl-174), so pushing it again records nothing. */
         fun pushedEarly(head: String): Boolean = data[WaitKeys.CANDIDATE_PUSHED] == "true" && candidateHead.equals(head, ignoreCase = true)
 
+        /** True once Loop called the merge of the pull request in this round (bl-181): a merge found then is its own. */
+        val mergeCalled: Boolean get() = data[WaitKeys.MERGE_CALLED] == "true"
+
         /** The round of the merge check, from 1. */
         val round: Int get() = data[WaitKeys.ROUND]?.toIntOrNull() ?: 1
 
@@ -185,6 +188,9 @@ sealed class Wait(
 
         /** This wait holding [head], the merge commit its check just made, as the candidate head, not pushed yet (bl-174). */
         fun candidate(head: String): Merge = Merge(with(data = data - WaitKeys.CANDIDATE_PUSHED + (WaitKeys.CANDIDATE_HEAD to head)))
+
+        /** This wait about to call the merge of its pull request (bl-181), stored before the call. */
+        fun callingMerge(): Merge = Merge(with(data = data + (WaitKeys.MERGE_CALLED to "true")))
 
         /** This wait once its candidate head was pushed (bl-174). */
         fun candidatePushed(): Merge = Merge(with(data = data + (WaitKeys.CANDIDATE_PUSHED to "true")))
@@ -213,14 +219,15 @@ sealed class Wait(
             )
 
         /**
-         * This wait back in phase `check` for [round], after the base moved before the merge; the CI wait starts anew and
-         * the candidate head goes, since the new round makes a new merge commit (bl-174).
+         * This wait back in phase `check` for [round], after the base moved before the merge; the CI wait starts anew,
+         * the candidate head goes, since the new round makes a new merge commit (bl-174), and so does a merge called in
+         * the round before (bl-181).
          */
         fun again(round: Int): Merge =
             Merge(
                 with(
                     data =
-                        data - WaitKeys.CI_KEYS - WaitKeys.CANDIDATE_KEYS +
+                        data - WaitKeys.CI_KEYS - WaitKeys.CANDIDATE_KEYS - WaitKeys.MERGE_CALLED +
                             mapOf(WaitKeys.PHASE to WaitKeys.PHASE_CHECK, WaitKeys.ROUND to round.toString()),
                 ),
             )

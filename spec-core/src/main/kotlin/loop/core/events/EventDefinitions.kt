@@ -57,6 +57,7 @@ object EventDefinitions {
             ApprovalRequested,
             ApprovalGiven,
             BranchPushed,
+            BranchPushFailed,
             PullRequestOpened,
             PullRequestUpdated,
             PullRequestFound,

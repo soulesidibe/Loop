@@ -548,6 +548,19 @@ class HumanLogTest {
     }
 
     @Test
+    fun `bl-181 a failed early push of the merge commit reads as a sentence`() {
+        val log = humanLog()
+        val head = "0123456789abcdef0123456789abcdef01234567"
+
+        log.recorded(event("branch_push_failed", mapOf("issue" to "m1-13", "head" to head, "early" to "true", "reason" to "rejected")))
+
+        assertEquals(
+            listOf("17:02:11  m1-13  could not push the merge commit 0123456789ab before the checks, it is pushed after them: rejected"),
+            lines,
+        )
+    }
+
+    @Test
     fun `m2-26 the merge check and the merge read as sentences`() {
         val log = humanLog()
         val base = "89abcdef0123456789abcdef0123456789abcdef"

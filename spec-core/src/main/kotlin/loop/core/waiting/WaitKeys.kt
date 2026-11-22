@@ -61,6 +61,13 @@ object WaitKeys {
     /** The keys of the early push, dropped by every new round of the merge check (bl-174). */
     internal val CANDIDATE_KEYS: Set<String> = setOf(CANDIDATE_HEAD, CANDIDATE_PUSHED)
 
+    /**
+     * The data key set to `true` right before Loop calls the merge of the pull request in phase [PHASE_MERGE] (bl-181),
+     * so a pull request found merged afterwards, after a stop or a failed move, is Loop's own merge, and one found merged
+     * without it is a human merge. Dropped by every new round of the merge check.
+     */
+    const val MERGE_CALLED: String = "merge_called"
+
     /** The data key of the time the merged head was pushed for the CI wait, phase [PHASE_CI] (m3-15). */
     const val CI_STARTED_AT: String = "ci_started_at"
 
@@ -84,5 +91,6 @@ object WaitKeys {
 
     /** The keys only a merge wait holds, dropped when it goes back to an approval wait. */
     internal val MERGE_KEYS: Set<String> =
-        setOf(PULL_REQUEST_NUMBER, PHASE, BASE_SHA, VERIFIED_FINGERPRINT, MERGED_HEAD, ROUND, MERGE_RETRY) + CI_KEYS + CANDIDATE_KEYS
+        setOf(PULL_REQUEST_NUMBER, PHASE, BASE_SHA, VERIFIED_FINGERPRINT, MERGED_HEAD, ROUND, MERGE_RETRY, MERGE_CALLED) + CI_KEYS +
+            CANDIDATE_KEYS
 }

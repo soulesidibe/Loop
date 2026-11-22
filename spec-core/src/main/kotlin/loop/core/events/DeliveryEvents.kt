@@ -66,6 +66,34 @@ object BranchPushed : KeyedEvent("branch_pushed", Delivery.SHA, Delivery.BRANCH)
     ) = "pushed ${data[Delivery.SHA]?.take(SHORT_SHA)} to ${data[Delivery.BRANCH]}"
 }
 
+/**
+ * bl-181: a push of a commit to the issue's branch failed and the delivery goes on. So far only the early push of the
+ * merge commit of a merge check (bl-174), [EARLY] `true`: the check goes on, and the push that follows a passing check
+ * pushes it again and fails loudly if the remote still refuses it.
+ */
+object BranchPushFailed : KeyedEvent("branch_push_failed", BranchPushFailed.ISSUE, Delivery.HEAD, BranchPushFailed.EARLY, Delivery.REASON) {
+    /** The identifier of the issue whose branch was not pushed. */
+    const val ISSUE = "issue"
+
+    /** `true` for the early push of the merge commit, before the checks run. */
+    const val EARLY = "early"
+
+    override val sample =
+        mapOf(ISSUE to "bl-1", Delivery.HEAD to "0123456789abcdef", EARLY to "true", Delivery.REASON to "the push was refused")
+
+    override fun humanSentence(
+        data: Map<String, String>,
+        facts: HumanFacts,
+    ): String {
+        val head = data[Delivery.HEAD]?.take(SHORT_SHA)
+        return if (data[EARLY] == "true") {
+            "could not push the merge commit $head before the checks, it is pushed after them: ${data[Delivery.REASON]}"
+        } else {
+            "could not push $head: ${data[Delivery.REASON]}"
+        }
+    }
+}
+
 /** m2-25: a pull request opened for the issue's branch. */
 object PullRequestOpened : KeyedEvent("pull_request_opened", Delivery.NUMBER, Delivery.URL) {
     override val sample = mapOf(Delivery.NUMBER to "12", Delivery.URL to "https://example.com/pull/12")
