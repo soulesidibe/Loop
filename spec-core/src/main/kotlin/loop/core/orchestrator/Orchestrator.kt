@@ -548,6 +548,18 @@ class Orchestrator(
     private val bounced = mutableSetOf<String>()
 
     /**
+     * Issue ids whose merge wait the early conflict check of this tick ended as a merged delivery (bl-182): the tick read
+     * them active before, so they are not dispatched in it.
+     */
+    private val settledEarly = mutableSetOf<String>()
+
+    /**
+     * True when the merge waits still hold in memory a CI poll or an early conflict check of the issue [issueId]
+     * (bl-182), for tests: a wait that ended holds neither.
+     */
+    internal fun mergeMemoryHeld(issueId: String): Boolean = merges.remembers(issueId)
+
+    /**
      * One poll: dispatches what the free slots allow, then waits for those attempts.
      * With `--once` this runs at most `agent.max_concurrent_agents` attempts.
      */
@@ -612,6 +624,7 @@ class Orchestrator(
                     it.id !in fire.handled &&
                     !waits.isBusy(it.id) &&
                     it.id !in delivered &&
+                    it.id !in settledEarly &&
                     !retries.isWaiting(it.id, now)
             }
         val routable =
@@ -4846,6 +4859,9 @@ class Orchestrator(
         candidates: List<Issue>,
     ): List<Deferred<Unit>> {
         val mergeWaits = MergeQueue.of(waits.current(WaitReason.Merge))
+        settledEarly.clear()
+        // bl-182: a merge wait that ended since the last tick, by any path, leaves nothing in memory.
+        merges.retainOnly(mergeWaits.mapTo(mutableSetOf()) { it.issueId })
         if (mergeWaits.isEmpty()) return emptyList()
         val standing = standings(mergeWaits, candidates, skip = waits::isChecking)
         val launched = mutableListOf<Deferred<Unit>>()
@@ -4869,7 +4885,7 @@ class Orchestrator(
                 }
             if (headFound) {
                 // bl-178: a wait behind the head only gets the early conflict check, against the base tip fetched last.
-                merges.checkEarly(stored, candidate)
+                if (merges.checkEarly(stored, candidate)) settledEarly += stored.issueId
                 continue
             }
             headFound = true
