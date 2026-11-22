@@ -205,6 +205,8 @@ class MergeGitHubCommandTest {
                         WaitKeys.VERIFIED_FINGERPRINT to clean,
                         WaitKeys.MERGED_HEAD to mergedHead,
                         WaitKeys.ROUND to "1",
+                        // bl-181: Loop called the merge before the stop, so the merge found is its own.
+                        WaitKeys.MERGE_CALLED to "true",
                     ),
                 )
             runBlocking { store.startWaiting(wait) }.getOrThrow()
