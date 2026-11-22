@@ -55,6 +55,14 @@ When the head's CI wait ends in `timeout` (pending runs past `ci_timeout_ms`), i
 - Docs are never a good candidate, since tests read them. Loop's own `WORKFLOW.md` lists `.loop/issues/**` only.
 - A skipped round is recorded with the moved files, and the auto merge gate still runs on the merged head.
 
+### A queued conflict is found before its turn (bl-178)
+
+- Every tick, each merge wait behind the head, its issue active, is checked with `git merge-tree --write-tree` of the base tip the merge waits fetched last (the head's merge check, the round skip of bl-176) and the head of the wait's fingerprint. No new fetch is made: the next head's merge check after a merge is the fetch after a merge lands.
+- It runs in the issue's own workspace through `WorkspaceGit`, with the pins and the env of the merge check's `git merge`, read only: no work tree, index or ref is written, and no slot or lock is held.
+- A conflict is refused at once like a conflict of the merge check: the m2-26 conflict comment naming the paths, the findings for the next attempt, the wait ends and the issue goes back to its agent. It leaves the queue, and its next delivery queues anew at the back. Event `merge_conflict_early` (`issue`, `base`, `paths`), shown by `loop trace` and the human log.
+- A clean result changes nothing. A failure of the call (a missing object, a git older than 2.38) logs a warning and changes nothing: the merge check finds the conflict in its turn.
+- At most once per wait per head and base tip, a failed call included, held in memory. The head of the queue is never checked early, and the merge check is unchanged.
+
 ### What stays the same
 
 - Verification: the merged head is still checked locally with every check, holdout and guard, and CI and the gate run on that same head.
