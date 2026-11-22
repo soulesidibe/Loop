@@ -75,7 +75,7 @@ The version shows in three places:
 Loop's own [`WORKFLOW.md`](../WORKFLOW.md) dispatches `todo` issues labeled `ready-for-agent`, runs Claude Code in a git worktree per issue on the branch `loop/<identifier>` (see [`workspaces.md`](workspaces.md)), and asks the agent to end with a commit and `loop tool move review`.
 
 1. Run Loop from the main checkout's `WORKFLOW.md`, never from a worktree. A worktree has no `.loop/issues/`, so Loop would find no issues there.
-2. Make exactly one issue eligible. `max_concurrent_agents` is 2, so two eligible issues start two agents. Remove `ready-for-agent` from the others for now, or add a `blocked_by`.
+2. Make exactly one issue eligible. `max_concurrent_agents` is 1, so a second eligible issue waits for the first agent. Remove `ready-for-agent` from the others for now, or add a `blocked_by`.
 3. Install and start the run:
 
    ```sh
