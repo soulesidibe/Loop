@@ -1,7 +1,7 @@
 ---
 id: bl-175
 title: "An Actions timeout pauses the delivery queue"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-agent]
 blocked_by: [bl-172]
@@ -31,3 +31,9 @@ Area: `Orchestrator.kt` (grep, never read it whole), `spec-core/src/main/kotlin/
 ## Comments
 
 2026-11-21 soule: written from the serialized delivery design, after a Fable 5.2 review at high effort.
+
+2026-11-21 23:34Z loop: Loop opened pull request #11 for this issue: https://github.com/soulesidibe/Loop/pull/11
+
+2026-11-21 23:35Z loop: Loop could not merge pull request #11: merging main at 69147e6a7d3f1879b133ec2226a5bf2d23a335ba into loop/bl-175 conflicts (conflict in spec-core/src/main/kotlin/loop/core/orchestrator/Orchestrator.kt, spec-core/src/test/kotlin/loop/core/orchestrator/CiWaitOrchestratorTest.kt). The merge was aborted and the branch is unchanged. The next attempt merges refs/loop/base/main into its branch, resolves the conflict and submits the result again.
+
+2026-11-22 00:31Z loop: Loop updated pull request #11 for this issue: https://github.com/soulesidibe/Loop/pull/11
