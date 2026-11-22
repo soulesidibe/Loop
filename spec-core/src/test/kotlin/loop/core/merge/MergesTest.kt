@@ -274,6 +274,13 @@ class MergesTest {
             maxChars: Int,
         ): String = "diff --git a/src/main/kotlin/App.kt b/src/main/kotlin/App.kt\n+fun app() = 1\n"
 
+        override fun changedFiles(
+            root: Path,
+            from: String,
+            to: String,
+            sinceMergeBase: Boolean,
+        ): List<String> = diff.map { it.path }
+
         override fun files(
             root: Path,
             commit: String,

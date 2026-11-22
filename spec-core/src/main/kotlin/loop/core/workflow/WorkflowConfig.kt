@@ -192,7 +192,9 @@ data class PullRequestConfig(
  * A kind's merge of its pull request (m2-26): merged with [method] once the merge check passed, after the CI wait of
  * [ci]. A rebase is never a method, since it rewrites the commits and what merges is no longer what was checked. With
  * [CiMode.Actions] (m3-15) the merge waits for the Actions runs of the merged head: at most [ciTimeoutMs] of answered
- * polls while runs are pending, and [ciNoRun] decides once no run showed up after [ciNoRunGraceMs].
+ * polls while runs are pending, and [ciNoRun] decides once no run showed up after [ciNoRunGraceMs]. A base that moved
+ * after the check only in files that match [recheckSkipPaths] (bl-176), globs anchored at the workspace root like
+ * `guards.protect` and empty by default, costs no new round when the pull request changed none of those files.
  */
 data class MergeConfig(
     val method: MergeMethod = MergeMethod.Merge,
@@ -200,6 +202,7 @@ data class MergeConfig(
     val ciTimeoutMs: Long = DEFAULT_CI_TIMEOUT_MS,
     val ciNoRun: CiNoRun = CiNoRun.Fail,
     val ciNoRunGraceMs: Long = DEFAULT_CI_NO_RUN_GRACE_MS,
+    val recheckSkipPaths: List<String> = emptyList(),
 ) {
     companion object {
         /** 45 minutes of answered polls while runs are pending. */

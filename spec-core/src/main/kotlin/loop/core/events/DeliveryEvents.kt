@@ -198,6 +198,29 @@ object MergeRequeued : KeyedEvent("merge_requeued", MergeRequeued.PHASE, Deliver
         "from phase ${data[PHASE]}"
 }
 
+/**
+ * bl-176: the base moved after the merge check from [Delivery.BASE_SHA] to [TIP] only in [FILES], each matching
+ * `recheck_skip_paths` and none in the pull request's diff, so the merge goes on with no new round. [FILES] lists at
+ * most [FILES_MAX] paths, comma separated.
+ */
+object MergeRoundSkipped : KeyedEvent("merge_round_skipped", Delivery.BASE_SHA, MergeRoundSkipped.TIP, MergeRoundSkipped.FILES) {
+    /** The base tip the merge goes on against. */
+    const val TIP = "tip"
+
+    /** The files that changed between the checked base and the tip. */
+    const val FILES = "files"
+
+    /** At most this many files are listed. */
+    const val FILES_MAX = 20
+
+    override val sample = mapOf(Delivery.BASE_SHA to "0123456789abcdef", TIP to "fedcba9876543210", FILES to ".loop/issues/bl-1.md")
+
+    override fun humanSentence(
+        data: Map<String, String>,
+        facts: HumanFacts,
+    ) = "the base moved to ${data[TIP]?.take(SHORT_SHA)} only in recheck_skip_paths, merges with no new round: ${data[FILES]}"
+}
+
 /** m3-15: the merge waits for the Actions runs of the merged head [Delivery.SHA], pushed for them. */
 object CiWaiting : KeyedEvent("ci_waiting", Delivery.SHA) {
     override val sample = mapOf(Delivery.SHA to "0123456789abcdef")

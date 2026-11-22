@@ -54,6 +54,14 @@ internal interface MergeGit {
         maxChars: Int,
     ): String
 
+    /** The files that differ from [from] to [to], or from their merge base to [to] with [sinceMergeBase], no renames. */
+    fun changedFiles(
+        root: Path,
+        from: String,
+        to: String,
+        sinceMergeBase: Boolean,
+    ): List<String>
+
     /** The files of [commit] under [dir]. */
     fun files(
         root: Path,
@@ -102,6 +110,13 @@ internal class WorkspaceMergeGit(
         head: String,
         maxChars: Int,
     ): String = git.diffText(root, base, head, maxChars)
+
+    override fun changedFiles(
+        root: Path,
+        from: String,
+        to: String,
+        sinceMergeBase: Boolean,
+    ): List<String> = git.changedFiles(root, from, to, sinceMergeBase)
 
     override fun files(
         root: Path,

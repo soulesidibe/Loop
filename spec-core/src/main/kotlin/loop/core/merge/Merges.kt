@@ -35,6 +35,7 @@ import loop.core.events.IssueCommented
 import loop.core.events.IssueMoved
 import loop.core.events.MergeCheckFinished
 import loop.core.events.MergeCheckStarted
+import loop.core.events.MergeRoundSkipped
 import loop.core.events.PullRequestMerged
 import loop.core.events.Tracker
 import loop.core.log.KeyValueLog
@@ -42,6 +43,7 @@ import loop.core.log.LogContext
 import loop.core.log.LogLevel
 import loop.core.log.LogOutcome
 import loop.core.verify.Fingerprinter
+import loop.core.verify.ProtectedPaths
 import loop.core.verify.WorkspaceFingerprint
 import loop.core.verify.WorkspaceGit
 import loop.core.waiting.MergePhase
@@ -649,11 +651,11 @@ internal class Merges(
      * The `merge` phase (m2-26): pushes the merged head unforced to the branch, so the pull request's head is what was
      * checked, then reads the pull request until its head shows the merged head, a bounded wait for the provider's
      * delayed update (send back 5). Reads the base tip once more and, when it moved since the check, redoes the check,
-     * at most [MergeCheck.MAX_ROUNDS] rounds. Reads the issue once more: one a human moved out of the active states
-     * is not merged (send back 6). An approval of the `auto` policy passes the auto merge gate, then, since the review
-     * can take minutes, the issue is read again, the workflow file must not hold a rejected change and the effective
-     * workflow must still allow an auto merge, and the base tip is read again (m2-28, rounds 2 and 3 and send back 4 of
-     * PR #75). Then merges the pull request with the merged head as its sha guard and [method], and delivers. A refusal because a branch moved under the merge is tried once more at the next tick before it
+     * at most [MergeCheck.MAX_ROUNDS] rounds, unless the move is only in `recheck_skip_paths` (bl-176, [skipRound]).
+     * Reads the issue once more: one a human moved out of the active states is not merged (send back 6). An approval of
+     * the `auto` policy passes the auto merge gate, then, since the review can take minutes, the issue is read again,
+     * the workflow file must not hold a rejected change and the effective workflow must still allow an auto merge, and
+     * the base tip is read again (m2-28, rounds 2 and 3 and send back 4 of PR #75). Then merges the pull request with the merged head as its sha guard and [method], and delivers. A refusal because a branch moved under the merge is tried once more at the next tick before it
      * counts as permanent. The next wait when the check must run again, null otherwise.
      */
     private suspend fun mergePhase(
@@ -678,7 +680,11 @@ internal class Merges(
             recordWaitEvent(wait, BranchPushed, mapOf(Delivery.SHA to mergedHead, Delivery.BRANCH to branch))
         }
         val shownHead = awaitHead(executor, branch, mergedHead).getOrElse { return mergeStepFailed(wait, MergeCheck.STEP_MERGE, it) }
-        baseMoved(wait, executor)?.let { return it.next }
+        val skipped =
+            when (val read = baseMoved(wait, executor, workflow, mergedHead, skipped = null)) {
+                is BaseRead.Moved -> return read.next
+                is BaseRead.GoesOn -> read.skipped
+            }
         var current = stillActive(wait) ?: return null
         // m2-28: an approval the auto policy gave itself merges only through the auto merge gate.
         if (wait.approvedBy == AutoMerge.AUTO) {
@@ -706,7 +712,8 @@ internal class Merges(
                 return autoMergeFallBack(wait, GateOutcome.FallBack(emptyList(), passed.risk, null, stopped, stopped))
             }
             // Send back 4 of PR #75: the merge's sha guard covers only the head.
-            baseMoved(wait, executor)?.let { return it.next }
+            val again = baseMoved(wait, executor, workflow, mergedHead, skipped)
+            if (again is BaseRead.Moved) return again.next
         }
         val mergeSha =
             deliveryStep { executor.mergePullRequest(number, mergedHead, method) }
@@ -741,33 +748,103 @@ internal class Merges(
     private fun autoMergeStopped(): String? =
         rejected()?.let { AutoMergeGate.rejectedReload(it.code, it.message) } ?: AutoMergeGate.notAllowedBy(workflow())
 
-    /** What [baseMoved] decided: the [next] wait, null when the wait ended or keeps its state for the next tick. */
-    private class Moved(
-        val next: Wait.Merge?,
-    )
+    /** What [baseMoved] decided. */
+    private sealed interface BaseRead {
+        /** The merge goes on: the base did not move, [skipped] null, or it moved to [skipped] with no new round (bl-176). */
+        class GoesOn(
+            val skipped: String?,
+        ) : BaseRead
+
+        /** The base moved: the [next] wait, null when the wait ended or keeps its state for the next tick. */
+        class Moved(
+            val next: Wait.Merge?,
+        ) : BaseRead
+    }
 
     /**
-     * Reads the base tip of [executor] and compares it with the base the merge check of [wait] checked (m2-26): null
-     * when it did not move, so the merge goes on. A base that moved schedules the check again, at most
+     * Reads the base tip of [executor] and compares it with the base the merge check of [wait] checked (m2-26): the
+     * merge goes on when it did not move, or when it moved to the tip [skipped] already let through in this run, or
+     * when [skipRound] lets the move through (bl-176). Otherwise a base that moved schedules the check again, at most
      * [MergeCheck.MAX_ROUNDS] rounds, then refuses; a read that fails is handled as a merge step that failed.
      */
     private suspend fun baseMoved(
         wait: Wait.Merge,
         executor: DeliveryExecutor,
-    ): Moved? {
+        workflow: WorkflowFile,
+        mergedHead: String,
+        skipped: String?,
+    ): BaseRead {
         val context = waitContext(wait)
-        val tip = deliveryStep { executor.baseTip() }.getOrElse { return Moved(mergeStepFailed(wait, MergeCheck.STEP_MERGE, it)) }
-        if (tip.equals(wait.baseSha, ignoreCase = true)) return null
+        val tip =
+            deliveryStep { executor.baseTip() }.getOrElse { return BaseRead.Moved(mergeStepFailed(wait, MergeCheck.STEP_MERGE, it)) }
+        if (tip.equals(wait.baseSha, ignoreCase = true)) return BaseRead.GoesOn(null)
+        if (skipped != null && tip.equals(skipped, ignoreCase = true)) return BaseRead.GoesOn(skipped)
+        skipRound(wait, executor, workflow, mergedHead)?.let { return BaseRead.GoesOn(it) }
         val round = wait.round + 1
         if (round > MergeCheck.MAX_ROUNDS) {
-            return Moved(
+            return BaseRead.Moved(
                 mergeRefused(wait, MergeCheck.STEP_MERGE, "the base moved during ${MergeCheck.MAX_ROUNDS} merge checks, it is now at $tip"),
             )
         }
         log.log(LogLevel.INFO, MergeCheck.MARK, LogOutcome.SCHEDULED, context, mapOf("round" to round), "the base moved to $tip")
         val next = wait.again(round)
         storeWait(next, context)
-        return Moved(next)
+        return BaseRead.Moved(next)
+    }
+
+    /**
+     * Whether a base that moved after the check of [wait] costs no new round (bl-176): the new tip, fetched host side as
+     * the merge check fetches it, null when a round must run. Only with `recheck_skip_paths` set, and only when the base
+     * the check merged is an ancestor of the new tip, every file that changed between them matches a glob, and none of
+     * those files is in the diff of [mergedHead] against its merge base with the new tip. A fetch or a git read that
+     * fails starts a round. A skip records `merge_round_skipped`.
+     */
+    private suspend fun skipRound(
+        wait: Wait.Merge,
+        executor: DeliveryExecutor,
+        workflow: WorkflowFile,
+        mergedHead: String,
+    ): String? {
+        val pullRequest =
+            workflow.config.kinds
+                ?.code
+                ?.delivery
+                ?.pullRequest ?: return null
+        val globs = pullRequest.merge?.recheckSkipPaths.orEmpty()
+        val checked = wait.baseSha
+        if (globs.isEmpty() || checked.isNullOrEmpty()) return null
+        val context = waitContext(wait)
+        val stop: (String) -> String? = { reason ->
+            val text = redactor.redact("the base moved, a new round of the merge check runs: $reason").take(REASON_MAX)
+            log.log(LogLevel.WARN, MergeCheck.MARK, LogOutcome.FAILED, context, reason = text)
+            null
+        }
+        val tip = deliveryStep { executor.fetchBase() }.getOrElse { return stop("cannot fetch the base: ${it.describe()}") }
+        recordWaitEvent(wait, BaseFetched, mapOf(Delivery.SHA to tip, Delivery.BASE to pullRequest.base))
+        val workspace =
+            locate(workflow, WorkspaceKey.of(wait.identifier)).getOrNull()
+                ?: return stop("cannot locate the workspace of ${wait.identifier}")
+        val moved =
+            gitStep {
+                if (!git.isAncestor(workspace, checked, tip)) return@gitStep null
+                git.changedFiles(workspace, checked, tip, sinceMergeBase = false)
+            }.getOrElse { return stop("cannot read the files the base changed: ${it.describe()}") } ?: return null
+        val listed = ProtectedPaths(globs)
+        if (moved.any { listed.match(it) == null }) return null
+        val changed =
+            gitStep { git.changedFiles(workspace, tip, mergedHead, sinceMergeBase = true).toSet() }
+                .getOrElse { return stop("cannot read the files of the pull request: ${it.describe()}") }
+        if (moved.any { it in changed }) return null
+        recordWaitEvent(
+            wait,
+            MergeRoundSkipped,
+            mapOf(
+                Delivery.BASE_SHA to checked,
+                MergeRoundSkipped.TIP to tip,
+                MergeRoundSkipped.FILES to moved.take(MergeRoundSkipped.FILES_MAX).joinToString(","),
+            ),
+        )
+        return tip
     }
 
     /**
