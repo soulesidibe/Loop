@@ -7,6 +7,8 @@ import loop.api.RunId
 import loop.core.events.AttemptFinished
 import loop.core.events.AttemptStarted
 import loop.core.events.ContextUsage
+import loop.core.events.Delivery
+import loop.core.events.DeliveryQueuePaused
 import loop.core.events.IssueParked
 import loop.core.events.RetryDropped
 import loop.core.events.RetryScheduled
@@ -30,6 +32,16 @@ internal data class RuntimeSnapshot(
     val waiting: List<WaitingRow> = emptyList(),
     /** The runner hold of the live run (bl-39), null when none holds it. */
     val hold: HoldRow? = null,
+    /** The pause of the delivery queue by the live run (bl-175), null when the queue runs. */
+    val queuePause: QueuePauseRow? = null,
+)
+
+/** The latest `delivery_queue_paused` of the live run with no `delivery_queue_resumed` after it (bl-175). */
+internal data class QueuePauseRow(
+    /** The issue whose CI wait timed out. */
+    val issue: String?,
+    val reason: String?,
+    val since: Instant,
 )
 
 /** The latest `runner_hold_started` of the live run with no `runner_hold_lifted` after it (bl-39). */
@@ -108,7 +120,7 @@ internal val SNAPSHOT_KINDS: Set<String> =
         IssueParked.name,
         RunnerHoldStarted.name,
         RunnerHoldLifted.name,
-    )
+    ) + DeliveryQueuePaused.QUEUE_KINDS
 
 /**
  * The snapshot of [events] (any kinds, every run of the project), the [parked] and the [waiting] records. Running and
@@ -119,7 +131,8 @@ internal val SNAPSHOT_KINDS: Set<String> =
  * dispatched retry keeps its entry until the attempt ends. A waiting issue is listed as waiting only, whatever its
  * events: the attempt whose checks run is still open, and the wait outlives the run that started it. The runner hold
  * (bl-39) is the live run's latest `runner_hold_started` when no `runner_hold_lifted` follows it. Each merge wait has its
- * place in the delivery queue (bl-172), the order of [MergeQueue].
+ * place in the delivery queue (bl-172), the order of [MergeQueue]. The queue is paused (bl-175) while the live run's
+ * latest `delivery_queue_paused` has no `delivery_queue_resumed` after it.
  */
 internal fun runtimeSnapshot(
     events: List<StoredEvent>,
@@ -193,7 +206,17 @@ internal fun runtimeSnapshot(
         parkedRows,
         waitingRows,
         liveRun?.let { holdOf(ordered, it) },
+        liveRun?.let { queuePauseOf(ordered, it) },
     )
+}
+
+/** The pause of the delivery queue by [liveRun]: its latest pause with no resume after it, else null (bl-175). */
+private fun queuePauseOf(
+    ordered: List<RecordedEvent>,
+    liveRun: RunId,
+): QueuePauseRow? {
+    val paused = DeliveryQueuePaused.openIn(ordered.filter { it.runId == liveRun }) ?: return null
+    return QueuePauseRow(paused.data[DeliveryQueuePaused.ISSUE], paused.data[Delivery.REASON], paused.ts)
 }
 
 /** The hold of [liveRun]: its latest hold event when it started a hold, null when it lifted one or there is none. */
