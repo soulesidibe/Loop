@@ -549,7 +549,12 @@ internal class Merges(
                     BranchPushFailed.ISSUE to wait.identifier,
                     Delivery.HEAD to head,
                     BranchPushFailed.EARLY to "true",
-                    Delivery.REASON to redactor.redact(error.describe()).lineSequence().first().take(REASON_MAX),
+                    Delivery.REASON to
+                        redactor
+                            .redact(error.describe())
+                            .lineSequence()
+                            .first()
+                            .take(REASON_MAX),
                 )
             recordWaitEvent(candidate, BranchPushFailed, failure)
             return candidate

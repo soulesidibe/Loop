@@ -1613,7 +1613,13 @@ class MergeCheckOrchestratorTest {
             orchestrator.tick()
 
             assertEquals(listOf(Triple(7L, verified, MergeMethod.Merge)), remote.merges)
-            assertEquals("true", waiting.records.values.single().data[MERGE_CALLED], "stored before the merge call")
+            assertEquals(
+                "true",
+                waiting.records.values
+                    .single()
+                    .data[MERGE_CALLED],
+                "stored before the merge call",
+            )
 
             tracker.moveFailure = null
             advanceTimeBy(5_000)

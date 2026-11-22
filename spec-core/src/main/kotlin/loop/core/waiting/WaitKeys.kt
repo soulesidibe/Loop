@@ -91,5 +91,6 @@ object WaitKeys {
 
     /** The keys only a merge wait holds, dropped when it goes back to an approval wait. */
     internal val MERGE_KEYS: Set<String> =
-        setOf(PULL_REQUEST_NUMBER, PHASE, BASE_SHA, VERIFIED_FINGERPRINT, MERGED_HEAD, ROUND, MERGE_RETRY, MERGE_CALLED) + CI_KEYS + CANDIDATE_KEYS
+        setOf(PULL_REQUEST_NUMBER, PHASE, BASE_SHA, VERIFIED_FINGERPRINT, MERGED_HEAD, ROUND, MERGE_RETRY, MERGE_CALLED) + CI_KEYS +
+            CANDIDATE_KEYS
 }
