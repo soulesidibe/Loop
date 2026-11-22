@@ -24,6 +24,7 @@ import loop.core.delivery.MergeCheck
 import loop.core.delivery.PullRequestDelivery
 import loop.core.events.AutoMergeFallback
 import loop.core.events.BaseFetched
+import loop.core.events.BranchPushFailed
 import loop.core.events.BranchPushed
 import loop.core.events.CiFinished
 import loop.core.events.CiWaiting
@@ -125,7 +126,7 @@ internal class Merges(
     /**
      * Settles the merge [wait] of an issue no longer active (m2-26), [issue] as the by-id read shows it, null when it is
      * gone. The pull request is looked up first: merged at the stored head, the merge is delivered, a human touch only
-     * when it was not Loop's own merge (phase `check`), since `Closes #n` may close the issue as Loop merges. Otherwise
+     * when Loop did not call the merge in this round (bl-181), since `Closes #n` may close the issue as Loop merges. Otherwise
      * a human moved the issue: the wait ends with a human touch, like an approval wait. A failed lookup keeps the wait.
      */
     suspend fun settleInactive(
@@ -194,7 +195,7 @@ internal class Merges(
                 return
             }
         if (issue != null && found != null && mergedAtStoredHead(wait, found)) {
-            finishMerged(wait, issue, humanMerge = wait.phase != MergePhase.Merge)
+            finishMerged(wait, issue, humanMerge = !wait.mergeCalled)
             return
         }
         endWaiting(wait)
@@ -242,7 +243,7 @@ internal class Merges(
             when {
                 found == null -> "no pull request has the head $branch"
                 mergedAtStoredHead(start, found) -> {
-                    finishMerged(start, issue, humanMerge = start.phase != MergePhase.Merge)
+                    finishMerged(start, issue, humanMerge = !start.mergeCalled)
                     return
                 }
                 found.state == PullRequestState.Merged -> "pull request #${found.number} was merged at another commit"
@@ -467,6 +468,8 @@ internal class Merges(
                             val number = wait.numberText
                             return mergeCheckFailed(
                                 current,
+                                issue,
+                                workflow,
                                 MergeCheck.conflictComment(number, base, checkedBase, branch, detail),
                                 MergeCheck.conflictFindings(base, checkedBase, detail),
                                 "merging the base conflicts: $detail",
@@ -488,6 +491,8 @@ internal class Merges(
                 val reason = findings.first
                 return mergeCheckFailed(
                     current,
+                    issue,
+                    workflow,
                     MergeCheck.guardComment(number, base, checkedBase, branch, reason),
                     MergeCheck.guardFindings(base, checkedBase, findings.second),
                     "diff_policy failed against the base: $reason",
@@ -503,6 +508,8 @@ internal class Merges(
                 val reason = findings.first
                 return mergeCheckFailed(
                     current,
+                    issue,
+                    workflow,
                     MergeCheck.refutedComment(number, base, checkedBase, branch, reason),
                     MergeCheck.refutedFindings(base, checkedBase, findings.second),
                     "the checks failed on the merged result: $reason",
@@ -521,8 +528,8 @@ internal class Merges(
      * (bl-174), so its Actions runs start meanwhile: [head] is stored as the candidate head first, so a lookup after a
      * stop knows a pull request merged at it, then pushed, `branch_pushed` recorded and the push stored. Nothing is
      * pushed again when the stored wait says it was. Never fatal: a wait that cannot be written is not pushed, and a push
-     * that fails is logged, the check goes on and the push that follows a passing check pushes it as before. The wait
-     * the check goes on with.
+     * that fails is logged and recorded as `branch_push_failed` with `early` = `true` (bl-181), the check goes on and the
+     * push that follows a passing check pushes it as before. The wait the check goes on with.
      */
     private suspend fun pushEarly(
         wait: Wait.Merge,
@@ -537,6 +544,14 @@ internal class Merges(
         deliveryStep { executorFor(workflow).push(head, branch) }.getOrElse { error ->
             val reason = redactor.redact("the merge commit is pushed after the checks: ${error.describe()}").take(REASON_MAX)
             log.log(LogLevel.WARN, DELIVERY, LogOutcome.FAILED, context, reason = reason)
+            val failure =
+                mapOf(
+                    BranchPushFailed.ISSUE to wait.identifier,
+                    Delivery.HEAD to head,
+                    BranchPushFailed.EARLY to "true",
+                    Delivery.REASON to redactor.redact(error.describe()).lineSequence().first().take(REASON_MAX),
+                )
+            recordWaitEvent(candidate, BranchPushFailed, failure)
             return candidate
         }
         recordWaitEvent(candidate, BranchPushed, mapOf(Delivery.SHA to head, Delivery.BRANCH to branch))
@@ -656,7 +671,8 @@ internal class Merges(
      * the `auto` policy passes the auto merge gate, then, since the review can take minutes, the issue is read again,
      * the workflow file must not hold a rejected change and the effective workflow must still allow an auto merge, and
      * the base tip is read again (m2-28, rounds 2 and 3 and send back 4 of PR #75). Then merges the pull request with the merged head as its sha guard and [method], and delivers. A refusal because a branch moved under the merge is tried once more at the next tick before it
-     * counts as permanent. The next wait when the check must run again, null otherwise.
+     * counts as permanent. Right before the merge call the wait stores `merge_called` (bl-181), so a merge found after a
+     * stop or a failed move is Loop's own, with no human touch. The next wait when the check must run again, null otherwise.
      */
     private suspend fun mergePhase(
         wait: Wait.Merge,
@@ -715,19 +731,22 @@ internal class Merges(
             val again = baseMoved(wait, executor, workflow, mergedHead, skipped)
             if (again is BaseRead.Moved) return again.next
         }
+        // bl-181: a wait that cannot say Loop called the merge is not merged now, the next tick tries again.
+        val calling = wait.callingMerge()
+        if (!wait.mergeCalled && !storeWait(calling, context)) return null
         val mergeSha =
             deliveryStep { executor.mergePullRequest(number, mergedHead, method) }
                 .getOrElse { error ->
                     if (error is DeliveryError && error.retryOnce && !wait.retried) {
                         val reason = redactor.redact("the merge is tried again at the next tick: ${error.describe()}").take(REASON_MAX)
                         log.log(LogLevel.WARN, DELIVERY, LogOutcome.FAILED, context, reason = reason)
-                        storeWait(wait.retrying(), context)
+                        storeWait(calling.retrying(), context)
                         return null
                     }
-                    return mergeStepFailed(wait, MergeCheck.STEP_MERGE, error)
+                    return mergeStepFailed(calling, MergeCheck.STEP_MERGE, error)
                 }
         recordWaitEvent(
-            wait,
+            calling,
             PullRequestMerged,
             mapOf(
                 Delivery.NUMBER to number.toString(),
@@ -736,7 +755,7 @@ internal class Merges(
                 PullRequestMerged.MERGE_SHA to mergeSha,
             ),
         )
-        finishMerged(wait, current, humanMerge = false)
+        finishMerged(calling, current, humanMerge = false)
         return null
     }
 
@@ -941,19 +960,51 @@ internal class Merges(
 
     /**
      * A conflict or a failing recheck (m2-26): comments [comment] on the issue, hands [findings] to its next attempt,
-     * and ends the wait, so the issue dispatches again. The comment is what survives a restart.
+     * and ends the wait, so the issue dispatches again. The comment is what survives a restart. A pull request merged
+     * while the check ran is never sent back, see [mergedDuringCheck] (bl-181).
      */
     private suspend fun mergeCheckFailed(
         wait: Wait.Merge,
+        issue: Issue,
+        workflow: WorkflowFile,
         comment: String,
         findings: String,
         reason: String,
     ): Wait.Merge? {
+        if (mergedDuringCheck(wait, issue, workflow)) return null
         commentMerge(wait, comment)
         onFindings(wait.issueId, redactor.redact(findings))
         log.log(LogLevel.WARN, DELIVERY, LogOutcome.FAILED, waitContext(wait), reason = redactor.redact(reason).take(REASON_MAX))
         endWaiting(wait)
         return null
+    }
+
+    /**
+     * Reads the pull request of [wait] before a failed check sends [issue] back to its agent (bl-181): a human may have
+     * merged it while the check ran. Merged at the stored head or at the candidate head, the wait ends as a merged
+     * delivery, with a human touch unless Loop called the merge; merged at another commit, the merge is refused as at the
+     * start of a run, so nothing is dispatched. True when the wait ended here. A read that fails is logged and the
+     * refusal goes on.
+     */
+    private suspend fun mergedDuringCheck(
+        wait: Wait.Merge,
+        issue: Issue,
+        workflow: WorkflowFile,
+    ): Boolean {
+        val branch = PullRequestDelivery.branch(WorkspaceKey.of(wait.identifier).value)
+        val found =
+            deliveryStep { executorFor(workflow).findPullRequest(branch) }.getOrElse { error ->
+                val reason = redactor.redact("cannot read the pull request before the refusal: ${error.describe()}").take(REASON_MAX)
+                log.log(LogLevel.WARN, DELIVERY, LogOutcome.FAILED, waitContext(wait), reason = reason)
+                return false
+            } ?: return false
+        when {
+            mergedAtStoredHead(wait, found) -> finishMerged(wait, issue, humanMerge = !wait.mergeCalled)
+            found.state == PullRequestState.Merged ->
+                mergeRefused(wait, MergeCheck.STEP_MERGE, "pull request #${found.number} was merged at another commit")
+            else -> return false
+        }
+        return true
     }
 
     /**

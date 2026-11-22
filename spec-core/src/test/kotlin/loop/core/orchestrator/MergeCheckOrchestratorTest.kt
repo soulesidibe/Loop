@@ -23,6 +23,7 @@ import loop.api.PullRequestState
 import loop.api.Redactor
 import loop.api.RunId
 import loop.api.SecretRedactor
+import loop.api.TrackerError
 import loop.api.WaitReason
 import loop.api.WaitingIssue
 import loop.core.delivery.AutoMerge
@@ -1260,7 +1261,8 @@ class MergeCheckOrchestratorTest {
                             headSha = verified,
                         )
                 }
-            val extra = mapOf(WaitKeys.PHASE to "merge", WaitKeys.MERGED_HEAD to verified)
+            // bl-181: Loop called the merge before a stop, so the merge found is its own.
+            val extra = mapOf(WaitKeys.PHASE to "merge", WaitKeys.MERGED_HEAD to verified, MERGE_CALLED to "true")
             val waiting = FakeWaitingIssues(mergeWait(clean(verified), extra))
             val sink = FakeSink()
 
@@ -1289,7 +1291,7 @@ class MergeCheckOrchestratorTest {
                             headSha = verified,
                         )
                 }
-            val extra = mapOf(WaitKeys.PHASE to "merge", WaitKeys.MERGED_HEAD to verified)
+            val extra = mapOf(WaitKeys.PHASE to "merge", WaitKeys.MERGED_HEAD to verified, MERGE_CALLED to "true")
             val waiting = FakeWaitingIssues(mergeWait(clean(verified), extra))
             val sink = FakeSink()
             val workflow = workflow(tracker = "github").let { it.copy(terminalStates = listOf("closed")) }
@@ -1520,6 +1522,143 @@ class MergeCheckOrchestratorTest {
             assertEquals(emptyMap(), waiting.records)
             assertEquals(listOf(MergeCheck.HUMAN_MERGE), sink.all("human_touch").map { it["touch"] })
             assertEquals(listOf("id-t-1" to "done"), tracker.moves)
+        }
+
+    @Test
+    fun `bl-181, a failed early push records branch_push_failed and the check goes on`() =
+        runTest {
+            val verified = verifiedWorktree()
+            val base = baseCommit()
+            val tracker = FakeTracker(listOf(issue("t-1")))
+            val remote = FakeRemote().apply { bases += base }
+            val waiting = FakeWaitingIssues(approvedWait(clean(verified)))
+            val sink = FakeSink()
+            val failing =
+                object : DeliveryExecutor by remote {
+                    var failed = 0
+
+                    override suspend fun push(
+                        sha: String,
+                        branch: String,
+                    ): Result<Unit> {
+                        if (sha != verified && failed == 0) {
+                            failed++
+                            return Result.failure(DeliveryError.Rejected("the push was refused"))
+                        }
+                        return remote.push(sha, branch)
+                    }
+                }
+
+            orchestrator(tracker, failing, waiting, sink).tick()
+
+            val merged = git(project, "rev-parse", "refs/heads/loop/t-1")
+            val failed = sink.data(BRANCH_PUSH_FAILED)
+            assertEquals("t-1", failed["issue"])
+            assertEquals(merged, failed["head"])
+            assertEquals("true", failed["early"])
+            assertContains(failed["reason"].orEmpty(), "the push was refused")
+            assertEquals(listOf(Triple(7L, merged, MergeMethod.Merge)), remote.merges, "the check and the merge go on")
+            assertTrue(sink.events.none { it.kind == "delivery_failed" }, sink.events.toString())
+        }
+
+    @Test
+    fun `bl-181, a pull request a human merged in phase merge before Loop's merge call records a human touch`() =
+        runTest {
+            val verified = verifiedWorktree()
+            val tracker = FakeTracker(listOf(issue("t-1")))
+            val remote =
+                FakeRemote().apply {
+                    pulls["loop/t-1"] =
+                        PullRequest(
+                            7,
+                            "https://github.com/acme/widgets/pull/7",
+                            created = false,
+                            state = PullRequestState.Merged,
+                            headSha = verified,
+                        )
+                }
+            val extra = mapOf(WaitKeys.PHASE to "merge", WaitKeys.MERGED_HEAD to verified)
+            val waiting = FakeWaitingIssues(mergeWait(clean(verified), extra))
+            val sink = FakeSink()
+
+            orchestrator(tracker, remote, waiting, sink).tick()
+
+            assertEquals(emptyList(), remote.merges)
+            assertEquals(listOf("id-t-1" to "done"), tracker.moves)
+            assertEquals(listOf(MergeCheck.HUMAN_MERGE), sink.all("human_touch").map { it["touch"] })
+            assertEquals(emptyMap(), waiting.records)
+        }
+
+    @Test
+    fun `bl-181, Loop's own merge records no human touch, even when a later tick finds it after a failed move`() =
+        runTest {
+            val verified = verifiedWorktree()
+            val tracker = FakeTracker(listOf(issue("t-1"))).apply { moveFailure = TrackerError.Status(503, "unavailable") }
+            val remote =
+                FakeRemote().apply {
+                    lastBase = git(project, "rev-parse", "main")
+                    pulls["loop/t-1"] = PullRequest(7, "https://github.com/acme/widgets/pull/7", created = false, headSha = verified)
+                }
+            val extra =
+                mapOf(
+                    WaitKeys.PHASE to "merge",
+                    WaitKeys.BASE_SHA to git(project, "rev-parse", "main"),
+                    WaitKeys.MERGED_HEAD to verified,
+                    WaitKeys.VERIFIED_FINGERPRINT to clean(verified),
+                )
+            val waiting = FakeWaitingIssues(mergeWait(clean(verified), extra))
+            val sink = FakeSink()
+            val orchestrator = orchestrator(tracker, remote, waiting, sink)
+
+            orchestrator.tick()
+
+            assertEquals(listOf(Triple(7L, verified, MergeMethod.Merge)), remote.merges)
+            assertEquals("true", waiting.records.values.single().data[MERGE_CALLED], "stored before the merge call")
+
+            tracker.moveFailure = null
+            advanceTimeBy(5_000)
+            orchestrator.tick()
+            testScheduler.advanceUntilIdle()
+
+            assertEquals(listOf(Triple(7L, verified, MergeMethod.Merge)), remote.merges, "no second merge")
+            assertEquals(listOf("id-t-1" to "done"), tracker.moves)
+            assertTrue(sink.events.none { it.kind == "human_touch" }, sink.events.toString())
+            assertEquals(emptyMap(), waiting.records)
+        }
+
+    @Test
+    fun `bl-181, a pull request a human merged before a refuted recheck ends the wait as merged and is not dispatched again`() =
+        runTest {
+            val verified = verifiedWorktree()
+            val base = baseCommit()
+            val tracker = FakeTracker(listOf(issue("t-1")))
+            val remote = FakeRemote().apply { bases += base }
+            val waiting = FakeWaitingIssues(approvedWait(clean(verified)))
+            val sink = FakeSink()
+            val runner = FakeRunner()
+            // A human merges the pull request, at M pushed early, while the recheck runs, and the recheck then fails.
+            val checks =
+                CheckRunner { _, _, _ ->
+                    remote.pulls["loop/t-1"] = remote.pulls.getValue("loop/t-1").copy(state = PullRequestState.Merged)
+                    CheckResult(1, timedOut = false, durationMs = 5, output = "boom\n")
+                }
+            val orchestrator = orchestrator(tracker, remote, waiting, sink, checks = checks, runner = runner)
+
+            orchestrator.tick()
+
+            assertEquals(MergeCheck.REFUTED, sink.data(MergeCheckFinished.name)["outcome"])
+            assertEquals(emptyList(), remote.merges)
+            assertEquals(listOf("id-t-1" to "done"), tracker.moves)
+            assertEquals(listOf(MergeCheck.HUMAN_MERGE), sink.all("human_touch").map { it["touch"] })
+            assertTrue(tracker.comments.none { it.second.text.contains("The merge commit stays on the branch") }, "no refusal comment")
+            assertTrue(sink.events.none { it.kind == "delivery_failed" }, sink.events.toString())
+            assertEquals(emptyMap(), waiting.records)
+
+            advanceTimeBy(5_000)
+            orchestrator.tick()
+            testScheduler.advanceUntilIdle()
+
+            assertEquals(emptyList(), runner.calls, "the issue is not dispatched again")
         }
 
     @Test
@@ -2217,5 +2356,7 @@ class MergeCheckOrchestratorTest {
     private companion object {
         val PROJECT = ProjectId("p1")
         const val HUMAN_TOUCH_MOVE = "move"
+        const val MERGE_CALLED = "merge_called"
+        const val BRANCH_PUSH_FAILED = "branch_push_failed"
     }
 }

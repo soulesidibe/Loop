@@ -388,6 +388,42 @@ class CiWaitOrchestratorTest {
         }
 
     @Test
+    fun `bl-181, a pull request a human merged in phase ci records a human touch, Loop merges nothing`() =
+        runTest {
+            val setup = Setup()
+            setup.remote.answers += green
+            val orchestrator = orchestrator(setup.tracker, setup.remote, setup.waiting, setup.sink)
+
+            tick(orchestrator)
+
+            assertEquals("ci", assertNotNull(setup.wait).data[WaitKeys.PHASE])
+            val pull = setup.remote.pulls.getValue("loop/t-1")
+            setup.remote.pulls["loop/t-1"] = pull.copy(state = PullRequestState.Merged)
+
+            tick(orchestrator, after = 30_000)
+
+            assertEquals(emptyList(), setup.remote.merges)
+            assertEquals(listOf(MergeCheck.HUMAN_MERGE), setup.all("human_touch").map { it["touch"] })
+            assertEquals(listOf("id-t-1" to "done"), setup.tracker.moves)
+            assertNull(setup.wait)
+        }
+
+    @Test
+    fun `bl-181, Loop's own merge after the CI wait records no human touch`() =
+        runTest {
+            val setup = Setup()
+            setup.remote.answers += green
+            val orchestrator = orchestrator(setup.tracker, setup.remote, setup.waiting, setup.sink)
+
+            tick(orchestrator)
+            tick(orchestrator, after = 30_000)
+
+            assertEquals(listOf(setup.verified), setup.remote.merges)
+            assertTrue(setup.sink.events.none { it.kind == "human_touch" }, setup.sink.events.toString())
+            assertNull(setup.wait)
+        }
+
+    @Test
     fun `pending runs keep the wait, all kept runs green merges with ci_finished green`() =
         runTest {
             val setup = Setup()
