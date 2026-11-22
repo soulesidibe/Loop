@@ -893,6 +893,38 @@ class CiWaitOrchestratorTest {
         }
 
     @Test
+    fun `bl-182, a paused queue still refuses a conflicting queued wait early`() =
+        runTest {
+            val setup = Setup(identifiers = listOf("t-1", "t-2", "t-3"))
+            // The base the head's merge check fetches adds c.txt, which t-3 adds too.
+            val base = baseCommit()
+            setup.remote.bases.clear()
+            setup.remote.bases += base
+            val orchestrator = queueOfTwo(setup, listOf(pending))
+            untilCiFinished(setup, orchestrator)
+            assertEquals(DeliveryQueuePaused.name, setup.queueEvents().single().kind)
+
+            // t-3 queues behind t-2 while the queue is paused, with a head that conflicts with the base fetched last.
+            val thirdWorkspace = root.resolve("workspaces/t-3")
+            git(project, "worktree", "add", "-q", "-b", "loop/t-3", thirdWorkspace.toString(), "main")
+            val third = commit(thirdWorkspace, "c.txt", "other\n")
+            setup.remote.pulls["loop/t-3"] = PullRequest(9, "https://github.com/acme/widgets/pull/9", created = false)
+            val queued = mergeWait("t-3", 9, third, FIXED_NOW + 2.seconds)
+            setup.waiting.records[PROJECT.value to queued.issueId] = queued.toRecord()
+            tick(orchestrator, after = 30_000)
+            tick(orchestrator, after = 30_000)
+
+            val early = setup.sink.events.single { it.kind == "merge_conflict_early" }
+            assertEquals("t-3", early.issueIdentifier)
+            assertEquals(mapOf("issue" to "t-3", "base" to base, "paths" to "c.txt"), early.data)
+            assertNull(setup.waiting.records[PROJECT.value to "id-t-3"], "t-3 goes back to its agent")
+            assertEquals(1, setup.tracker.comments.count { it.first == "id-t-3" }, "the conflict comment")
+            assertEquals(DeliveryQueuePaused.name, setup.queueEvents().single().kind, "the queue stays paused")
+            assertEquals("check", setup.record("t-2").data[WaitKeys.PHASE], "the head behind the pause starts no check")
+            assertTrue(setup.sink.events.none { it.kind == "merge_check_started" && it.issueIdentifier == "t-2" })
+        }
+
+    @Test
     fun `a red CI at the head does not pause the queue`() =
         runTest {
             val setup = Setup(identifiers = listOf("t-1", "t-2"))

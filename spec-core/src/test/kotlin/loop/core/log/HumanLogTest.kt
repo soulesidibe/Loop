@@ -483,6 +483,22 @@ class HumanLogTest {
     }
 
     @Test
+    fun `bl-182 a failed early conflict check reads as a sentence of its issue`() {
+        val log = humanLog()
+
+        val data = mapOf("issue" to "m1-13", "head" to "fedcba9876543210", "base" to "89abcdef0123456789", "reason" to "timed out")
+        log.recorded(event("early_check_failed", data, attempt = null))
+
+        assertEquals(
+            listOf(
+                "17:02:11  m1-13  the early conflict check of fedcba987654 against the base at 89abcdef0123 failed, " +
+                    "it is tried again at the next tick: timed out",
+            ),
+            lines,
+        )
+    }
+
+    @Test
     fun `bl-178 an early conflict of a queued merge wait reads as a sentence of its issue`() {
         val log = humanLog()
 

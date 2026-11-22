@@ -347,6 +347,26 @@ class TraceCommandTest {
     }
 
     @Test
+    fun `bl-182 a failed early conflict check shows in the attempt's timeline`() {
+        val lines =
+            trace(
+                event("attempt_started", "13:48:40", "a1"),
+                event("attempt_finished", "13:48:42", "a1", data = mapOf("outcome" to "succeeded", "reason" to "waiting_approval")),
+                event(
+                    "early_check_failed",
+                    "14:35:06",
+                    "a1",
+                    data = mapOf("issue" to "t-2", "head" to "fedcba9876543210", "base" to "0123456789abcdef", "reason" to "timed out"),
+                ),
+            )
+
+        assertContains(
+            lines,
+            line("14:35:06", "early_check_failed", "issue=t-2 head=fedcba9876543210 base=0123456789abcdef reason=\"timed out\""),
+        )
+    }
+
+    @Test
     fun `bl-178 an early conflict of a queued merge wait shows in the attempt's timeline`() {
         val lines =
             trace(

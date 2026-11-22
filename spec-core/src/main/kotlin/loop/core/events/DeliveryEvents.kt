@@ -282,6 +282,39 @@ object MergeConflictEarly : KeyedEvent(
         "found while queued, the issue goes back to its agent before its turn"
 }
 
+/**
+ * bl-182: the early conflict check of a merge wait queued behind the head of the delivery queue could not answer, the
+ * `git merge-tree` of the fetched base tip [BASE] and the head [Delivery.HEAD] failed for [Delivery.REASON]. The wait
+ * stays queued and the next tick tries again; the merge check finds a conflict in its turn.
+ */
+object EarlyCheckFailed : KeyedEvent(
+    "early_check_failed",
+    EarlyCheckFailed.ISSUE,
+    Delivery.HEAD,
+    EarlyCheckFailed.BASE,
+    Delivery.REASON,
+) {
+    /** The identifier of the queued issue. */
+    const val ISSUE = "issue"
+
+    /** The fetched base tip, a commit. */
+    const val BASE = "base"
+
+    override val sample =
+        mapOf(
+            ISSUE to "bl-3",
+            Delivery.HEAD to "fedcba9876543210",
+            BASE to "0123456789abcdef",
+            Delivery.REASON to "git merge-tree timed out",
+        )
+
+    override fun humanSentence(
+        data: Map<String, String>,
+        facts: HumanFacts,
+    ) = "the early conflict check of ${data[Delivery.HEAD]?.take(SHORT_SHA)} against the base at " +
+        "${data[BASE]?.take(SHORT_SHA)} failed, it is tried again at the next tick: ${data[Delivery.REASON]}"
+}
+
 /** m3-15: the merge waits for the Actions runs of the merged head [Delivery.SHA], pushed for them. */
 object CiWaiting : KeyedEvent("ci_waiting", Delivery.SHA) {
     override val sample = mapOf(Delivery.SHA to "0123456789abcdef")

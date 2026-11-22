@@ -30,6 +30,7 @@ import loop.core.events.CiFinished
 import loop.core.events.CiWaiting
 import loop.core.events.Delivery
 import loop.core.events.DeliveryFailed
+import loop.core.events.EarlyCheckFailed
 import loop.core.events.EventDefinition
 import loop.core.events.HumanTouched
 import loop.core.events.IssueCommented
@@ -130,8 +131,29 @@ internal class Merges(
      */
     private var fetchedBase: Pair<String, String>? = null
 
-    /** The head and the base tip of the last early conflict check of each queued merge wait, by issue id (bl-178). */
+    /**
+     * The head and the base tip of the last early conflict check of each queued merge wait that answered, clean or
+     * conflicting, by issue id (bl-178); a failed call leaves no entry (bl-182).
+     */
     private val earlyChecked = mutableMapOf<String, Pair<String, String>>()
+
+    /** True when a CI poll or an early conflict check of the issue [issueId] is held in memory (bl-182). */
+    fun remembers(issueId: String): Boolean = issueId in ciPolls || issueId in earlyChecked
+
+    /**
+     * Drops what memory holds of every issue but [waiting], the issue ids that still hold a merge wait (bl-182): a wait
+     * that ended by a path outside this class, a move or a new attempt, leaves no CI poll and no early check behind.
+     */
+    fun retainOnly(waiting: Set<String>) {
+        ciPolls.keys.retainAll(waiting)
+        earlyChecked.keys.retainAll(waiting)
+    }
+
+    /** Drops the CI poll and the early check of the issue [issueId], whose merge wait ended (bl-182). */
+    private fun forget(issueId: String) {
+        ciPolls.remove(issueId)
+        earlyChecked.remove(issueId)
+    }
 
     /**
      * Settles the merge [wait] of an issue no longer active (m2-26), [issue] as the by-id read shows it, null when it is
@@ -157,40 +179,54 @@ internal class Merges(
     /**
      * The early conflict check of [wait], a merge wait queued behind the head of the delivery queue (bl-178), inline in
      * the tick with no slot: `git merge-tree` of the base tip last fetched and the committed head of the wait's
-     * fingerprint, in the issue's own workspace, read only. It runs once per head and base tip, a failed call included.
-     * A conflict ends the wait as a conflict of the merge check does, the m2-26 comment, the findings for the next
-     * attempt, and records `merge_conflict_early`; the issue then leaves the queue. As for the merge check, a pull request
-     * a human merged meanwhile is read first and never sent back (bl-181). A clean merge changes nothing, and
-     * a call that fails logs a warning and changes nothing: the merge check finds the conflict in its turn.
+     * fingerprint, in the issue's own workspace, read only. A clean or conflicting answer is given once per head and
+     * base tip. A conflict ends the wait as a conflict of the merge check does, the m2-26 comment, the findings for the
+     * next attempt, and records `merge_conflict_early`; the issue then leaves the queue. As for the merge check, a pull
+     * request a human merged meanwhile is read first and never sent back (bl-181). A clean merge changes nothing. A call
+     * that fails logs a warning, records `early_check_failed` and changes nothing, so the next tick tries again (bl-182):
+     * the merge check finds the conflict in its turn. True when the wait ended with no dispatch due, the pull request
+     * found merged, so the tick does not dispatch the issue it read before.
      */
     suspend fun checkEarly(
         wait: Wait.Merge,
         issue: Issue,
-    ) {
+    ): Boolean {
         val workflow = workflow()
         val base =
             workflow.config.kinds
                 ?.code
                 ?.delivery
                 ?.pullRequest
-                ?.base ?: return
-        val (fetchedFor, tip) = fetchedBase ?: return
-        if (fetchedFor != base) return
-        val head = WorkspaceFingerprint.committedHead(wait.fingerprint.orEmpty()) ?: return
-        if (earlyChecked[wait.issueId] == head to tip) return
-        earlyChecked[wait.issueId] = head to tip
-        val failed: (String) -> Unit = { reason ->
-            val text = redactor.redact("the early conflict check failed, the wait stays queued: $reason").take(REASON_MAX)
+                ?.base ?: return false
+        val (fetchedFor, tip) = fetchedBase ?: return false
+        if (fetchedFor != base) return false
+        val head = WorkspaceFingerprint.committedHead(wait.fingerprint.orEmpty()) ?: return false
+        if (earlyChecked[wait.issueId] == head to tip) return false
+
+        // bl-182: a failure is not a check, the next tick tries again.
+        suspend fun failed(reason: String): Boolean {
+            val redacted = redactor.redact(reason).take(REASON_MAX)
+            val text = "the early conflict check failed, the wait stays queued: $redacted".take(REASON_MAX)
             log.log(LogLevel.WARN, MergeCheck.MARK, LogOutcome.FAILED, waitContext(wait), reason = text)
+            recordWaitEvent(
+                wait,
+                EarlyCheckFailed,
+                mapOf(
+                    EarlyCheckFailed.ISSUE to wait.identifier,
+                    Delivery.HEAD to head,
+                    EarlyCheckFailed.BASE to tip,
+                    Delivery.REASON to redacted,
+                ),
+            )
+            return false
         }
         val workspace =
             locate(workflow, WorkspaceKey.of(wait.identifier)).getOrElse {
-                failed("cannot locate the workspace: ${it.describe()}")
-                return
+                return failed("cannot locate the workspace: ${it.describe()}")
             } ?: return failed("the workspace of ${wait.identifier} is gone")
         val outcome = gitStep { git.mergeTree(workspace, tip, head) }.getOrElse { return failed(it.describe()) }
-        val conflict = outcome as? WorkspaceGit.MergeTreeOutcome.Conflict ?: return
-        earlyChecked.remove(wait.issueId)
+        earlyChecked[wait.issueId] = head to tip
+        val conflict = outcome as? WorkspaceGit.MergeTreeOutcome.Conflict ?: return false
         val paths = redactor.redact(conflict.paths.take(MergeConflictEarly.PATHS_MAX).joinToString(","))
         recordWaitEvent(
             wait,
@@ -199,7 +235,7 @@ internal class Merges(
         )
         val detail = redactor.redact(conflict.detail).take(REASON_MAX)
         val branch = PullRequestDelivery.branch(WorkspaceKey.of(wait.identifier).value)
-        mergeCheckFailed(
+        return !sentBack(
             wait,
             issue,
             workflow,
@@ -1043,12 +1079,25 @@ internal class Merges(
         findings: String,
         reason: String,
     ): Wait.Merge? {
-        if (mergedDuringCheck(wait, issue, workflow)) return null
+        sentBack(wait, issue, workflow, comment, findings, reason)
+        return null
+    }
+
+    /** The send back of [mergeCheckFailed]: true when the issue goes back to its agent, false when the wait ended otherwise. */
+    private suspend fun sentBack(
+        wait: Wait.Merge,
+        issue: Issue,
+        workflow: WorkflowFile,
+        comment: String,
+        findings: String,
+        reason: String,
+    ): Boolean {
+        if (mergedDuringCheck(wait, issue, workflow)) return false
         commentMerge(wait, comment)
         onFindings(wait.issueId, redactor.redact(findings))
         log.log(LogLevel.WARN, DELIVERY, LogOutcome.FAILED, waitContext(wait), reason = redactor.redact(reason).take(REASON_MAX))
         endWaiting(wait)
-        return null
+        return true
     }
 
     /**
@@ -1186,8 +1235,9 @@ internal class Merges(
         }
     }
 
-    /** Ends the wait of [wait]'s issue, in the store and in memory, and wakes the poll sleep. */
+    /** Ends the wait of [wait]'s issue, in the store and in memory, drops what memory holds of it and wakes the poll sleep. */
     private suspend fun endWaiting(wait: Wait) {
+        forget(wait.issueId)
         val error = waits.end(wait).exceptionOrNull()
         // A failure is logged at warn and never stops anything: the wait in memory decides for this process (m2-04).
         if (error != null) log.log(LogLevel.WARN, WAITING, LogOutcome.FAILED, waitContext(wait), reason = error.describe())
@@ -1196,12 +1246,13 @@ internal class Merges(
 
     /**
      * Writes [wait] to the store, its issue then waiting in memory for the wait's reason, written or not; a failure is
-     * logged. True when it was written.
+     * logged. True when it was written. A wait that is no longer a merge wait drops what memory holds of it (bl-182).
      */
     private suspend fun storeWait(
         wait: Wait,
         context: LogContext,
     ): Boolean {
+        if (wait !is Wait.Merge) forget(wait.issueId)
         val failure = waits.save(wait).exceptionOrNull()
         failure?.let {
             log.log(
