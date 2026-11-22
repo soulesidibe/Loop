@@ -3,7 +3,10 @@ package loop.core.orchestrator
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
@@ -226,6 +229,9 @@ class MergeCheckOrchestratorTest {
         /** Refusals the next merges return, in order, before [mergeFailure] (send back 5). */
         val mergeFailures = ArrayDeque<DeliveryError>()
 
+        /** Runs at each merge past [mergeFailures], so a test can hold the merge phase (bl-180). */
+        var onMerge: suspend () -> Unit = {}
+
         /** Moves the base to each merged head, as a merge on GitHub moves it (bl-172). */
         var baseOnMerge = false
 
@@ -291,6 +297,7 @@ class MergeCheckOrchestratorTest {
             method: MergeMethod,
         ): Result<String> {
             mergeFailures.removeFirstOrNull()?.let { return Result.failure(it) }
+            onMerge()
             mergeFailure?.let { return Result.failure(it) }
             if (lagReads > 0) {
                 return Result.failure(
@@ -562,6 +569,121 @@ class MergeCheckOrchestratorTest {
             machine.slots -= "another-process"
             orchestrator.tick()
             assertEquals(1, remote.merges.size)
+        }
+
+    @Test
+    fun `a merge check whose job starts on a cancelled scope leaves no machine slot and no running check behind (bl-180)`() =
+        runTest {
+            val verified = verifiedWorktree()
+            val tracker = FakeTracker(listOf(issue("t-1")))
+            val machine = FakeMachine(MachineLimits(maxConcurrentAgents = 1))
+            val remote = FakeRemote().apply { bases += git(project, "rev-parse", "main") }
+            val waiting = FakeWaitingIssues(approvedWait(clean(verified)))
+            val orchestrator = orchestrator(tracker, remote, waiting, FakeSink(), machine = machine)
+            lateinit var stopped: Job
+            // A stop that lands between the machine slot claim and the start of the merge check's job.
+            machine.onClaimed = { stopped.cancel() }
+
+            stopped = launch { orchestrator.tick() }
+            stopped.join()
+
+            assertEquals(0, remote.merges.size, "the cancelled tick merges nothing")
+            val holder = machine.log.first().removePrefix("claimed ")
+            assertEquals(emptyList(), machine.slots, "the machine slot row of the job that never ran is released")
+            assertEquals(listOf("claimed $holder", "released $holder"), machine.log)
+
+            machine.onClaimed = {}
+            orchestrator.tick()
+
+            assertEquals(1, remote.merges.size, "no running check is left behind, so the next tick starts the merge check")
+            assertEquals(emptyList(), machine.slots)
+        }
+
+    @Test
+    fun `a merge check under ci none keeps its agent slot through the merge phase that follows it (bl-180)`() =
+        runTest {
+            val verified = verifiedWorktree()
+            val tracker = FakeTracker(listOf(issue("t-1"), issue("t-2")))
+            val entered = CompletableDeferred<Unit>()
+            val gate = CompletableDeferred<Unit>()
+            val remote =
+                FakeRemote().apply {
+                    bases += git(project, "rev-parse", "main")
+                    onMerge = {
+                        entered.complete(Unit)
+                        gate.await()
+                    }
+                }
+            val waiting = FakeWaitingIssues(approvedWait(clean(verified)))
+            val runner = FakeRunner()
+            val orchestrator = orchestrator(tracker, remote, waiting, FakeSink(), workflow(maxAgents = 1), runner = runner)
+
+            val first = async { orchestrator.tick() }
+            entered.await()
+            val merging = waiting.records.values.single()
+            assertEquals(WaitKeys.PHASE_MERGE, merging.data[WaitKeys.PHASE], "the run went on to phase merge")
+
+            val second = orchestrator.tick()
+
+            assertEquals(emptyList(), second.attempts, "the run started in phase check still holds the one agent slot in phase merge")
+            gate.complete(Unit)
+            assertEquals(emptyList(), first.await().attempts, "the merge check took the one agent slot")
+            assertEquals(1, remote.merges.size)
+            assertEquals(emptyList(), runner.calls)
+
+            orchestrator.tick()
+
+            assertEquals(listOf("t-2"), runner.calls.map { it.first.issue.identifier }, "the merge ended, so its agent slot is free")
+        }
+
+    @Test
+    fun `a merge tried again at the next tick starts in phase merge and holds no agent slot (bl-180)`() =
+        runTest {
+            val verified = verifiedWorktree()
+            val tracker = FakeTracker(listOf(issue("t-1"), issue("t-2")))
+            val entered = CompletableDeferred<Unit>()
+            val gate = CompletableDeferred<Unit>()
+            val remote =
+                FakeRemote().apply {
+                    bases += git(project, "rev-parse", "main")
+                    mergeFailures += DeliveryError.Rejected("Cannot merge pull request #7: 409 Head branch was modified", retryOnce = true)
+                    onMerge = {
+                        entered.complete(Unit)
+                        gate.await()
+                    }
+                }
+            val waiting = FakeWaitingIssues(approvedWait(clean(verified)))
+            val started = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val runner =
+                FakeRunner { _, _ ->
+                    flow {
+                        started.complete(Unit)
+                        release.await()
+                        emitAll(succeedingTurn())
+                    }
+                }
+            val orchestrator = orchestrator(tracker, remote, waiting, FakeSink(), workflow(maxAgents = 1), runner = runner)
+
+            orchestrator.tick()
+
+            val retried = waiting.records.values.single()
+            assertEquals(WaitKeys.PHASE_MERGE, retried.data[WaitKeys.PHASE])
+            assertEquals("true", retried.data[WaitKeys.MERGE_RETRY])
+            assertEquals(emptyList(), runner.calls, "the merge check held the one agent slot")
+
+            val second = async { orchestrator.tick() }
+            entered.await()
+            started.await()
+
+            val beside = runner.calls.map { it.first.issue.identifier }
+            assertEquals(listOf("t-2"), beside, "t-2 takes the one agent slot beside the merge phase")
+            assertEquals(emptyList(), remote.merges, "the merge phase still runs")
+            gate.complete(Unit)
+            release.complete(Unit)
+            second.await()
+            assertEquals(listOf(Triple(7L, verified, MergeMethod.Merge)), remote.merges)
+            assertEquals(listOf("id-t-1" to "done"), tracker.moves)
         }
 
     /** The merge wait of t-1 in phase `merge`, its check passed on the base of `main` with V, [verified], as its merged head. */
