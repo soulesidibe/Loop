@@ -6,7 +6,8 @@ import kotlin.time.Instant
 
 /**
  * What holds an agent slot of the project now: the normalized state of each running attempt, as reconciliation
- * last read it, and the number of running merge checks. A restored wait's checks take no slot.
+ * last read it, and the number of running merge checks, phase `check` work only. A restored wait's checks and a
+ * delivery's merge phase take no slot (bl-173).
  */
 internal data class SlotUse(
     val attemptStates: List<String>,
@@ -29,9 +30,10 @@ internal data class AttemptSlots(
  * checks together count against `agent.max_concurrent_agents`, `agent.max_concurrent_agents_by_state` caps attempt
  * launches only, and at most one merge check runs at a time. Step one, [mergeCheckFits], runs first in the tick, so a
  * merge check takes the last free slot ahead of due retries and candidates. Step two, [attempts], fills what is left.
+ * A delivery's merge phase asks neither step: it holds no agent slot (bl-173).
  */
 internal object SlotPlan {
-    /** Step one: whether a merge check may start now. */
+    /** Step one: whether a merge check, phase `check` work, may start now. */
     fun mergeCheckFits(
         agent: AgentConfig,
         use: SlotUse,

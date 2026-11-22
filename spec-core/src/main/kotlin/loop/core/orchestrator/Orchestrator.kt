@@ -4832,9 +4832,11 @@ class Orchestrator(
      * move to `on_delivered.move_to`, a human touch when a human merged it), anything else ends the wait as a human
      * change, and the wait leaves the queue. The first other wait is the head, and only the head advances: whose check
      * runs, whose attempt runs or whose issue cannot be read holds the queue and does nothing this tick. An active head
-     * first runs what needs no slot, the CI poll (m3-15), through [Merges.advance]; when its next step needs a slot, its
-     * merge check and merge run in one background job in [scope] through [Merges.run], on a free agent slot. The waits
-     * behind the head stay in phase `check` and do nothing. The running checks are returned so `--once` waits for them.
+     * first runs the CI poll (m3-15), which needs no slot, through [Merges.advance]; then its merge check and merge run
+     * in one background job in [scope] through [Merges.run]. A job in phase `check` waits for a free agent slot and a
+     * machine slot; a job in phase `merge` takes no agent slot, and a machine slot only for the auto merge gate's
+     * reviewer (bl-173). The waits behind the head stay in phase `check` and do nothing. The running jobs are returned so
+     * `--once` waits for them.
      */
     private suspend fun syncMerges(
         scope: CoroutineScope,
@@ -4866,13 +4868,16 @@ class Orchestrator(
             headFound = true
             // m3-15: a CI wait is polled here, with no slot; once CI allows the merge, the merge phase starts below.
             val wait = merges.advance(stored) ?: continue
+            // bl-173: only phase check builds in the workspace and holds an agent slot; phase merge holds none.
+            val checks = wait.phase == MergePhase.Check
             // bl-175: while the queue is paused after a CI timeout, no merge check starts.
-            if (wait.phase == MergePhase.Check && queuePause.paused != null) continue
+            if (checks && queuePause.paused != null) continue
             // bl-86: step one of the slot plan, for the merge check work that holds a slot, before the parked read and
             // the due retries of [dispatch].
-            if (!SlotPlan.mergeCheckFits(effective.config.agent, slotUse())) continue
-            // m3-16: then a machine slot, like an attempt; with none free the merge check waits for a later tick.
-            val slot = machineGate.claim(waitContext(wait))
+            if (checks && !SlotPlan.mergeCheckFits(effective.config.agent, slotUse())) continue
+            // m3-16: then a machine slot, like an attempt, for the check and for a merge phase that runs the merge risk
+            // reviewer, the auto merge gate's; with none free the work waits for a later tick.
+            val slot = if (checks || wait.approvedBy == AutoMerge.AUTO) machineGate.claim(waitContext(wait)) else null
             if (slot == SlotClaim.Refused) continue
             val job =
                 scope.async(start = CoroutineStart.LAZY) {
@@ -4890,7 +4895,7 @@ class Orchestrator(
                         attemptEnded.trySend(Unit)
                     }
                 }
-            waits.checkStarted(wait.issueId)
+            waits.checkStarted(wait.issueId, holdsSlot = checks)
             job.start()
             launched += job
         }

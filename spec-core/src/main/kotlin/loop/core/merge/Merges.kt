@@ -146,7 +146,8 @@ internal class Merges(
      * delivers it. The pull request is looked up first, so a restart never merges twice: merged at the stored head, it
      * is delivered; merged elsewhere or closed by hand, the merge is refused for good. Then the phases run from the one
      * stored, the check, then the merge, the check again when the base moved; a passing check under `ci: actions` stops
-     * at the CI wait, which [advance] polls.
+     * at the CI wait, which [advance] polls. A run that starts in phase `merge` holds no agent slot (bl-173), so when the
+     * base moved it stops at the new round's check, which a later tick starts on a free slot.
      */
     suspend fun run(
         start: Wait.Merge,
@@ -245,10 +246,13 @@ internal class Merges(
                     MergePhase.Merge -> mergePhase(wait, issue, workflow, merge.method)
                     // m3-15: the tick polls the CI wait, with no slot.
                     MergePhase.Ci -> return
-                    MergePhase.Check ->
+                    MergePhase.Check -> {
+                        // bl-173: a run started in phase merge holds no agent slot, and the check needs one.
+                        if (start.phase != MergePhase.Check) return
                         checkPhase(wait, issue, workflow)?.let { checked ->
                             if (merge.ci == CiMode.Actions && checked.phase == MergePhase.Merge) startCi(checked, workflow) else checked
                         }
+                    }
                 } ?: return
         }
     }
