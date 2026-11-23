@@ -35,3 +35,10 @@ Filed from the run review. Related: m3-08, m3-09, m3-11.
 2026-11-18 soule: triaged ready-for-agent in m3-29. Blocked by m4-04, which edits the same usage code path in the runner.
 
 2026-11-18 soule: the Fable recheck of m3-29 found this mostly solved. It was filed before m3-08 and m3-09, which now report `context_usage` from the runner and keep the peak per session in the ledger, `loop show` and `loop status`. The old criteria on parsing and on the store already hold. One thing is missing: no test proves the usage is read from a line over 2,000 characters with `usage` at its end. The criteria are cut down to that test, so it stays open as a small ready-for-agent issue.
+
+2026-11-23 10:59Z loop: Loop opened pull request #24 for this issue: https://github.com/soulesidibe/Loop/pull/24
+
+2026-11-23 11:08Z loop: Loop did not merge pull request #24, ci: Actions runs did not pass: build (failure). The pull request stays open and the result waits for a new approval.
+  Failed runs:
+  - build (failure): https://github.com/soulesidibe/Loop/actions/runs/45160991798
+  Rerun the runs on GitHub or fix the branch, then approve again with loop approve.

@@ -1,7 +1,7 @@
 ---
 id: m4-05
 title: "The auto merge ci condition follows the kind's ci setting"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-agent]
 blocked_by: [m4-04]
@@ -43,3 +43,5 @@ Out of this issue: a refused run read as not started (m4-07), the auto merge gat
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-23 11:23Z loop: Loop opened pull request #25 for this issue: https://github.com/soulesidibe/Loop/pull/25
