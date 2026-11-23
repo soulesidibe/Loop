@@ -20,6 +20,7 @@ import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 /**
@@ -195,6 +196,55 @@ class ClaudeCodeRiskReviewerTest {
             assertTrue("--strict-mcp-config" in args, "no MCP server of the workspace or the user")
             assertEquals("{\"mcpServers\":{}}", mcp.readText().trim(), "the only MCP config is empty")
             assertTrue("--disable-slash-commands" in args, "no skill or command of the workspace")
+        }
+
+    /** The arguments of the first run [log] recorded. */
+    private fun loggedArgs(): List<String> =
+        log
+            .readText()
+            .lines()
+            .first { it.startsWith("ARGS ") }
+            .removePrefix("ARGS ")
+            .split(" ")
+
+    @Test
+    fun `bl-100 the reviewer runs in the issue workspace, never in the project root or Loop's own directory`() =
+        runBlocking {
+            // The operator's checkout holds the live WORKFLOW.md; the issue workspace is a separate folder.
+            val project = Files.createDirectories(folder.resolve("project"))
+            project.resolve("WORKFLOW.md").writeText("---\n---\n")
+            val issueWorkspace = Files.createDirectories(folder.resolve("workspaces/m4-06"))
+            val claude = fakeClaude("cat > /dev/null\necho '{\"result\":\"ok\"}'")
+
+            ClaudeCodeRiskReviewer(claude.toString(), host)
+                .review(RiskReviewRequest(issueWorkspace, "claude-sonnet-5-5", "Review this.", 10_000))
+                .getOrThrow()
+
+            val pwd =
+                log
+                    .readText()
+                    .lines()
+                    .first { it.startsWith("PWD ") }
+                    .removePrefix("PWD ")
+            assertEquals(issueWorkspace.toString(), pwd, "the directory is the request's workspace")
+            assertNotEquals(project.toString(), pwd, "never the project root")
+            assertNotEquals(Path.of(System.getProperty("user.dir")).toRealPath().toString(), pwd, "never Loop's own directory")
+        }
+
+    @Test
+    fun `bl-100 Bash stays among the disallowed tools and out of the allowed ones, so the reviewer cannot run git`() =
+        runBlocking {
+            val claude = fakeClaude("cat > /dev/null\necho '{\"result\":\"ok\"}'")
+
+            ClaudeCodeRiskReviewer(claude.toString(), host).review(request()).getOrThrow()
+
+            val args = loggedArgs()
+            val disallowed = args[args.indexOf("--disallowedTools") + 1].split(",")
+            val allowed = args[args.indexOf("--allowedTools") + 1].split(",")
+            assertTrue("Bash" in disallowed, "Bash is disallowed: $disallowed")
+            assertTrue(listOf("Edit", "Write", "MultiEdit", "NotebookEdit").all { it in disallowed }, "no writer: $disallowed")
+            assertEquals(listOf("Read", "Grep", "Glob"), allowed, "read tools only")
+            assertEquals("plan", args[args.indexOf("--permission-mode") + 1])
         }
 
     @Test

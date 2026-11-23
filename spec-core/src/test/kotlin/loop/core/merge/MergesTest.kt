@@ -778,8 +778,9 @@ class MergesTest {
         runTest {
             val (data, comment) = fallBack(autoSetup(reviewer = null))
 
-            assertContains(data.getValue(AutoMergeFallback.REASON), "this Loop has no risk reviewer for its runner")
-            assertContains(comment, "this Loop has no risk reviewer for its runner")
+            val reason = "this Loop cannot run its merge risk reviewer, so the reviewer setup, not the result, is why the merge waits"
+            assertContains(data.getValue(AutoMergeFallback.REASON), reason)
+            assertContains(comment, "Merge risk: not assessed, $reason")
         }
 
     @Test

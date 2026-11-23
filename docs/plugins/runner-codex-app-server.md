@@ -68,6 +68,8 @@ Loop checks `runners.codex` against the profile on every load of `WORKFLOW.md`, 
 | `runners.codex` not a map | `invalid_config` | `runners.codex must be a map` |
 | a key the profile does not list | none, a startup warning | `runners.codex.<key> is not a key of the codex-app-server runner, Loop ignores it` |
 
+The merge risk reviewer of a Codex result is not Codex: Loop runs the model of `kinds.code.delivery.risk.reviewer` through the Claude Code command, `runners.claude-code.command` when set, else `claude`, and under `policy: auto` with merge `loop run` warns at startup when that command cannot be found (m4-06, see [the reviewer apart from the runner](../spec-decisions.md#the-reviewer-apart-from-the-runner-extension-m4-06)).
+
 ## Launch and streams
 
 - **Launch:** the words of `command` as the argv, with the workspace as its working directory, in its own process group, with the agent env of the shared policy (`agent.env` added, removed names taken out). Cancelling the attempt kills the group. No shell runs it, unlike the spec's `bash -lc`: a login shell reads the user's profile after the env policy built the env, and a profile export would bring back a name the policy removed, such as `GH_TOKEN` or `LOOP_HOLDOUT` (m3-20).

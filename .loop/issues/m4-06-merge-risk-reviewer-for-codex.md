@@ -1,7 +1,7 @@
 ---
 id: m4-06
 title: "A merge risk reviewer for Codex results, never run in the operator's checkout"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-05]
@@ -66,3 +66,11 @@ Out of this issue: a Codex native reviewer, a reviewer section in the workflow, 
 2026-11-23 21:08Z loop: Loop updated pull request #27 for this issue: https://github.com/soulesidibe/Loop/pull/27
 
 2026-11-23 21:08Z loop: Loop could not merge pull request #27: merging main at 7fde4874ef09338954f9afb58cb517eed4479f84 into loop/m4-06 conflicts (conflict in docs/spec-decisions.md, spec-core/src/test/kotlin/loop/core/orchestrator/AutoMergeOrchestratorTest.kt). The merge was aborted and the branch is unchanged. The next attempt merges refs/loop/base/main into its branch, resolves the conflict and submits the result again.
+
+2026-11-23 21:27Z loop: Loop updated pull request #27 for this issue: https://github.com/soulesidibe/Loop/pull/27
+
+2026-11-23 21:38Z loop: Loop did not merge pull request #27 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Failed conditions:
+  - protected_paths: the diff touches .claude/skills/merge-risk/SKILL.md (protected by **/.claude/)
+  Merge risk: not assessed, a condition failed.
+  Once approved, Loop runs the merge check again and merges.
