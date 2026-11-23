@@ -1,7 +1,7 @@
 ---
 id: m4-03
 title: "Background wakes never count as turns, and the idle channel is bounded"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-agent]
 blocked_by: [m4-02]

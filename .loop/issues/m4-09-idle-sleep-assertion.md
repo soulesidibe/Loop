@@ -1,7 +1,7 @@
 ---
 id: m4-09
 title: "loop run keeps the Mac awake while attempts run"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-agent]
 blocked_by: [m4-01]
