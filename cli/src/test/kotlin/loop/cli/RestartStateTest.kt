@@ -15,6 +15,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlin.time.Clock
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
 /**
@@ -32,40 +33,31 @@ class RestartStateTest {
     fun `a queued retry survives a restart and fires at its original due time, not at once`() {
         fixture.issue("t-1")
         fixture.useFailingAgent()
-        fixture.writeWorkflow(extra = "agent:\n  max_retry_backoff_ms: $BACKOFF_MS")
+        fixture.writeWorkflow()
 
         val first = fixture.loop("run", "--once", fixture.workflow.toString())
         assertEquals(0, first.exitCode, first.toString())
-        // The first retry is due 10 s out, which a loaded machine can spend between two JVMs (bl-96). It fails
-        // too, so the retry restored below is the second, due 20 s out.
-        val firstDue = Instant.parse(fixture.query("SELECT due_at FROM retry_states").single()["due_at"]!!)
-        while (Clock.System.now() <= firstDue) Thread.sleep(POLL_MS)
-        val retry = fixture.loop("run", "--once", fixture.workflow.toString())
-        assertEquals(0, retry.exitCode, retry.toString())
         val stored = fixture.query("SELECT attempt, due_at, error, failures FROM retry_states").single()
-        assertEquals("2", stored["attempt"], stored.toString())
-        assertEquals("2", stored["failures"], stored.toString())
-        val dueAt = Instant.parse(stored["due_at"]!!)
+        assertEquals("1", stored["attempt"], stored.toString())
+        assertEquals("1", stored["failures"], stored.toString())
+        // The first retry waits 10 s, too short for a loaded machine to end one JVM and start the next
+        // (bl-107). The test moves the due time out, so the restart lands before it.
+        val dueAt = Clock.System.now() + RESTART_WINDOW
+        fixture.update("UPDATE retry_states SET due_at = '$dueAt'")
 
         val second = fixture.start("run", fixture.workflow.toString())
         try {
-            awaitAgentCalls(3) ?: fail("the restored retry never fired\n${second.await(30)}")
+            awaitAgentCalls(2) ?: fail("the restored retry never fired\n${second.await(30)}")
         } finally {
             second.process.destroy()
         }
         val ended = second.await(30)
-        val earlierRuns =
-            fixture
-                .query("SELECT run_id FROM events WHERE kind = 'attempt_started' ORDER BY seq")
-                .take(2)
-                .map { it["run_id"] }
-        // The `--once` retry run restored the first retry; the last restore is the new run's.
+        val firstRun = fixture.query("SELECT run_id FROM events WHERE kind = 'attempt_started' ORDER BY seq").first()["run_id"]
         val restored =
             fixture
-                .query(
-                    "SELECT ts, run_id, data FROM events WHERE kind = 'retry_scheduled' AND data LIKE '%\"restored\":\"true\"%' ORDER BY seq",
-                ).last()
-        assertTrue(restored["run_id"] !in earlierRuns, "the restored retry is recorded in the new run\n$ended")
+                .query("SELECT ts, run_id, data FROM events WHERE kind = 'retry_scheduled' AND data LIKE '%\"restored\":\"true\"%'")
+                .single()
+        assertTrue(restored["run_id"] != firstRun, "the restored retry is recorded in the new run\n$ended")
         assertContains(restored["data"]!!, "\"due_at\":\"$dueAt\"")
         // The new run started, and restored the entry, before the due time: it waited for it.
         val restoredAt = Instant.parse(restored["ts"]!!)
@@ -191,11 +183,11 @@ class RestartStateTest {
 
     private companion object {
         /**
-         * The cap on a retry's delay, `min(10 s * 2^(attempt - 1), cap)`: the second retry waits 20 s, long enough
-         * for a JVM to start before it falls due, short enough for a test. A 6 s cap was too short with parallel
-         * forks (m4-00), and the first retry's 10 s too short on a loaded machine (bl-96).
+         * How far out the queued retry falls due: long enough for a JVM to start and restore it first, short
+         * enough for a test. The 10 s of the first backoff were too short with three agents running at once:
+         * the restart came up to 8 s after the due time (bl-107).
          */
-        const val BACKOFF_MS = 20_000L
+        val RESTART_WINDOW = 30.seconds
         const val POLL_MS = 50L
         val WAIT_NANOS = TimeUnit.SECONDS.toNanos(60)
     }

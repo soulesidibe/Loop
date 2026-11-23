@@ -1654,6 +1654,33 @@ class ClaudeCodeRunnerTest {
         assertTrue(occupancy.all { it.model == null }, "$occupancy")
     }
 
+    @Test
+    fun `bl-107 a line over 2,000 characters with its usage at the end reports that usage as occupancy`() {
+        // Loop stores each runner_output line cut at 2,000 characters, so the runner must read the usage from the full line.
+        val command = "echo " + "x".repeat(5_000)
+        val long =
+            "{\"type\":\"assistant\",\"message\":{\"id\":\"msg_2\",\"type\":\"message\",\"role\":\"assistant\"," +
+                "\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Bash\",\"input\":{\"command\":\"$command\"}}]," +
+                "\"usage\":{\"input_tokens\":300,\"output_tokens\":40,\"cache_read_input_tokens\":120000," +
+                "\"cache_creation_input_tokens\":4000}},\"session_id\":\"claude-session-1\"}"
+        assertTrue(long.length > 2_000 && "\"usage\"" !in long.take(2_000), "the usage must sit past the first 2,000 characters")
+        val success = Fixtures.lines("success")
+        val lines = success.map { if ("\"id\":\"msg_2\"" in it) long else it }
+        val claude = Scripted(listOf(listOf(stdout(lines))))
+
+        val events = run(scriptedRunner(claude))
+
+        val started = assertIs<RunnerEvent.SessionStarted>(events.first())
+        // msg_1: 10 + 1 + 2; the long msg_2: 300 + 120,000 + 4,000, its output tokens left out.
+        val expected =
+            listOf(13L, 124_300L).map {
+                RunnerEvent.ContextUsage(started.sessionId, started.turnId, it, model = "anthropic/claude-sonnet")
+            }
+        assertEquals(expected, events.filterIsInstance<RunnerEvent.ContextUsage>())
+        // The runner hands the line on in full; only the store cuts it.
+        assertTrue(events.filterIsInstance<RunnerEvent.Output>().any { it.line == long }, "the long line was not output in full")
+    }
+
     /** An event that reports progress inside a turn: an output line, an estimate or an occupancy. */
     private fun RunnerEvent.isProgress(): Boolean =
         this is RunnerEvent.Output || this is RunnerEvent.UsageEstimate || this is RunnerEvent.ContextUsage

@@ -231,6 +231,13 @@ class LoopFixture(
             }
         }
 
+    /** Runs the write [sql] on the store file, for a test that sets up a state no run reaches in time. */
+    fun update(sql: String) {
+        DriverManager.getConnection("jdbc:sqlite:$storeFile").use { connection ->
+            connection.createStatement().use { it.executeUpdate(sql) }
+        }
+    }
+
     /** Records [events] through the real store, as a running `loop run` would. */
     fun seed(vararg events: RecordedEvent) {
         SqliteEventStore.open(loopHome, projectDir, Redactor.NONE).getOrThrow().use { store ->
@@ -311,7 +318,7 @@ class LoopFixture(
         timeoutSeconds: Long = 60,
     ): LoopResult = start(*args, cwd = cwd, env = env).await(timeoutSeconds)
 
-    /** A launcher run started by [start]; the start script execs java, so [process] is the JVM. */
+    /** A launcher run started by [start]; perl and the start script exec, so [process] is the JVM. */
     inner class RunningLoop(
         val process: Process,
         private val args: List<String>,
@@ -383,26 +390,21 @@ class LoopFixture(
             }
     }
 
-    /**
-     * Starts the installed launcher like [loop] without waiting for it.
-     *
-     * [defaultSigint] starts it with SIGINT at its default, as a terminal does. A process started with SIGINT
-     * ignored, as `nohup` or a detached `loop run` leaves it, passes that on, and the JVM then never sees Ctrl-C.
-     */
+    /** Starts the installed launcher like [loop] without waiting for it. */
     fun start(
         vararg args: String,
         cwd: Path = projectDir,
         env: Map<String, String?> = emptyMap(),
-        defaultSigint: Boolean = false,
     ): RunningLoop {
         val launcher = System.getProperty("loop.launcher") ?: fail("system property loop.launcher is not set")
         val run = ++runs
         val stdout = outputDir.resolve("run-$run.out").toFile()
         val stderr = outputDir.resolve("run-$run.err").toFile()
-        // perl execs the launcher in place, so the pid stays the launcher's.
-        val prefix = if (defaultSigint) listOf("perl", "-e", SIGINT_DEFAULT) else emptyList()
+        // SIGINT back to its default, as a terminal gives its foreground job: a build started from a
+        // background job passes SIGINT on ignored, and a JVM keeps an ignored SIGINT, so loop run
+        // would never see a Ctrl-C (bl-107). perl execs, so the pid stays the JVM's.
         val builder =
-            ProcessBuilder(prefix + launcher + args)
+            ProcessBuilder(listOf("perl", "-e", "\$SIG{INT} = 'DEFAULT'; exec { \$ARGV[0] } @ARGV", launcher) + args)
                 .directory(cwd.toFile())
                 .redirectOutput(stdout)
                 .redirectError(stderr)
@@ -424,8 +426,5 @@ class LoopFixture(
         private const val DUMP_TIMEOUT_SECONDS = 20L
         private const val QUIT_DUMP_WAIT_MS = 3_000L
         private val STATE_LINE = Regex("""^state:(.*)$""", RegexOption.MULTILINE)
-
-        /** Sets SIGINT back to its default, then execs its arguments with no shell. */
-        private const val SIGINT_DEFAULT = "\$SIG{INT} = 'DEFAULT'; exec { \$ARGV[0] } @ARGV or die \"exec \$ARGV[0]: \$!\\n\";"
     }
 }
