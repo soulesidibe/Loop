@@ -2,7 +2,7 @@
 id: m4-13
 title: "Each tracker polled and reconciled on its own"
 state: todo
-priority: 2
+priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-47]
 ---

@@ -2,7 +2,7 @@
 id: m4-32
 title: "loop send-back, which is bl-89's loop reject"
 state: todo
-priority: 3
+priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-52]
 ---

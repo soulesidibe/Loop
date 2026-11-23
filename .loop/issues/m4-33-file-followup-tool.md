@@ -2,7 +2,7 @@
 id: m4-33
 title: "file_followup for both runners, a kind may override the tracker"
 state: todo
-priority: 3
+priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-32]
 ---

@@ -2,7 +2,7 @@
 id: m4-34
 title: "Reactions config and the merge_conflict reaction"
 state: todo
-priority: 3
+priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-33]
 ---
