@@ -41,3 +41,7 @@ Out of this issue: the rule for a failure after a sleep (m4-08), sleep on lid cl
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-23 02:46Z loop: Loop opened pull request #19 for this issue: https://github.com/soulesidibe/Loop/pull/19
+
+2026-11-23 03:11Z loop: Loop did not merge pull request #19: main at d08267864c593417c6d07659d2073a552a959151 was merged into loop/m4-09, but the checks failed on the result (a check failed). The merge commit stays on the branch. The next attempt fixes the result and submits it again.
