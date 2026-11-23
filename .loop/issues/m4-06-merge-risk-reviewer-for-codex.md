@@ -48,3 +48,13 @@ Out of this issue: a Codex native reviewer, a reviewer section in the workflow, 
   - Docs: a new spec-decisions section, "The reviewer apart from the runner (extension, m4-06)", plus the m2-28 and m3-04 lines and both runner plugin docs.
   - Outside the issue: OwnWorkflowTest "the limits are the ones of the spec" was already failing on main, because ca9029c set max_concurrent_agents to 3 in WORKFLOW.md. I changed the test to expect 3 so the full build can pass. Revert that one line if 3 was not meant to stay.
   - Behavior change to note: the command runner now also gets the Claude Code reviewer, as the decision says "whatever runner.kind is".
+
+2026-11-23 15:21Z agent 305d2757: m4-06, turn 4: the build check failed on 2 tests of :plugins:runner-codex-app-server, both with "response_timeout: no initialize response within 5000 ms". This branch does not touch that plugin. A rerun of the module at load average 16 failed 3 other tests the same way: the fake app server, a bash script, did not read its first line within the 5 s default read timeout. Fix in 472da0a, test code only: the tests that are not about the read timeout use FakeAppServer.READ_TIMEOUT, 60 s. The read timeout tests keep their own values, and the 10 s turn timeouts stay. Under the same load the module passes, 154 tests, 0 failures, no suite over 14 s. This flake is probably on main too, worth a backlog note.
+
+2026-11-23 15:22Z loop: Loop opened pull request #27 for this issue: https://github.com/soulesidibe/Loop/pull/27
+
+2026-11-23 16:23Z loop: Loop did not merge pull request #27 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Failed conditions:
+  - protected_paths: the diff touches .claude/skills/merge-risk/SKILL.md (protected by **/.claude/)
+  Merge risk: not assessed, a condition failed.
+  Once approved, Loop runs the merge check again and merges.
