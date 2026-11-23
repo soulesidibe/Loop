@@ -3,7 +3,7 @@ id: m4-06
 title: "A merge risk reviewer for Codex results, never run in the operator's checkout"
 state: todo
 priority: 2
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [m4-05]
 ---
 

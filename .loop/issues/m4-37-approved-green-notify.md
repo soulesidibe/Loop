@@ -3,7 +3,7 @@ id: m4-37
 title: "The approved_green reaction tells me a pull request is ready to merge"
 state: todo
 priority: 3
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [m4-36]
 ---
 
