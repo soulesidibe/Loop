@@ -259,6 +259,18 @@ class PreflightTest {
     }
 
     @Test
+    fun `a max wake turns below 1 fails preflight naming the key (m4-03)`() {
+        listOf("0", "-3").forEach { value ->
+            val result = check(workflow(extra = "agent:\n  max_wake_turns: $value"))
+
+            assertEquals(
+                PreflightResult.Failed("invalid_config", "agent.max_wake_turns must be a positive integer, got $value"),
+                result,
+            )
+        }
+    }
+
+    @Test
     fun `unset var fails preflight with its name`() {
         val result = check(workflow(extra = "workspace:\n  root: \$WS_ROOT"))
 

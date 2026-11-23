@@ -89,6 +89,7 @@ class JsonlTurnLedgerTest {
                 "peak_fraction" to JsonPrimitive(0.3),
                 "rotations" to JsonPrimitive(1),
                 "interrupted" to JsonNull,
+                "wake" to JsonPrimitive(false),
             ),
             json.toMap(),
         )
@@ -174,6 +175,17 @@ class JsonlTurnLedgerTest {
             listOf(JsonPrimitive("hard_limit"), JsonNull),
             written.map { Json.parseToJsonElement(it).jsonObject["interrupted"] },
         )
+    }
+
+    @Test
+    fun `m4-03 the line of a wake turn says wake true, any other turn false`() {
+        val written = mutableListOf<String>()
+        val ledger = JsonlTurnLedger(written::add, SecretRedactor())
+
+        ledger.append(turn.copy(wake = true)).getOrThrow()
+        ledger.append(turn).getOrThrow()
+
+        assertEquals(listOf(JsonPrimitive(true), JsonPrimitive(false)), written.map { Json.parseToJsonElement(it).jsonObject["wake"] })
     }
 
     @Test

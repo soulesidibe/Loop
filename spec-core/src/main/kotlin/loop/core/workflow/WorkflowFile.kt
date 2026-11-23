@@ -409,6 +409,7 @@ class WorkflowLoader(
                 agent.positiveInt("agent.max_concurrent_agents", "max_concurrent_agents")
                     ?: defaults.maxConcurrentAgents,
             maxTurns = agent.positiveInt("agent.max_turns", "max_turns") ?: defaults.maxTurns,
+            maxWakeTurns = agent.positiveInt("agent.max_wake_turns", "max_wake_turns") ?: defaults.maxWakeTurns,
             maxRetryBackoffMs =
                 agent.positiveLong("agent.max_retry_backoff_ms", "max_retry_backoff_ms")
                     ?: defaults.maxRetryBackoffMs,

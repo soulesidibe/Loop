@@ -3,7 +3,7 @@ id: m4-26
 title: "Resource limits, the read only check after release, and resources for checks"
 state: todo
 priority: 2
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [m4-51]
 ---
 

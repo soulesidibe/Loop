@@ -63,3 +63,8 @@ Out of this issue: usage after the stop grace (m4-04), the other bl-122 findings
   - diff_size: the diff changes 1128 lines, over the limit of 1000
   Merge risk: not assessed, a condition failed.
   Once approved, Loop runs the merge check again and merges.
+
+2026-11-23 04:56Z loop: Loop did not merge pull request #20, ci: Actions runs did not pass: build (failure). The pull request stays open and the result waits for a new approval.
+  Failed runs:
+  - build (failure): https://github.com/soulesidibe/Loop/actions/runs/45113835331
+  Rerun the runs on GitHub or fix the branch, then approve again with loop approve.

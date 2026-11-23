@@ -46,6 +46,12 @@ class WorkflowConfigValidationTest {
     }
 
     @Test
+    fun `max wake turns defaults to 30 and reads agent max_wake_turns (m4-03)`() {
+        assertEquals(30, config("agent:\n  max_turns: 7").agent.maxWakeTurns)
+        assertEquals(4, config("agent:\n  max_wake_turns: 4").agent.maxWakeTurns)
+    }
+
+    @Test
     fun `a non numeric max turns fails quoting the value`() {
         val error = error("agent:\n  max_turns: abc")
 

@@ -101,6 +101,7 @@ object HumanText {
             reason == "not_active" -> "the issue left the active states"
             reason == "not_eligible" -> "the issue is no longer eligible"
             reason == "max_turns" -> "it used all its turns"
+            reason == "max_wake_turns" -> "it used all its wake turns"
             reason == "no_continuation" -> "the runner ran its one turn"
             reason == "waiting_approval" -> "its verified result waits for approval"
             reason == "split_issue" -> "its sessions filled up without progress"
