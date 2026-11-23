@@ -15,6 +15,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlin.time.Clock
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
 /**
@@ -32,14 +33,17 @@ class RestartStateTest {
     fun `a queued retry survives a restart and fires at its original due time, not at once`() {
         fixture.issue("t-1")
         fixture.useFailingAgent()
-        fixture.writeWorkflow(extra = "agent:\n  max_retry_backoff_ms: $BACKOFF_MS")
+        fixture.writeWorkflow()
 
         val first = fixture.loop("run", "--once", fixture.workflow.toString())
         assertEquals(0, first.exitCode, first.toString())
         val stored = fixture.query("SELECT attempt, due_at, error, failures FROM retry_states").single()
         assertEquals("1", stored["attempt"], stored.toString())
         assertEquals("1", stored["failures"], stored.toString())
-        val dueAt = Instant.parse(stored["due_at"]!!)
+        // The first retry waits 10 s, too short for a loaded machine to end one JVM and start the next
+        // (bl-107). The test moves the due time out, so the restart lands before it.
+        val dueAt = Clock.System.now() + RESTART_WINDOW
+        fixture.update("UPDATE retry_states SET due_at = '$dueAt'")
 
         val second = fixture.start("run", fixture.workflow.toString())
         try {
@@ -179,11 +183,12 @@ class RestartStateTest {
 
     private companion object {
         /**
-         * Long enough for a JVM to start before the retry falls due, short enough for a test. 6 s was too short
-         * with parallel forks (m4-00): the second `loop run` restored the entry after its due time, 2 runs in 5.
+         * How far out the queued retry falls due: long enough for a JVM to start and restore it first, short
+         * enough for a test. The 10 s of the first backoff were too short with three agents running at once:
+         * the restart came up to 8 s after the due time (bl-107).
          */
-        const val BACKOFF_MS = 15_000L
+        val RESTART_WINDOW = 30.seconds
         const val POLL_MS = 50L
-        val WAIT_NANOS = TimeUnit.SECONDS.toNanos(40)
+        val WAIT_NANOS = TimeUnit.SECONDS.toNanos(60)
     }
 }

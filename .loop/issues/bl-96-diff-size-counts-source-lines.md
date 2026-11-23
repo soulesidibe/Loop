@@ -106,3 +106,15 @@ Filed from the 2026-11-16 run review.
   - RestartStateTest "a queued retry survives a restart...": the test's own check failed again with "the restart came after the due time, the test proves nothing". The second loop run restored the retry 3 s after its 15 s backoff ran out. This test also failed in the turn 4 build, so its backoff goes from 15 s to 30 s and its wait from 40 s to 60 s. The assertions are unchanged. m4-00 already raised this margin once, from 6 s. It passes alone.
   - RunCommandTest "SIGINT to loop run stops it cleanly": kill -INT exited 0, but the JVM never ran its shutdown hook. The thread dump shows main still waiting in untilSignal, with no shutdown thread. It passes alone, so I left it unchanged. It is worth a bl issue for triage.
   I also merged refs/loop/base/main at 5aac3d4, which holds tracker notes only. Evidence: the RestartStateTest and SIGINT test runs and ktlintCheck pass.
+
+2026-11-23 17:23Z agent 652b0f2e: bl-96 turn 6: the full build failed on 3 cli tests, none in code bl-96 changes. Each is fixed in its test, with assertions unchanged.
+  - RunCommandTest "SIGINT to loop run stops it cleanly": I found the cause. The loop run doing this verification (started 15:10Z, after the turn 4 build) has SIGINT and SIGHUP set to ignore, as nohup or a detached launch leaves them. jcmd VM.info shows "SIGINT: SIG_IGN". Its build and test JVMs inherit that, so the loop run under test never sees the signal. This fails every time: I reproduced it by running gradle with SIGINT ignored. The test now starts loop run with SIGINT at its default, as a terminal does (LoopFixture.start defaultSigint). Worth knowing: a loop run started this way ignores Ctrl-C.
+  - RestartStateTest: my turn 5 fix did nothing. The first retry waits min(10 s, max_retry_backoff_ms), so it was 10 s with a 15 s or a 30 s cap. The test now lets the first retry fail too, so the retry it restores is due 20 s out.
+  - CodexClientToolsRunTest: under load, the fake app server missed the 5 s initialize read timeout. The test's runner now sets read_timeout_ms 30000.
+  Evidence: with gradle under SIGINT ignored, the SIGINT test and RestartStateTest pass; CodexClientToolsRunTest and ktlintCheck pass.
+
+2026-11-23 17:30Z agent 652b0f2e: bl-96 turn 7: the build exited 143 (SIGTERM) as cli:test started, before any test failed. I take it as stopped from outside: main moved to a76b690, one agent at a time again. I merged main and put OwnWorkflowTest back to main's copy, which expects max_concurrent_agents 1. OwnWorkflowTest (17 tests) and ktlintCheck pass. Turn 6's cli test fixes are unchanged.
+
+2026-11-23 20:30Z loop: Loop opened pull request #28 for this issue: https://github.com/soulesidibe/Loop/pull/28
+
+2026-11-23 20:30Z loop: Loop could not merge pull request #28: merging main at 784068c922a8d892c6db7a84d3f275e227825b8d into loop/bl-96 conflicts (conflict in cli/src/test/kotlin/loop/cli/LoopFixture.kt, cli/src/test/kotlin/loop/cli/RestartStateTest.kt). The merge was aborted and the branch is unchanged. The next attempt merges refs/loop/base/main into its branch, resolves the conflict and submits the result again.
