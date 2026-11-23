@@ -12,6 +12,7 @@ import loop.api.TrackerContext
 import loop.api.TrackerError
 import loop.core.verify.Holdouts
 import loop.core.workflow.ConfigValue
+import loop.core.workflow.DeliveryPolicy
 import loop.core.workflow.RunnerCheck
 import loop.core.workflow.TrackerCheck
 import loop.core.workflow.WorkflowFile
@@ -26,6 +27,7 @@ import loop.tracker.github.GitHubTrackerSettings
 import loop.tracker.github.GitHubTransport
 import loop.tracker.github.GitPush
 import loop.tracker.github.JdkGitHubTransport
+import java.io.File
 import java.io.IOException
 import java.net.URI
 import java.nio.file.Files
@@ -348,10 +350,12 @@ fun runnerFor(
 }
 
 /**
- * The read only reviewer of the merge risk assessment (m2-28): Claude Code's, with the command of `runners.claude-code`,
- * when `runner.kind` is `claude-code`; null for any other runner, so an auto merge falls back to a human. Its env is the
- * agent env policy and its settings deny reads under [holdoutDir], like an agent's. It stays wired to the `claude-code`
- * kind (m3-04): moving it behind the plugin is later work.
+ * The read only reviewer of the merge risk assessment (m2-28): Claude Code's, with the [riskReviewerCommand], whatever
+ * `runner.kind` is (m4-06, bl-145), since the reviewer is a concern apart from the runner that did the work and the
+ * workflow names its model in `risk.reviewer`. The command is resolved as [resolveCommand] does, so the reviewer starts
+ * exactly the file the startup check found; null when it cannot be found, so the auto merge gate falls back naming the
+ * reviewer setup, and the startup warns ([riskReviewerWarning]). Its env is the agent env policy and its settings deny
+ * reads under [holdoutDir], like an agent's.
  */
 fun riskReviewerFor(
     workflow: WorkflowFile,
@@ -359,12 +363,70 @@ fun riskReviewerFor(
     removedEnvNames: Set<String>,
     holdoutDir: Path? = null,
 ): RiskReviewer? =
-    if (workflow.runner.kind == ClaudeCodeSettings.KIND) {
-        val settings = ClaudeCodeSettings.of(workflow.runner.section(ClaudeCodeSettings.KIND))
-        ClaudeCodeRiskReviewer(settings.command, hostEnv, removedEnvNames, holdoutDir)
-    } else {
-        null
+    resolveCommand(riskReviewerCommand(workflow), hostEnv)?.let { command ->
+        ClaudeCodeRiskReviewer(command, hostEnv, removedEnvNames, holdoutDir)
     }
+
+/**
+ * The command the merge risk reviewer runs (m4-06): under `runner.kind: claude-code` the command of its section, which
+ * the loader checked; under any other runner `runners.claude-code.command` when it is set and not blank, else
+ * [DEFAULT_REVIEWER_COMMAND].
+ */
+fun riskReviewerCommand(workflow: WorkflowFile): String =
+    if (workflow.runner.kind == ClaudeCodeSettings.KIND) {
+        ClaudeCodeSettings.of(workflow.runner.section(ClaudeCodeSettings.KIND)).command
+    } else {
+        (workflow.runner.sections[ClaudeCodeSettings.KIND] as? Map<*, *>)
+            ?.get("command")
+            ?.let { it as? String }
+            ?.takeIf { it.isNotBlank() }
+            ?: DEFAULT_REVIEWER_COMMAND
+    }
+
+/**
+ * m4-06: the startup warning of a workflow whose auto merge gate would run a merge risk reviewer, `policy: auto` with
+ * `pull_request.merge` and `risk.reviewer`, while the [riskReviewerCommand] cannot be found: every result would then
+ * wait for `loop approve`, for the reviewer setup and not for the result. Null otherwise.
+ */
+fun riskReviewerWarning(
+    workflow: WorkflowFile,
+    hostEnv: Map<String, String>,
+): String? {
+    val delivery = workflow.config.kinds?.code?.delivery ?: return null
+    if (delivery.policy != DeliveryPolicy.Auto || delivery.pullRequest?.merge == null) return null
+    val model = delivery.risk.reviewer ?: return null
+    val command = riskReviewerCommand(workflow)
+    if (resolveCommand(command, hostEnv) != null) return null
+    return "kinds.code.delivery.risk.reviewer is $model, but its command $command cannot be found, so no merge risk " +
+        "reviewer can run and every result waits for loop approve. Install Claude Code or set runners.claude-code.command"
+}
+
+/**
+ * The file [command] starts, or null when it cannot be found: a bare name is the first executable file of that name in
+ * the folders of the `PATH` of [hostEnv], given as its absolute path; an absolute path is itself when it is an
+ * executable file. A relative path with a slash resolves against the issue workspace, which does not exist yet, so it
+ * is kept as written.
+ */
+internal fun resolveCommand(
+    command: String,
+    hostEnv: Map<String, String>,
+): String? {
+    val executable = { path: Path -> Files.isRegularFile(path) && Files.isExecutable(path) }
+    if ('/' !in command) {
+        return hostEnv["PATH"]
+            .orEmpty()
+            .split(File.pathSeparatorChar)
+            .filter { it.isNotEmpty() }
+            .firstNotNullOfOrNull { dir -> runCatching { Path.of(dir, command) }.getOrNull()?.takeIf(executable) }
+            ?.toAbsolutePath()
+            ?.toString()
+    }
+    val path = runCatching { Path.of(command) }.getOrNull() ?: return null
+    return command.takeIf { !path.isAbsolute || executable(path) }
+}
+
+/** The reviewer's command when the workflow names none (m4-06). */
+const val DEFAULT_REVIEWER_COMMAND = "claude"
 
 /**
  * The env names kept out of the agent env: every `$NAME` `WORKFLOW.md` references, that is
