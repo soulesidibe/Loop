@@ -178,8 +178,11 @@ class RestartStateTest {
     }
 
     private companion object {
-        /** Long enough for a JVM to start before the retry falls due, short enough for a test. */
-        const val BACKOFF_MS = 6_000L
+        /**
+         * Long enough for a JVM to start before the retry falls due, short enough for a test. 6 s was too short
+         * with parallel forks (m4-00): the second `loop run` restored the entry after its due time, 2 runs in 5.
+         */
+        const val BACKOFF_MS = 15_000L
         const val POLL_MS = 50L
         val WAIT_NANOS = TimeUnit.SECONDS.toNanos(40)
     }

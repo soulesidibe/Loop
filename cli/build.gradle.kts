@@ -184,6 +184,8 @@ tasks.test {
     setEnvironment(environment.filterKeys { !it.startsWith("GIT_") })
     // The cli tests spawn the installed launcher end to end.
     dependsOn(tasks.installDist)
+    // Half the cores, at least 1 (m4-00): one fork took 22 minutes. Each test makes its own LOOP_HOME and temp dirs.
+    maxParallelForks = (Runtime.getRuntime().availableProcessors() / 2).coerceAtLeast(1)
     // Without build-info.properties: a new commit alone does not rerun the cli tests.
     inputs
         .files(fileTree(launcherInstallDir) { exclude("build-info.properties") })

@@ -1,7 +1,7 @@
 ---
 id: m4-00
 title: "Human prerequisites: parallel cli tests, CI timeout, ci: actions back in the live checkout, the workspace_reused prompt step, two test recordings"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-human]
 blocked_by: []
@@ -31,17 +31,17 @@ Out of this issue: bl-129's low findings (`workspaceReused = false` defaults in 
 
 ## Acceptance criteria
 
-- [ ] bl-07 was checked before the forks were raised: at least five forked runs of `:cli:test`, or the diagnostic run, with the result in a comment on this issue (judgment).
-- [ ] `grep -q maxParallelForks cli/build.gradle.kts` passes.
-- [ ] Three runs in a row of `./gradlew --no-daemon :cli:test --rerun` are green, with the wall time before and after the forks in a comment (judgment).
-- [ ] `grep -q 'timeout-minutes: 45' .github/workflows/build.yml` passes, and the first Actions run after it finishes inside the limit (judgment).
-- [ ] `grep -qE '^ +ci: actions' WORKFLOW.md` passes, and the live shared checkout has no uncommitted `WORKFLOW.md` change.
+- [x] bl-07 was checked before the forks were raised: at least five forked runs of `:cli:test`, or the diagnostic run, with the result in a comment on this issue (judgment).
+- [x] `grep -q maxParallelForks cli/build.gradle.kts` passes.
+- [x] Three runs in a row of `./gradlew --no-daemon :cli:test --rerun` are green, with the wall time before and after the forks in a comment (judgment).
+- [x] `grep -q 'timeout-minutes: 45' .github/workflows/build.yml` passes, and the first Actions run after it finishes inside the limit (judgment).
+- [x] `grep -qE '^ +ci: actions' WORKFLOW.md` passes, and the live shared checkout has no uncommitted `WORKFLOW.md` change.
 - [x] `grep -q 'loop.workspace_reused' WORKFLOW.md && grep -q 'loop.workspace_reused' spec-core/src/test/resources/prompt/own-template.md` passes.
 - [x] `./gradlew --no-daemon :cli:test --tests 'loop.cli.OwnWorkflowTest'` passes, with the `workspace_reused` case.
 - [x] `test -s plugins/tracker-github/src/test/resources/github/recorded/actions-run-43779352010.json && test -s plugins/tracker-github/src/test/resources/github/recorded/actions-run-43779352010-jobs.json` passes.
 - [x] `test -s plugins/runner-claude-code/src/test/resources/streams/wake_turns_10c2f759.jsonl` passes.
 - [x] Both recordings are redacted, and how each was made is written down, in the recordings' `README.md` for the run and in the commit message for the runner lines (judgment).
-- [ ] `./gradlew --no-daemon build` passes.
+- [x] `./gradlew --no-daemon build` passes.
 
 ## Comments
 
@@ -55,3 +55,9 @@ Out of this issue: bl-129's low findings (`workspaceReused = false` defaults in 
   Step 7: `wake_turns_10c2f759.jsonl` holds the 365 runner lines of the attempt, redacted by an allowlist as its commit message says, and `wake_turns_10c2f759.turns.json` gives each line's arrival time and where Loop's six inputs fall.
   The Fable 5.2 reviews found that m4-03's replay criterion does not match the recording (bl-170) and that the block's heading is wrong in a reused workspace (bl-171).
   `./gradlew --no-daemon build` passed on the branch before the merge of main; the full build criterion stays open for the steps that remain.
+
+2026-11-23 soule: steps 1 to 4 are done, so all seven steps are.
+  Step 1: bl-07 checked with eight runs of `./gradlew --no-daemon :cli:test --rerun` at 5 forks on a 10 core Mac, the Loop run idle. No `did not exit in 60s` and no new file in `$TMPDIR/loop-hangs/`, so bl-07's diagnostic was not needed. Two of the first five runs failed `RestartStateTest` "a queued retry survives a restart" at line 60: with forks the restarted `loop run` restored the retry after its 6 s backoff had already passed, so the test's own guard fired. Its `BACKOFF_MS` is now 15 s, with the reason next to it. `MachineLimitsCommandTest` passed in every run.
+  Step 2: `maxParallelForks` is half the cores, at least 1 (5 here, 2 on a 4 core Actions runner). Wall time of `:cli:test`: 22.1 minutes in one fork (bl-142), 12.4 to 14.0 minutes with forks over the eight runs. Runs 6 to 8, after the test fix, were green in a row: 746, 810 and 744 s. The forks help less than 5 times because the end to end tests spawn JVMs of their own; splitting them into their own task stays the fallback.
+  Step 3: `timeout-minutes: 45` in `.github/workflows/build.yml`. The first Actions run after it is checked on this commit's push.
+  Step 4: the live checkout has `ci: actions` committed and no uncommitted `WORKFLOW.md` change, and Actions runs of the public repository are green again (bl-182's rerun, 2026-11-22).
