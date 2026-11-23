@@ -226,6 +226,18 @@ class WorkspaceGitTest {
         assertTrue("vendor/lib" in workspaceGit.diffText(repo, base, head, maxChars = 10_000))
     }
 
+    @Test
+    fun `bl-96 the reviewer's diff text keeps its first characters of a large diff, and a git failure names its exit code`() {
+        val (_, base) = forked()
+        val head = commit("big.txt", (1..20_000).joinToString("") { "line $it of a large diff\n" }, "big")
+
+        val text = workspaceGit.diffText(repo, base, head, maxChars = 1_000)
+        assertEquals(1_000, text.length)
+        assertTrue(text.startsWith("diff --git "), text.take(100))
+        val error = assertFailsWith<IOException> { workspaceGit.diffText(repo, "0".repeat(40), head, maxChars = 1_000) }
+        assertTrue("git diff exited with code" in error.message!!, error.message)
+    }
+
     /** A branch whose last commit adds a 3 line Kotlin file, the base of its fork and the head. */
     private fun kotlinChange(): Pair<String, String> {
         val (_, base) = forked()
