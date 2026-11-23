@@ -66,9 +66,10 @@ class AutoMergeTest {
             mergedHead = head,
             mergeability = Result.success(Mergeability(mergeable = true, state = "clean")),
             headRuns = Result.success(ActionsRuns(0, emptyList())),
-            baseRuns = Result.success(ActionsRuns(0, emptyList())),
-            workflows = Result.success(emptyList()),
         )
+
+    /** m4-05: the Actions runs are read only under `ci: actions`, so the tests of runs read them there. */
+    private val actions = ci.copy(ci = CiMode.Actions)
 
     private var nextRun = 1L
 
@@ -92,6 +93,7 @@ class AutoMergeTest {
         assertEquals(null, AutoMerge.ciFailure(ci), "mergeable and clean, no check expected")
     }
 
+    /** m4-05: `unstable` fails only under `ci: actions`, the other states under both values of `ci`. */
     @Test
     fun `a pull request that is not mergeable and clean fails ci, an unknown state included`() {
         for (state in listOf(
@@ -100,28 +102,34 @@ class AutoMergeTest {
             Mergeability(null, "unknown"),
             Mergeability(true, "blocked"),
         )) {
-            assertContains(ciReason(ci.copy(mergeability = Result.success(state))), "pull request #7", message = "$state")
+            assertContains(ciReason(actions.copy(mergeability = Result.success(state))), "pull request #7", message = "$state")
         }
         assertContains(ciReason(ci.copy(mergeability = Result.failure(IllegalStateException("503")))), "503")
+        assertContains(ciReason(actions.copy(mergeability = Result.failure(IllegalStateException("503")))), "503")
     }
 
-    /** m3-15 read check runs as Actions runs; the m2-28 name is kept so the test is never lost. */
+    /**
+     * m3-15 read check runs as Actions runs; the m2-28 name is kept so the test is never lost. m4-05: checks are
+     * expected only under `ci: actions`, where a head with no run fails under `ci_no_run: fail`; under `ci: none` no
+     * run is read, so a head with none holds.
+     */
     @Test
     fun `send back 5, a fresh head with no check run yet fails ci when checks are expected`() {
         assertEquals(
-            "no Actions run is registered on the merged head aaaaaaaaaaaa yet, while the merged head holds the workflows .github/workflows/ci.yml",
-            ciReason(ci.copy(workflows = Result.success(listOf(".github/workflows/ci.yml")))),
+            "no Actions run on the merged head aaaaaaaaaaaa, and ci_no_run is fail",
+            ciReason(actions),
         )
         assertEquals(
-            "no Actions run is registered on the merged head aaaaaaaaaaaa yet, while the base tip has 1 Actions runs",
-            ciReason(ci.copy(baseRuns = runs(run("build", "completed", "success")))),
+            null,
+            AutoMerge.ciFailure(ci),
+            "under ci none a head with no run holds",
         )
     }
 
     /** m3-15 read check runs as Actions runs; the m2-28 name is kept so the test is never lost. */
     @Test
     fun `send back 5, a check run still running or not passed fails ci`() {
-        val expected = ci.copy(workflows = Result.success(listOf(".github/workflows/ci.yml")))
+        val expected = actions
         assertEquals(
             "Actions runs on the merged head aaaaaaaaaaaa are pending: 1 of the 2 kept runs not completed, lint (in_progress)",
             ciReason(expected.copy(headRuns = runs(run("build", "completed", "success"), run("lint", "in_progress", null)))),
@@ -132,12 +140,12 @@ class AutoMergeTest {
         )
         assertEquals(
             "Actions runs on the merged head aaaaaaaaaaaa did not pass: build (mystery)",
-            ciReason(ci.copy(headRuns = runs(run("build", "completed", "mystery")))),
+            ciReason(actions.copy(headRuns = runs(run("build", "completed", "mystery")))),
             "an unknown conclusion is red",
         )
         assertEquals(
             "Actions runs on the merged head aaaaaaaaaaaa are pending: 101 runs, more than one page of 100",
-            ciReason(ci.copy(headRuns = Result.success(ActionsRuns(101, listOf(run("build", "completed", "success")))))),
+            ciReason(actions.copy(headRuns = Result.success(ActionsRuns(101, listOf(run("build", "completed", "success")))))),
         )
     }
 
@@ -147,9 +155,7 @@ class AutoMergeTest {
         val green = runs(run("build", "completed", "success"), run("docs", "completed", "skipped"), run("x", "completed", "neutral"))
         assertEquals(
             null,
-            AutoMerge.ciFailure(
-                ci.copy(headRuns = green, baseRuns = green, workflows = Result.success(listOf(".github/workflows/ci.yml"))),
-            ),
+            AutoMerge.ciFailure(ci.copy(headRuns = green)),
         )
         assertEquals(null, AutoMerge.ciFailure(ci.copy(headRuns = green, ci = CiMode.Actions)))
     }
@@ -163,16 +169,72 @@ class AutoMergeTest {
         assertEquals(null, AutoMerge.ciFailure(ci.copy(ci = CiMode.Actions, noRun = CiNoRun.Pass)))
     }
 
-    /** m3-15 read check runs as Actions runs; the m2-28 name is kept so the test is never lost. */
+    /**
+     * m3-15 read check runs as Actions runs; the m2-28 name is kept so the test is never lost. m4-05: no base tip run
+     * and no workflow file is read any more, and the runs of the merged head only under `ci: actions`, where runs that
+     * were not read fail closed.
+     */
     @Test
     fun `send back 5, check runs or workflows that cannot be read fail ci`() {
         val error = Result.failure<ActionsRuns>(IllegalStateException("403 the token needs the Actions: read permission"))
-        assertContains(ciReason(ci.copy(headRuns = error)), "cannot read the Actions runs of the merged head aaaaaaaaaaaa: 403")
-        assertContains(ciReason(ci.copy(headRuns = error)), "Actions: read")
-        assertContains(ciReason(ci.copy(baseRuns = error)), "cannot read the Actions runs of the base tip: 403")
+        assertContains(ciReason(actions.copy(headRuns = error)), "cannot read the Actions runs of the merged head aaaaaaaaaaaa: 403")
+        assertContains(ciReason(actions.copy(headRuns = error)), "Actions: read")
+        assertEquals(null, AutoMerge.ciFailure(ci.copy(headRuns = error)), "under ci none the runs are not read")
         assertContains(
-            ciReason(ci.copy(workflows = Result.failure(IllegalStateException("git ls-tree exited")))),
-            "cannot read the workflows of the merged head",
+            ciReason(actions.copy(headRuns = null)),
+            "the Actions runs of the merged head aaaaaaaaaaaa were not read",
+        )
+    }
+
+    /** m4-05 (bl-146): under `ci: none` green means the merge check passed, so whatever the runs say, ci holds. */
+    @Test
+    fun `m4-05, under ci none ci holds once the merge check passed, whatever the Actions runs of the merged head`() {
+        val table =
+            listOf(
+                "runs not read" to null,
+                "no run" to runs(),
+                "red" to runs(run("build", "completed", "failure")),
+                "pending" to runs(run("build", "completed", "success"), run("lint", "queued", null)),
+                "unreadable" to Result.failure(IllegalStateException("403 the token needs the Actions: read permission")),
+            )
+        for ((case, headRuns) in table) {
+            assertEquals(null, AutoMerge.ciFailure(ci.copy(headRuns = headRuns)), case)
+        }
+    }
+
+    /**
+     * m4-05: under `ci: none` a state of `unstable`, failing checks GitHub reports such as the runs Actions refused for
+     * billing (bl-98), holds ci; the states that are not CI still fail it.
+     */
+    @Test
+    fun `m4-05, under ci none unstable holds ci while dirty, blocked, behind, an unknown state and not mergeable fail it`() {
+        val table =
+            listOf(
+                Mergeability(true, "clean") to null,
+                Mergeability(true, "has_hooks") to null,
+                Mergeability(true, "unstable") to null,
+                Mergeability(true, "UNSTABLE") to null,
+                Mergeability(false, "dirty") to "pull request #7 is not mergeable and green, mergeable false, state dirty",
+                Mergeability(true, "blocked") to "pull request #7 is not mergeable and green, mergeable true, state blocked",
+                Mergeability(true, "behind") to "pull request #7 is not mergeable and green, mergeable true, state behind",
+                Mergeability(true, "draft") to "pull request #7 is not mergeable and green, mergeable true, state draft",
+                Mergeability(true, null) to "pull request #7 is not mergeable and green, mergeable true, state unknown",
+                Mergeability(null, "unknown") to "GitHub has not said whether pull request #7 is mergeable (state unknown)",
+                Mergeability(false, "unstable") to "pull request #7 is not mergeable and green, mergeable false, state unstable",
+                Mergeability(false, "clean") to "pull request #7 is not mergeable and green, mergeable false, state clean",
+            )
+        for ((state, reason) in table) {
+            assertEquals(reason, AutoMerge.ciFailure(ci.copy(mergeability = Result.success(state)))?.reason, "$state")
+        }
+        assertEquals(
+            "pull request #7 is not mergeable and green, mergeable true, state unstable",
+            ciReason(
+                actions.copy(
+                    mergeability = Result.success(Mergeability(true, "unstable")),
+                    headRuns = runs(run("build", "completed", "success")),
+                ),
+            ),
+            "under ci actions unstable still fails",
         )
     }
 

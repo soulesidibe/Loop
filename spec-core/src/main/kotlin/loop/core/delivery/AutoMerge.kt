@@ -24,9 +24,10 @@ enum class AutoMergeCondition(
     MERGE_CHECK("merge_check"),
 
     /**
-     * CI is green and the provider reports the pull request mergeable: GitHub's `mergeable` with the state `clean`,
-     * and, when checks are expected, every check run of the merged head completed and passed. Read after the merge risk
-     * review, see [AutoMerge.ciFailure].
+     * CI is green and the provider reports the pull request mergeable, green following the kind's `ci` (m4-05): under
+     * `ci: actions` GitHub's `mergeable` with the state `clean` and every Actions run of the merged head completed and
+     * passed; under `ci: none` the merge check passed and GitHub's `mergeable` with a state that is not blocked by
+     * anything but CI. Read after the merge risk review, see [AutoMerge.ciFailure].
      */
     CI("ci"),
 
@@ -72,19 +73,16 @@ data class AutoMergeFacts(
 
 /**
  * What the CI condition reads (m2-28, send back 5 of PR #75), right after the merge risk review so a head pushed a
- * moment before has had time to register its runs: the [mergeability] of pull request [pullRequestNumber], the Actions
- * runs of the [mergedHead], [headRuns] (m3-15), and the [ci] mode with its [noRun] rule. Under [CiMode.None] a head
- * with no run is judged by what makes runs expected: those of the checked base tip, [baseRuns], and the workflow files
- * the merged head holds under `.github/workflows/`, [workflows]; under [CiMode.Actions] the CI wait already applied the
- * grace, so [noRun] decides.
+ * moment before has had time to register its runs: the [mergeability] of pull request [pullRequestNumber], the [ci]
+ * mode, and under [CiMode.Actions] only the Actions runs of the [mergedHead], [headRuns] (m3-15), with the [noRun]
+ * rule, the CI wait having already applied the grace. Under [CiMode.None] no run is read and [headRuns] is null
+ * (m4-05, bl-146).
  */
 data class CiFacts(
     val pullRequestNumber: Long,
     val mergedHead: String,
     val mergeability: Result<Mergeability>,
-    val headRuns: Result<ActionsRuns>,
-    val baseRuns: Result<ActionsRuns>,
-    val workflows: Result<List<String>>,
+    val headRuns: Result<ActionsRuns>? = null,
     val ci: CiMode = CiMode.None,
     val noRun: CiNoRun = CiNoRun.Fail,
 )
@@ -101,6 +99,12 @@ object AutoMerge {
     private val GREEN_STATES = setOf("clean", "has_hooks")
 
     /**
+     * The states an auto merge accepts under `ci: none` (m4-05): `unstable` adds failing checks GitHub reports, such as
+     * runs Actions refused for billing (bl-98), which `ci: none` does not wait for.
+     */
+    private val GREEN_STATES_CI_NONE = GREEN_STATES + "unstable"
+
+    /**
      * Every condition but [AutoMergeCondition.CI] that fails on [facts], in the order of [AutoMergeCondition], each with
      * its reason; empty when all hold. CI is read after the merge risk review, see [ciFailure].
      */
@@ -110,11 +114,11 @@ object AutoMerge {
         }
 
     /**
-     * The CI condition on [facts], null when it holds (send back 5 of PR #75, m3-15): the pull request is mergeable and
-     * `clean`, and the Actions runs of the merged head pass [CiWait.verdict]. A red or pending verdict fails it. A head
-     * with no run fails under [CiMode.Actions] unless `ci_no_run` is `pass`, and under [CiMode.None] when runs are
-     * expected: the merged head holds a workflow under `.github/workflows/` or the base tip has runs. Anything that
-     * cannot be read fails, closed.
+     * The CI condition on [facts], null when it holds (send back 5 of PR #75, m3-15, m4-05). Under [CiMode.Actions] the
+     * pull request is mergeable and `clean`, and the Actions runs of the merged head pass [CiWait.verdict]: a red or
+     * pending verdict fails it, and a head with no run unless `ci_no_run` is `pass`. Under [CiMode.None] green means the
+     * merge check passed, which the gate proved before reading CI, so no run is read and only the pull request must be
+     * mergeable, `unstable` included. Anything that cannot be read fails, closed.
      */
     fun ciFailure(facts: CiFacts): FailedCondition? = ciReason(facts)?.let { FailedCondition(AutoMergeCondition.CI, it) }
 
@@ -124,41 +128,25 @@ object AutoMerge {
             facts.mergeability.getOrElse { error ->
                 return "cannot read whether pull request #$number is mergeable: ${firstLine(error)}"
             }
+        val green = if (facts.ci == CiMode.Actions) GREEN_STATES else GREEN_STATES_CI_NONE
         when {
             found.mergeable == null ->
                 return "GitHub has not said whether pull request #$number is mergeable (state ${found.state ?: "unknown"})"
-            found.mergeable != true || found.state?.lowercase() !in GREEN_STATES ->
+            found.mergeable != true || found.state?.lowercase() !in green ->
                 return "pull request #$number is not mergeable and green, mergeable ${found.mergeable}, state ${found.state ?: "unknown"}"
         }
+        if (facts.ci == CiMode.None) return null
         val head = short(facts.mergedHead)
-        val runs = facts.headRuns.getOrElse { return "cannot read the Actions runs of the merged head $head: ${firstLine(it)}" }
+        val read = facts.headRuns ?: return "the Actions runs of the merged head $head were not read"
+        val runs = read.getOrElse { return "cannot read the Actions runs of the merged head $head: ${firstLine(it)}" }
         return when (val verdict = CiWait.verdict(runs)) {
             is CiVerdict.Green -> null
             is CiVerdict.Red ->
                 "Actions runs on the merged head $head did not pass: " +
                     shown(verdict.failed.map { "${it.name} (${it.conclusion ?: "no conclusion"})" })
             is CiVerdict.Pending -> "Actions runs on the merged head $head are pending: ${CiWait.pendingText(verdict)}"
-            CiVerdict.NoRun -> noRunReason(facts, head)
+            CiVerdict.NoRun -> if (facts.noRun == CiNoRun.Pass) null else "no Actions run on the merged head $head, and ci_no_run is fail"
         }
-    }
-
-    /** Why a merged head with no Actions run fails the CI condition, null when that passes. */
-    private fun noRunReason(
-        facts: CiFacts,
-        head: String,
-    ): String? {
-        if (facts.ci == CiMode.Actions) {
-            return if (facts.noRun == CiNoRun.Pass) null else "no Actions run on the merged head $head, and ci_no_run is fail"
-        }
-        val baseRuns = facts.baseRuns.getOrElse { return "cannot read the Actions runs of the base tip: ${firstLine(it)}" }
-        val workflows = facts.workflows.getOrElse { return "cannot read the workflows of the merged head $head: ${firstLine(it)}" }
-        val expected =
-            when {
-                workflows.isNotEmpty() -> "the merged head holds the workflows ${shown(workflows)}"
-                baseRuns.totalCount > 0 -> "the base tip has ${baseRuns.totalCount} Actions runs"
-                else -> return null
-            }
-        return "no Actions run is registered on the merged head $head yet, while $expected"
     }
 
     private fun firstLine(error: Throwable): String = (error.message ?: error::class.simpleName).orEmpty().lines().first()
