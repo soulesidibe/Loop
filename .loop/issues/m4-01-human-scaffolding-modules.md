@@ -1,7 +1,7 @@
 ---
 id: m4-01
 title: "Human scaffolding: resource and export modules, empty HumanChannel and ResourceProvider"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-human]
 blocked_by: [m4-00]
@@ -30,16 +30,26 @@ Out of this issue: the `ServiceLoader` loaders in `cli`, which load only runners
 
 ## Acceptance criteria
 
-- [ ] `./gradlew --no-daemon :plugins:resource-ios:build :plugins:resource-android:build :plugins:export-otel:build` passes.
-- [ ] `./gradlew --no-daemon :plugins:resource-ios:test :plugins:resource-android:test :plugins:export-otel:test` passes, each module with a smoke test that uses `plugin-api`, `kotlinx-coroutines-test` and the `plugin-api` test fixtures, the resource modules' also `runner-process`, and `export-otel`'s also an OpenTelemetry SDK class.
-- [ ] `grep -q ':plugins:resource-ios' cli/build.gradle.kts && grep -q ':plugins:resource-android' cli/build.gradle.kts && grep -q ':plugins:export-otel' cli/build.gradle.kts` passes.
-- [ ] `grep -q 'public interface HumanChannel' plugin-api/src/main/kotlin/loop/api/HumanChannel.kt && grep -q 'public interface ResourceProvider' plugin-api/src/main/kotlin/loop/api/ResourceProvider.kt` passes.
-- [ ] The OpenTelemetry versions are in `gradle/libs.versions.toml`, each at least seven days old on the day of the commit (judgment).
-- [ ] The premise "no Gradle edit needed" of m4-09, m4-27, m4-28, m4-29, m4-38 to m4-40, m4-42 and m4-49 is checked against this scaffolding, and what each will need from the classpath is listed in a comment on this issue (judgment).
-- [ ] `./gradlew --no-daemon build` passes.
+- [x] `./gradlew --no-daemon :plugins:resource-ios:build :plugins:resource-android:build :plugins:export-otel:build` passes.
+- [x] `./gradlew --no-daemon :plugins:resource-ios:test :plugins:resource-android:test :plugins:export-otel:test` passes, each module with a smoke test that uses `plugin-api`, `kotlinx-coroutines-test` and the `plugin-api` test fixtures, the resource modules' also `runner-process`, and `export-otel`'s also an OpenTelemetry SDK class.
+- [x] `grep -q ':plugins:resource-ios' cli/build.gradle.kts && grep -q ':plugins:resource-android' cli/build.gradle.kts && grep -q ':plugins:export-otel' cli/build.gradle.kts` passes.
+- [x] `grep -q 'public interface HumanChannel' plugin-api/src/main/kotlin/loop/api/HumanChannel.kt && grep -q 'public interface ResourceProvider' plugin-api/src/main/kotlin/loop/api/ResourceProvider.kt` passes.
+- [x] The OpenTelemetry versions are in `gradle/libs.versions.toml`, each at least seven days old on the day of the commit (judgment).
+- [x] The premise "no Gradle edit needed" of m4-09, m4-27, m4-28, m4-29, m4-38 to m4-40, m4-42 and m4-49 is checked against this scaffolding, and what each will need from the classpath is listed in a comment on this issue (judgment).
+- [x] `./gradlew --no-daemon build` passes.
 
 ## Comments
 
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-23 soule: done.
+  The three modules `:plugins:resource-ios`, `:plugins:resource-android` and `:plugins:export-otel` are in `settings.gradle.kts`, each with the dependencies of step 2, `runner-process` for the two resource modules only. `export-otel` takes `opentelemetry-sdk` and `opentelemetry-exporter-otlp` through `opentelemetry-bom` 1.68.0, released 2026-11-06 (17 days old). `cli` puts the three on its runtime classpath with `runtimeOnly`, since its loaders use the `plugin-api` interfaces and never compile against a module. `HumanChannel` and `ResourceProvider` are empty public interfaces in `plugin-api`. Each module has a smoke test using `plugin-api`, `runTest`, `RealIntegration` from the `plugin-api` test fixtures, and `ProcessGroupLauncher` or `SdkTracerProvider`. `./gradlew --no-daemon build` passes.
+  Premise "no Gradle edit needed", checked against this scaffolding:
+  - m4-09, m4-29: `cli` sources only, no library.
+  - m4-27, m4-28: their module exists with `plugin-api`, `runner-process`, coroutines and serialization; they add only `META-INF/services/loop.api.ResourceProvider`. They need m4-24 to give `ResourceProvider` its members first.
+  - m4-38, m4-39: `sqlite-jdbc` is already `store`'s, and `cli` depends on `store`.
+  - m4-40: `cli` already depends on `spec-core` and `store`.
+  - m4-42: the SDK and the OTLP exporter are on `export-otel`'s compile and test classpaths, so a `SpanExporter` written in the test needs nothing more. Its provider interface goes in `plugin-api` and its loader in `cli`, which reaches the module at runtime through `ServiceLoader`, so `runtimeOnly` is enough. A test in `cli` that names a class of `export-otel` would need `testImplementation`, a Gradle edit, so `ExporterPluginsTest` should load the exporter through `ServiceLoader` only.
+  - m4-49: `plugins/tracker-github` only, no library.

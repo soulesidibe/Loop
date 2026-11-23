@@ -119,6 +119,11 @@ dependencies {
     // m3-02: on the classpath for plugin loading (m3-04), so the codex-app-server runner registers through its own
     // META-INF/services/loop.api.RunnerProvider (m3-17) with no change to Host.kt.
     implementation(project(":plugins:runner-codex-app-server"))
+    // m4-01: on the runtime classpath for plugin loading, so each resource provider (m4-24) and exporter (m4-42)
+    // registers through its own META-INF/services file, added by its own issue, with no Gradle change.
+    runtimeOnly(project(":plugins:resource-ios"))
+    runtimeOnly(project(":plugins:resource-android"))
+    runtimeOnly(project(":plugins:export-otel"))
     implementation(libs.clikt)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
