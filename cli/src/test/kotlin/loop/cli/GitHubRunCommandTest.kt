@@ -13,6 +13,7 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.PosixFilePermissions
 import java.security.MessageDigest
 import java.util.Collections
@@ -185,7 +186,10 @@ class GitHubRunCommandTest {
         requiredLabels: String = "  required_labels: [ready-for-agent]\n",
         states: String = "",
     ) {
-        fixture.workflow.writeText(
+        // A running loop reads WORKFLOW.md on every tick, so the new text goes to a sibling file first and replaces
+        // the workflow in one rename: a plain write truncates the file first, and a tick could read it empty.
+        val next = fixture.workflow.resolveSibling("WORKFLOW.md.next")
+        next.writeText(
             "---\n" +
                 "tracker:\n" +
                 "  kind: github\n" +
@@ -210,6 +214,7 @@ class GitHubRunCommandTest {
                 "---\n" +
                 "Work on {{ issue.identifier }}: {{ issue.title }}\n",
         )
+        Files.move(next, fixture.workflow, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
     }
 
     @Test
