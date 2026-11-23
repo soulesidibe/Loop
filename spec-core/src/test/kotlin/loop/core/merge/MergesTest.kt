@@ -72,6 +72,7 @@ import loop.core.workflow.RiskConfig
 import loop.core.workflow.WorkflowConfig
 import loop.core.workflow.WorkflowFile
 import loop.core.workflow.commandRunner
+import java.io.IOException
 import java.nio.file.Path
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.cancellation.CancellationException
@@ -229,6 +230,9 @@ class MergesTest {
         var onMerge: (String) -> Unit = {}
         var diff = listOf(DiffEntry("src/main/kotlin/App.kt", 1, 0), DiffEntry("src/test/kotlin/AppTest.kt", 1, 0))
 
+        /** What [diffText] throws, null when the diff text reads. */
+        var diffTextError: IOException? = null
+
         override fun isAncestor(
             root: Path,
             ancestor: String,
@@ -278,7 +282,10 @@ class MergesTest {
             base: String,
             head: String,
             maxChars: Int,
-        ): String = "diff --git a/src/main/kotlin/App.kt b/src/main/kotlin/App.kt\n+fun app() = 1\n"
+        ): String {
+            diffTextError?.let { throw it }
+            return "diff --git a/src/main/kotlin/App.kt b/src/main/kotlin/App.kt\n+fun app() = 1\n"
+        }
 
         override fun changedFiles(
             root: Path,
@@ -718,6 +725,24 @@ class MergesTest {
             val (data, _) = fallBack(setup)
 
             assertEquals("the workspace is gone", data[AutoMergeFallback.REASON])
+        }
+
+    /** Since bl-96 the reviewer runs on a failed hard condition whenever it can; here the diff text cannot be read. */
+    @Test
+    fun `fallback reason a hard condition failed, the reviewer never runs`() =
+        runTest {
+            val reviewer = FakeReviewer(answer())
+            val setup = autoSetup(reviewer)
+            setup.git.diff = listOf(DiffEntry("src/main/kotlin/App.kt", 5_000, 0), DiffEntry("src/test/kotlin/AppTest.kt", 1, 0))
+            setup.git.diffTextError = IOException("git diff exited with code 128")
+
+            val (data, comment) = fallBack(setup)
+
+            assertEquals("diff_size", data[AutoMergeFallback.CONDITIONS])
+            assertNull(data[AutoMergeFallback.BAND])
+            assertContains(comment, "diff_size")
+            assertContains(comment, "Merge risk: not assessed")
+            assertTrue(reviewer.requests.isEmpty())
         }
 
     @Test
