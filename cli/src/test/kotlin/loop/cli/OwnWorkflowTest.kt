@@ -162,7 +162,8 @@ class OwnWorkflowTest {
     fun `the limits are the ones of the spec`() {
         val config = loaded().config
 
-        assertEquals(1, config.agent.maxConcurrentAgents)
+        // Three agents at a time since ca9029c.
+        assertEquals(3, config.agent.maxConcurrentAgents)
         assertEquals(10, config.agent.maxTurns)
         assertEquals(5, config.retries.maxAttempts)
         assertEquals(3, config.retries.maxContinuations)
