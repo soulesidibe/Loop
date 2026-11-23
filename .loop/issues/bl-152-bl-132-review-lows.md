@@ -3,7 +3,7 @@ id: bl-152
 title: "Low findings of the bl-132 merge risk reviews, usage at a stop and the rotated issue re-read"
 state: todo
 priority: 3
-labels: [deferred]
+labels: [ready-for-agent]
 blocked_by: [m4-04]
 ---
 

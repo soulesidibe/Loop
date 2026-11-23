@@ -3,7 +3,7 @@ id: bl-92
 title: "A merge wait with green CI queues behind attempts dispatched during its CI wait"
 state: todo
 priority: 2
-labels: [deferred]
+labels: [ready-for-agent]
 blocked_by: [m4-07]
 ---
 

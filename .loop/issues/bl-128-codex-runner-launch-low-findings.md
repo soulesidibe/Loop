@@ -3,7 +3,7 @@ id: bl-128
 title: "Low findings of the m3-17 merge risk review, the Codex runner launch"
 state: todo
 priority: 2
-labels: [deferred]
+labels: [ready-for-agent]
 blocked_by: [bl-141]
 ---
 

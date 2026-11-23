@@ -3,7 +3,7 @@ id: bl-96
 title: "Auto merge diff size counts tests and docs, and the reviewer never sees large diffs"
 state: todo
 priority: 2
-labels: [deferred]
+labels: [ready-for-agent]
 blocked_by: [m4-05]
 ---
 

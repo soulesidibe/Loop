@@ -3,7 +3,7 @@ id: bl-107
 title: "Runner output lines cut at 2,000 characters hide each request's token usage"
 state: todo
 priority: 2
-labels: [deferred]
+labels: [ready-for-agent]
 blocked_by: [m4-04]
 ---
 

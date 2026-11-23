@@ -3,7 +3,7 @@ id: m4-40
 title: "loop replay renders an attempt's prompt again and diffs it"
 state: todo
 priority: 3
-labels: [deferred]
+labels: [ready-for-agent]
 blocked_by: [m4-39]
 ---
 

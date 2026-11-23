@@ -3,7 +3,7 @@ id: m4-12
 title: "Namespaced issue ids in the core, primary workspace keys and branches kept"
 state: todo
 priority: 2
-labels: [deferred]
+labels: [ready-for-agent]
 blocked_by: [m4-11]
 ---
 

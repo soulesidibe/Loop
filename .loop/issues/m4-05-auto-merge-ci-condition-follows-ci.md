@@ -3,7 +3,7 @@ id: m4-05
 title: "The auto merge ci condition follows the kind's ci setting"
 state: todo
 priority: 2
-labels: [deferred]
+labels: [ready-for-agent]
 blocked_by: [m4-04]
 ---
 

@@ -3,7 +3,7 @@ id: m4-51
 title: "request_resource and release_resource on the Codex runner"
 state: todo
 priority: 2
-labels: [deferred]
+labels: [ready-for-agent]
 blocked_by: [m4-25]
 ---
 

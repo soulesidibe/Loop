@@ -3,7 +3,7 @@ id: m4-23
 title: "Kind research: report posted on the issue, required sections, sources reachable"
 state: todo
 priority: 2
-labels: [deferred]
+labels: [ready-for-agent]
 blocked_by: [m4-22]
 ---
 
