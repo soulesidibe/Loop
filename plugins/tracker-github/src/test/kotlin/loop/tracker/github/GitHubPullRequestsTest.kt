@@ -4,6 +4,11 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.long
+import kotlinx.serialization.json.jsonPrimitive
+import loop.api.ActionsJob
+import loop.api.ActionsJobs
 import loop.api.ActionsRun
 import loop.api.ActionsRuns
 import loop.api.DeliveryError
@@ -653,5 +658,80 @@ class GitHubPullRequestsTest {
             clock.now = reset
             assertTrue(delivery.actionsRuns(sha).isSuccess)
             assertEquals(2, github.requests.size)
+        }
+
+    private val refusedSha = "1c495c0359f1fb41aef31782e7221ff699f6cb8c"
+    private val refusedRunsUrl = "${FakeGitHub.API}/repos/${FakeGitHub.REPO}/actions/runs?head_sha=$refusedSha&per_page=100"
+
+    private fun jobsUrl(run: Long) = "${FakeGitHub.API}/repos/${FakeGitHub.REPO}/actions/runs/$run/jobs?per_page=100"
+
+    @Test
+    fun `m4-07, the recorded run 43779352010 GitHub refused for billing lists as failed and its only job has zero steps`() =
+        runTest {
+            github.on(refusedRunsUrl, FakeGitHub.recorded("actions-runs-43779352010"))
+            github.on(jobsUrl(43779352010), FakeGitHub.recorded("actions-run-43779352010-jobs"))
+
+            val listed = delivery().actionsRuns(refusedSha).getOrThrow()
+            val jobs = delivery().actionsJobs(43779352010).getOrThrow()
+
+            val single = FakeGitHub.recordedJson("actions-run-43779352010").jsonObject
+            val run = listed.runs.single()
+            assertEquals(1, listed.totalCount)
+            assertEquals(single.getValue("id").jsonPrimitive.long, run.id)
+            assertEquals(single.getValue("conclusion").jsonPrimitive.content, run.conclusion)
+            assertEquals(single.getValue("status").jsonPrimitive.content, run.status)
+            assertEquals("failure", run.conclusion)
+            assertEquals(ActionsJobs(1, listOf(ActionsJob(133012782555, "build", "completed", "failure", 0))), jobs)
+            assertEquals(
+                listOf("GET" to refusedRunsUrl, "GET" to jobsUrl(43779352010)),
+                github.requests.map { it.method to it.url },
+            )
+        }
+
+    @Test
+    fun `m4-07, the jobs read counts the steps of each job and keeps the total`() =
+        runTest {
+            github.on(
+                jobsUrl(5),
+                FakeGitHub.response(
+                    200,
+                    """{"total_count":120,"jobs":[{"id":1,"name":"build","status":"completed","conclusion":"failure",""" +
+                        """"steps":[{"name":"a"},{"name":"b"}]},{"id":2,"name":"lint","status":"completed","conclusion":null,"steps":[]}]}""",
+                ),
+            )
+
+            assertEquals(
+                ActionsJobs(
+                    120,
+                    listOf(ActionsJob(1, "build", "completed", "failure", 2), ActionsJob(2, "lint", "completed", null, 0)),
+                ),
+                delivery().actionsJobs(5).getOrThrow(),
+            )
+        }
+
+    @Test
+    fun `m4-07, a 403 or a 404 on the jobs read is permanent and names Actions read`() =
+        runTest {
+            github.on(jobsUrl(5), FakeGitHub.recorded("actions-forbidden"))
+            val forbidden = assertIs<DeliveryError.Rejected>(delivery().actionsJobs(5).exceptionOrNull())
+            assertContains(forbidden.message.orEmpty(), "Actions: read")
+            assertContains(forbidden.message.orEmpty(), "Resource not accessible by personal access token")
+            github.on(jobsUrl(5), FakeGitHub.response(404, """{"message":"Not Found"}"""))
+            assertContains(assertIs<DeliveryError.Rejected>(delivery().actionsJobs(5).exceptionOrNull()).message.orEmpty(), "Actions: read")
+        }
+
+    @Test
+    fun `m4-07, a jobs read unreadable fails, held or unreachable is unavailable`() =
+        runTest {
+            github.on(jobsUrl(5), FakeGitHub.response(200, "not json"))
+            assertIs<DeliveryError.Rejected>(delivery().actionsJobs(5).exceptionOrNull())
+            github.on(jobsUrl(5), FakeGitHub.response(200, """{"total_count":1,"jobs":[{"id":1,"name":"build","status":"completed"}]}"""))
+            assertIs<DeliveryError.Rejected>(delivery().actionsJobs(5).exceptionOrNull(), "a job without its steps")
+            github.on(jobsUrl(5), FakeGitHub.response(502, "Bad Gateway"))
+            assertIs<DeliveryError.Unavailable>(delivery().actionsJobs(5).exceptionOrNull())
+            github.on(jobsUrl(5), FakeGitHub.recorded("rate-limited"))
+            assertIs<DeliveryError.Unavailable>(delivery().actionsJobs(5).exceptionOrNull())
+            github.unreachable = true
+            assertIs<DeliveryError.Unavailable>(delivery().actionsJobs(5).exceptionOrNull())
         }
 }

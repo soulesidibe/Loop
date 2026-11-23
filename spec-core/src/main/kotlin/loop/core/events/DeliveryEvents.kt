@@ -332,6 +332,7 @@ object CiFinished : KeyedEvent("ci_finished", Delivery.OUTCOME, Delivery.RUNS) {
     const val NO_RUN_PASS = "no_run_pass"
     const val NO_RUN_FAIL = "no_run_fail"
     const val TIMEOUT = "timeout"
+    const val NOT_STARTED = "not_started"
 
     override val sample = mapOf(Delivery.OUTCOME to GREEN, Delivery.RUNS to "30433642,30433650")
 

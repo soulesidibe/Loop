@@ -88,7 +88,37 @@ public interface DeliveryExecutor {
      */
     public suspend fun actionsRuns(sha: String): Result<ActionsRuns> =
         Result.failure(DeliveryError.Rejected("this delivery cannot read the Actions runs of a commit"))
+
+    /**
+     * The jobs of the Actions run [runId] (m4-07), one page of at most 100 with the total the provider counts, read by
+     * the CI wait for the failed runs only, to tell a run GitHub refused to start (every job with zero steps) from a red
+     * one. A refusal (401, 403, 404) is [DeliveryError.Rejected], a 403 or 404 naming the "Actions: read" permission; a
+     * network error, a 5xx answer or a rate limit hold is [DeliveryError.Unavailable]. Not supported by default.
+     */
+    public suspend fun actionsJobs(runId: Long): Result<ActionsJobs> =
+        Result.failure(DeliveryError.Rejected("this delivery cannot read the jobs of an Actions run"))
 }
+
+/**
+ * The jobs of one Actions run as the provider listed them (m4-07): [jobs], at most one page, and [totalCount], the
+ * number of jobs it counts in all, so a run is never called not started on a part of its jobs.
+ */
+public data class ActionsJobs(
+    public val totalCount: Long,
+    public val jobs: List<ActionsJob>,
+)
+
+/**
+ * One job of an Actions run (m4-07): its [id], its [name], its [status] and [conclusion] as the provider names them,
+ * and the number of [steps] it ran, zero for a job GitHub refused to start (billing or limits).
+ */
+public data class ActionsJob(
+    public val id: Long,
+    public val name: String,
+    public val status: String,
+    public val conclusion: String?,
+    public val steps: Int,
+)
 
 /**
  * The Actions runs of one commit as the provider listed them (m3-15): [runs], at most one page, and [totalCount], the

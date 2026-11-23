@@ -146,6 +146,9 @@ object AutoMerge {
             is CiVerdict.Red ->
                 "Actions runs on the merged head $head did not pass: " +
                     shown(verdict.failed.map { "${it.name} (${it.conclusion ?: "no conclusion"})" })
+            is CiVerdict.NotStarted ->
+                "GitHub did not start the Actions runs on the merged head $head, so the code was not judged: " +
+                    shown(verdict.notStarted.map { "${it.name} (${it.conclusion ?: "no conclusion"})" })
             is CiVerdict.Pending -> "Actions runs on the merged head $head are pending: ${CiWait.pendingText(verdict)}"
             CiVerdict.NoRun -> if (facts.noRun == CiNoRun.Pass) null else "no Actions run on the merged head $head, and ci_no_run is fail"
         }
