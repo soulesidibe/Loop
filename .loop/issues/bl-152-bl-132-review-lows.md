@@ -1,7 +1,7 @@
 ---
 id: bl-152
 title: "Low findings of the bl-132 merge risk reviews, usage at a stop and the rotated issue re-read"
-state: todo
+state: done
 priority: 3
 labels: [ready-for-agent]
 blocked_by: [m4-04]
@@ -45,3 +45,5 @@ None. Backlog, not scheduled in a milestone. Found by the merge risk reviews of 
 2026-11-23 21:49Z loop: Loop updated pull request #26 for this issue: https://github.com/soulesidibe/Loop/pull/26
 
 2026-11-23 22:01Z loop: Loop could not merge pull request #26: merging main at ef6e7fdd60a3fe12b8839acd2dd8969a174b0931 into loop/bl-152 conflicts (conflict in docs/spec-decisions.md). The merge was aborted and the branch is unchanged. The next attempt merges refs/loop/base/main into its branch, resolves the conflict and submits the result again.
+
+2026-11-23 23:05Z loop: Loop updated pull request #26 for this issue: https://github.com/soulesidibe/Loop/pull/26
