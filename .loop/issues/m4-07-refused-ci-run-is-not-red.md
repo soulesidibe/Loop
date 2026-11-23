@@ -1,7 +1,7 @@
 ---
 id: m4-07
 title: "A CI run GitHub refused to start is not started, not red"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-06]
@@ -47,3 +47,5 @@ Out of this issue: a rerun of refused runs, commit statuses (bl-60), the double 
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-23 22:47Z loop: Loop opened pull request #29 for this issue: https://github.com/soulesidibe/Loop/pull/29

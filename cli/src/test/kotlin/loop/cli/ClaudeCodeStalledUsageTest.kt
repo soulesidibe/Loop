@@ -28,7 +28,7 @@ class ClaudeCodeStalledUsageTest {
 
     @Test
     fun `a result line then silence until the stall timeout records its usage and cost on the attempt and its ledger line`() {
-        fixture.workflow.writeText(claudeWorkflow(silentClaude(cost = "2.5"), stallTimeoutMs = 1000))
+        fixture.workflow.writeText(claudeWorkflow(silentClaude(cost = "2.5"), stallTimeoutMs = STALL_MS))
         fixture.issue("t-1")
 
         val result = LoopCommand(host()).test(listOf("run", fixture.workflow.toString(), "--once"))
@@ -62,7 +62,7 @@ class ClaudeCodeStalledUsageTest {
 
     @Test
     fun `a stalled turn with no result line records no usage, its tokens and cost stay null`() {
-        fixture.workflow.writeText(claudeWorkflow(silentClaude(cost = null), stallTimeoutMs = 1000))
+        fixture.workflow.writeText(claudeWorkflow(silentClaude(cost = null), stallTimeoutMs = STALL_MS))
         fixture.issue("t-1")
 
         val result = LoopCommand(host()).test(listOf("run", fixture.workflow.toString(), "--once"))
@@ -103,7 +103,7 @@ class ClaudeCodeStalledUsageTest {
 
     @Test
     fun `the cost of a result line before the silence counts toward the per attempt dollar budget`() {
-        val workflow = claudeWorkflow(silentClaude(cost = "12.5"), stallTimeoutMs = 5000)
+        val workflow = claudeWorkflow(silentClaude(cost = "12.5"), stallTimeoutMs = 600_000)
         fixture.workflow.writeText(workflow.replace("workspace:", "budgets:\n  per_attempt_usd: 10\nworkspace:"))
         fixture.issue("t-1")
 
@@ -207,6 +207,9 @@ class ClaudeCodeStalledUsageTest {
     private companion object {
         /** The tokens of the fake's result line: 1000 input, 200 output, 50000 cache read, 3000 cache creation. */
         const val TOKENS = 54_200L
+
+        /** The stall timeout of the tests that end on a stall, long enough for the fake's first lines on a loaded machine. */
+        const val STALL_MS = 5_000L
         const val WAIT_MS = 30_000L
         const val POLL_MS = 100L
     }

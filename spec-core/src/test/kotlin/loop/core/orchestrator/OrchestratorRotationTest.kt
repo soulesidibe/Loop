@@ -1,8 +1,13 @@
 package loop.core.orchestrator
 
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import loop.api.LedgerTurn
 import loop.api.ProjectId
@@ -41,6 +46,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Clock
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * m3-11, story 89 soft limit part (plan 8.2 and 8.4): a session whose latest occupancy reaches `context.soft_limit` of
@@ -182,6 +188,19 @@ class OrchestratorRotationTest {
         }
 
     private fun FakeSink.ofKind(kind: String): List<RecordedEvent> = events.filter { it.kind == kind }
+
+    /**
+     * Runs the test's ready coroutines until [condition] holds, for up to 10 seconds of real time: an attempt reads the
+     * workspace with git off the test dispatcher, so virtual time alone does not bring it to the point a case waits for.
+     */
+    private fun TestScope.awaitReal(condition: () -> Boolean) {
+        val deadline = System.nanoTime() + 10.seconds.inWholeNanoseconds
+        runCurrent()
+        while (!condition() && System.nanoTime() < deadline) {
+            Thread.sleep(10)
+            runCurrent()
+        }
+    }
 
     @Test
     fun `m3-11 a session over the soft limit rotates at its turn end into a new session with retry_kind rotation and the brief`() =
@@ -455,6 +474,38 @@ class OrchestratorRotationTest {
             val runner =
                 runner(
                     onTurn = { session, _ ->
+                        if (session == 2) {
+                            tracker.fetchByIdsFailure = null
+                            tracker.moveIssue("id-m3-11", "review")
+                        }
+                    },
+                ) { session, _ -> if (session == 1) listOf(240_000L) else listOf(10_000L) }
+            // bl-152: the fallback is the issue the turn end read, here still the issue as dispatched, since the edit
+            // lands after that read, during the stop, and the read right before the rotated prompt fails.
+            runner.onStop = {
+                if (runner.sessionsOpened == 1) {
+                    tracker.issues[0] = tracker.issues[0].copy(title = "Title as edited")
+                    tracker.fetchByIdsFailure = TrackerError.Unavailable(IOException("tracker down"))
+                }
+            }
+
+            val summary = orchestrator(tracker, runner, workflow(template = TITLED)).tick().attempts.single()
+
+            assertEquals(AttemptOutcome.Succeeded, summary.outcome)
+            assertEquals(1, sink.ofKind("session_rotated").size)
+            val rotated = runner.turnInputs[1].second
+            assertTrue(rotated.startsWith("Do m3-11: Title of m3-11 kind=rotation\n"), rotated)
+            val warning = logLines.single { "level=warn" in it && "event=rotation_issue" in it }
+            assertTrue("tracker down" in warning, warning)
+        }
+
+    @Test
+    fun `bl-152 a rotated prompt shows the issue the turn end read when the read at the rotation fails, with one warning`() =
+        runTest {
+            val tracker = FakeTracker(listOf(issue("m3-11")))
+            val runner =
+                runner(
+                    onTurn = { session, _ ->
                         if (session == 1) tracker.issues[0] = tracker.issues[0].copy(title = "Title as edited")
                         if (session == 2) {
                             tracker.fetchByIdsFailure = null
@@ -471,9 +522,100 @@ class OrchestratorRotationTest {
             assertEquals(AttemptOutcome.Succeeded, summary.outcome)
             assertEquals(1, sink.ofKind("session_rotated").size)
             val rotated = runner.turnInputs[1].second
-            assertTrue(rotated.startsWith("Do m3-11: Title of m3-11 kind=rotation\n"), rotated)
-            val warning = logLines.single { "level=warn" in it && "event=rotation_issue" in it }
+            assertTrue(rotated.startsWith("Do m3-11: Title as edited kind=rotation\n"), rotated)
+            val warning = logLines.filter { "level=warn" in it }.single()
+            assertTrue("event=rotation_issue" in warning, warning)
             assertTrue("tracker down" in warning, warning)
+        }
+
+    @Test
+    fun `bl-152 a rotated prompt shows the issue the turn end read when its completion at the rotation fails`() =
+        runTest {
+            val tracker = FakeTracker(listOf(issue("m3-11")))
+            val runner =
+                runner(
+                    onTurn = { session, _ ->
+                        if (session == 1) tracker.issues[0] = tracker.issues[0].copy(title = "Title as edited")
+                        if (session == 2) {
+                            tracker.completeFailure = null
+                            tracker.moveIssue("id-m3-11", "review")
+                        }
+                    },
+                ) { session, _ -> if (session == 1) listOf(240_000L) else listOf(10_000L) }
+            runner.onStop =
+                { if (runner.sessionsOpened == 1) tracker.completeFailure = TrackerError.Unavailable(IOException("comments down")) }
+
+            val summary = orchestrator(tracker, runner, workflow(template = TITLED)).tick().attempts.single()
+
+            assertEquals(AttemptOutcome.Succeeded, summary.outcome)
+            val rotated = runner.turnInputs[1].second
+            assertTrue(rotated.startsWith("Do m3-11: Title as edited kind=rotation\n"), rotated)
+            val warning = logLines.filter { "level=warn" in it }.single()
+            assertTrue("event=rotation_issue" in warning && "comments down" in warning, warning)
+        }
+
+    @Test
+    fun `bl-152 loop stop during the read at the rotation still records session_rotated before the attempt ends`() =
+        runTest {
+            val tracker = FakeTracker(listOf(issue("m3-11")))
+            val runner = runner { session, _ -> if (session == 1) listOf(240_000L) else listOf(10_000L) }
+            // The read right before the rotated prompt, after the old session stopped, hangs until the run is stopped.
+            var hung = false
+            tracker.onFetchByIds = {
+                if (runner.stops == 1 && !hung) {
+                    hung = true
+                    awaitCancellation()
+                }
+            }
+            val job = launch { orchestrator(tracker, runner).tick() }
+            runCurrent()
+            awaitReal { hung }
+            assertTrue(hung, "the attempt is in the read at the rotation")
+
+            job.cancelAndJoin()
+
+            assertEquals(1, runner.sessionsOpened)
+            val event = sink.ofKind("session_rotated").single()
+            assertEquals("1", event.data["rotation"])
+            assertEquals("th1", event.data["old_thread_id"])
+            assertFalse("new_thread_id" in event.data, event.data.toString())
+            val kinds = sink.events.map { it.kind }.filter { it == "session_rotated" || it == "attempt_finished" }
+            assertEquals(listOf("session_rotated", "attempt_finished"), kinds)
+            assertEquals("canceled", sink.ofKind("attempt_finished").single().data["outcome"])
+        }
+
+    @Test
+    fun `bl-152 a reconciliation stop during the read at the rotation still records session_rotated before the attempt ends`() =
+        runTest {
+            val tracker = FakeTracker(listOf(issue("m3-11")))
+            val runner = runner { session, _ -> if (session == 1) listOf(240_000L) else listOf(10_000L) }
+            // A human moves the issue while the old session stops; the attempt's read right after hangs, so the next
+            // tick's reconciliation sees the move and stops the attempt first.
+            var hung = false
+            runner.onStop = { if (runner.sessionsOpened == 1) tracker.issues[0] = tracker.issues[0].copy(state = "done") }
+            tracker.onFetchByIds = {
+                if (runner.stops == 1 && !hung) {
+                    hung = true
+                    awaitCancellation()
+                }
+            }
+            val job = launch { orchestrator(tracker, runner).runUntilCancelled() }
+            awaitReal { hung }
+            assertTrue(hung, "the attempt is in the read at the rotation")
+
+            advanceTimeBy(1_000)
+            awaitReal { sink.ofKind("attempt_finished").isNotEmpty() }
+
+            assertEquals(1, runner.sessionsOpened)
+            val event = sink.ofKind("session_rotated").single()
+            assertEquals("1", event.data["rotation"])
+            assertFalse("new_thread_id" in event.data, event.data.toString())
+            val kinds = sink.events.map { it.kind }.filter { it == "session_rotated" || it == "attempt_finished" }
+            assertEquals(listOf("session_rotated", "attempt_finished"), kinds)
+            val finished = sink.ofKind("attempt_finished").single().data
+            assertEquals("canceled", finished["outcome"])
+            assertEquals(ExitReason.TERMINAL, finished["reason"])
+            job.cancelAndJoin()
         }
 
     @Test
