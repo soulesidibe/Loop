@@ -351,6 +351,17 @@ class StreamJsonMapperTest {
     }
 
     @Test
+    fun `the recorded failure after the idle sleep of bl-156 is runner_unavailable, so it takes no attempt`() {
+        // Attempt 10c2f759, turn 6: the Mac slept at 10:10Z and the turn failed at 10:21Z, its last recorded line.
+        val result = assertIs<StreamLine.Result>(lines("wake_turns_10c2f759").last())
+
+        val failed = assertIs<RunnerEvent.TurnFailed>(StreamJsonMapper.turnEvents(result, SESSION, TURN, null).last())
+
+        assertEquals(RunnerEvent.TurnFailed.Category.RunnerUnavailable, failed.category)
+        assertTrue(failed.reason.endsWith("(ENOTFOUND)"), failed.reason)
+    }
+
+    @Test
     fun `each network error code and text in an error result is runner_unavailable`() {
         listOf(
             "API Error: Can't reach the API server, check your internet or DNS (ENOTFOUND)",
