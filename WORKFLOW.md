@@ -16,7 +16,7 @@ hooks:
   before_remove: sh "$(dirname "$LOOP_WORKFLOW")/scripts/hooks/worktree-before-remove.sh"
   timeout_ms: 60000
 agent:
-  max_concurrent_agents: 3
+  max_concurrent_agents: 1
   max_turns: 10
   env:
     # bl-01: each attempt gets its own Gradle daemon pool, see docs/self-hosting.md.
