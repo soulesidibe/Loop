@@ -244,6 +244,7 @@ class StatusCommand(
         fun noWindow(model: String?): String =
             (model?.let { "no window for $it in context.windows" } ?: "the runner named no model") +
                 ", so the soft and hard limits do not hold for this session"
+
         const val STATE_WIDTH = 10
         const val SHORT_ID = 8
         const val TIME_START = 11
