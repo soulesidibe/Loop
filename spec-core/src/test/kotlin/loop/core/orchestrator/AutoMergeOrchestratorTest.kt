@@ -784,12 +784,13 @@ class AutoMergeOrchestratorTest {
         assertContains(run.comment, "Merge risk: band low, score 1.00.")
     }
 
+    /** m4-05: `unstable` holds the condition under `ci: none`, so a state that is not CI, `blocked`, stands in for it. */
     @Test
     fun `condition ci, a pull request that is not mergeable and clean falls back`() =
         runTest {
-            val run = autoMerge(prepare = { it.mergeable = Result.success(Mergeability(true, "unstable")) })
+            val run = autoMerge(prepare = { it.mergeable = Result.success(Mergeability(true, "blocked")) })
 
-            assertCiFellBack(run, "pull request #7 is not mergeable and green, mergeable true, state unstable")
+            assertCiFellBack(run, "pull request #7 is not mergeable and green, mergeable true, state blocked")
         }
 
     @Test
@@ -800,16 +801,20 @@ class AutoMergeOrchestratorTest {
                 reviewer().apply {
                     during = {
                         remote.reviews++
-                        remote.mergeable = Result.success(Mergeability(true, "unstable"))
+                        remote.mergeable = Result.success(Mergeability(true, "behind"))
                     }
                 }
             val run = autoMerge(reviewer = reviewer, prepare = { remote = it })
 
             assertTrue(remote.mergeabilityReads.isNotEmpty() && remote.mergeabilityReads.all { it == 1 }, "${remote.mergeabilityReads}")
-            assertCiFellBack(run, "pull request #7 is not mergeable and green, mergeable true, state unstable")
+            assertCiFellBack(run, "pull request #7 is not mergeable and green, mergeable true, state behind")
         }
 
-    /** m3-15 read check runs as Actions runs; the m2-28 name is kept so the test is never lost. */
+    /**
+     * m3-15 read check runs as Actions runs; the m2-28 name is kept so the test is never lost. m4-05 (bl-146): under
+     * `ci: none` the base tip's runs no longer make runs expected, the result merges and no run is read. The name no
+     * longer fits, so the test is listed for a human to remove or rename.
+     */
     @Test
     fun `send back 5, a merged head with no check run yet falls back when the base tip has check runs`() =
         runTest {
@@ -818,11 +823,16 @@ class AutoMergeOrchestratorTest {
                     remote.actionsRuns[checkNotNull(remote.base)] = listed(actionsRun("build", "completed", "success"))
                 })
 
-            assertCiFellBack(run, "no Actions run is registered on the merged head ")
-            assertContains(run.comment, "yet, while the base tip has 1 Actions runs")
+            assertFalse(run.fellBack(), "under ci none the base tip's runs do not stop the merge")
+            assertEquals(1, run.remote.merges.size, run.waiting.records.toString())
+            assertEquals(emptyList(), run.remote.actionsReads, "no Actions run is read under ci none, the base tip's neither")
         }
 
-    /** m3-15 read check runs as Actions runs; the m2-28 name is kept so the test is never lost. */
+    /**
+     * m3-15 read check runs as Actions runs; the m2-28 name is kept so the test is never lost. m4-05 (bl-146): under
+     * `ci: none` neither the workflow files nor a running run stop the merge, and no run is read. The name no longer
+     * fits, so the test is listed for a human to remove or rename.
+     */
     @Test
     fun `send back 5, a workflow in the merged head expects checks, a running one falls back`() =
         runTest {
@@ -839,8 +849,9 @@ class AutoMergeOrchestratorTest {
                     },
                 )
 
-            assertCiFellBack(run, "Actions runs on the merged head ")
-            assertContains(run.comment, "are pending: 1 of the 1 kept runs not completed, build (in_progress)")
+            assertFalse(run.fellBack(), "under ci none a workflow file and a running run do not stop the merge")
+            assertEquals(1, run.remote.merges.size, run.waiting.records.toString())
+            assertEquals(emptyList(), run.remote.actionsReads, "no Actions run is read under ci none")
         }
 
     /** m3-15 read check runs as Actions runs; the m2-28 name is kept so the test is never lost. */
@@ -858,6 +869,40 @@ class AutoMergeOrchestratorTest {
                 )
 
             assertEquals(1, run.remote.merges.size, run.waiting.records.toString())
+            assertEquals(emptyList(), run.remote.actionsReads, "m4-05: under ci none the runs are not read, green or not")
+        }
+
+    // m4-05 (bl-146): under ci none green means the merge check passed, so Actions being down stops no auto merge.
+
+    @Test
+    fun `m4-05, under ci none a result with no Actions run on the merged head auto merges, with no runs request sent`() =
+        runTest {
+            val run =
+                autoMerge(
+                    worktree = {
+                        val verified = verifiedWorktree()
+                        commit(project, ".github/workflows/build.yml", "on: push\n")
+                        verified
+                    },
+                    prepare = { remote ->
+                        remote.actionsRuns[checkNotNull(remote.base)] = listed(actionsRun("build", "completed", "success"))
+                        remote.headRunsOf = { listed() }
+                    },
+                )
+
+            assertEquals(1, run.remote.merges.size, run.waiting.records.toString())
+            assertEquals(emptyList(), run.remote.actionsReads, "no runs request is sent, for the merged head or the base tip")
+            assertTrue(run.sink.events.none { it.kind == AutoMergeFallback.name })
+            assertEquals("auto", run.sink.all("issue_moved").single()["approved_by"])
+        }
+
+    @Test
+    fun `m4-05, under ci none an unstable pull request, its checks refused by Actions, auto merges`() =
+        runTest {
+            val run = autoMerge(prepare = { it.mergeable = Result.success(Mergeability(true, "unstable")) })
+
+            assertEquals(1, run.remote.merges.size, run.waiting.records.toString())
+            assertEquals(emptyList(), run.remote.actionsReads)
         }
 
     // m3-15: the CI condition under ci actions, read at the gate after the CI wait passed.
@@ -948,7 +993,13 @@ class AutoMergeOrchestratorTest {
                         "Cannot list the Actions runs on acme/widgets: The tracker answered 403: the token needs the Actions: read permission",
                     ),
                 )
-            val run = autoMerge(prepare = { remote -> remote.headRunsOf = { forbidden } })
+            // m4-05: the runs are read only under ci actions, so the 403 comes at the gate after a green CI wait.
+            val run =
+                autoMerge(
+                    workflow(merge = actions),
+                    prepare = sequence(listed(actionsRun("build", "completed", "success")), forbidden),
+                    ciPolls = 1,
+                )
 
             assertCiFellBack(run, "cannot read the Actions runs of the merged head ")
             assertContains(run.comment, "Actions: read")
