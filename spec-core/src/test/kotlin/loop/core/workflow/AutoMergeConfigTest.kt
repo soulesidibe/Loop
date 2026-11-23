@@ -109,6 +109,7 @@ class AutoMergeConfigTest {
         assertEquals(AutoMergeConfig(enabled = true), delivery.autoMerge)
         assertEquals(AutoMergeConfig.DEFAULT_PROTECTED_PATHS, delivery.autoMerge.protectedPaths)
         assertEquals(AutoMergeConfig.DEFAULT_MAX_DIFF_LINES, delivery.autoMerge.maxDiffLines)
+        assertEquals(AutoMergeConfig.DEFAULT_DOC_PATHS, delivery.autoMerge.docPaths)
         assertEquals(RiskConfig(), delivery.risk)
         assertTrue("WORKFLOW.md" in delivery.autoMerge.protectedPaths)
         assertTrue("docs/adr/" in delivery.autoMerge.protectedPaths)
@@ -134,6 +135,7 @@ class AutoMergeConfigTest {
                   enabled: true
                   protected_paths: [infra/, /deploy.sh]
                   max_diff_lines: 120
+                  doc_paths: [guides/, "**/*.txt"]
                 risk:
                   reviewer: claude-sonnet-5-5
                   sensitive_paths: ["*.lock"]
@@ -142,7 +144,7 @@ class AutoMergeConfigTest {
                 """,
             )
 
-        assertEquals(AutoMergeConfig(true, listOf("infra/", "deploy.sh"), 120), delivery.autoMerge)
+        assertEquals(AutoMergeConfig(true, listOf("infra/", "deploy.sh"), 120, listOf("guides/", "**/*.txt")), delivery.autoMerge)
         assertEquals(RiskConfig("claude-sonnet-5-5", listOf("*.lock"), listOf("db/schema/"), 30_000), delivery.risk)
     }
 
@@ -172,6 +174,10 @@ class AutoMergeConfigTest {
         assertEquals(
             "kinds.code.delivery.auto_merge.protected_paths must not hold a blank path",
             error("policy: auto\nauto_merge: { enabled: true, protected_paths: [\" \"] }"),
+        )
+        assertEquals(
+            "kinds.code.delivery.auto_merge.doc_paths must not hold a blank path",
+            error("policy: auto\nauto_merge: { enabled: true, doc_paths: [\" \"] }"),
         )
         assertEquals("kinds.code.delivery.risk must be a map", error("policy: human\nrisk: ~"))
         assertEquals("kinds.code.delivery.risk.reviewer must not be blank", error("policy: human\nrisk: { reviewer: \" \" }"))

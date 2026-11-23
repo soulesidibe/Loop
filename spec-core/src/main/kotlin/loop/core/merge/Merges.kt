@@ -821,7 +821,8 @@ internal class Merges(
                 EventDefinition,
                 Map<String, String>,
             ) -> Unit = { definition, data -> recordWaitEvent(wait, definition, data) }
-            val outcome = gate.evaluate(wait, current, workflow, executor, workspace, number, mergedHead, shownHead, record)
+            val warn: suspend (String) -> Unit = { reason -> log.log(LogLevel.WARN, DELIVERY, LogOutcome.FAILED, waitContext(wait), reason = reason) }
+            val outcome = gate.evaluate(wait, current, workflow, executor, workspace, number, mergedHead, shownHead, record, warn)
             val passed =
                 when (outcome) {
                     is GateOutcome.FallBack -> return autoMergeFallBack(wait, outcome)

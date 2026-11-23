@@ -721,7 +721,7 @@ class MergesTest {
         }
 
     @Test
-    fun `fallback reason a hard condition failed, the reviewer never runs`() =
+    fun `fallback reason a hard condition failed, the reviewer still runs and the band is recorded (bl-96)`() =
         runTest {
             val reviewer = FakeReviewer(answer())
             val setup = autoSetup(reviewer)
@@ -730,9 +730,10 @@ class MergesTest {
             val (data, comment) = fallBack(setup)
 
             assertEquals("diff_size", data[AutoMergeFallback.CONDITIONS])
-            assertNull(data[AutoMergeFallback.BAND])
+            assertEquals("low", data[AutoMergeFallback.BAND])
             assertContains(comment, "diff_size")
-            assertTrue(reviewer.requests.isEmpty())
+            assertContains(comment, "Merge risk: band low")
+            assertEquals(1, reviewer.requests.size)
         }
 
     @Test
