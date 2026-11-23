@@ -75,3 +75,42 @@ Filed from the 2026-11-16 run review.
   - A prompt that fits the estimated token count but not the reviewer's real tokenizer is not floored; safety relies on the `prompt_limit` margin and on the reviewer failing, which falls back to approval.
   - `merge_risk_assessed` records score 1.00 with band medium when the floor applies. Consumers must read the band, never recompute it from the score; say so where the event is documented.
   - `leftOut()` in `MergeRisk.kt` maps files to diff sections by numstat order; a mismatch would only miscount the files left out, never lower the floor.
+
+2026-11-23 13:51Z agent 44ae8e0f: bl-96 hand off.
+  What changed:
+  - diff_size counts only lines outside tests (the guards' language globs) and docs (new auto_merge.doc_paths, default **/*.md, **/*.mdx, **/*.markdown, **/*.adoc, **/*.rst, docs/). One limit, not two. A file git did not count still fails the condition. The impact floor (over half of max_diff_lines) reads the same lines.
+  - The merge risk reviewer runs even when a hard condition fails, so the fallback comment carries a band. CI is still read only when every hard condition holds.
+  - Tests: AutoMergeTest and AutoMergeOrchestratorTest "a diff large only in tests and docs passes diff_size", and "a result that fails a hard condition gets a merge risk review whose band and verdicts the comment carries".
+  Copied findings, handled in code: 7 (a null shown head fails merge_check), 14 (the diff text is streamed and capped, the reviewer's stdout is capped at 1 MiB and more is a crash), 15 (the two output readers share one 5 s wait, not 5 s each; the orphaned child is not killed, since it is no longer reachable once the reviewer exits), 16 (the title and paths show control characters as U+FFFD), 19 (a failed spend write is logged at warn), 22 (sensitive and one way paths fold case), 23 (CLAUDE.local.md and .gitmodules are protected by default, and diffs pass --ignore-submodules=none), 24 (textCounts with no patch is uncounted, leading newlines are kept), bl-140 a (a gate test for the no limit cap path), bl-140 d (docs say read the band, never recompute it from the score).
+  Closed here:
+  - 1, 2, 3, 4, 26: reload and preflight handling around the gate, not the diff size or reviewer path.
+  - 5, 6: gate reruns belong to the orchestrator's retry and round paths. Note that a fallback now pays one review too.
+  - 8 to 12: struck in m3-29.
+  - 13: Claude Code reports usage only in its final JSON, so a killed run's spend cannot be read. timeout_ms bounds it, and bl-87 already accepts an overshoot of one review.
+  - 17: the reasons are the reviewer's words, one line of 300 characters, shown beside a band and floors computed in code. They never decide the merge.
+  - 18: accepted. The reviewer is read only, and every floor comes from git's diff of the merged head, not the working tree.
+  - 20, 21: guards case folding, not this path.
+  - 25: the verification floor is a minimum the reviewer can raise. Mapping tests to sources would be a new feature.
+  - 27: a past commit message. History is not rewritten.
+  - bl-140 b: a file list that overflows already falls back, and a cap would hide which files the cut left out.
+  - bl-140 c: a tokenizer mismatch makes the reviewer fail, which falls back.
+  - bl-140 e: a numstat order mismatch can only miscount the files left out, never lower a floor.
+  Evidence: focused spec-core and runner-claude-code tests and ktlintCheck pass.
+
+2026-11-23 14:51Z agent 44ae8e0f: bl-96 turn 4: the full build failed on 2 cli tests that time out under load. Neither touches code bl-96 changes.
+  - ClaudeCodeStalledUsageTest "a result line then silence until the stall timeout...": tokens null. The fake claude printed its result line after the 1 s stall timeout had already fired.
+  - RestartStateTest "a queued retry survives a restart...": the test itself reports "the restart came after the due time, the test proves nothing".
+  The build took 26 minutes, so the machine was loaded. bl-96 changes only the merge gate, merge risk, WorkspaceGit, the workflow config and the risk reviewer. Both classes pass alone 3 times out of 3, 7 of 7 tests per run. I left both tests unchanged, since they are out of scope. They are worth a bl issue each for triage: the stall test's 1000 ms timeout and RestartStateTest's 15 s backoff are too tight for a loaded machine.
+
+2026-11-23 16:14Z agent 652b0f2e: bl-96 turn 5: the full build (29 min 42 s) failed on 2 cli tests. Neither touches code bl-96 changes.
+  - RestartStateTest "a queued retry survives a restart...": the test's own check failed again with "the restart came after the due time, the test proves nothing". The second loop run restored the retry 3 s after its 15 s backoff ran out. This test also failed in the turn 4 build, so its backoff goes from 15 s to 30 s and its wait from 40 s to 60 s. The assertions are unchanged. m4-00 already raised this margin once, from 6 s. It passes alone.
+  - RunCommandTest "SIGINT to loop run stops it cleanly": kill -INT exited 0, but the JVM never ran its shutdown hook. The thread dump shows main still waiting in untilSignal, with no shutdown thread. It passes alone, so I left it unchanged. It is worth a bl issue for triage.
+  I also merged refs/loop/base/main at 5aac3d4, which holds tracker notes only. Evidence: the RestartStateTest and SIGINT test runs and ktlintCheck pass.
+
+2026-11-23 17:23Z agent 652b0f2e: bl-96 turn 6: the full build failed on 3 cli tests, none in code bl-96 changes. Each is fixed in its test, with assertions unchanged.
+  - RunCommandTest "SIGINT to loop run stops it cleanly": I found the cause. The loop run doing this verification (started 15:10Z, after the turn 4 build) has SIGINT and SIGHUP set to ignore, as nohup or a detached launch leaves them. jcmd VM.info shows "SIGINT: SIG_IGN". Its build and test JVMs inherit that, so the loop run under test never sees the signal. This fails every time: I reproduced it by running gradle with SIGINT ignored. The test now starts loop run with SIGINT at its default, as a terminal does (LoopFixture.start defaultSigint). Worth knowing: a loop run started this way ignores Ctrl-C.
+  - RestartStateTest: my turn 5 fix did nothing. The first retry waits min(10 s, max_retry_backoff_ms), so it was 10 s with a 15 s or a 30 s cap. The test now lets the first retry fail too, so the retry it restores is due 20 s out.
+  - CodexClientToolsRunTest: under load, the fake app server missed the 5 s initialize read timeout. The test's runner now sets read_timeout_ms 30000.
+  Evidence: with gradle under SIGINT ignored, the SIGINT test and RestartStateTest pass; CodexClientToolsRunTest and ktlintCheck pass.
+
+2026-11-23 17:30Z agent 652b0f2e: bl-96 turn 7: the build exited 143 (SIGTERM) as cli:test started, before any test failed. I take it as stopped from outside: main moved to a76b690, one agent at a time again. I merged main and put OwnWorkflowTest back to main's copy, which expects max_concurrent_agents 1. OwnWorkflowTest (17 tests) and ktlintCheck pass. Turn 6's cli test fixes are unchanged.
