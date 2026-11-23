@@ -11,6 +11,7 @@ Written 2026-11-11 in issue m1-12. Terms follow [`CONTEXT.md`](../CONTEXT.md). T
    - [Java](#java)
 3. [Known limits](#known-limits)
 4. [Running Loop on its own issues](#running-loop-on-its-own-issues)
+   - [Sleep while work runs](#sleep-while-work-runs)
    - [Gradle daemons per Attempt](#gradle-daemons-per-attempt)
    - [Loop mode on Loop's own backlog](#loop-mode-on-loops-own-backlog)
 5. [GitHub playground](#github-playground)
@@ -94,6 +95,18 @@ Since bl-59 Loop fetches `main` itself before every attempt, the first and every
 Loop's own `WORKFLOW.md` uses the plain hooks of [`workspaces.md`](workspaces.md#usage) and a prompt that syncs with `refs/loop/base/main`, which Loop fetches before each run. The earlier `fetch-base.sh` workaround is gone.
 
 Workspaces live in `workspaces/` at the repository root, which is gitignored. The agent keeps its progress file and evidence in `.scratch/<identifier>/` inside its workspace, also gitignored, so they are never committed.
+
+### Sleep while work runs
+
+Since m4-09, `loop run` keeps the Mac awake while work runs (bl-156). While at least one Attempt, verification or merge check runs, it holds an idle sleep assertion through a `caffeinate -i -w <loop pid>` child, and it stops that child when none runs, so an idle overnight poll still lets the Mac sleep. `-w` ends the assertion if `loop run` dies, and the shutdown hook stops the child when the run ends. The operator log shows `event=keep_awake outcome=started` and `outcome=released`. No `caffeinate -i` wrapper is needed anymore.
+
+Why: on 2026-11-18, during the M3 exit run on the pilot app, the Mac went to idle sleep on battery during an Attempt. The turn failed with `ENOTFOUND` after the sleep, and the error retry due 10 seconds later started 2.5 hours later, after the wake, so the sleep spent one of the two attempts of `retries.max_attempts: 2`.
+
+Limits:
+
+- A lid close still sleeps the Mac, and so does a forced sleep from the Apple menu or a low battery. No idle assertion prevents them. Keep the lid open, or use clamshell mode on power with an external display, during a long run.
+- On other systems, or on a Mac where `caffeinate` cannot start, `loop run` logs one `event=keep_awake outcome=failed` line at its first work and runs as before.
+- What happens to an Attempt a sleep interrupts anyway is m4-08's rule: the failure reads as a network error and takes no attempt slot.
 
 ### Gradle daemons per Attempt
 
