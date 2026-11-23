@@ -22,6 +22,7 @@ import loop.core.delivery.AutoMerge
 import loop.core.delivery.AutoMergeCondition
 import loop.core.delivery.AutoMergeFacts
 import loop.core.delivery.CiFacts
+import loop.core.delivery.CiWait
 import loop.core.delivery.DiffCut
 import loop.core.delivery.FailedCondition
 import loop.core.delivery.FittedPrompt
@@ -186,7 +187,7 @@ internal class AutoMergeGate(
 
     /**
      * What the CI condition reads of pull request [number] and its [mergedHead], read now: its mergeability and, under
-     * `ci: actions` only, the Actions runs of the merged head (m3-15). Under `ci: none` no run is read, of the merged
+     * `ci: actions` only, the Actions runs of the merged head (m3-15) and the jobs of its failed runs (m4-07). Under `ci: none` no run is read, of the merged
      * head or the base tip, and no workflow file (m4-05, bl-146).
      */
     private suspend fun ciFacts(
@@ -196,11 +197,14 @@ internal class AutoMergeGate(
         merge: MergeConfig?,
     ): CiFacts {
         val ci = merge?.ci ?: CiMode.None
+        val headRuns = if (ci == CiMode.Actions) provider { executor.actionsRuns(mergedHead) } else null
+        val failed = headRuns?.getOrNull()?.let(CiWait::jobsToRead).orEmpty()
         return CiFacts(
             pullRequestNumber = number,
             mergedHead = mergedHead,
             mergeability = mergeability(executor, number),
-            headRuns = if (ci == CiMode.Actions) provider { executor.actionsRuns(mergedHead) } else null,
+            headRuns = headRuns,
+            headJobs = failed.associate { run -> run.id to provider { executor.actionsJobs(run.id) } },
             ci = ci,
             noRun = merge?.ciNoRun ?: CiNoRun.Fail,
         )

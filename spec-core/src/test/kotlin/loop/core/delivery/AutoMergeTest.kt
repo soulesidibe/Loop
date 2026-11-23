@@ -1,5 +1,7 @@
 package loop.core.delivery
 
+import loop.api.ActionsJob
+import loop.api.ActionsJobs
 import loop.api.ActionsRun
 import loop.api.ActionsRuns
 import loop.api.Mergeability
@@ -166,6 +168,27 @@ class AutoMergeTest {
             AutoMerge.ciFailure(ci.copy(headRuns = green)),
         )
         assertEquals(null, AutoMerge.ciFailure(ci.copy(headRuns = green, ci = CiMode.Actions)))
+    }
+
+    @Test
+    fun `m4-07, a run GitHub did not start fails ci as not started, never as a red run, under ci_no_run pass too`() {
+        val refused = run("build", "completed", "failure")
+        val zeroSteps = Result.success(ActionsJobs(1, listOf(ActionsJob(9, "build", "completed", "failure", 0))))
+        for (facts in listOf(actions, actions.copy(noRun = CiNoRun.Pass))) {
+            assertEquals(
+                "GitHub did not start the Actions runs on the merged head aaaaaaaaaaaa, so the code was not judged: build (failure)",
+                ciReason(facts.copy(headRuns = runs(refused), headJobs = mapOf(refused.id to zeroSteps))),
+            )
+        }
+        val withSteps = Result.success(ActionsJobs(1, listOf(ActionsJob(9, "build", "completed", "failure", 4))))
+        assertEquals(
+            "Actions runs on the merged head aaaaaaaaaaaa did not pass: build (failure)",
+            ciReason(actions.copy(headRuns = runs(refused), headJobs = mapOf(refused.id to withSteps))),
+        )
+        val forbidden = Result.failure<ActionsJobs>(IllegalStateException("403 the token needs the Actions: read permission"))
+        val unread = ciReason(actions.copy(headRuns = runs(refused), headJobs = mapOf(refused.id to forbidden)))
+        assertContains(unread, "cannot read the jobs of the Actions run ${refused.id} of aaaaaaaaaaaa: 403")
+        assertContains(unread, "Actions: read")
     }
 
     @Test

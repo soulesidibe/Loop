@@ -1,5 +1,7 @@
 package loop.core.delivery
 
+import loop.api.ActionsJob
+import loop.api.ActionsJobs
 import loop.api.ActionsRun
 import loop.api.ActionsRuns
 import loop.api.MergeMethod
@@ -9,6 +11,7 @@ import loop.core.workflow.MergeConfig
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
@@ -58,6 +61,7 @@ class CiWaitTest {
             is CiVerdict.Green -> "green"
             is CiVerdict.Red -> "red"
             is CiVerdict.Pending -> "pending"
+            is CiVerdict.NotStarted -> "not_started"
             CiVerdict.NoRun -> "no_run"
         }
 
@@ -113,6 +117,148 @@ class CiWaitTest {
         for (row in table) {
             assertEquals(row.expected, name(CiWait.verdict(row.listing)), row.why)
         }
+    }
+
+    private var nextJob = 900L
+
+    /** The jobs of one run, one per entry of [steps], each with that many steps; [total] the count GitHub gives. */
+    private fun jobs(
+        vararg steps: Int,
+        total: Long = steps.size.toLong(),
+    ) = ActionsJobs(total, steps.map { ActionsJob(nextJob++, "build", "completed", "failure", it) })
+
+    /** One row of the m4-07 table: the runs, the jobs read for them by run, the verdict expected and why. */
+    private data class JobsRow(
+        val why: String,
+        val listing: ActionsRuns,
+        val jobs: Map<Long, ActionsJobs>,
+        val expected: String,
+    )
+
+    @Test
+    fun `m4-07, the not started table`() {
+        val refused = run(1, conclusion = "failure")
+        val built = run(2, conclusion = "failure")
+        val green = run(3)
+        val queued = run(4, status = "queued", conclusion = null)
+        val cancelled = run(5, conclusion = "cancelled")
+        val noJob = run(6, conclusion = "failure")
+        val unread = run(7, conclusion = "failure")
+        val table =
+            listOf(
+                JobsRow(
+                    "a failed run whose only job has zero steps is not started",
+                    runs(refused),
+                    mapOf(refused.id to jobs(0)),
+                    "not_started",
+                ),
+                JobsRow("every job with zero steps is not started", runs(refused), mapOf(refused.id to jobs(0, 0, 0)), "not_started"),
+                JobsRow("a failed run with steps stays red", runs(built), mapOf(built.id to jobs(7)), "red"),
+                JobsRow("one job with steps among refused ones is red", runs(built), mapOf(built.id to jobs(0, 3)), "red"),
+                JobsRow("a failed run whose jobs were not read stays red, fail closed", runs(unread), emptyMap(), "red"),
+                JobsRow("a failed run with no job at all stays red, a broken workflow file", runs(noJob), mapOf(noJob.id to jobs()), "red"),
+                JobsRow(
+                    "zero steps on a page of jobs shorter than the total stays red",
+                    runs(refused),
+                    mapOf(refused.id to jobs(0, total = 150)),
+                    "red",
+                ),
+                JobsRow(
+                    "a not started run next to a green one is not started",
+                    runs(refused, green),
+                    mapOf(refused.id to jobs(0)),
+                    "not_started",
+                ),
+                JobsRow(
+                    "a not started run next to a pending one is not started, the head can no longer turn green",
+                    runs(refused, queued),
+                    mapOf(refused.id to jobs(0)),
+                    "not_started",
+                ),
+                JobsRow(
+                    "a not started run next to a red one is red",
+                    runs(refused, built),
+                    mapOf(refused.id to jobs(0), built.id to jobs(4)),
+                    "red",
+                ),
+                JobsRow("a cancelled run with zero steps is not started", runs(cancelled), mapOf(cancelled.id to jobs(0)), "not_started"),
+                JobsRow("jobs of a green run change nothing", runs(green), mapOf(green.id to jobs(0)), "green"),
+                JobsRow("a pending run is not judged on its jobs", runs(queued), mapOf(queued.id to jobs(0)), "pending"),
+                JobsRow("no run is no run, never not started", runs(), emptyMap(), "no_run"),
+                JobsRow(
+                    "a total above the page is pending, never not started",
+                    runs(refused, total = 120),
+                    mapOf(refused.id to jobs(0)),
+                    "pending",
+                ),
+            )
+        for (row in table) {
+            assertEquals(row.expected, name(CiWait.verdict(row.listing, row.jobs)), row.why)
+        }
+    }
+
+    @Test
+    fun `m4-07, the jobs are read only for the failed kept runs, at most 10 per poll`() {
+        val green = run(1)
+        val queued = run(2, status = "queued", conclusion = null)
+        val older = run(3, number = 1, conclusion = "failure")
+        val newer = run(3, number = 2)
+        val failed = (10L..21L).map { run(it, conclusion = if (it % 2 == 0L) "failure" else "cancelled") }
+
+        assertEquals(emptyList(), CiWait.jobsToRead(runs(green, queued, older, newer)), "no failed kept run, no jobs read")
+        assertEquals(failed.take(10).map { it.id }, CiWait.jobsToRead(runs(green, *failed.toTypedArray(), queued)).map { it.id })
+        assertEquals(emptyList(), CiWait.jobsToRead(runs(*failed.toTypedArray(), total = 101)), "a listing over a page reads no jobs")
+
+        val readJobs = failed.take(10).associate { it.id to jobs(0) }
+        val verdict = assertIs<CiVerdict.Red>(CiWait.verdict(runs(*failed.toTypedArray()), readJobs))
+        assertEquals(failed.drop(10).map { it.id }, verdict.failed.map { it.id }, "the runs past the 10 read stay red")
+    }
+
+    @Test
+    fun `m4-07, a not started verdict names the refused runs and a red one names only the red runs`() {
+        val refused = run(1, conclusion = "failure")
+        val built = run(2, conclusion = "failure")
+        val notStarted = assertIs<CiVerdict.NotStarted>(CiWait.verdict(runs(refused, run(3)), mapOf(refused.id to jobs(0))))
+        assertEquals(listOf(refused.id), notStarted.notStarted.map { it.id })
+        assertEquals(2, notStarted.kept.size)
+
+        val red = assertIs<CiVerdict.Red>(CiWait.verdict(runs(refused, built), mapOf(refused.id to jobs(0), built.id to jobs(5))))
+        assertEquals(listOf(built.id), red.failed.map { it.id })
+    }
+
+    @Test
+    fun `m4-07, not started fails with its own outcome at once, never red and never no run, under ci_no_run pass too`() {
+        val refused = run(1, conclusion = "failure")
+        val verdict = CiWait.verdict(runs(refused), mapOf(refused.id to jobs(0)))
+
+        for (merge in listOf(config, config.copy(ciNoRun = CiNoRun.Pass))) {
+            for (waited in listOf(0L, 5 * MINUTE, 90 * MINUTE)) {
+                val failed = assertIs<CiDecision.Fail>(CiWait.decide(verdict, waited, merge), "waited $waited, ${merge.ciNoRun}")
+                assertEquals(CiWait.NOT_STARTED, failed.outcome)
+                assertContains(failed.reason, "GitHub did not start")
+                assertContains(failed.reason, "the code was not judged")
+            }
+        }
+        assertEquals("not_started", CiWait.NOT_STARTED)
+        assertEquals(
+            6,
+            setOf(CiWait.GREEN, CiWait.RED, CiWait.NO_RUN_PASS, CiWait.NO_RUN_FAIL, CiWait.TIMEOUT, CiWait.NOT_STARTED).size,
+            "not_started is its own outcome",
+        )
+    }
+
+    @Test
+    fun `m4-07, the comment of a not started run says GitHub did not start it and the code was not judged`() {
+        val refused = run(1, conclusion = "failure")
+        val decision = assertIs<CiDecision.Fail>(CiWait.decide(CiWait.verdict(runs(refused), mapOf(refused.id to jobs(0))), 0, config))
+        val comment = CiWait.failedComment("7", decision.reason, CiWait.failedRunLines(listOf(refused)) { it }, notStarted = true)
+
+        assertContains(comment, "Loop did not merge pull request #7, ci: GitHub did not start")
+        assertContains(comment, "the code was not judged")
+        assertContains(comment, "Runs not started:\n- build (failure): https://github.com/acme/widgets/actions/runs/")
+        assertFalse(comment.contains("Failed runs"), comment)
+        assertFalse(comment.contains("fix the branch"), comment)
+        assertContains(comment, "approve again with loop approve")
     }
 
     @Test

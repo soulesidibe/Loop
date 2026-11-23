@@ -4,6 +4,8 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runTest
+import loop.api.ActionsJob
+import loop.api.ActionsJobs
 import loop.api.ActionsRun
 import loop.api.ActionsRuns
 import loop.api.AttemptId
@@ -213,6 +215,10 @@ class MergesTest {
         override suspend fun mergeability(number: Long): Result<Mergeability> = mergeable
 
         override suspend fun actionsRuns(sha: String): Result<ActionsRuns> = runs
+
+        /** m4-07: every run read ran a step, so a failed one is red. */
+        override suspend fun actionsJobs(runId: Long): Result<ActionsJobs> =
+            Result.success(ActionsJobs(1, listOf(ActionsJob(runId, "build", "completed", "failure", 3))))
     }
 
     /**
