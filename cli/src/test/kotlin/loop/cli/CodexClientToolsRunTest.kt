@@ -172,6 +172,8 @@ class CodexClientToolsRunTest {
             |  codex:
             |    command: "$command"
             |    strict_mcp: false
+            |    # bl-152: the 5 s default ran out on a loaded machine before the fake answered initialize.
+            |    read_timeout_ms: 60000
             |agent:
             |  max_turns: 1
             |retries:

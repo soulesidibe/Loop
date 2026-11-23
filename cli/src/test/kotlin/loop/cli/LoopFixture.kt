@@ -231,6 +231,13 @@ class LoopFixture(
             }
         }
 
+    /** Runs [sql], a statement that returns no rows, on the store file while no `loop run` holds it. */
+    fun execute(sql: String) {
+        DriverManager.getConnection("jdbc:sqlite:$storeFile").use { connection ->
+            connection.createStatement().use { st -> st.executeUpdate(sql) }
+        }
+    }
+
     /** Records [events] through the real store, as a running `loop run` would. */
     fun seed(vararg events: RecordedEvent) {
         SqliteEventStore.open(loopHome, projectDir, Redactor.NONE).getOrThrow().use { store ->
@@ -383,18 +390,24 @@ class LoopFixture(
             }
     }
 
-    /** Starts the installed launcher like [loop] without waiting for it. */
+    /**
+     * Starts the installed launcher like [loop] without waiting for it. With [interruptible], SIGINT is reset to its
+     * default before the launcher runs: a build started in the background inherits SIGINT ignored, and a JVM that starts
+     * with SIGINT ignored never runs its shutdown hooks on one (bl-152). `perl` execs the launcher, so the pid stays.
+     */
     fun start(
         vararg args: String,
         cwd: Path = projectDir,
         env: Map<String, String?> = emptyMap(),
+        interruptible: Boolean = false,
     ): RunningLoop {
         val launcher = System.getProperty("loop.launcher") ?: fail("system property loop.launcher is not set")
         val run = ++runs
         val stdout = outputDir.resolve("run-$run.out").toFile()
         val stderr = outputDir.resolve("run-$run.err").toFile()
+        val resetSigint = if (interruptible) listOf("perl", "-e", RESET_SIGINT) else emptyList()
         val builder =
-            ProcessBuilder(listOf(launcher) + args)
+            ProcessBuilder(resetSigint + launcher + args)
                 .directory(cwd.toFile())
                 .redirectOutput(stdout)
                 .redirectError(stderr)
@@ -415,6 +428,7 @@ class LoopFixture(
         const val RUN_ID: String = "5b2f0c3d-0000-4000-8000-000000000001"
         private const val DUMP_TIMEOUT_SECONDS = 20L
         private const val QUIT_DUMP_WAIT_MS = 3_000L
+        private const val RESET_SIGINT = "\$SIG{INT} = 'DEFAULT'; exec @ARGV or die \"exec: \$!\\n\";"
         private val STATE_LINE = Regex("""^state:(.*)$""", RegexOption.MULTILINE)
     }
 }

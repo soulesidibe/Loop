@@ -554,7 +554,7 @@ class RunCommandTest {
         fixture.issue("t-1")
         val pidFile = root.resolve("agent.pid")
         fixture.agentScript.writeText("#!/bin/sh\necho \$\$ > '$pidFile'\nsleep 30\n")
-        val running = fixture.start("run", fixture.workflow.toString())
+        val running = fixture.start("run", fixture.workflow.toString(), interruptible = true)
         try {
             val pid =
                 awaitPid(pidFile) ?: run {

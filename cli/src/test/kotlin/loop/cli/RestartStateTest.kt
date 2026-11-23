@@ -15,6 +15,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlin.time.Clock
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
 /**
@@ -39,7 +40,11 @@ class RestartStateTest {
         val stored = fixture.query("SELECT attempt, due_at, error, failures FROM retry_states").single()
         assertEquals("1", stored["attempt"], stored.toString())
         assertEquals("1", stored["failures"], stored.toString())
-        val dueAt = Instant.parse(stored["due_at"]!!)
+        assertNotNull(stored["due_at"], stored.toString())
+        // bl-152: the first retry is due 10 s out whatever the backoff cap, too short for a JVM to stop and another to
+        // start on a loaded machine. The stored due time moves further out, as a longer backoff would have put it.
+        val dueAt = Clock.System.now() + RESTART_WINDOW
+        fixture.execute("UPDATE retry_states SET due_at = '$dueAt'")
 
         val second = fixture.start("run", fixture.workflow.toString())
         try {
@@ -178,12 +183,16 @@ class RestartStateTest {
     }
 
     private companion object {
-        /**
-         * Long enough for a JVM to start before the retry falls due, short enough for a test. 6 s was too short
-         * with parallel forks (m4-00): the second `loop run` restored the entry after its due time, 2 runs in 5.
-         */
+        /** The cap of every backoff, above the first retry's 10 s so that one is not shortened. */
         const val BACKOFF_MS = 15_000L
+
+        /**
+         * How far out the queued retry falls due when the second `loop run` starts: long enough for a JVM to start
+         * before it, short enough for a test. 6 s, then the first retry's 10 s, were too short with parallel forks
+         * (m4-00) and beside other builds (bl-152): the second run restored the entry after its due time.
+         */
+        val RESTART_WINDOW = 30.seconds
         const val POLL_MS = 50L
-        val WAIT_NANOS = TimeUnit.SECONDS.toNanos(40)
+        val WAIT_NANOS = TimeUnit.SECONDS.toNanos(60)
     }
 }
