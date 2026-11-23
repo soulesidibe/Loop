@@ -81,6 +81,7 @@ import loop.core.events.CheckStarted
 import loop.core.events.ConfigReloadFailed
 import loop.core.events.ConfigReloaded
 import loop.core.events.ContextUsage
+import loop.core.events.ContextWindowUnknown
 import loop.core.events.Delivery
 import loop.core.events.DeliveryQueuePaused
 import loop.core.events.DeliveryQueueResumed
@@ -524,12 +525,6 @@ class Orchestrator(
      * attempt's ledger row is written only when it ends. Removed once the row is written.
      */
     private val liveSpend = ConcurrentHashMap<AttemptId, LiveSpend>()
-
-    /**
-     * The models whose context window this process already warned is unknown (m3-08), so each warns once per run; an
-     * empty string stands for a runner that named no model.
-     */
-    private val unknownWindows: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     /** What was spent against the issue and day budgets, the ledger rows and [liveSpend] (bl-84). */
     private val spendReading = SpendReading(attemptLedger, projectId, clock) { liveSpend.toMap() }
@@ -1541,6 +1536,14 @@ class Orchestrator(
 
         val runner: AgentRunner = runnerFor(workflow)
         private val workspaces: WorkspaceManager = workspacesFor(workflow)
+
+        /** The windows of this attempt's models, and the ones with none (m4-02). */
+        private val contextWindows =
+            ContextWindows(
+                workflow.config.context.windows,
+                workflow.runner.kind,
+                records = workflow.config.kinds != null && runner.capabilities.occupancy,
+            )
 
         var sessionId: SessionId? = null
         var turnId: TurnId? = null
@@ -3256,21 +3259,15 @@ class Orchestrator(
         }
 
         /**
-         * m3-08: the first report of a [model] with no window in `context.windows`, or of a runner that names no model,
-         * logs a warning naming it, once per run. Its occupancy is still recorded, in tokens, without a fraction.
+         * m3-08, m4-02: the first report of a [model] with no window in `context.windows` in this attempt, or of a runner
+         * that names no model, logs a warning naming it and, in Loop mode with a runner that declares occupancy, records
+         * `context_window_unknown` ([ContextWindows]). Its occupancy is still recorded, in tokens, without a fraction.
          */
-        private fun warnUnknownWindow(model: String?) {
-            if (model != null && model in workflow.config.context.windows) return
-            if (!unknownWindows.add(model.orEmpty())) return
-            val reason =
-                if (model == null) {
-                    "the runner named no model, so context occupancy is reported in tokens without a fraction"
-                } else {
-                    "no window for $model in context.windows, so context occupancy is reported in tokens without a fraction. " +
-                        "Add $model under context.windows"
-                }
+        private suspend fun warnUnknownWindow(model: String?) {
+            val unknown = contextWindows.firstUnknown(model) ?: return
+            if (unknown.recorded) record(ContextWindowUnknown, data = unknown.data)
             val fields = mapOfNotNull(ContextUsage.MODEL to model)
-            log.log(LogLevel.WARN, CONTEXT_WINDOW, LogOutcome.FAILED, logContext(), fields, reason)
+            log.log(LogLevel.WARN, CONTEXT_WINDOW, LogOutcome.FAILED, logContext(), fields, unknown.reason)
         }
 
         /** bl-39: a successful turn lifts the runner hold, if one holds the run, and records it in this attempt. */

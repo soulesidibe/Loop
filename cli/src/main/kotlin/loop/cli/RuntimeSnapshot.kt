@@ -7,6 +7,7 @@ import loop.api.RunId
 import loop.core.events.AttemptFinished
 import loop.core.events.AttemptStarted
 import loop.core.events.ContextUsage
+import loop.core.events.ContextWindowUnknown
 import loop.core.events.Delivery
 import loop.core.events.DeliveryQueuePaused
 import loop.core.events.IssueParked
@@ -66,7 +67,10 @@ internal data class RunningRow(
     val turns: Int,
     /** `attempt_tokens` of the attempt's latest `usage` event, null before its first. */
     val tokens: String?,
-    /** The occupancy of the session of the attempt's latest turn (m3-09), null before that session's first report. */
+    /**
+     * The occupancy of the session of the attempt's latest turn (m3-09), null before that session's first report,
+     * unless the session already has no window (m4-02).
+     */
     val occupancy: SessionOccupancy? = null,
     /**
      * Whether the attempt's runner declares occupancy, from its `attempt_started` (m3-09); null for an attempt recorded
@@ -115,6 +119,7 @@ internal val SNAPSHOT_KINDS: Set<String> =
         TurnStarted.name,
         Usage.name,
         ContextUsage.name,
+        ContextWindowUnknown.name,
         RetryScheduled.name,
         RetryDropped.name,
         IssueParked.name,
@@ -163,7 +168,7 @@ internal fun runtimeSnapshot(
                             startedAt = open.ts,
                             turns = turns,
                             tokens = tokens,
-                            occupancy = runningSession(ofAttempt)?.takeIf { it.latest != null },
+                            occupancy = runningSession(ofAttempt)?.takeIf { it.latest != null || it.noWindow },
                             declaresOccupancy = open.data[AttemptStarted.OCCUPANCY]?.toBooleanStrictOrNull(),
                         )
                     return@forEach
