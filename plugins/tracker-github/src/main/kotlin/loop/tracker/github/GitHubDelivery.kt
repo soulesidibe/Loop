@@ -1,5 +1,6 @@
 package loop.tracker.github
 
+import loop.api.ActionsJobs
 import loop.api.ActionsRuns
 import loop.api.DeliveryError
 import loop.api.DeliveryExecutor
@@ -112,6 +113,10 @@ class GitHubDelivery(
     /** Lists through [GitHubPullRequests.actionsRuns] (m3-15). */
     override suspend fun actionsRuns(sha: String): Result<ActionsRuns> =
         github("Cannot list the Actions runs on $repository") { pullRequests.actionsRuns(sha) }
+
+    /** Reads through [GitHubPullRequests.actionsJobs] (m4-07). */
+    override suspend fun actionsJobs(runId: Long): Result<ActionsJobs> =
+        github("Cannot read the jobs of Actions run $runId on $repository") { pullRequests.actionsJobs(runId) }
 
     /** The result of [call], a GitHub failure as a [DeliveryError] whose message starts with [context]. */
     private suspend fun <T> github(

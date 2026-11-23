@@ -614,7 +614,7 @@ class HumanLogTest {
         val head = "0123456789abcdef0123456789abcdef01234567"
 
         log.recorded(event("ci_waiting", mapOf("sha" to head)))
-        for (outcome in listOf("green", "red", "no_run_pass", "no_run_fail", "timeout")) {
+        for (outcome in listOf("green", "red", "no_run_pass", "no_run_fail", "timeout", "not_started")) {
             log.recorded(event("ci_finished", mapOf("outcome" to outcome, "runs" to "1,2")))
         }
         log.recorded(event("issue_commented", mapOf("chars" to "80", "by" to "host", "reason" to "ci")))
@@ -627,6 +627,7 @@ class HumanLogTest {
                 "17:02:11  m1-13  CI passed, the merged head has no Actions run and ci_no_run is pass",
                 "17:02:11  m1-13  CI failed, the merged head has no Actions run and ci_no_run is fail",
                 "17:02:11  m1-13  CI timed out, Actions runs of the merged head are still pending",
+                "17:02:11  m1-13  CI not started, GitHub did not start the Actions runs of the merged head, the code was not judged",
                 "17:02:11  m1-13  commented why CI did not let it merge",
             ),
             lines,

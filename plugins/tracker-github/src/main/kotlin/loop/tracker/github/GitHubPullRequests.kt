@@ -5,6 +5,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.longOrNull
+import loop.api.ActionsJob
+import loop.api.ActionsJobs
 import loop.api.ActionsRun
 import loop.api.ActionsRuns
 import loop.api.Mergeability
@@ -187,17 +189,7 @@ class GitHubPullRequests(
      */
     suspend fun actionsRuns(sha: String): ActionsRuns {
         val url = URI("$runsPath?head_sha=${encode(sha)}&per_page=$PER_PAGE")
-        val response =
-            try {
-                client.send("GET", url, absent = emptySet()) ?: error("no status is absent for a runs listing")
-            } catch (e: TrackerError.Status) {
-                if (e.status != FORBIDDEN && e.status != NOT_FOUND) throw e
-                throw TrackerError.Status(
-                    e.status,
-                    "the token needs the Actions: read permission to list the Actions runs of $owner/$repo. " +
-                        "GitHub said: ${e.message.orEmpty().substringAfter(": ")}",
-                )
-            }
+        val response = actionsRead(url, "list the Actions runs of $owner/$repo")
         val item = GitHubClient.parse(response.body, url) as? JsonObject ?: throw TrackerError.Malformed(url.toString())
         val runs = item["workflow_runs"] as? JsonArray ?: throw TrackerError.Malformed(url.toString())
         val total =
@@ -210,6 +202,54 @@ class GitHubPullRequests(
             },
         )
     }
+
+    /**
+     * The jobs of the Actions run [runId] (m4-07), `GET /repos/<owner>/<repo>/actions/runs/<id>/jobs?per_page=100`: one
+     * page with GitHub's `total_count`, each job with the number of its steps, which the runs listing does not show. A
+     * 403 or a 404 names the "Actions: read" permission, like the runs listing. An answer that is not a jobs listing, or
+     * a job without its id, name, status or steps, fails with [TrackerError.Malformed]; other failures, a rate limit
+     * included, are those of [GitHubClient.send].
+     */
+    suspend fun actionsJobs(runId: Long): ActionsJobs {
+        val url = URI("$runsPath/$runId/jobs?per_page=$PER_PAGE")
+        val response = actionsRead(url, "read the jobs of the Actions run $runId of $owner/$repo")
+        val item = GitHubClient.parse(response.body, url) as? JsonObject ?: throw TrackerError.Malformed(url.toString())
+        val jobs = item["jobs"] as? JsonArray ?: throw TrackerError.Malformed(url.toString())
+        val total =
+            (item["total_count"] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull ?: throw TrackerError.Malformed(url.toString())
+        return ActionsJobs(
+            total,
+            jobs.mapIndexed { index, job ->
+                val obj = job as? JsonObject ?: throw TrackerError.Malformed("$url, item $index")
+                readJob(obj) ?: throw TrackerError.Malformed("$url, item $index")
+            },
+        )
+    }
+
+    /** A GET of the Actions API at [url], a 403 or a 404 turned into a refusal naming "Actions: read" to [what]. */
+    private suspend fun actionsRead(
+        url: URI,
+        what: String,
+    ): GitHubResponse =
+        try {
+            client.send("GET", url, absent = emptySet()) ?: error("no status is absent for an Actions read")
+        } catch (e: TrackerError.Status) {
+            if (e.status != FORBIDDEN && e.status != NOT_FOUND) throw e
+            throw TrackerError.Status(
+                e.status,
+                "the token needs the Actions: read permission to $what. GitHub said: ${e.message.orEmpty().substringAfter(": ")}",
+            )
+        }
+
+    /** [job] as an Actions job, null when a field the verdict needs is missing, its steps first. */
+    private fun readJob(job: JsonObject): ActionsJob? =
+        ActionsJob(
+            id = job.long("id") ?: return null,
+            name = job.string("name") ?: return null,
+            status = job.string("status") ?: return null,
+            conclusion = job.string("conclusion"),
+            steps = (job["steps"] as? JsonArray)?.size ?: return null,
+        )
 
     /** [run] as an Actions run, null when a field the verdict or the comment needs is missing; a missing attempt is 1. */
     private fun readRun(run: JsonObject): ActionsRun? =

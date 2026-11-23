@@ -332,6 +332,18 @@ class TraceCommandTest {
     }
 
     @Test
+    fun `m4-07 a CI run GitHub did not start shows as not_started in the attempt's timeline`() {
+        val lines =
+            trace(
+                event("attempt_started", "13:48:40", "a1"),
+                event("attempt_finished", "13:48:42", "a1", data = mapOf("outcome" to "succeeded", "reason" to "waiting_approval")),
+                event("ci_finished", "13:58:05", "a1", data = mapOf("outcome" to "not_started", "runs" to "43779352010")),
+            )
+
+        assertContains(lines, line("13:58:05", "ci_finished", "outcome=not_started runs=43779352010"))
+    }
+
+    @Test
     fun `bl-175 the pause of the delivery queue and its resume show in the attempt's timeline`() {
         val lines =
             trace(

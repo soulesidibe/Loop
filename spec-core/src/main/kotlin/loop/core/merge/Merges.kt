@@ -404,7 +404,8 @@ internal class Merges(
     /**
      * One poll of the CI wait [wait] (m3-15), inline in the tick, with no slot and no workspace, at most once every
      * [CiWait.POLL_FLOOR_MS]. Without `merge` in the workflow now, the wait goes back to an approved approval; under
-     * `ci: none` now, it goes on to the merge. Otherwise the Actions runs of the merged head are listed once: an answer
+     * `ci: none` now, it goes on to the merge. Otherwise the Actions runs of the merged head are listed once, then the
+     * jobs of its failed runs, at most 10 (m4-07), to tell a run GitHub did not start from a red one: an answer
      * that can pass with time (unreachable, 5xx, a rate limit hold) keeps the wait, records nothing and counts nothing;
      * a refusal for good, a 403 or 404 naming "Actions: read" included, is refused. An answer adds the time since the
      * previous answered poll, then [CiWait.decide] rules: the wait in phase `merge` when CI allows it, null otherwise.
@@ -441,17 +442,16 @@ internal class Merges(
         val last = ciPolls[wait.issueId]
         if (last != null && now - last.at < CiWait.POLL_FLOOR_MS.milliseconds) return null
         val head = wait.mergedHead ?: return mergeRefused(wait, CiWait.STEP, "the wait holds no merged head")
-        val listing =
-            deliveryStep { executorFor(workflow).actionsRuns(head) }.getOrElse { error ->
-                ciPolls[wait.issueId] = CiPoll(now, answered = false)
-                if (PullRequestDelivery.permanent(error)) return mergeRefused(wait, CiWait.STEP, error.describe())
-                val reason = redactor.redact("CI not read, it keeps waiting: ${error.describe()}").take(REASON_MAX)
-                log.log(LogLevel.WARN, DELIVERY, LogOutcome.FAILED, context, reason = reason)
-                return null
+        val executor = executorFor(workflow)
+        val listing = deliveryStep { executor.actionsRuns(head) }.getOrElse { return ciNotRead(wait, now, it) }
+        // m4-07: the listing shows no step, so the jobs of the failed runs, at most 10, tell a run GitHub refused to start.
+        val jobs =
+            CiWait.jobsToRead(listing).associate { run ->
+                run.id to deliveryStep { executor.actionsJobs(run.id) }.getOrElse { return ciNotRead(wait, now, it) }
             }
         val waited = wait.ciWaitedMs + if (last?.answered == true) (now - last.at).inWholeMilliseconds else 0
         ciPolls[wait.issueId] = CiPoll(now, answered = true)
-        val verdict = CiWait.verdict(listing)
+        val verdict = CiWait.verdict(listing, jobs)
         val counted = wait.waited(waited)
         return when (val decision = CiWait.decide(verdict, waited, merge)) {
             CiDecision.Wait -> {
@@ -468,13 +468,36 @@ internal class Merges(
             is CiDecision.Fail -> {
                 ciPolls.remove(wait.issueId)
                 recordWaitEvent(wait, CiFinished, mapOf(Delivery.OUTCOME to decision.outcome, Delivery.RUNS to CiWait.runIds(verdict.kept)))
-                val failed = (verdict as? CiVerdict.Red)?.failed.orEmpty()
+                val failed =
+                    when (verdict) {
+                        is CiVerdict.Red -> verdict.failed
+                        is CiVerdict.NotStarted -> verdict.notStarted
+                        else -> emptyList()
+                    }
                 val lines = CiWait.failedRunLines(failed) { redactor.redact(it) }
+                val notStarted = verdict is CiVerdict.NotStarted
                 mergeRefused(counted, CiWait.STEP, decision.reason) { reason ->
-                    CiWait.failedComment(wait.numberText, reason, lines) to IssueCommented.CI
+                    CiWait.failedComment(wait.numberText, reason, lines, notStarted) to IssueCommented.CI
                 }.also { if (decision.outcome == CiWait.TIMEOUT) onCiTimeout(wait) }
             }
         }
+    }
+
+    /**
+     * A CI read of [wait] at [now], the runs listing or the jobs of a failed run, that failed with [error]: the poll is
+     * not answered, so it counts nothing. A refusal for good, a 403 or 404 naming "Actions: read" included, is refused;
+     * an answer that can pass with time is logged and keeps the wait, null.
+     */
+    private suspend fun ciNotRead(
+        wait: Wait.Merge,
+        now: Instant,
+        error: Throwable,
+    ): Wait.Merge? {
+        ciPolls[wait.issueId] = CiPoll(now, answered = false)
+        if (PullRequestDelivery.permanent(error)) return mergeRefused(wait, CiWait.STEP, error.describe())
+        val reason = redactor.redact("CI not read, it keeps waiting: ${error.describe()}").take(REASON_MAX)
+        log.log(LogLevel.WARN, DELIVERY, LogOutcome.FAILED, waitContext(wait), reason = reason)
+        return null
     }
 
     /**

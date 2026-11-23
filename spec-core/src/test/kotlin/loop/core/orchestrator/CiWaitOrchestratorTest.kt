@@ -8,6 +8,16 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
+import loop.api.ActionsJob
+import loop.api.ActionsJobs
 import loop.api.ActionsRun
 import loop.api.ActionsRuns
 import loop.api.AttemptId
@@ -238,6 +248,65 @@ class CiWaitOrchestratorTest {
             val answer = if (answers.size > 1) answers.removeFirst() else answers.firstOrNull()
             return answer ?: Result.success(ActionsRuns(0, emptyList()))
         }
+
+        /** The jobs answered by run id, else one job that ran a step, like a run GitHub started. */
+        val jobs = mutableMapOf<Long, Result<ActionsJobs>>()
+        val jobsRead = mutableListOf<Long>()
+
+        override suspend fun actionsJobs(runId: Long): Result<ActionsJobs> {
+            jobsRead += runId
+            return jobs[runId] ?: Result.success(ActionsJobs(1, listOf(ActionsJob(runId * 10, "build", "completed", "failure", 3))))
+        }
+    }
+
+    /** A body GitHub answered, recorded in m4-00 under `plugins/tracker-github/src/test/resources/github/recorded/`. */
+    private fun recordedJson(name: String): JsonObject =
+        Json
+            .parseToJsonElement(
+                RECORDED
+                    .resolve("$name.json")
+                    .toFile()
+                    .readText(),
+            ).jsonObject
+
+    private fun JsonObject.text(key: String): String? = get(key)?.jsonPrimitive?.contentOrNull
+
+    /** The recorded runs listing of bl-85's merged head, whose only run, 43779352010, GitHub refused for billing (bl-98). */
+    private fun recordedRefusedRuns(): ActionsRuns {
+        val listing = recordedJson("actions-runs-43779352010")
+        val runs =
+            listing.getValue("workflow_runs").jsonArray.map {
+                val run = it.jsonObject
+                ActionsRun(
+                    id = run.getValue("id").jsonPrimitive.long,
+                    name = checkNotNull(run.text("name")),
+                    workflowId = run.getValue("workflow_id").jsonPrimitive.long,
+                    event = checkNotNull(run.text("event")),
+                    runNumber = run.getValue("run_number").jsonPrimitive.long,
+                    runAttempt = run.getValue("run_attempt").jsonPrimitive.long,
+                    status = checkNotNull(run.text("status")),
+                    conclusion = run.text("conclusion"),
+                    url = checkNotNull(run.text("html_url")),
+                )
+            }
+        return ActionsRuns(listing.getValue("total_count").jsonPrimitive.long, runs)
+    }
+
+    /** The recorded jobs of run 43779352010: one job, 0 steps. */
+    private fun recordedRefusedJobs(): ActionsJobs {
+        val listing = recordedJson("actions-run-43779352010-jobs")
+        val jobs =
+            listing.getValue("jobs").jsonArray.map {
+                val job = it.jsonObject
+                ActionsJob(
+                    id = job.getValue("id").jsonPrimitive.long,
+                    name = checkNotNull(job.text("name")),
+                    status = checkNotNull(job.text("status")),
+                    conclusion = job.text("conclusion"),
+                    steps = (job.getValue("steps") as JsonArray).size,
+                )
+            }
+        return ActionsJobs(listing.getValue("total_count").jsonPrimitive.long, jobs)
     }
 
     private fun run(
@@ -487,6 +556,127 @@ class CiWaitOrchestratorTest {
                     .state,
             )
             assertEquals(emptyList(), setup.tracker.moves, "no dispatch, the issue is not moved")
+        }
+
+    @Test
+    fun `m4-07, the recorded run GitHub refused to start ends the wait not started, never red, with an unapproved approval`() =
+        runTest {
+            val setup = Setup()
+            val refused = recordedRefusedRuns()
+            assertEquals(listOf(REFUSED_RUN), refused.runs.map { it.id })
+            assertEquals(recordedJson("actions-run-43779352010").text("conclusion"), refused.runs.single().conclusion)
+            setup.remote.answers += Result.success(refused)
+            setup.remote.jobs[REFUSED_RUN] = Result.success(recordedRefusedJobs())
+            val orchestrator = orchestrator(setup.tracker, setup.remote, setup.waiting, setup.sink)
+            tick(orchestrator)
+
+            tick(orchestrator, after = 30_000)
+
+            assertEquals(listOf(REFUSED_RUN), setup.remote.jobsRead, "the jobs of the failed run only")
+            assertEquals(mapOf("outcome" to "not_started", "runs" to "$REFUSED_RUN"), setup.all(CiFinished.name).single())
+            val failed = setup.all(DeliveryFailed.name).single()
+            assertEquals("ci", failed["step"])
+            assertContains(failed["reason"].orEmpty(), "GitHub did not start the Actions runs")
+            assertContains(failed["reason"].orEmpty(), "the code was not judged")
+            assertFalse(failed["reason"].orEmpty().contains("did not pass"), failed.toString())
+            val comment =
+                setup.tracker.comments
+                    .last()
+                    .second.text
+            assertContains(comment, "Loop did not merge pull request #7, ci: GitHub did not start the Actions runs")
+            assertContains(comment, "the code was not judged")
+            assertContains(
+                comment,
+                "Runs not started:\n- build (failure): https://github.com/soulesidibe/Loop-private/actions/runs/$REFUSED_RUN",
+            )
+            assertContains(comment, "Check the Actions billing and limits of the repository")
+            assertFalse(comment.contains("Failed runs"), comment)
+            assertEquals("ci", setup.all("issue_commented").last()["reason"])
+            val wait = assertNotNull(setup.wait)
+            assertEquals(WaitReason.Approval, wait.reason)
+            assertFalse(wait.approved)
+            assertNull(wait.data[WaitKeys.PHASE])
+            assertEquals(emptyList(), setup.remote.merges)
+            assertEquals(emptyList(), setup.tracker.moves, "no dispatch, the code goes back to no agent")
+            assertTrue(setup.all(DeliveryQueuePaused.name).isEmpty(), "a run not started does not pause the queue")
+        }
+
+    @Test
+    fun `m4-07, a run GitHub refused to start never counts as no run, under ci_no_run pass too`() =
+        runTest {
+            val setup = Setup(workflow(actions.copy(ciNoRun = CiNoRun.Pass)))
+            setup.remote.answers += Result.success(recordedRefusedRuns())
+            setup.remote.jobs[REFUSED_RUN] = Result.success(recordedRefusedJobs())
+            val orchestrator = orchestrator(setup.tracker, setup.remote, setup.waiting, setup.sink, setup.workflow)
+            tick(orchestrator)
+
+            tick(orchestrator, after = 30_000)
+            tick(orchestrator, after = 90_000)
+
+            assertEquals(listOf("not_started"), setup.all(CiFinished.name).map { it["outcome"] })
+            assertEquals(emptyList(), setup.remote.merges)
+            assertEquals(WaitReason.Approval, setup.wait?.reason)
+            assertEquals(false, setup.wait?.approved)
+        }
+
+    @Test
+    fun `m4-07, a 403 or a 404 on the jobs read gives delivery_failed naming Actions read, with no ci_finished`() =
+        runTest {
+            val setup = Setup()
+            setup.remote.answers += Result.success(recordedRefusedRuns())
+            setup.remote.jobs[REFUSED_RUN] =
+                Result.failure(
+                    DeliveryError.Rejected(
+                        "Cannot read the jobs of Actions run $REFUSED_RUN on acme/widgets: the token needs the Actions: read permission",
+                    ),
+                )
+            val orchestrator = orchestrator(setup.tracker, setup.remote, setup.waiting, setup.sink)
+            tick(orchestrator)
+
+            tick(orchestrator, after = 30_000)
+
+            assertTrue(setup.all(CiFinished.name).isEmpty())
+            val failed = setup.all(DeliveryFailed.name).single()
+            assertEquals("ci", failed["step"])
+            assertContains(failed["reason"].orEmpty(), "Actions: read")
+            assertEquals(WaitReason.Approval, setup.wait?.reason)
+            assertEquals(emptyList(), setup.remote.merges)
+        }
+
+    @Test
+    fun `m4-07, a jobs read that can pass with time keeps the wait and records nothing`() =
+        runTest {
+            val setup = Setup()
+            setup.remote.answers += Result.success(recordedRefusedRuns())
+            setup.remote.jobs[REFUSED_RUN] = Result.failure(DeliveryError.Unavailable("GitHub answered 502"))
+            val orchestrator = orchestrator(setup.tracker, setup.remote, setup.waiting, setup.sink)
+            tick(orchestrator)
+
+            tick(orchestrator, after = 30_000)
+
+            assertEquals("ci", setup.wait?.data?.get(WaitKeys.PHASE))
+            assertEquals("0", setup.wait?.data?.get(WaitKeys.CI_WAITED_MS), "an unanswered poll counts nothing")
+            assertTrue(setup.all(CiFinished.name).isEmpty())
+            assertTrue(setup.all(DeliveryFailed.name).isEmpty())
+
+            setup.remote.jobs[REFUSED_RUN] = Result.success(recordedRefusedJobs())
+            tick(orchestrator, after = 30_000)
+
+            assertEquals(listOf("not_started"), setup.all(CiFinished.name).map { it["outcome"] })
+        }
+
+    @Test
+    fun `m4-07, a green or pending poll reads no jobs`() =
+        runTest {
+            val setup = Setup()
+            setup.remote.answers += listOf(pending, green)
+            val orchestrator = orchestrator(setup.tracker, setup.remote, setup.waiting, setup.sink)
+            tick(orchestrator)
+            tick(orchestrator, after = 30_000)
+            tick(orchestrator, after = 30_000)
+
+            assertEquals(listOf(setup.verified), setup.remote.merges)
+            assertEquals(emptyList(), setup.remote.jobsRead)
         }
 
     @Test
@@ -754,6 +944,15 @@ class CiWaitOrchestratorTest {
 
     private companion object {
         val PROJECT = ProjectId("p1")
+
+        /**
+         * The GitHub answers recorded in m4-00, read in place from the github tracker's test resources. Gradle runs the
+         * tests of spec-core in its project folder, so the path is relative to it.
+         */
+        val RECORDED: Path = Path.of("../plugins/tracker-github/src/test/resources/github/recorded").toAbsolutePath().normalize()
+
+        /** The run GitHub refused for billing on 2026-11-16, recorded in m4-00 (bl-98). */
+        const val REFUSED_RUN = 43779352010L
     }
 
     /** The approved `Waiting(merge)` of [identifier] on pull request [number] in phase `check`, verified on [head]. */

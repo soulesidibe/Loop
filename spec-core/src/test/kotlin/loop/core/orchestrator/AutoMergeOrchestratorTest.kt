@@ -8,6 +8,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runTest
+import loop.api.ActionsJob
+import loop.api.ActionsJobs
 import loop.api.ActionsRun
 import loop.api.ActionsRuns
 import loop.api.AttemptId
@@ -272,6 +274,15 @@ class AutoMergeOrchestratorTest {
         override suspend fun actionsRuns(sha: String): Result<ActionsRuns> {
             actionsReads += sha
             return actionsRuns[sha] ?: headRunsOf?.takeIf { sha != base }?.invoke(sha) ?: Result.success(ActionsRuns(0, emptyList()))
+        }
+
+        /** The jobs of each run by id (m4-07), else one job that ran a step, like a run GitHub started. */
+        val actionsJobs = mutableMapOf<Long, Result<ActionsJobs>>()
+        val jobsReads = mutableListOf<Long>()
+
+        override suspend fun actionsJobs(runId: Long): Result<ActionsJobs> {
+            jobsReads += runId
+            return actionsJobs[runId] ?: Result.success(ActionsJobs(1, listOf(ActionsJob(runId, "build", "completed", "failure", 3))))
         }
     }
 
@@ -1033,6 +1044,26 @@ class AutoMergeOrchestratorTest {
 
             assertCiFellBack(run, "Actions runs on the merged head ")
             assertContains(run.comment, "did not pass: build (failure)")
+        }
+
+    @Test
+    fun `m4-07, under ci actions a run GitHub did not start at the gate falls back naming it not started, not red`() =
+        runTest {
+            val gate = sequence(listed(actionsRun("build", "completed", "success")), listed(actionsRun("build", "completed", "failure")))
+            val run =
+                autoMerge(
+                    workflow(merge = actions),
+                    prepare = { remote ->
+                        gate(remote)
+                        remote.actionsJobs[10] = Result.success(ActionsJobs(1, listOf(ActionsJob(1, "build", "completed", "failure", 0))))
+                    },
+                    ciPolls = 1,
+                )
+
+            assertCiFellBack(run, "GitHub did not start the Actions runs on the merged head ")
+            assertContains(run.comment, "so the code was not judged: build (failure)")
+            assertFalse(run.comment.contains("did not pass"), run.comment)
+            assertEquals(listOf(10L), run.remote.jobsReads, "the jobs of the failed run, at the gate only")
         }
 
     @Test
