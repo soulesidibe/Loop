@@ -3,7 +3,7 @@ id: m4-08
 title: "A lost network is runner_unavailable and uses no attempt"
 state: todo
 priority: 2
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [m4-07]
 ---
 

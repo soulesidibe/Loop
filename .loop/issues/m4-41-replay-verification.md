@@ -3,7 +3,7 @@ id: m4-41
 title: "loop replay runs verification again on the recorded fingerprint"
 state: todo
 priority: 3
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [m4-54, m4-40]
 ---
 

@@ -207,6 +207,8 @@ class ClaudeCodeRunner internal constructor(
     private val stopGrace: Duration = STOP_GRACE,
     /** True while the process group still has a member; a probe that fails counts as alive. */
     private val groupAlive: (Long) -> Boolean = { pgid -> ShellGroupSignaller.signal(pgid, SIGNAL_PROBE) != GroupSignalResult.Empty },
+    /** How many lines no turn needs the process may queue while idle, see [LiveProcess.keeps]. */
+    private val idleLineBound: Int = IDLE_LINE_BOUND,
     private val newSettingsDir: () -> Path = { createTempDirectory(SETTINGS_DIR_PREFIX) },
 ) : AgentRunner {
     constructor(
@@ -388,6 +390,9 @@ class ClaudeCodeRunner internal constructor(
             private var ended = false
             private val held = mutableListOf<RunnerEvent>()
 
+            // m4-03: whether this turn read the notification of a background task run an earlier turn started.
+            private var wake = false
+
             // This turn's per message usage of the main session, by message id, for the estimate.
             private val messageUsage = mutableMapOf<String, StreamLine.UsageTotals>()
 
@@ -412,6 +417,16 @@ class ClaudeCodeRunner internal constructor(
                             // m3-12: a turn cancelled while a wake is read stops the process group, as on any cancel.
                             current = it
                             hear(it)
+                            val dropped = it.markBusy()
+                            if (dropped > 0) {
+                                emit(
+                                    RunnerEvent.Output(
+                                        Stream.Stderr,
+                                        "${LOOP_PREFIX}warning: the claude-code process wrote more than $idleLineBound lines while idle, " +
+                                            "$dropped of them dropped, its usage and result lines kept",
+                                    ),
+                                )
+                            }
                             readIdle(it)
                         }
                     // A wake the process ran while idle went silent past the turn timeout.
@@ -427,6 +442,8 @@ class ClaudeCodeRunner internal constructor(
                         read(process, reused = false)
                     }
                 } finally {
+                    // m4-03: between turns nothing reads the process, so its queue is bounded until the next turn.
+                    if (ended) live?.markIdle()
                     if (!ended) {
                         withContext(NonCancellable) {
                             // After a cancel the collector is gone, so the line cannot be emitted any more.
@@ -553,7 +570,7 @@ class ClaudeCodeRunner internal constructor(
                 val stdin = Channel<String>(Channel.UNLIMITED)
                 val events = Channel<ProcessEvent>(Channel.UNLIMITED)
                 // Outside the workspace, so the agent cannot edit its own guardrail; kept until the process is gone.
-                val process = LiveProcess(events, stdin, newSettingsDir()).also { current = it }
+                val process = LiveProcess(events, stdin, newSettingsDir(), idleLineBound).also { current = it }
                 val dir = checkNotNull(process.settingsDir)
                 val settingsFile =
                     dir.resolve(SETTINGS_FILE).apply { writeText(ClaudeSettingsFile.json(hiddenDirs(), ctx.env[ENV_LAUNCHER])) }
@@ -573,7 +590,7 @@ class ClaudeCodeRunner internal constructor(
                         try {
                             launchProcess(spec).collect { event ->
                                 if (event is ProcessEvent.Started) process.pid = event.pid
-                                events.send(event)
+                                if (process.keeps(event)) events.send(event)
                             }
                         } catch (e: CancellationException) {
                             throw e
@@ -655,9 +672,12 @@ class ClaudeCodeRunner internal constructor(
             }
 
             /**
-             * Handles one line of [process]. Returns the `result` line that ends the turn; an [idle] line never ends it.
+             * Handles one line of [process]. Returns the `result` line that ends the turn; an [idle] line never ends it,
+             * nor does a wake's result (`origin.kind` `task-notification`) unless the turn was interrupted (m4-03).
              * A `result` line's usage is added to the session's and reported at once, the session total, after the line.
-             * An [idle] `init` or `assistant` line means the process runs a wake, until a `result` line.
+             * An [idle] `init` or main session `assistant` line means the process runs a wake, until a `result` line; a
+             * subagent's line does not (bl-122). The first `task_notification` line of a run an earlier turn started
+             * makes this turn a wake turn, reported once, after the line (m4-03).
              */
             private suspend fun line(
                 event: ProcessEvent.Line,
@@ -668,6 +688,7 @@ class ClaudeCodeRunner internal constructor(
                 var occupancy: RunnerEvent.ContextUsage? = null
                 var usage: RunnerEvent.Usage? = null
                 var result: StreamLine.Result? = null
+                var woken: RunnerEvent.WakeTurn? = null
                 if (event.stream == Stream.Stdout) {
                     when (val line = StreamJsonMapper.parse(event.text)) {
                         is StreamLine.Init -> {
@@ -695,10 +716,18 @@ class ClaudeCodeRunner internal constructor(
                                 // bl-108: reported at once, so a stall or a stop that cancels the turn later keeps this spend.
                                 usage = StreamJsonMapper.usageEvent(total, sessionId, turnId)
                             }
-                            if (!idle) result = line
+                            if (!idle && (!line.wake || synchronized(inputLock) { interrupted })) result = line
+                        }
+                        is StreamLine.TaskStarted -> continuity.runs.putIfAbsent(line.run, ids.turn)
+                        is StreamLine.TaskNotification -> {
+                            val startedIn = continuity.runs[line.run]
+                            if (!wake && startedIn != null && startedIn < ids.turn) {
+                                wake = true
+                                woken = RunnerEvent.WakeTurn(sessionId, turnId)
+                            }
                         }
                         is StreamLine.Assistant -> {
-                            if (idle) process.waking = true
+                            if (idle && line.parentToolUseId == null) process.waking = true
                             val id = line.messageId
                             val usage = line.usage
                             if (!idle && id != null && usage != null && line.parentToolUseId == null) {
@@ -718,6 +747,7 @@ class ClaudeCodeRunner internal constructor(
                 }
                 // The estimate, the occupancy or the usage follows the line it came from.
                 emit(RunnerEvent.Output(event.stream, event.text))
+                woken?.let { emit(it) }
                 estimate?.let { emit(it) }
                 occupancy?.let { emit(it) }
                 usage?.let { emit(it) }
@@ -782,24 +812,76 @@ class ClaudeCodeRunner internal constructor(
 
     /**
      * What a session carries across its turns and processes: Claude Code's newest session id, the usage so far, the
-     * newest `init` line's model and the main session message ids whose occupancy was reported.
+     * newest `init` line's model, the main session message ids whose occupancy was reported and the turn that read
+     * each background task run's `task_started` line (m4-03).
      */
     private class Continuity {
         var runtimeSessionId: String? = null
         var usage: StreamLine.UsageTotals? = null
         var model: String? = null
         val countedMessages = mutableSetOf<String>()
+        val runs = mutableMapOf<StreamLine.TaskRun, Int>()
     }
 
     /**
      * One running process of a session: its launch collector [job] (cancelling it kills the group), its [events],
-     * its open [stdin] and the [settingsDir] it reads, deleted once it is gone.
+     * its open [stdin] and the [settingsDir] it reads, deleted once it is gone. While it is idle, between turns, its
+     * [events] queue holds at most [idleLineBound] lines no turn needs (m4-03, bl-122), see [keeps].
      */
     private class LiveProcess(
         val events: Channel<ProcessEvent>,
         val stdin: Channel<String>,
         var settingsDir: Path?,
+        private val idleLineBound: Int,
     ) {
+        // Whether no turn reads it, the lines no turn needs queued since, and those dropped over the bound.
+        private var idle = false
+        private var idleLines = 0
+        private var dropped = 0
+
+        /**
+         * Whether [event] goes to the queue. Always while a turn reads the process. While it is idle, every line a
+         * later turn needs is kept: `result` lines (their usage), `init` lines, the `task_started` and
+         * `task_notification` lines of background runs, main session `assistant` lines and Loop's own `loop:` lines.
+         * Any other line, a subagent's message or a tool result, is kept up to [idleLineBound], then dropped.
+         */
+        @Synchronized
+        fun keeps(event: ProcessEvent): Boolean {
+            if (!idle || event !is ProcessEvent.Line || needed(event)) return true
+            if (idleLines < idleLineBound) {
+                idleLines++
+                return true
+            }
+            dropped++
+            return false
+        }
+
+        /** No turn reads the process from now on, until [markBusy]. */
+        @Synchronized
+        fun markIdle() {
+            idle = true
+            idleLines = 0
+        }
+
+        /** A turn reads the process from now on; returns how many lines were dropped while it was idle. */
+        @Synchronized
+        fun markBusy(): Int {
+            idle = false
+            idleLines = 0
+            return dropped.also { dropped = 0 }
+        }
+
+        private fun needed(event: ProcessEvent.Line): Boolean =
+            if (event.stream == Stream.Stdout) {
+                when (val line = StreamJsonMapper.parse(event.text)) {
+                    is StreamLine.Result, is StreamLine.Init, is StreamLine.TaskStarted, is StreamLine.TaskNotification -> true
+                    is StreamLine.Assistant -> line.parentToolUseId == null
+                    else -> false
+                }
+            } else {
+                event.text.startsWith(LOOP_PREFIX)
+            }
+
         var job: Job? = null
 
         @Volatile var pid: Long? = null
@@ -899,6 +981,9 @@ class ClaudeCodeRunner internal constructor(
 
         /** m3-12: why a turn interrupted before its input was written ends; Loop does not count it as a failure. */
         const val INTERRUPTED_BEFORE_INPUT = "interrupted: the turn was interrupted before its input was written"
+
+        /** How many lines no turn needs an idle process may queue before the next ones are dropped (m4-03, bl-122). */
+        const val IDLE_LINE_BOUND = 1_000
 
         /** How long [AgentSession.stop] waits for the process to exit once its stdin is closed. */
         val STOP_GRACE = 5.seconds

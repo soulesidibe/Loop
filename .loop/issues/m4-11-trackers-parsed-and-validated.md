@@ -3,7 +3,7 @@ id: m4-11
 title: "trackers: parsed and validated, the primary tracker kept"
 state: todo
 priority: 2
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [m4-10]
 ---
 

@@ -3,7 +3,7 @@ id: m4-24
 title: "Resources config, the ResourceProvider interface and its loader"
 state: todo
 priority: 2
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [m4-23, m4-01]
 ---
 

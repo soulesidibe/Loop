@@ -3,7 +3,7 @@ id: m4-46
 title: "After a network hold, a session below the soft limit resumes"
 state: todo
 priority: 2
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [m4-08]
 ---
 

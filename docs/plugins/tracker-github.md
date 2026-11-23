@@ -297,6 +297,8 @@ git --git-dir=<temporary> <the pins of the push> -c credential.helper= -c creden
 
 So no git process that reads the project's config, the user's or the system's ever holds the token, and every git process of the fetch gets the minimal environment of the push. A fetch with nothing new still succeeds and proves the tip.
 
+**The fetch mutex.** Since m4-49 (bl-67), the base fetches of one repository run one at a time. Two verifications at once used to fetch and write `refs/loop/base/<base>` together, and git's ref lock could fail one of them, which recorded `diff_base_unpinned` and blocked its auto merge. Everything after the read of the object folder in step 2, through step 6, now runs under one mutex per repository, held in the Loop process. Repositories are told apart by the real path of their object folder, the one step 2 reads (`git rev-parse --git-common-dir`), so two workspaces of one repository share a mutex and wait on each other, and two repositories never do. A second fetch waits until the first ends, which the 5 minute limit of each of its git processes bounds. Only the base fetch takes the mutex: the push and a git process an agent starts in its workspace do not.
+
 **The base tip and the merge.** `GitHubPullRequests` reads the base and merges, through the shared client:
 
 - `baseTip`: `GET /repos/{owner}/{repo}/git/ref/heads/{base}`, each part of the base encoded and its slashes kept, read right before a merge. The result is `object.sha`; an answer whose `ref` is not `refs/heads/<base>` or without a full commit id fails for good, a missing base is a 404.

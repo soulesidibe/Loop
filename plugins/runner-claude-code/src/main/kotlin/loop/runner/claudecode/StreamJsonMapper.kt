@@ -20,7 +20,11 @@ internal sealed interface StreamLine {
         val model: String? = null,
     ) : StreamLine
 
-    /** The final `result` event of the turn; [text] is its `result` field. */
+    /**
+     * The final `result` event of the turn; [text] is its `result` field. [wake] is true for the result of a wake,
+     * a run Claude Code started on its own for a background task's notification: its `origin.kind` is
+     * `task-notification` (m4-03).
+     */
     data class Result(
         val subtype: String?,
         val isError: Boolean,
@@ -28,7 +32,24 @@ internal sealed interface StreamLine {
         val permissionDenials: List<Denial> = emptyList(),
         val text: String? = null,
         val sessionId: String? = null,
+        val wake: Boolean = false,
     ) : StreamLine
+
+    /** A background task run (a subagent, a background command) started: the `system` `task_started` line (m4-03). */
+    data class TaskStarted(
+        val run: TaskRun,
+    ) : StreamLine
+
+    /** A background task run ended and the session was told: the `system` `task_notification` line (m4-03). */
+    data class TaskNotification(
+        val run: TaskRun,
+    ) : StreamLine
+
+    /** One run of a background task. A restarted task keeps its [taskId] and gets a new [runId]. */
+    data class TaskRun(
+        val taskId: String?,
+        val runId: String?,
+    )
 
     /**
      * A tool call Claude Code refused, from the result's `permission_denials`: a Bash [command], or the [path] a
@@ -143,7 +164,10 @@ internal object StreamJsonMapper {
                     permissionDenials = denialsOf(event),
                     text = event.string("result"),
                     sessionId = event.string("session_id"),
+                    wake = (event["origin"] as? JsonObject)?.string("kind") == WAKE_ORIGIN,
                 )
+            type == "system" && subtype == "task_started" -> StreamLine.TaskStarted(taskRun(event))
+            type == "system" && subtype == "task_notification" -> StreamLine.TaskNotification(taskRun(event))
             type == "assistant" -> {
                 val message = event["message"] as? JsonObject
                 StreamLine.Assistant(
@@ -308,6 +332,9 @@ internal object StreamJsonMapper {
     }
 
     private const val SUCCESS = "success"
+
+    /** The `origin.kind` Claude Code gives the result of a wake it ran for a background task's notification. */
+    private const val WAKE_ORIGIN = "task-notification"
     private const val MAX_DETAIL = 200
 
     private fun parseObject(line: String): JsonObject? =
@@ -316,6 +343,8 @@ internal object StreamJsonMapper {
         } catch (ignored: IllegalArgumentException) {
             null
         }
+
+    private fun taskRun(event: JsonObject): StreamLine.TaskRun = StreamLine.TaskRun(event.string("task_id"), event.string("run_id"))
 
     private fun JsonObject.string(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
 

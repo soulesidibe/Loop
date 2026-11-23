@@ -1698,6 +1698,7 @@ class Orchestrator(
                     peak = occupancy.peak(workflow.config.context.windows),
                     rotations = rotations,
                     interrupted = turn.interrupted?.let { SessionRotated.HARD_LIMIT },
+                    wake = turn.wake,
                 )
             ledgerWrite { withContext(io) { turnLedger.append(line) } }
         }
@@ -2779,13 +2780,15 @@ class Orchestrator(
          * the same [session]. A runner without a session runs the one turn. A session past the soft limit is
          * rotated before the next turn (m3-11): that turn opens a new session with a newly rendered prompt, and
          * keeps its number, since turns count across the sessions of an attempt. A turn interrupted at the hard limit
-         * (m3-12) ends like a completed one, then rotates with that reason.
+         * (m3-12) ends like a completed one, then rotates with that reason. A wake turn counts against
+         * `agent.max_wake_turns`, not `agent.max_turns` ([TurnCount], m4-03).
          */
         private suspend fun runTurns(
             ctx: AttemptContext,
             prompt: String,
         ): Executed {
             val maxTurns = workflow.config.agent.maxTurns
+            val count = TurnCount(maxTurns, workflow.config.agent.maxWakeTurns)
             var number = 1
             // The turn's number within its session: a new session starts at 1, so a runtime starts it empty.
             var sessionTurn = 1
@@ -2795,6 +2798,7 @@ class Orchestrator(
                 val current = session
                 val runs = sessionTurn
                 runTurn(turn) { current?.runTurn(input, runs) ?: runner.run(ctx, input) }
+                val limit = count.end(turn.wake)
                 // Before the end reason, max turns and the refresh: an attempt past a budget runs no further turn.
                 // The budget deliberately wins over the turn's own failure: the issue is parked, not retried.
                 if (turn.capped) {
@@ -2844,10 +2848,10 @@ class Orchestrator(
                             error = error.describe(),
                         )
                     }
-                val ended = endReason(refresh, number, maxTurns)
+                val ended = endReason(refresh, limit)
                 if (ended != null) {
                     recordFinishing(turn)
-                    if (ended == ExitReason.MAX_TURNS) refutedEnd(number, Refresh(refresh))?.let { return it }
+                    if (TurnCount.isLimit(ended)) refutedEnd(number, Refresh(refresh))?.let { return it }
                     return Executed(AttemptOutcome.Succeeded, exitReason = ended, turns = number, refresh = Refresh(refresh))
                 }
                 // m3-12: a turn interrupted at the hard limit rotates with that reason, else the soft limit is checked.
@@ -2873,7 +2877,7 @@ class Orchestrator(
                 input =
                     continuationGuidance(
                         checkNotNull(refresh),
-                        number,
+                        count.next,
                         maxTurns,
                         drainFindings,
                         drainFailures.values.toList(),
@@ -3073,11 +3077,10 @@ class Orchestrator(
         private fun approvalEnd(number: Int): Executed? =
             if (waitingApproval) Executed(AttemptOutcome.Succeeded, exitReason = ExitReason.WAITING_APPROVAL, turns = number) else null
 
-        /** Why no further turn follows a completed turn [number], null when the next one should run. */
+        /** Why no further turn follows a completed turn, [limit] the turn limit it reached, null when the next one should run. */
         private fun endReason(
             refreshed: Issue?,
-            number: Int,
-            maxTurns: Int,
+            limit: String?,
         ): String? {
             if (refreshed == null) return ExitReason.NOT_FOUND
             val target = RetryTarget.of(refreshed, workflow)
@@ -3087,7 +3090,7 @@ class Orchestrator(
                 RetryTarget.Terminal -> ExitReason.TERMINAL
                 RetryTarget.NotActive -> ExitReason.NOT_ACTIVE
                 RetryTarget.NotEligible -> ExitReason.NOT_ELIGIBLE
-                RetryTarget.Eligible -> if (number >= maxTurns) ExitReason.MAX_TURNS else null
+                RetryTarget.Eligible -> limit
             }
         }
 
@@ -3453,6 +3456,8 @@ class Orchestrator(
                     // m3-21: recorded as it comes, a report that never stops the turn; the runner sends only changes.
                     record(RateLimit, data = rateLimitData(event))
                 }
+                // m4-03: counted at the turn's end, against agent.max_wake_turns instead of agent.max_turns.
+                is RunnerEvent.WakeTurn -> turn.wake = true
                 is RunnerEvent.TurnCompleted -> {
                     sessionId = event.sessionId
                     turnId = event.turnId
@@ -5206,10 +5211,14 @@ class Orchestrator(
                 TurnEvent.TURN_ID to turnId?.value,
                 TurnEvent.CAPPED to if (capped) "true" else null,
                 TurnEvent.INTERRUPTED to interrupted?.let { SessionRotated.HARD_LIMIT },
+                TurnEvent.WAKE to if (wake) "true" else null,
             )
 
         var launched = false
         var finished = false
+
+        /** True once the runner said this is a wake turn (m4-03): it counts against `agent.max_wake_turns` only. */
+        var wake = false
 
         /** True once the attempt went past a spend budget during this turn (m2-20); the turn is then cut. */
         var capped = false

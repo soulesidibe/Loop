@@ -41,3 +41,5 @@ Out of this issue: the state rewrite and the comment insert of the same tracker,
 ## Comments
 
 2026-11-18 soule: written in m3-29, split from m4-33 after the Fable 5.2 review.
+
+2026-11-23 05:54Z loop: Loop opened pull request #22 for this issue: https://github.com/soulesidibe/Loop/pull/22

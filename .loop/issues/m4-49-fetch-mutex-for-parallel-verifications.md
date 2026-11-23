@@ -36,3 +36,5 @@ Out of this issue: the area lock (m4-17), the other bl-67 findings (the agent tr
 ## Comments
 
 2026-11-18 soule: written in m3-29, split from m4-17 after the Fable 5.2 review.
+
+2026-11-23 05:33Z loop: Loop opened pull request #21 for this issue: https://github.com/soulesidibe/Loop/pull/21

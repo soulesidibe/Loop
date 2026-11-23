@@ -68,6 +68,9 @@ public data class LedgerPeak(
  * Since m3-12 it carries [interrupted], `hard_limit` for a turn Loop interrupted because its session reached
  * `context.hard_limit` of its window, null for any other turn. An interrupted turn is not a failed one: its [outcome]
  * stays `completed`.
+ *
+ * Since m4-03 it carries [wake], true for a wake turn: one that read the notification of a background task run an
+ * earlier turn started. Its usage counts like any turn's, but it does not count against `agent.max_turns`.
  */
 public data class LedgerTurn(
     public val ts: Instant,
@@ -90,6 +93,7 @@ public data class LedgerTurn(
     public val peak: LedgerPeak? = null,
     public val rotations: Int = 0,
     public val interrupted: String? = null,
+    public val wake: Boolean = false,
 )
 
 /**
