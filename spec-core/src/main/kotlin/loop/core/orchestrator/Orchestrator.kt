@@ -109,6 +109,7 @@ import loop.core.events.RunnerOutput
 import loop.core.events.RunnerOutputRecordFailed
 import loop.core.events.SessionRotated
 import loop.core.events.SessionStopFailed
+import loop.core.events.StopGraceExpired
 import loop.core.events.TokenThreshold
 import loop.core.events.ToolRequestDropped
 import loop.core.events.ToolRequestEvent
@@ -1619,6 +1620,34 @@ class Orchestrator(
         private val ledger = LedgerMeter()
         private val ledgerSetup = LedgerMeter.setupOf(workflow, runner.model)
 
+        /** The latest turn line of this attempt, which a `stop` line copies (m4-04). */
+        private var lastTurnLine: LedgerTurn? = null
+
+        /**
+         * Every stop of the session passes the usage callback (m4-04): what a stop reads counts in the spend, the budgets
+         * and the ledger, and a failed stop is logged and recorded as `session_stop_failed` (m3-07).
+         */
+        private val stopUsage =
+            StopUsage(
+                usage = { recordUsage(it, budgets = true, atStop = true) },
+                graceExpired = { event ->
+                    record(StopGraceExpired, data = StopUsage.graceData(event, ledger.tokens?.let { tokens.total }, costUsd))
+                    val reason = "the session did not exit within ${describeMs(event.graceMs)} of its stop, its unreported usage is lost"
+                    log.log(
+                        LogLevel.WARN,
+                        "session",
+                        LogOutcome.FAILED,
+                        logContext(),
+                        fields = mapOf("grace_ms" to event.graceMs),
+                        reason = reason,
+                    )
+                },
+                failed = { e ->
+                    log.log(LogLevel.WARN, "session", LogOutcome.FAILED, logContext(), reason = e.describe())
+                    record(SessionStopFailed, data = mapOf(SessionStopFailed.REASON to e.describe()))
+                },
+            )
+
         /** The latest model a `context_usage` report of this attempt named, null before any (bl-147). */
         private var reportedModel: String? = null
 
@@ -1700,6 +1729,7 @@ class Orchestrator(
                     interrupted = turn.interrupted?.let { SessionRotated.HARD_LIMIT },
                     wake = turn.wake,
                 )
+            lastTurnLine = line
             ledgerWrite { withContext(io) { turnLedger.append(line) } }
         }
 
@@ -2465,13 +2495,29 @@ class Orchestrator(
             checkBudgets()
             if (breach != null) return budgetEnd(turns = 0)
             session = runner.openSession(ctx)
-            try {
-                return runTurns(ctx, prompt)
-            } finally {
-                session?.let { stop(it) }
-                session = null
-            }
+            val executed =
+                try {
+                    runTurns(ctx, prompt)
+                } finally {
+                    endSession()
+                }
+            val parks = executed.parkReason != null
+            val waits = executed.exitReason == ExitReason.WAITING_APPROVAL
+            return if (StopUsage.budgetWins(breach != null, parks, waits)) budgetEnd(executed.turns) else executed
         }
+
+        /**
+         * Stops the session at the attempt's end, with the usage callback like every stop (m4-04), then writes the
+         * `stop` ledger line of what a stop read that no turn line holds. Its failure is recorded and ignored.
+         */
+        private suspend fun endSession() =
+            withContext(NonCancellable) {
+                session?.let { stopUsage.stop(it) }
+                session = null
+                StopUsage.line(lastTurnLine, ledger, clock.now())?.let { line ->
+                    ledgerWrite { withContext(io) { turnLedger.append(line) } }
+                }
+            }
 
         /**
          * The session brief of [issue] in [workspace] (m3-10, plan 9.2), diffed against [fetchedBase], the base fetched
@@ -2946,11 +2992,14 @@ class Orchestrator(
             val old = session
             session = null
             // bl-132: a wake the old session read at its stop counts in the attempt's spend, as any of its usage does.
-            old?.let { stop(it) { usage -> recordUsage(usage, budgets = true, atStop = true) } }?.let { error ->
-                return Rotation.Ended(Executed(AttemptOutcome.Failed, SessionStopFailed.name, turns = number, error = error))
+            val stopFailure = old?.let { stopUsage.stop(it) }
+            // A budget that usage went past starts no new session and wins over a failed stop (m4-04).
+            when (StopUsage.rotationEnd(breach != null, stopFailure)) {
+                StopUsage.End.Budget -> return Rotation.Ended(budgetEnd(turns = number))
+                StopUsage.End.StopFailed ->
+                    return Rotation.Ended(Executed(AttemptOutcome.Failed, SessionStopFailed.name, turns = number, error = stopFailure))
+                StopUsage.End.Next -> Unit
             }
-            // A budget that usage went past starts no new session: the attempt ends as at any budget.
-            if (breach != null) return Rotation.Ended(budgetEnd(turns = number))
             rotations++
             spend.closeSession()
             occupancy = OccupancyMeter()
@@ -3313,30 +3362,6 @@ class Orchestrator(
             recordPhase(AttemptPhase.Finishing, mapOfNotNull(Phase.EXIT_CODE to turn.exitCode?.toString()))
 
         /**
-         * Stops the session whatever the attempt's end, even a cancelled one; a failure is logged and recorded as
-         * `session_stop_failed` (m3-07). Gives the failure's description, null when the session stopped: the attempt's
-         * end ignores it, a rotation does not start a second session beside it (m3-11). With [usage], the usage reports
-         * of what the session read while it stopped go to it (bl-132).
-         */
-        private suspend fun stop(
-            session: AgentSession,
-            usage: (suspend (RunnerEvent.Usage) -> Unit)? = null,
-        ): String? =
-            withContext(NonCancellable) {
-                try {
-                    if (usage == null) session.stop() else session.stop(usage)
-                    null
-                } catch (e: Exception) {
-                    // Under NonCancellable this coroutine cannot be cancelled, so a CancellationException is the
-                    // session's own, never the attempt's cancel: log it like any failure and keep the real result.
-                    // A genuine outer cancel still propagates, withContext rethrows it once this block returns.
-                    log.log(LogLevel.WARN, "session", LogOutcome.FAILED, logContext(), reason = e.describe())
-                    record(SessionStopFailed, data = mapOf(SessionStopFailed.REASON to e.describe()))
-                    e.describe()
-                }
-            }
-
-        /**
          * Records a real usage report of the current session, a turn's or one its stop read [atStop] (bl-132): absolute
          * totals for the session so far, so a later report replaces this one. m3-11: plus the closed sessions of the
          * attempt, so the totals stay absolute for the attempt. A report read at the stop counts in the next turn's
@@ -3458,6 +3483,8 @@ class Orchestrator(
                 }
                 // m4-03: counted at the turn's end, against agent.max_wake_turns instead of agent.max_turns.
                 is RunnerEvent.WakeTurn -> turn.wake = true
+                // m4-04: reported only by a stop, which StopUsage reads.
+                is RunnerEvent.StopGraceExpired -> Unit
                 is RunnerEvent.TurnCompleted -> {
                     sessionId = event.sessionId
                     turnId = event.turnId

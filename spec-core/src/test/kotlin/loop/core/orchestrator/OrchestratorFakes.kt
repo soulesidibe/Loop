@@ -420,8 +420,14 @@ class FakeRunner(
     /** Runs at the start of [AgentSession.stop]. */
     var onStop: suspend () -> Unit = {}
 
-    /** The usage reports the session numbered from 1 gives at its stop (bl-132), as a wake read at the stop would. */
-    var stopUsage: (Int) -> List<RunnerEvent.Usage> = { emptyList() }
+    /**
+     * The reports the session numbered from 1 gives at its stop (bl-132), as a wake read at the stop would: its usage,
+     * and a [RunnerEvent.StopGraceExpired] when the stop grace ended with the wake still running (m4-04).
+     */
+    var stopUsage: (Int) -> List<RunnerEvent> = { emptyList() }
+
+    /** The number of the session, counted from 1, of every stop called with a report callback (m4-04). */
+    val reportedStops = mutableListOf<Int>()
 
     /** The number of the session, counted from 1, of every [AgentSession.interrupt] call (m3-12). */
     val interrupts = mutableListOf<Int>()
@@ -475,8 +481,9 @@ class FakeRunner(
                 onStop()
             }
 
-            override suspend fun stop(usage: suspend (RunnerEvent.Usage) -> Unit) {
-                stopUsage(number).forEach { usage(it) }
+            override suspend fun stop(report: suspend (RunnerEvent) -> Unit) {
+                reportedStops += number
+                stopUsage(number).forEach { report(it) }
                 stop()
             }
 

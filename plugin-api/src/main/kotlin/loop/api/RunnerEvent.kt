@@ -131,6 +131,21 @@ public sealed interface RunnerEvent {
         public val turnId: TurnId,
     ) : RunnerEvent
 
+    /**
+     * The stop of an agent session gave the runtime [graceMs] to exit and it was still there, so the runner killed it
+     * (m4-04). Reported only through [AgentSession.stop], after the turn [turnId] the session ran last. [wake] is true
+     * when a wake was running, its lines read with no `result` line after them, and [wakeMessages] counts its model
+     * messages whose usage the runner added to the session's, reported as a [Usage] right before this event. What the
+     * runtime had not reported yet is lost.
+     */
+    public data class StopGraceExpired(
+        public val sessionId: SessionId,
+        public val turnId: TurnId,
+        public val graceMs: Long,
+        public val wake: Boolean,
+        public val wakeMessages: Int,
+    ) : RunnerEvent
+
     /** The turn ended normally with [exitCode]. */
     public data class TurnCompleted(
         public val sessionId: SessionId,

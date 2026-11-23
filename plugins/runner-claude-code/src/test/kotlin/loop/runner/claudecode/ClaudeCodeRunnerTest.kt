@@ -613,7 +613,7 @@ class ClaudeCodeRunnerTest {
         val claude = Scripted(listOf(listOf(wake.take(3))), idle = listOf(wake[3]), atExit = listOf(wake[4]))
         val runner = scriptedRunner(claude)
 
-        val reported = mutableListOf<RunnerEvent.Usage>()
+        val reported = mutableListOf<RunnerEvent>()
         val first =
             runBlocking {
                 withTimeout(20.seconds) {
@@ -628,7 +628,7 @@ class ClaudeCodeRunnerTest {
         val turn = first.filterIsInstance<RunnerEvent.Usage>().single()
         assertEquals(listOf(1000L, 40_000L, 11_500_000L, 149_000L), turn.tokens())
         // The session's total, the wake's segment added, with the session's latest cost.
-        val usage = reported.single()
+        val usage = assertIs<RunnerEvent.Usage>(reported.single())
         assertEquals(listOf(1500L, 49_500L, 13_400_000L, 189_000L), usage.tokens())
         assertEquals(9.75, usage.totalCostUsd)
         assertEquals(turn.sessionId, usage.sessionId)
@@ -640,7 +640,7 @@ class ClaudeCodeRunnerTest {
         val wake = Fixtures.lines("background_wake").map { ProcessEvent.Line(Stream.Stdout, it) }
         val claude = Scripted(listOf(listOf(wake.take(3))), idle = listOf(wake[3], wake[4]))
 
-        val reported = mutableListOf<RunnerEvent.Usage>()
+        val reported = mutableListOf<RunnerEvent>()
         runBlocking {
             withTimeout(20.seconds) {
                 val session = checkNotNull(scriptedRunner(claude).openSession(context(emptyMap())))
@@ -649,11 +649,11 @@ class ClaudeCodeRunnerTest {
                 session.stop { reported += it }
             }
         }
-        assertEquals(listOf(listOf(1500L, 49_500L, 13_400_000L, 189_000L)), reported.map { it.tokens() })
+        assertEquals(listOf(listOf(1500L, 49_500L, 13_400_000L, 189_000L)), reported.map { assertIs<RunnerEvent.Usage>(it).tokens() })
 
         // Without a wake the stop reads no result line, so it reports no usage.
         val quiet = Scripted(listOf(listOf(wake.take(3))))
-        val none = mutableListOf<RunnerEvent.Usage>()
+        val none = mutableListOf<RunnerEvent>()
         runBlocking {
             withTimeout(20.seconds) {
                 val session = checkNotNull(scriptedRunner(quiet).openSession(context(emptyMap())))
@@ -662,6 +662,71 @@ class ClaudeCodeRunnerTest {
             }
         }
         assertEquals(emptyList(), none)
+    }
+
+    @Test
+    fun `m4-04 a wake still running when the stop grace ends reports the usage its lines read, then stop_grace_expired`() {
+        // The wake's assistant line comes while the process is idle, twice as Claude Code writes one line per content
+        // block; its result line never comes, the process ignores the closed stdin until its group is killed.
+        val wake = Fixtures.lines("background_wake").map { ProcessEvent.Line(Stream.Stdout, it) }
+        val claude = Scripted(listOf(listOf(wake.take(3))), idle = listOf(wake[3], wake[3]), ignoresEof = true)
+
+        val reported = mutableListOf<RunnerEvent>()
+        val first =
+            runBlocking {
+                withTimeout(20.seconds) {
+                    val session = checkNotNull(scriptedRunner(claude, stopGrace = 300.milliseconds).openSession(context(emptyMap())))
+                    val one = session.runTurn("Fix it", 1).toList()
+                    delay(300.milliseconds)
+                    session.stop { reported += it }
+                    one
+                }
+            }
+
+        val turn = first.filterIsInstance<RunnerEvent.Usage>().single()
+        assertEquals(2, reported.size, reported.toString())
+        // The session's total with the wake's one message added once, its cost unknown so the latest one kept.
+        val usage = assertIs<RunnerEvent.Usage>(reported[0])
+        assertEquals(listOf(1500L, 49_500L, 13_400_000L, 189_000L), usage.tokens())
+        assertEquals(8.5, usage.totalCostUsd)
+        assertEquals(turn.turnId, usage.turnId)
+        assertEquals(
+            RunnerEvent.StopGraceExpired(turn.sessionId, turn.turnId, graceMs = 300, wake = true, wakeMessages = 1),
+            reported[1],
+        )
+    }
+
+    @Test
+    fun `m4-04 a process with no wake that outlives the stop grace reports stop_grace_expired alone, a wake's result clears it`() {
+        val wake = Fixtures.lines("background_wake").map { ProcessEvent.Line(Stream.Stdout, it) }
+        val quiet = Scripted(listOf(listOf(wake.take(3))), ignoresEof = true)
+        val reported = mutableListOf<RunnerEvent>()
+        runBlocking {
+            withTimeout(20.seconds) {
+                val session = checkNotNull(scriptedRunner(quiet, stopGrace = 300.milliseconds).openSession(context(emptyMap())))
+                session.runTurn("Fix it", 1).toList()
+                session.stop { reported += it }
+            }
+        }
+        val expired = assertIs<RunnerEvent.StopGraceExpired>(reported.single())
+        assertEquals(false to 0, expired.wake to expired.wakeMessages)
+
+        // A wake that wrote its result line before the grace ended counts by that line, never twice.
+        val ended = Scripted(listOf(listOf(wake.take(3))), idle = listOf(wake[3], wake[4]), ignoresEof = true)
+        val after = mutableListOf<RunnerEvent>()
+        runBlocking {
+            withTimeout(20.seconds) {
+                val session = checkNotNull(scriptedRunner(ended, stopGrace = 300.milliseconds).openSession(context(emptyMap())))
+                session.runTurn("Fix it", 1).toList()
+                delay(300.milliseconds)
+                session.stop { after += it }
+            }
+        }
+        assertEquals(listOf(1500L, 49_500L, 13_400_000L, 189_000L), assertIs<RunnerEvent.Usage>(after[0]).tokens())
+        assertEquals(9.75, (after[0] as RunnerEvent.Usage).totalCostUsd)
+        val clear = assertIs<RunnerEvent.StopGraceExpired>(after[1])
+        assertEquals(false to 0, clear.wake to clear.wakeMessages)
+        assertEquals(2, after.size, after.toString())
     }
 
     @Test

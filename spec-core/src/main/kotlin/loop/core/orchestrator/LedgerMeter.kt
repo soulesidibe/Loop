@@ -36,6 +36,9 @@ internal class LedgerMeter {
      */
     private var between: Between? = null
 
+    /** True while usage a stop read is held for the next turn, so no turn line holds it yet (m4-04). */
+    val holdsStopUsage: Boolean get() = between != null
+
     /** True once a cost below the cost at a turn start was reported, so it is warned about once per attempt. */
     private var costDropSeen = false
 
