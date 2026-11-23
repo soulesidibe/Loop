@@ -15,8 +15,8 @@ import loop.core.log.LogContext
 import loop.core.log.LogLevel
 import loop.core.log.LogOutcome
 import loop.core.orchestrator.RunObserver
-import java.io.IOException
 import java.io.File
+import java.io.IOException
 import java.lang.ProcessBuilder.Redirect
 import java.util.concurrent.TimeUnit
 
@@ -52,10 +52,19 @@ object ProcessAwakeLauncher : AwakeLauncher {
             Result.success(
                 AwakeChild {
                     process.destroy()
-                    if (!process.waitFor(STOP_GRACE_MS, TimeUnit.MILLISECONDS)) process.destroyForcibly()
+                    try {
+                        if (!process.waitFor(STOP_GRACE_MS, TimeUnit.MILLISECONDS)) process.destroyForcibly()
+                    } catch (e: InterruptedException) {
+                        process.destroyForcibly()
+                        Thread.currentThread().interrupt()
+                    }
                 },
             )
         } catch (e: IOException) {
+            Result.failure(e)
+        } catch (e: SecurityException) {
+            Result.failure(e)
+        } catch (e: UnsupportedOperationException) {
             Result.failure(e)
         }
 }
@@ -175,8 +184,13 @@ class KeepAwake(
     private fun release() {
         val held = child ?: return
         child = null
-        held.stop()
-        log.log(LogLevel.INFO, EVENT, LogOutcome.RELEASED, context)
+        try {
+            held.stop()
+            log.log(LogLevel.INFO, EVENT, LogOutcome.RELEASED, context)
+        } catch (e: Exception) {
+            // An observer never throws; `-w` still ends the assertion with `loop run`.
+            log.log(LogLevel.WARN, EVENT, LogOutcome.FAILED, context, reason = "cannot stop $PROGRAM: ${e.message ?: e::class.simpleName}")
+        }
     }
 
     private companion object {

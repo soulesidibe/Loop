@@ -163,6 +163,17 @@ class KeepAwakeTest {
     }
 
     @Test
+    fun `a stop that throws is logged and never reaches the run`() {
+        val throwing = KeepAwake({ Result.success(AwakeChild { throw IllegalStateException("no such process") }) }, log, LogContext(), PID)
+        throwing.recorded(event(AttemptStarted.name, issue = "1", attempt = "a1"))
+
+        throwing.recorded(event(AttemptFinished.name, issue = "1", attempt = "a1"))
+
+        assertTrue(" level=warn event=keep_awake outcome=failed " in lines.last(), lines.joinToString("\n"))
+        assertTrue("no such process" in lines.last(), lines.last())
+    }
+
+    @Test
     fun `close with no assertion held stops nothing`() {
         keepAwake.close()
 
@@ -248,7 +259,13 @@ class KeepAwakeTest {
     private fun awaitPid(file: Path): Long {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
         while (System.nanoTime() < deadline) {
-            if (file.exists()) file.readText().trim().toLongOrNull()?.let { return it }
+            if (file.exists()) {
+                file
+                    .readText()
+                    .trim()
+                    .toLongOrNull()
+                    ?.let { return it }
+            }
             Thread.sleep(20)
         }
         error("the child never wrote its pid")
