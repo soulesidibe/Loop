@@ -42,3 +42,5 @@ Filed from the run review. Related: m3-08, m3-09, m3-11.
   Failed runs:
   - build (failure): https://github.com/soulesidibe/Loop/actions/runs/45160991798
   Rerun the runs on GitHub or fix the branch, then approve again with loop approve.
+
+2026-11-23 14:20Z loop: Loop did not merge pull request #24: main at ca9029cab5b3601fdabcc1c086ec18d86f2da31b was merged into loop/bl-107, but the checks failed on the result (a check failed). The merge commit stays on the branch. The next attempt fixes the result and submits it again.
