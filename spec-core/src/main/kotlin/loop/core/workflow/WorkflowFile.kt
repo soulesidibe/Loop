@@ -692,7 +692,8 @@ class WorkflowLoader(
 
     /**
      * m2-28: `kinds.code.delivery.auto_merge`, off when absent. Present, a map whose `enabled` is `true` or `false`,
-     * whose optional `protected_paths` replace the default globs, and whose optional `max_diff_lines` is positive.
+     * whose optional `protected_paths` replace the default globs, whose optional `max_diff_lines` is positive, and whose
+     * optional `doc_paths` replace the default doc globs (bl-96).
      */
     private fun parseAutoMerge(delivery: YamlMap): AutoMergeConfig {
         val prefix = "kinds.code.delivery.auto_merge"
@@ -709,6 +710,7 @@ class WorkflowLoader(
             enabled = enabled,
             protectedPaths = autoMerge.paths("$prefix.protected_paths", "protected_paths") ?: AutoMergeConfig.DEFAULT_PROTECTED_PATHS,
             maxDiffLines = autoMerge.positiveInt("$prefix.max_diff_lines", "max_diff_lines") ?: AutoMergeConfig.DEFAULT_MAX_DIFF_LINES,
+            docPaths = autoMerge.paths("$prefix.doc_paths", "doc_paths") ?: AutoMergeConfig.DEFAULT_DOC_PATHS,
         )
     }
 

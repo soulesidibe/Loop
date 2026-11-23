@@ -165,7 +165,7 @@ class WorkspaceGit(
             .map { line ->
                 val parts = line.split('\t', limit = 3)
                 if (parts.size != 3) throw IOException("git diff printed an unexpected line: ${line.take(LINE_MAX)}")
-                val path = parts[2].trimStart('\n')
+                val path = parts[2]
                 val added = parts[0].toIntOrNull()
                 val deleted = parts[1].toIntOrNull()
                 if (added != null && deleted != null) {
@@ -179,7 +179,8 @@ class WorkspaceGit(
 
     /**
      * The lines added and deleted in the patch of the one file [path], diffed as text whatever its attributes say; null
-     * when git fails. Every line after the first hunk header that starts with `+` or `-` is a change.
+     * when git fails or prints no patch for it, so a path that matches nothing is never counted as 0 lines (bl-96).
+     * Every line after the first hunk header that starts with `+` or `-` is a change.
      */
     private fun textCounts(
         root: Path,
@@ -188,7 +189,7 @@ class WorkspaceGit(
         path: String,
     ): Pair<Int, Int>? {
         val outcome = run(root, *NO_ATTRIBUTES, "--literal-pathspecs", "diff", "--no-color", *DIFF_AS_TEXT, "$base...$head", "--", path)
-        if (outcome.code != 0) return null
+        if (outcome.code != 0 || !outcome.stdout.startsWith("diff --git ")) return null
         val hunks = outcome.stdout.lineSequence().dropWhile { !it.startsWith("@@") }
         var added = 0
         var deleted = 0
@@ -204,7 +205,9 @@ class WorkspaceGit(
     /**
      * The text of the diff of [head] against its merge base with [base] (m2-28), for the merge risk reviewer, cut at
      * [maxChars]. No color, external diff or text conversion, and every file as text whatever its attributes say, as
-     * [diffStat] counts it; a NUL byte of a binary file is shown as U+FFFD. A git failure is an [IOException].
+     * [diffStat] counts it; a NUL byte of a binary file is shown as U+FFFD. Only the first [maxChars] are kept as git
+     * prints, the rest read and dropped, so a large diff never sits in memory whole (bl-96). A git failure is an
+     * [IOException].
      */
     fun diffText(
         root: Path,
@@ -212,9 +215,21 @@ class WorkspaceGit(
         head: String,
         maxChars: Int,
     ): String {
-        val outcome = run(root, *NO_ATTRIBUTES, "diff", "--no-color", *DIFF_AS_TEXT, "$base...$head", "--")
-        if (outcome.code != 0) throw IOException("git diff exited with code ${outcome.code}: ${outcome.firstLine()}")
-        return outcome.stdout.take(maxChars).replace('\u0000', '\uFFFD')
+        val text = StringBuilder()
+        val args = listOf(*NO_ATTRIBUTES, "diff", "--no-color", *DIFF_AS_TEXT, "$base...$head", "--")
+        val code =
+            stream(root, args) { input ->
+                val reader = input.reader(Charsets.UTF_8)
+                val buffer = CharArray(READ_CHARS)
+                while (true) {
+                    val read = reader.read(buffer)
+                    if (read < 0) break
+                    val room = maxChars - text.length
+                    if (room > 0) text.appendRange(buffer, 0, minOf(read, room))
+                }
+            }
+        if (code != 0) throw IOException("git diff exited with code $code")
+        return text.toString().replace('\u0000', '\uFFFD')
     }
 
     /**
@@ -593,11 +608,17 @@ class WorkspaceGit(
         /** No `core.attributesFile` of any config is read by a diff Loop counts (send back 2 of PR #75). */
         private val NO_ATTRIBUTES = arrayOf("-c", "core.attributesFile=/dev/null")
 
-        /** Patches as text, no rename pairing, no external diff and no text conversion (m2-28); numstat ignores `--text`. */
-        private val DIFF_AS_TEXT = arrayOf("--text", "--no-renames", "--no-ext-diff", "--no-textconv")
+        /**
+         * Patches as text, no rename pairing, no external diff and no text conversion (m2-28); numstat ignores `--text`.
+         * Every gitlink change is shown, whatever `diff.ignoreSubmodules` the shared config sets (bl-96).
+         */
+        private val DIFF_AS_TEXT = arrayOf("--text", "--no-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none")
 
         /** The tree id `git merge-tree --write-tree` prints first, SHA-1 or SHA-256. */
         private val TREE_ID = Regex("[0-9a-f]{40}|[0-9a-f]{64}")
+
+        /** The characters [diffText] reads at a time. */
+        private const val READ_CHARS: Int = 8_192
 
         /** The most of an unexpected git line an error shows. */
         private const val LINE_MAX: Int = 200

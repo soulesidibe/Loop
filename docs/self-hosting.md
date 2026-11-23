@@ -167,7 +167,8 @@ Since m3-15 the `code` kind merges with `ci: actions`: after a passing merge che
 #### When auto merge falls back
 
 - **CI.** What green means for the auto merge `ci` condition follows the kind's `ci` (m4-05). Under `ci: actions`, Loop's own setting, the pull request is `mergeable` and `clean` and the Actions runs of the merged head are green, as the CI wait read them; a red, pending or missing run, or a listing the token cannot read (it needs "Actions: read"), falls back. Under `ci: none`, green means the merge check passed: no Actions run and no workflow file is read, and `unstable` passes, so a result merges on its own while Actions is down, as it was for billing from 2026-11-16 (bl-146). `dirty`, `blocked`, `behind` and an unknown mergeability fall back under both.
-- **Size.** `auto_merge.max_diff_lines` is 1000, added plus deleted. A larger diff always falls back, and a diff over 500 lines floors the merge risk `impact` at `medium`. m3-15 itself fell back here, at 2512 lines, and merged after `loop approve`.
+- **Size.** `auto_merge.max_diff_lines` is 1000, added plus deleted, counted outside tests and docs since bl-96: Kotlin and Swift test files and the default `auto_merge.doc_paths` (Markdown and the like, and `docs/`) do not count. More than 1000 such lines always falls back, and more than 500 floors the merge risk `impact` at `medium`. m3-15 itself fell back here, at 2512 lines in all, and merged after `loop approve`.
+- **Review on every fallback.** Since bl-96 the merge risk reviewer runs even when a hard condition fails, so the fallback comment carries a band for the approval.
 - **Risk.** A merge risk band above `low`, or any dimension at its worst verdict.
 
 The default `auto_merge.protected_paths` also apply: a diff that touches `WORKFLOW.md`, `scripts/`, `.github/`, the Gradle files, `.loop/`, `docs/adr/`, `CONTEXT.md`, `AGENTS.md`, `CLAUDE.md` or `.claude/` never merges without approval.

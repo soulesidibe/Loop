@@ -338,7 +338,11 @@ class AutoMergeOrchestratorTest {
         /** When set, every read of the rows fails with it. */
         var readFailure: Throwable? = null
 
+        /** When set, every write of a row fails with it and nothing is recorded. */
+        var writeFailure: Throwable? = null
+
         override suspend fun recordAttempt(attempt: LedgerAttempt): Result<Unit> {
+            writeFailure?.let { return Result.failure(it) }
             recorded += attempt
             return Result.success(Unit)
         }
@@ -374,6 +378,7 @@ class AutoMergeOrchestratorTest {
         events: (suspend (AttemptId) -> Result<List<RecordedEvent>>)? = null,
         preflight: PreflightCheck = PreflightCheck { PreflightResult.Ok(workflow) },
         reviewerFor: (WorkflowFile) -> RiskReviewer? = { reviewer },
+        logOut: (String) -> Unit = {},
     ): Orchestrator {
         var next = 0
         val clock = SchedulerClock(testScheduler)
@@ -382,7 +387,7 @@ class AutoMergeOrchestratorTest {
             tracker = tracker,
             runner = runner,
             sink = sink,
-            log = KeyValueLog(out = {}, clock = clock, redactor = Redactor.NONE),
+            log = KeyValueLog(out = logOut, clock = clock, redactor = Redactor.NONE),
             clock = clock,
             workspaces = WorkspaceManager(Workspaces(workflow.workspaceRoot), HooksConfig(), FakeHookRunner()),
             newId = { "a${++next}" },
@@ -484,6 +489,7 @@ class AutoMergeOrchestratorTest {
         started: (Orchestrator) -> Unit = {},
         ciPolls: Int = 0,
         reviewerFor: (WorkflowFile) -> RiskReviewer? = { reviewer },
+        logOut: (String) -> Unit = {},
     ): Run {
         val verified = worktree()
         val remote = FakeRemote().apply { base = git(project, "rev-parse", "main") }
@@ -502,6 +508,7 @@ class AutoMergeOrchestratorTest {
                 events = (events ?: { sha -> verifiedEvents(clean(sha)) })(verified),
                 preflight = preflight?.invoke(workflow) ?: PreflightCheck { PreflightResult.Ok(workflow) },
                 reviewerFor = reviewerFor,
+                logOut = logOut,
             )
         started(orchestrator)
         orchestrator.tick()
@@ -722,6 +729,48 @@ class AutoMergeOrchestratorTest {
         }
 
     @Test
+    fun `bl-140 with no window for the reviewer's model a diff over the read cap is cut, said in the prompt, and floors the band`() =
+        runTest {
+            val reviewer = reviewer()
+            val long = (1..120).joinToString("") { "val line%03d = \"%s\"\n".format(it, "x".repeat(990)) }
+            val run =
+                autoMerge(
+                    workflow =
+                        workflow(
+                            context = ContextConfig(windows = emptyMap()),
+                            autoMerge = AutoMergeConfig(enabled = true, maxDiffLines = 1000),
+                        ),
+                    reviewer = reviewer,
+                    worktree = { verifiedWorktree(text = long) },
+                )
+
+            val prompt = reviewer.requests.single().prompt
+            assertTrue(
+                Regex(
+                    "The diff above is cut to fit the reviewer's prompt limit: more than \\d+ of its characters are left out",
+                ).containsMatchIn(prompt),
+                prompt.takeLast(3_000),
+            )
+            val assessed = run.sink.all(MergeRiskAssessed.name).single()
+            assertEquals("true", assessed[MergeRiskAssessed.DIFF_CUT])
+            assertEquals("medium", assessed["band"])
+            assertTrue(run.fellBack(), "a cut diff waits for approval")
+        }
+
+    @Test
+    fun `bl-96 a reviewer spend the ledger cannot write is logged at warn, the decision unchanged (finding 19 of bl-76)`() =
+        runTest {
+            val lines = mutableListOf<String>()
+            val ledger = FakeLedger().apply { writeFailure = IllegalStateException("store locked") }
+            val run = autoMerge(ledger = ledger, logOut = { lines += it })
+
+            assertEquals(1, run.remote.merges.size, "the gate's decision does not change")
+            val line = lines.single { "spend" in it }
+            assertContains(line, "the reviewer's spend was not written to the ledger, so the spend budgets miss it: store locked")
+            assertContains(line, "level=warn")
+        }
+
+    @Test
     fun `m3-13 a reviewer prompt that cannot fit even with an empty diff falls back to Waiting(approval) naming the reason`() =
         runTest {
             val reviewer = reviewer()
@@ -756,8 +805,11 @@ class AutoMergeOrchestratorTest {
         assertEquals(condition, run.sink.all(AutoMergeFallback.name).single()["conditions"])
         assertEquals(AutoMerge.COMMENT_REASON, run.sink.all("issue_commented").last()["reason"])
         assertTrue(run.sink.events.none { it.kind == "delivery_failed" })
-        assertTrue((run.reviewer as? FakeReviewer)?.requests.isNullOrEmpty(), "no reviewer session once a condition failed")
-        assertContains(run.comment, "Merge risk: not assessed, a condition failed.")
+        // bl-96: the reviewer runs even when a condition failed, so the comment carries a band for the operator.
+        assertEquals(1, (run.reviewer as FakeReviewer).requests.size, "the reviewer runs once a condition failed")
+        assertContains(run.comment, "Merge risk: band low, score ")
+        assertEquals("low", run.sink.all(AutoMergeFallback.name).single()["band"])
+        assertEquals(1, run.sink.all(MergeRiskAssessed.name).size)
     }
 
     @Test
@@ -1286,9 +1338,67 @@ class AutoMergeOrchestratorTest {
     @Test
     fun `condition diff_size, a diff over the limit falls back`() =
         runTest {
-            val run = autoMerge(workflow(autoMerge = AutoMergeConfig(enabled = true, maxDiffLines = 1)))
+            val run =
+                autoMerge(
+                    workflow(autoMerge = AutoMergeConfig(enabled = true, maxDiffLines = 1)),
+                    worktree = { verifiedWorktree(text = "fun a() = 1\nfun b() = 2\n") },
+                )
 
-            assertFellBack(run, "diff_size", "the diff changes 2 lines, over the limit of 1")
+            assertFellBack(run, "diff_size", "the diff changes 2 lines outside tests and docs, over the limit of 1, 3 lines in all")
+        }
+
+    @Test
+    fun `bl-96 condition diff_size, a diff large only in tests and docs passes it and merges`() =
+        runTest {
+            val many = (1..60).joinToString("") { "line $it\n" }
+            val reviewer = reviewer()
+            val run =
+                autoMerge(
+                    workflow(autoMerge = AutoMergeConfig(enabled = true, maxDiffLines = 10)),
+                    reviewer = reviewer,
+                    worktree = {
+                        verifiedWorktree()
+                        commit(workspace, "src/test/kotlin/BigTest.kt", many)
+                        commit(workspace, "docs/guide.md", many)
+                    },
+                )
+
+            assertTrue(run.sink.events.none { it.kind == AutoMergeFallback.name }, run.sink.events.toString())
+            assertEquals(1, run.remote.merges.size)
+            assertContains(
+                reviewer.requests.single().prompt,
+                "Files changed: 4, lines changed: 122, 1 of them outside tests and docs (limit 10).",
+            )
+        }
+
+    @Test
+    fun `bl-96 a result that fails a hard condition gets a merge risk review whose band and verdicts the comment carries`() =
+        runTest {
+            val reviewer = reviewer(answer("impact" to "medium", "verification" to "partial"))
+            val run = autoMerge(reviewer = reviewer, worktree = { verifiedWorktree(file = "scripts/release.sh", text = "echo\n") })
+
+            assertEquals(1, reviewer.requests.size)
+            assertTrue(run.fellBack())
+            assertContains(run.comment, "- protected_paths: the diff touches scripts/release.sh (protected by scripts/)")
+            assertContains(run.comment, "Merge risk: band medium, score 1.53.")
+            assertContains(run.comment, "impact looks medium")
+            val fallback = run.sink.all(AutoMergeFallback.name).single()
+            assertEquals("protected_paths", fallback["conditions"])
+            assertEquals("medium", fallback["band"])
+            assertContains(fallback["reason"].orEmpty(), "protected_paths: the diff touches scripts/release.sh")
+            assertContains(fallback["reason"].orEmpty(), "the merge risk band is medium")
+            assertTrue(run.remote.mergeabilityReads.isEmpty(), "CI is not read once a hard condition failed")
+        }
+
+    @Test
+    fun `bl-96 a hard condition failing with no reviewer to run says why the risk was not assessed`() =
+        runTest {
+            val run = autoMerge(reviewer = null, worktree = { verifiedWorktree(file = "scripts/release.sh", text = "echo\n") })
+
+            assertTrue(run.fellBack())
+            assertContains(run.comment, "- protected_paths: the diff touches scripts/release.sh")
+            assertContains(run.comment, "Merge risk: not assessed, this Loop cannot run its merge risk reviewer, so the reviewer setup, not the result, is why the merge waits.")
+            assertEquals(null, run.sink.all(AutoMergeFallback.name).single()["band"])
         }
 
     @Test

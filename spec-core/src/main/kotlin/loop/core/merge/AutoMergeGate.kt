@@ -73,10 +73,12 @@ internal sealed interface GateOutcome {
 
 /**
  * The gate of an auto merge (m2-28, story 100), run in the merge phase right before the merge of a wait the `auto`
- * policy approved. The hard conditions are read first, each a veto; only when they all hold does the read only reviewer
- * run, its spend written to the ledger as a row so the spend budgets count it. The score and band are computed in code.
- * The CI condition is read last, after the review (send back 5 of PR #75). Every failure of the reviewer, a timeout,
- * a crash, an answer that is not valid JSON or a missing dimension, falls back: the gate fails closed.
+ * policy approved. The hard conditions are read first, each a veto. The read only reviewer then runs even when one
+ * failed (bl-96), so the fallback comment carries a band for the operator who reviews it; its spend is written to the
+ * ledger as a row so the spend budgets count it. The score and band are computed in code. The CI condition is read
+ * last, after the review (send back 5 of PR #75), and only when every hard condition held. Every failure of the
+ * reviewer, a timeout, a crash, an answer that is not valid JSON or a missing dimension, falls back: the gate fails
+ * closed.
  */
 internal class AutoMergeGate(
     private val git: MergeGit,
@@ -101,7 +103,8 @@ internal class AutoMergeGate(
 ) {
     /**
      * Decides the auto merge of [wait] on [issue]: [mergedHead] in [workspace], checked against the base the wait
-     * stores, the provider showing [shownHead]. Records `merge_risk_assessed` through [record] once the risk is assessed.
+     * stores, the provider showing [shownHead]. Records `merge_risk_assessed` through [record] once the risk is assessed,
+     * and logs through [warn] what goes wrong without changing the decision.
      */
     suspend fun evaluate(
         wait: Wait.Merge,
@@ -113,10 +116,12 @@ internal class AutoMergeGate(
         mergedHead: String,
         shownHead: String?,
         record: suspend (EventDefinition, Map<String, String>) -> Unit,
+        warn: suspend (String) -> Unit,
     ): GateOutcome {
         notAllowedBy(workflow)?.let { stopped -> return fallBack(emptyList(), null, stopped, stopped).copy(stopped = stopped) }
         val kind = checkNotNull(workflow.config.kinds?.code)
         val delivery = checkNotNull(kind.delivery)
+        val testGlobs = (kind.guards?.languages ?: TestLanguage.BUILT_IN).flatMap { it.files }
         val base = wait.baseSha.orEmpty()
         val diff =
             step { git.diffStat(workspace, base, mergedHead) }.getOrElse { error ->
@@ -145,6 +150,7 @@ internal class AutoMergeGate(
                 diff = diff,
                 autoMerge = delivery.autoMerge,
                 unpinned = list.any { it.kind == DiffBaseUnpinned.name },
+                testGlobs = testGlobs,
             )
         var failures = AutoMerge.failures(facts)
         events.exceptionOrNull()?.let { error ->
@@ -155,10 +161,12 @@ internal class AutoMergeGate(
                 (failures.filter { it.condition !in unread } + unread.map { FailedCondition(it, reason) })
                     .sortedBy { it.condition.ordinal }
         }
+        // bl-96: the review runs even when a hard condition failed, so the operator who reviews the fallback gets a band.
+        val risk = assessRisk(wait, issue, workflow, workspace, base, mergedHead, diff, testGlobs, record, warn)
         if (failures.isNotEmpty()) {
-            return fallBack(failures, null, "a condition failed", failures.joinToString("; ") { "${it.condition.wire}: ${it.reason}" })
+            val reasons = failures.map { "${it.condition.wire}: ${it.reason}" } + listOfNotNull(risk.fallBack)
+            return fallBack(failures, risk.assessment, risk.skipped, reasons.joinToString("; "))
         }
-        val risk = assessRisk(wait, issue, workflow, workspace, base, mergedHead, diff, record)
         // Send back 5 of PR #75: CI is read after the review, so the checks of the head just pushed had time to register.
         val ci = AutoMerge.ciFailure(ciFacts(executor, number, mergedHead, delivery.pullRequest?.merge))
         if (ci == null && risk.fallBack == null && risk.assessment != null) return GateOutcome.Merge(risk.assessment)
@@ -208,7 +216,10 @@ internal class AutoMergeGate(
             Result.failure(e)
         }
 
-    /** The reviewer's session and the assessment, once every hard condition holds; CI is read after it. */
+    /**
+     * The reviewer's session and the assessment, whether the hard conditions held or not (bl-96); CI is read after it.
+     * The code facts read the [testGlobs] of the guards' languages.
+     */
     private suspend fun assessRisk(
         wait: Wait,
         issue: Issue,
@@ -217,7 +228,9 @@ internal class AutoMergeGate(
         base: String,
         mergedHead: String,
         diff: List<DiffEntry>,
+        testGlobs: List<String>,
         record: suspend (EventDefinition, Map<String, String>) -> Unit,
+        warn: suspend (String) -> Unit,
     ): RiskOutcome {
         val kind = checkNotNull(workflow.config.kinds?.code)
         val risk = kind.delivery.risk
@@ -230,8 +243,7 @@ internal class AutoMergeGate(
                     "this Loop cannot run its merge risk reviewer, so the reviewer setup, not the result, is why the merge waits",
                 )
         budgetPassed(workflow, wait.issueId)?.let { return riskFailed(it) }
-        val testGlobs = (kind.guards?.languages ?: TestLanguage.BUILT_IN).flatMap { it.files }
-        val facts = MergeRisk.facts(diff, risk, testGlobs, kind.delivery.autoMerge.maxDiffLines)
+        val facts = MergeRisk.facts(diff, risk, testGlobs, kind.delivery.autoMerge.maxDiffLines, kind.delivery.autoMerge.docPaths)
         val text =
             step { git.diffText(workspace, base, mergedHead, DIFF_MAX_CHARS + 1) }.getOrElse { error ->
                 return riskFailed("cannot read the diff for the reviewer: ${error.message}")
@@ -274,7 +286,7 @@ internal class AutoMergeGate(
             } catch (e: Exception) {
                 Result.failure(RiskReviewError.Crashed(e.message ?: e::class.simpleName.orEmpty(), e))
             }
-        writeSpend(wait, issue, workflow, model, started, answer)
+        writeSpend(wait, issue, workflow, model, started, answer)?.let { warn(it) }
         val review =
             answer.getOrElse { error ->
                 val why =
@@ -348,7 +360,8 @@ internal class AutoMergeGate(
 
     /**
      * Writes the reviewer's spend as a ledger row of its own (m2-28), reason [REVIEW_REASON], so the per issue and per
-     * day spend budgets read it like an attempt's. A write that fails changes nothing else.
+     * day spend budgets read it like an attempt's. A write that fails changes nothing else: it returns why, redacted, for
+     * the log (bl-96), and null when the row was written.
      */
     private suspend fun writeSpend(
         wait: Wait,
@@ -357,7 +370,7 @@ internal class AutoMergeGate(
         model: String,
         started: kotlin.time.Instant,
         answer: Result<RiskReview>,
-    ) {
+    ): String? {
         val review = answer.getOrNull()
         val row =
             LedgerAttempt(
@@ -379,13 +392,17 @@ internal class AutoMergeGate(
                 guards = null,
                 verdict = null,
             )
-        try {
-            attemptLedger.recordAttempt(row)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            // The spend is lost to the budgets, the gate's decision is not changed by it.
-        }
+        val failure =
+            try {
+                attemptLedger.recordAttempt(row).exceptionOrNull()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                e
+            } ?: return null
+        // The spend is lost to the budgets, the gate's decision is not changed by it.
+        val why = (failure.message ?: failure::class.simpleName).orEmpty().lines().first()
+        return redactor.redact("the reviewer's spend was not written to the ledger, so the spend budgets miss it: $why").take(REASON_MAX)
     }
 
     /** The latest result the attempt submitted (m2-15), as saved beside its evidence; null when it saved none. */
