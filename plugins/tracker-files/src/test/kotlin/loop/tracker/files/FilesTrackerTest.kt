@@ -442,6 +442,104 @@ class FilesTrackerTest {
             assertEquals(broken, file.readText())
         }
 
+    /** Adds `needs-info` to `a-1` and checks the labels read back in order, every other field as it was. */
+    private suspend fun assertLabelWriteReadsBack(
+        file: Path,
+        expected: List<String>,
+    ) {
+        val before = tracker().todo("a-1")
+
+        tracker().updateLabels("a-1", add = listOf("needs-info")).getOrThrow()
+
+        assertEquals(before.copy(labels = expected), tracker().todo("a-1"), file.readText())
+    }
+
+    @Test
+    fun `a blank line inside a block list of labels is rewritten whole`() =
+        runTest {
+            val file = issueFile("a-1", labels = "\n  - ready-for-agent\n\n  - afk")
+
+            assertLabelWriteReadsBack(file, listOf("ready-for-agent", "afk", "needs-info"))
+            assertContains(file.readText(), "\nlabels: [ready-for-agent, afk, needs-info]\nblocked_by: []\n")
+        }
+
+    @Test
+    fun `a column 0 comment inside a block list of labels is replaced and a comment after it is kept`() =
+        runTest {
+            val file = issueFile("a-1", labels = "\n  - ready-for-agent\n# between\n  - afk\n# after", blockedBy = "[b-1]")
+            issueFile("b-1", state = "done")
+
+            assertLabelWriteReadsBack(file, listOf("ready-for-agent", "afk", "needs-info"))
+            assertContains(file.readText(), "\nlabels: [ready-for-agent, afk, needs-info]\n# after\nblocked_by: [b-1]\n")
+        }
+
+    @Test
+    fun `a quoted labels key is rewritten in place and not added twice`() =
+        runTest {
+            val file = issueFile("a-1").also { it.writeText(it.readText().replace("\nlabels:", "\n\"labels\":")) }
+
+            assertLabelWriteReadsBack(file, listOf("ready-for-agent", "needs-info"))
+            assertEquals(1, file.readText().lines().count { "labels" in it }, file.readText())
+        }
+
+    @Test
+    fun `a labels key with a space before the colon is rewritten in place and not added twice`() =
+        runTest {
+            val file = issueFile("a-1").also { it.writeText(it.readText().replace("\nlabels:", "\nlabels :")) }
+
+            assertLabelWriteReadsBack(file, listOf("ready-for-agent", "needs-info"))
+            assertEquals(1, file.readText().lines().count { "labels" in it }, file.readText())
+        }
+
+    @Test
+    fun `a trailing comment on the labels entry is replaced with the entry`() =
+        runTest {
+            val file = issueFile("a-1", labels = "[ready-for-agent] # set by triage")
+            val before = file.readText()
+
+            assertLabelWriteReadsBack(file, listOf("ready-for-agent", "needs-info"))
+            val expected = before.replace("\nlabels: [ready-for-agent] # set by triage\n", "\nlabels: [ready-for-agent, needs-info]\n")
+            assertEquals(expected, file.readText())
+        }
+
+    @Test
+    fun `a label with a trailing space stays quoted so it reads back as written`() =
+        runTest {
+            val file = issueFile("a-1", labels = "[\"afk \"]")
+
+            assertLabelWriteReadsBack(file, listOf("afk", "needs-info"))
+            assertContains(file.readText(), "\nlabels: [\"afk \", needs-info]\n")
+        }
+
+    @Test
+    fun `a label write whose result would not parse fails as malformed and the file is untouched`() =
+        runTest {
+            // The labels entry ends a flow map that spans two lines, so a flow list line in its place leaves the map open.
+            val file = issuesDir.resolve("a-1-slug.md")
+            file.writeText("---\n{id: a-1, title: A, state: todo,\n labels: [afk]}\n---\n\nBody.\n")
+            val before = file.readBytes()
+
+            val error = tracker().updateLabels("a-1", add = listOf("needs-info")).exceptionOrNull()
+
+            assertIs<TrackerError.Malformed>(error)
+            assertContentEquals(before, file.readBytes())
+            assertEquals(listOf(file.name), issuesDir.listDirectoryEntries().map { it.name })
+        }
+
+    @Test
+    fun `a label write that would drop another field fails as malformed and the file is untouched`() =
+        runTest {
+            // The whole front matter is one flow map on the labels line, so a flow list line in its place drops id, title and state.
+            val file = issuesDir.resolve("a-1-slug.md")
+            file.writeText("---\n{id: a-1, title: A, state: todo, labels: [afk]}\n---\n\nBody.\n")
+            val before = file.readBytes()
+
+            val error = tracker().updateLabels("a-1", add = listOf("needs-info")).exceptionOrNull()
+
+            assertIs<TrackerError.Malformed>(error)
+            assertContentEquals(before, file.readBytes())
+        }
+
     private val head = "---\nid: a-1\ntitle: \"Title of a-1\"\nstate: todo\npriority: 2\nlabels: [ready-for-agent]\nblocked_by: []\n---\n"
 
     private fun rawIssue(

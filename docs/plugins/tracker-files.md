@@ -186,7 +186,10 @@ A human answers by hand, as `<date> <name>: <text>`; the time is optional. Nothi
 `updateLabels` (m2-11), the optional label write of `TrackerAdapter`, adds and removes labels on the front matter `labels` field. No agent tool calls it yet; Loop uses it for the readiness bounce.
 
 - Labels are compared trimmed and case insensitively. A label already there is not added twice, removing a label that is not there is not an error, and blank labels are ignored. Existing labels keep their spelling; new ones are written as given, trimmed.
-- The adapter replaces the first column 0 `labels:` entry inside the front matter, a flow list such as `[ready-for-agent]` or a block list of indented `-` lines, with one flow list line, `labels: [ready-for-agent, needs-info]`. A label is written plain when YAML reads it back as the same text, and double quoted otherwise (`"p1: urgent"`). With no `labels:` key, the line is added before the closing `---`.
+- The adapter replaces the front matter `labels` entry, a flow list such as `[ready-for-agent]` or a block list of `-` lines, with one flow list line, `labels: [ready-for-agent, needs-info]`. A label is written plain when YAML reads it back as the same text, and double quoted otherwise (`"p1: urgent"`). With no `labels` key, the line is added before the closing `---`.
+- The entry is found by parsing the front matter, so `"labels":` and `labels :` are the same key and never get a second line. It runs from its key line to the line before the next key, without the blank lines and comment lines at its end, so a blank line or a column 0 `#` comment between the items is part of it.
+- A comment on the entry is replaced with it: a trailing comment on the key line and a comment between the items are gone after the write. A comment after the last item stays. Keep a note that must survive on its own line before the `labels` key.
+- Read back rule: before writing, the adapter parses the new text. It must give the intended labels in order, every other front matter field unchanged and the same body. When it does not, as for a front matter written as one flow map `{...}`, the write fails with `Malformed` and the file is byte for byte what it was. Nothing is written first and repaired after.
 - Every other byte is kept, line endings included, and the file is written through a temporary file and an atomic rename under the same lock as moves and comments. When the label set does not change, nothing is written.
 
 ## Errors
@@ -196,8 +199,8 @@ Every call returns a result whose failure is a `TrackerError`. The adapter does 
 | `TrackerError` | When | Spec category (11.4) | Message |
 |---|---|---|---|
 | `Unavailable` | The folder or a file cannot be listed or read (an I/O error) | `tracker_request` | The I/O error's message |
-| `Malformed` | Fetch by ids hits a malformed file that belongs to a requested id; a move finds no `state:` line; a comment finds no front matter, or the body has an unclosed fence; a label write cannot read the `labels` field | `tracker_response` | `Malformed issue at <path>` |
-| `NotFound` | A move, a comment or a label write names an id no well formed file has | `tracker_response` | `No issue "<id>" in the tracker` |
+| `Malformed` | Fetch by ids hits a malformed file that belongs to a requested id; a move finds no `state:` line; a comment finds no front matter, or the body has an unclosed fence; a label write whose new text fails the [read back rule](#labels) | `tracker_response` | `Malformed issue at <path>` |
+| `NotFound` | A move, a comment or a label write names an id no well formed file has, including the id of a file that does not parse | `tracker_response` | `No issue "<id>" in the tracker` |
 | `BlankComment` | A comment whose text is blank once trimmed | None: a tool argument error, reported by `loop tool comment` with exit code 2 | The comment is empty |
 | `UndefinedState` | A move names a state outside the six | None: a tool argument error, reported by `loop tool move` with exit code 2 | `"<state>" is not a state of the tracker. Valid states: todo, in_progress, review, needs_info, done, canceled` |
 

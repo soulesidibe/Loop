@@ -46,9 +46,13 @@ import kotlin.io.path.readText
  * An unclosed fence before the insert point makes the body malformed, so nothing is written.
  * Every other byte is kept, except a final newline added when missing.
  *
- * A label write (m2-11) replaces the front matter `labels:` entry, a flow list or a block list,
- * with one flow list line, or adds that line before the closing `---` when there is none. Every
- * other byte is kept, and nothing is written when the label set does not change.
+ * A label write (m2-11) replaces the front matter `labels` entry with one flow list line, or adds
+ * that line before the closing `---` when there is none. The entry is found by parsing, so a quoted
+ * key or a space before the colon is the same entry. It runs from its key line to the line before the
+ * next key, without the blank and comment lines at its end: a comment on the key line or between the
+ * items is replaced with the entry, every other byte is kept. The new text must parse back to the
+ * intended labels in order with every other field unchanged, else the write fails with
+ * [TrackerError.Malformed] and nothing is written. Nothing is written when the label set does not change.
  *
  * A move, a comment or a label write reads, changes and renames under one lock, so none loses another.
  */
@@ -164,9 +168,27 @@ class FilesTracker(
         }
     }
 
-    private fun fileOf(issueId: String): Path =
-        issueFiles().firstOrNull { parse(it).getOrNull()?.id == issueId }
-            ?: throw TrackerError.NotFound(issueId)
+    private fun fileOf(issueId: String): Path = find(issueId).file
+
+    /** An issue with its `labels` as written, before normalization, and the front matter it was read from. */
+    private class Parsed(
+        val issue: Issue,
+        val rawLabels: List<String>,
+        val frontMatter: YamlMap,
+    )
+
+    /** A well formed issue file with the text it was parsed from, read once. */
+    private class Found(
+        val file: Path,
+        val text: String,
+        val parsed: Parsed,
+    )
+
+    private fun find(issueId: String): Found =
+        issueFiles().firstNotNullOfOrNull { file ->
+            val text = file.readText()
+            parseText(file, text).getOrNull()?.takeIf { it.issue.id == issueId }?.let { Found(file, text, it) }
+        } ?: throw TrackerError.NotFound(issueId)
 
     /**
      * Runs [block] holding the write lock: a JVM lock for threads (a file lock alone
@@ -218,17 +240,17 @@ class FilesTracker(
         val removing = remove.map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
         return io {
             locked {
-                val file = fileOf(issueId)
-                val text = file.readText()
-                val current = rawLabels(text) ?: throw TrackerError.Malformed(file.toString())
+                val found = find(issueId)
+                val current = found.parsed.rawLabels
                 val kept = current.filterNot { it.trim().lowercase() in removing }
                 val labels =
                     adding.fold(kept) { acc, label ->
                         if (acc.any { it.trim().equals(label, ignoreCase = true) }) acc else acc + label
                     }
                 if (labels != current) {
-                    val rewritten = rewriteLabels(text, labels) ?: throw TrackerError.Malformed(file.toString())
-                    writeAtomically(file, rewritten.toByteArray(Charsets.UTF_8))
+                    val rewritten =
+                        rewriteLabels(found.text, found.parsed, labels) ?: throw TrackerError.Malformed(found.file.toString())
+                    writeAtomically(found.file, rewritten.toByteArray(Charsets.UTF_8))
                 }
             }
         }
@@ -240,9 +262,14 @@ class FilesTracker(
             .filter { it.isRegularFile() && it.extension == "md" && !it.name.startsWith(".") }
             .sortedBy { it.name }
 
-    private fun parse(file: Path): Result<Issue> =
+    private fun parse(file: Path): Result<Issue> = parseText(file, file.readText()).map { it.issue }
+
+    private fun parseText(
+        file: Path,
+        text: String,
+    ): Result<Parsed> =
         try {
-            Result.success(parseIssue(file.readText()) ?: throw TrackerError.Malformed(file.toString()))
+            Result.success(parseIssue(text) ?: throw TrackerError.Malformed(file.toString()))
         } catch (e: TrackerError.Malformed) {
             Result.failure(e)
         } catch (e: IOException) {
@@ -311,7 +338,8 @@ class FilesTracker(
         private val NEWLINE = Regex("\r\n|\n|\r")
         private val HEADING = Regex("^#{1,2}( .*|\t.*)?$")
 
-        private val PLAIN_LABEL = Regex("""[A-Za-z0-9][A-Za-z0-9 _./-]*""")
+        private const val LABELS = "labels"
+        private val PLAIN_LABEL = Regex("""[A-Za-z0-9]([A-Za-z0-9 _./-]*[A-Za-z0-9_./-])?""")
         private val YAML_NULLS = setOf("null", "~")
 
         private val ID_LINE = Regex("""^id:(.*)$""", RegexOption.MULTILINE)
@@ -331,30 +359,28 @@ class FilesTracker(
             )
         }
 
-        /** Null when a required field is missing or empty. */
-        private fun parseIssue(text: String): Issue? {
+        /** Null when a required field is missing or empty. Throws kaml's exceptions for unparseable yaml. */
+        private fun parseIssue(text: String): Parsed? {
             val frontMatter = splitFrontMatter(text) ?: return null
             if (frontMatter.yaml.isBlank()) return null
             val map = Yaml.default.parseToYamlNode(frontMatter.yaml) as? YamlMap ?: return null
             val id = map.text("id") ?: return null
             val title = map.text("title") ?: return null
             val state = map.text("state") ?: return null
-            return Issue(
-                id = id,
-                identifier = id,
-                title = title,
-                state = state,
-                priority = map.text("priority")?.toIntOrNull(),
-                labels =
-                    map
-                        .textList("labels")
-                        ?.map { it.trim().lowercase() }
-                        ?.filter { it.isNotEmpty() }
-                        ?: return null,
-                blockedBy = map.textList("blocked_by") ?: return null,
-                description = frontMatter.body.trim().ifEmpty { null },
-                createdAt = null,
-            )
+            val rawLabels = map.textList(LABELS) ?: return null
+            val issue =
+                Issue(
+                    id = id,
+                    identifier = id,
+                    title = title,
+                    state = state,
+                    priority = map.text("priority")?.toIntOrNull(),
+                    labels = rawLabels.map { it.trim().lowercase() }.filter { it.isNotEmpty() },
+                    blockedBy = map.textList("blocked_by") ?: return null,
+                    description = frontMatter.body.trim().ifEmpty { null },
+                    createdAt = null,
+                )
+            return Parsed(issue, rawLabels, map)
         }
 
         private fun YamlMap.text(key: String): String? = (get<YamlNode>(key) as? YamlScalar)?.content?.trim()?.ifEmpty { null }
@@ -447,21 +473,14 @@ class FilesTracker(
             return out.toString()
         }
 
-        /** The `labels` of the front matter as written, before normalization; null when they cannot be read. */
-        private fun rawLabels(text: String): List<String>? {
-            val frontMatter = splitFrontMatter(text) ?: return null
-            if (frontMatter.yaml.isBlank()) return emptyList()
-            val map = Yaml.default.parseToYamlNode(frontMatter.yaml) as? YamlMap ?: return null
-            return map.textList("labels")
-        }
-
         /**
-         * Replaces the first column 0 `labels:` entry of the front matter, with the indented or `-` lines
-         * of a block list after it, by one flow list line; adds that line before the closing `---` when
-         * there is no entry. Every other byte is kept. Null when there is no front matter.
+         * The text of [before] with its `labels` entry replaced by one flow list line of [labels], or that line
+         * added before the closing `---` when there is no entry. See the class doc for the entry's lines.
+         * Null when the new text does not parse back to [labels] in order with every other field unchanged.
          */
         private fun rewriteLabels(
             text: String,
+            before: Parsed,
             labels: List<String>,
         ): String? {
             val lines = text.split(LINE_START).filter { it.isNotEmpty() }
@@ -471,12 +490,37 @@ class FilesTracker(
             val fmEnd = (1 until lines.size).firstOrNull { content(lines[it]) == "---" } ?: return null
             val eol = if (lines[0].endsWith("\r\n")) "\r\n" else "\n"
             val line = "labels: [${labels.joinToString(", ") { flowItem(it) }}]$eol"
-            val start = (1 until fmEnd).firstOrNull { content(lines[it]).startsWith("labels:") }
-            if (start == null) return (lines.subList(0, fmEnd) + line + lines.subList(fmEnd, lines.size)).joinToString("")
-            var end = start + 1
-            while (end < fmEnd && content(lines[end]).let { it.startsWith(" ") || it.startsWith("\t") || it.startsWith("-") }) end++
-            return (lines.subList(0, start) + line + lines.subList(end, lines.size)).joinToString("")
+            // kaml lines count from 1 at the first front matter line, which is lines[1].
+            val keys = before.frontMatter.entries.keys
+            val key = keys.firstOrNull { it.content == LABELS }
+            val rewritten =
+                if (key == null) {
+                    (lines.subList(0, fmEnd) + line + lines.subList(fmEnd, lines.size)).joinToString("")
+                } else {
+                    val start = key.location.line
+                    val next = keys.map { it.location.line }.filter { it > start }.minOrNull() ?: fmEnd
+                    var end = maxOf(next, start + 1)
+                    while (end - 1 > start && content(lines[end - 1]).trim().let { it.isEmpty() || it.startsWith("#") }) end--
+                    val indent = content(lines[start]).takeWhile { it == ' ' || it == '\t' }
+                    (lines.subList(0, start) + (indent + line) + lines.subList(end, lines.size)).joinToString("")
+                }
+            val after =
+                try {
+                    parseIssue(rewritten)
+                } catch (e: Exception) {
+                    // kaml throws its own exception types for unparseable yaml.
+                    null
+                } ?: return null
+            val unchanged =
+                after.rawLabels == labels &&
+                    after.frontMatter.otherFields() == before.frontMatter.otherFields() &&
+                    after.issue.description == before.issue.description
+            return rewritten.takeIf { unchanged }
         }
+
+        /** Every front matter field but `labels`, in order, as key and content. */
+        private fun YamlMap.otherFields(): List<Pair<String, String>> =
+            entries.filterKeys { it.content != LABELS }.map { (key, value) -> key.content to value.contentToString() }
 
         /** A label as a YAML flow list item: plain when that reads back as the same text, double quoted otherwise. */
         private fun flowItem(label: String): String =
