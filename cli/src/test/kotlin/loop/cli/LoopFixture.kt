@@ -231,6 +231,13 @@ class LoopFixture(
             }
         }
 
+    /** Runs the write [sql] on the store file, for a test that sets up a state no run reaches in time. */
+    fun update(sql: String) {
+        DriverManager.getConnection("jdbc:sqlite:$storeFile").use { connection ->
+            connection.createStatement().use { it.executeUpdate(sql) }
+        }
+    }
+
     /** Records [events] through the real store, as a running `loop run` would. */
     fun seed(vararg events: RecordedEvent) {
         SqliteEventStore.open(loopHome, projectDir, Redactor.NONE).getOrThrow().use { store ->
