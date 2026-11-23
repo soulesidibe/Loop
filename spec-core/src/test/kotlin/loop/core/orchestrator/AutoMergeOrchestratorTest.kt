@@ -1451,7 +1451,7 @@ class AutoMergeOrchestratorTest {
         }
 
     @Test
-    fun `m4-06 a host that cannot run its reviewer falls back, naming the reviewer setup and not the result`() =
+    fun `a host with no reviewer falls back`() =
         runTest {
             assertReviewFellBack(autoMerge(reviewer = null), NO_REVIEWER_REASON)
         }
