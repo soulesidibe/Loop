@@ -3,7 +3,7 @@ id: bl-101
 title: "Low findings from the merge risk reviews of m3-16 (PR #85)"
 state: todo
 priority: 3
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [m4-10]
 ---
 

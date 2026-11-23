@@ -3,7 +3,7 @@ id: bl-135
 title: "Low findings of the m3-20 merge risk review, Codex Loop mode guards"
 state: todo
 priority: 3
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [bl-128]
 ---
 

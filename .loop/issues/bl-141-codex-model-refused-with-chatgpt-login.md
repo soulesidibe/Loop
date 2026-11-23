@@ -3,7 +3,7 @@ id: bl-141
 title: "Codex runner turns fail when the operator's codex config names a model the login refuses"
 state: todo
 priority: 2
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [m4-08]
 ---
 
