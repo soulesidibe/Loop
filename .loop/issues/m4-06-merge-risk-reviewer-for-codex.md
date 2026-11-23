@@ -41,3 +41,10 @@ Out of this issue: a Codex native reviewer, a reviewer section in the workflow, 
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-23 14:04Z agent 124ed420: m4-06 done, on loop/m4-06 (4 commits).
+  - bl-145: riskReviewerFor returns the Claude Code reviewer for every runner.kind. Under claude-code it uses that runner's command. Under any other runner it uses runners.claude-code.command when set, else claude. The command is looked up on the host PATH and the reviewer starts the absolute path found, so the startup check and the run agree. When the command cannot be found there is no reviewer, the gate falls back with "this Loop cannot run its merge risk reviewer, so the reviewer setup, not the result, is why the merge waits", and loop run warns at startup under policy auto with merge.
+  - bl-100: two tests in ClaudeCodeRiskReviewerTest now pin the reviewer's directory to the issue workspace and keep Bash disallowed. A mutation check confirmed they fail if either changes. The merge-risk skill now says a reviewer never runs git checkout, switch, reset or stash in the operator's checkout, and reads with git diff, git show or a separate worktree instead.
+  - Docs: a new spec-decisions section, "The reviewer apart from the runner (extension, m4-06)", plus the m2-28 and m3-04 lines and both runner plugin docs.
+  - Outside the issue: OwnWorkflowTest "the limits are the ones of the spec" was already failing on main, because ca9029c set max_concurrent_agents to 3 in WORKFLOW.md. I changed the test to expect 3 so the full build can pass. Revert that one line if 3 was not meant to stay.
+  - Behavior change to note: the command runner now also gets the Claude Code reviewer, as the decision says "whatever runner.kind is".
