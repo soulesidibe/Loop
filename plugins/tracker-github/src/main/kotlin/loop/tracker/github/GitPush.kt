@@ -4,6 +4,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runInterruptible
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import loop.api.DeliveryError
 import java.io.IOException
@@ -13,6 +15,7 @@ import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.PosixFilePermissions
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
@@ -90,6 +93,11 @@ class GitPush(
      * project's object folder by plain file copy, never by a git process holding the token. Only then, without the
      * token and with no hook, git checks in the project that the commit is there and writes the ref.
      *
+     * The fetches of one repository run one at a time (bl-67): from the read of the project's tips to the write of the
+     * ref, each holds the mutex of the repository's object folder ([fetchLock]), so two verifications never write the
+     * same ref at once and neither fails on git's ref lock. Two workspaces of one repository share that folder, so
+     * they wait on each other; two repositories do not.
+     *
      * A [base] that is not a safe branch name ([isBaseName]), a base the remote does not have, an authentication
      * failure and a resolved fetch URL that is not [url] are [DeliveryError.Rejected]; any other git failure, a copy
      * that fails, a timeout and a git that cannot start are [DeliveryError.Unavailable]. Messages quote git's first
@@ -103,18 +111,20 @@ class GitPush(
             }
             checkToken("Nothing was fetched")
             val objects = objects()
-            val sha256 = objectFormat() == SHA256
-            val haves = listOf("$BASE_REFS$base", "refs/heads/$base").mapNotNull { projectCommit(it) }.distinct()
             val sha =
-                temporary("fetch") { repository ->
-                    prepare(repository, objects, sha256, what = "fetch")
-                    haves.forEachIndexed { index, have -> seed(repository, "$HAVE_REF$index", have) }
-                    checkUrl(repository, push = false)
-                    val fetched = receive(repository, base)
-                    land(repository.resolve("objects"), objects)
+                fetchLock(objects).withLock {
+                    val sha256 = objectFormat() == SHA256
+                    val haves = listOf("$BASE_REFS$base", "refs/heads/$base").mapNotNull { projectCommit(it) }.distinct()
+                    val fetched =
+                        temporary("fetch") { repository ->
+                            prepare(repository, objects, sha256, what = "fetch")
+                            haves.forEachIndexed { index, have -> seed(repository, "$HAVE_REF$index", have) }
+                            checkUrl(repository, push = false)
+                            receive(repository, base).also { land(repository.resolve("objects"), objects) }
+                        }
+                    record(base, fetched)
                     fetched
                 }
-            record(base, sha)
             Result.success(sha)
         } catch (e: DeliveryError) {
             Result.failure(e)
@@ -657,6 +667,23 @@ class GitPush(
         private const val MAX_BASE_LENGTH = 255
 
         private const val FORBIDDEN_IN_REF = "~^:?*[\\"
+
+        /**
+         * One mutex per repository for [fetch], keyed by the real path of its object folder, which every worktree of
+         * the repository shares. A repository's entry stays for the life of the process: Loop serves a few.
+         */
+        private val fetchLocks = ConcurrentHashMap<Path, Mutex>()
+
+        /** The fetch mutex of the repository whose object folder is [objects], by its real path, else its normalized one. */
+        private fun fetchLock(objects: Path): Mutex {
+            val key =
+                try {
+                    objects.toRealPath()
+                } catch (_: IOException) {
+                    objects.toAbsolutePath().normalize()
+                }
+            return fetchLocks.computeIfAbsent(key) { Mutex() }
+        }
 
         /** Where the project repository keeps the fetched tip of each base. */
         private const val BASE_REFS = "refs/loop/base/"
