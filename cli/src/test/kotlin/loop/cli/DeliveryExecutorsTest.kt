@@ -3,9 +3,9 @@ package loop.cli
 import kotlinx.coroutines.runBlocking
 import loop.api.DeliveryError
 import loop.api.RiskReviewRequest
-import loop.runner.claudecode.ClaudeCodeRiskReviewer
 import loop.core.workflow.WorkflowFile
 import loop.core.workflow.WorkflowLoader
+import loop.runner.claudecode.ClaudeCodeRiskReviewer
 import loop.tracker.github.GitHubResponse
 import loop.tracker.github.GitHubTransport
 import java.nio.file.Files
@@ -220,7 +220,14 @@ class DeliveryExecutorsTest {
                 "the default command claude, with no claude-code section, found on the host PATH",
             )
 
-            val model = checkNotNull(workflow.config.kinds?.code?.delivery?.risk?.reviewer)
+            val model =
+                checkNotNull(
+                    workflow.config.kinds
+                        ?.code
+                        ?.delivery
+                        ?.risk
+                        ?.reviewer,
+                )
             val workspace = Files.createDirectories(root.resolve("workspaces/t-1")).toRealPath()
             reviewer.review(RiskReviewRequest(workspace, model, "Review this.", 10_000)).getOrThrow()
 

@@ -392,7 +392,10 @@ fun riskReviewerWarning(
     workflow: WorkflowFile,
     hostEnv: Map<String, String>,
 ): String? {
-    val delivery = workflow.config.kinds?.code?.delivery ?: return null
+    val delivery =
+        workflow.config.kinds
+            ?.code
+            ?.delivery ?: return null
     if (delivery.policy != DeliveryPolicy.Auto || delivery.pullRequest?.merge == null) return null
     val model = delivery.risk.reviewer ?: return null
     val command = riskReviewerCommand(workflow)
