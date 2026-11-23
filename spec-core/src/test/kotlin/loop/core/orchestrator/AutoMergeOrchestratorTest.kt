@@ -67,6 +67,7 @@ import loop.core.workflow.PreflightCheck
 import loop.core.workflow.PreflightResult
 import loop.core.workflow.PullRequestConfig
 import loop.core.workflow.RiskConfig
+import loop.core.workflow.RunnerSettings
 import loop.core.workflow.TokenCounters
 import loop.core.workflow.WorkflowConfig
 import loop.core.workflow.WorkflowFile
@@ -372,6 +373,7 @@ class AutoMergeOrchestratorTest {
         runner: FakeRunner = FakeRunner(),
         events: (suspend (AttemptId) -> Result<List<RecordedEvent>>)? = null,
         preflight: PreflightCheck = PreflightCheck { PreflightResult.Ok(workflow) },
+        reviewerFor: (WorkflowFile) -> RiskReviewer? = { reviewer },
     ): Orchestrator {
         var next = 0
         val clock = SchedulerClock(testScheduler)
@@ -399,7 +401,7 @@ class AutoMergeOrchestratorTest {
             deliveryFor = { remote },
             workspaceGit = workspaceGit,
             attemptEvents = events ?: { attempt -> Result.success(sink.events.filter { it.attemptId == attempt }) },
-            riskReviewerFor = { reviewer },
+            riskReviewerFor = reviewerFor,
             preflight = preflight,
         )
     }
@@ -481,6 +483,7 @@ class AutoMergeOrchestratorTest {
         tracker: FakeTracker = FakeTracker(listOf(issue("t-1"))),
         started: (Orchestrator) -> Unit = {},
         ciPolls: Int = 0,
+        reviewerFor: (WorkflowFile) -> RiskReviewer? = { reviewer },
     ): Run {
         val verified = worktree()
         val remote = FakeRemote().apply { base = git(project, "rev-parse", "main") }
@@ -498,6 +501,7 @@ class AutoMergeOrchestratorTest {
                 ledger,
                 events = (events ?: { sha -> verifiedEvents(clean(sha)) })(verified),
                 preflight = preflight?.invoke(workflow) ?: PreflightCheck { PreflightResult.Ok(workflow) },
+                reviewerFor = reviewerFor,
             )
         started(orchestrator)
         orchestrator.tick()
@@ -873,6 +877,33 @@ class AutoMergeOrchestratorTest {
         }
 
     // m4-05 (bl-146): under ci none green means the merge check passed, so Actions being down stops no auto merge.
+
+    @Test
+    fun `m4-06, a Codex result with every condition held and a low band auto merges, the reviewer chosen apart from the runner`() =
+        runTest {
+            val codex =
+                workflow().copy(runner = RunnerSettings("codex-app-server", mapOf("codex" to mapOf("command" to "codex app-server"))))
+            val kinds = mutableListOf<String>()
+            val reviewer = reviewer()
+
+            val run =
+                autoMerge(
+                    workflow = codex,
+                    reviewer = reviewer,
+                    reviewerFor = { wf ->
+                        kinds += wf.runner.kind
+                        reviewer
+                    },
+                )
+
+            assertEquals(1, run.remote.merges.size, run.waiting.records.toString())
+            assertTrue(kinds.isNotEmpty() && kinds.all { it == "codex-app-server" }, "the gate asked for the reviewer of $kinds")
+            assertEquals("claude-sonnet-5-5", reviewer.requests.single().model, "the model of risk.reviewer")
+            assertEquals("low", run.sink.all(MergeRiskAssessed.name).single()["band"])
+            assertTrue(run.sink.events.none { it.kind == AutoMergeFallback.name })
+            assertTrue(run.sink.events.none { it.kind == "human_touch" }, "no human touch")
+            assertEquals("auto", run.sink.all("issue_moved").single()["approved_by"])
+        }
 
     @Test
     fun `m4-05, under ci none a result with no Actions run on the merged head auto merges, with no runs request sent`() =
@@ -1420,9 +1451,9 @@ class AutoMergeOrchestratorTest {
         }
 
     @Test
-    fun `a host with no reviewer falls back`() =
+    fun `m4-06 a host that cannot run its reviewer falls back, naming the reviewer setup and not the result`() =
         runTest {
-            assertReviewFellBack(autoMerge(reviewer = null), "this Loop has no risk reviewer")
+            assertReviewFellBack(autoMerge(reviewer = null), NO_REVIEWER_REASON)
         }
 
     @Test
@@ -1611,5 +1642,9 @@ class AutoMergeOrchestratorTest {
 
     private companion object {
         val PROJECT = ProjectId("p1")
+
+        /** m4-06: the fallback reason when the host cannot run a reviewer, the reviewer setup and not the result. */
+        const val NO_REVIEWER_REASON =
+            "this Loop cannot run its merge risk reviewer, so the reviewer setup, not the result, is why the merge waits"
     }
 }
