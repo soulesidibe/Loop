@@ -12,6 +12,7 @@ Written 2026-11-11 in issue m1-12. Terms follow [`CONTEXT.md`](../CONTEXT.md). T
 3. [Known limits](#known-limits)
 4. [Running Loop on its own issues](#running-loop-on-its-own-issues)
    - [Sleep while work runs](#sleep-while-work-runs)
+   - [Network loss](#network-loss)
    - [Gradle daemons per Attempt](#gradle-daemons-per-attempt)
    - [Loop mode on Loop's own backlog](#loop-mode-on-loops-own-backlog)
 5. [GitHub playground](#github-playground)
@@ -106,7 +107,15 @@ Limits:
 
 - A lid close still sleeps the Mac, and so does a forced sleep from the Apple menu or a low battery. No idle assertion prevents them. Keep the lid open, or use clamshell mode on power with an external display, during a long run.
 - On other systems, or on a Mac where `caffeinate` cannot start, `loop run` logs one `event=keep_awake outcome=failed` line at its first work and runs as before.
-- What happens to an Attempt a sleep interrupts anyway is m4-08's rule: the failure reads as a network error and takes no attempt slot.
+- An Attempt a sleep interrupts anyway fails with a network error, which takes no attempt slot, see [network loss](#network-loss).
+
+### Network loss
+
+Since m4-08 a lost network costs no attempt (bl-123). When the connection drops, the turn fails with a network error (Claude Code writes `API Error: Can't reach the API server (...) (ENOTFOUND)`, Codex a transport failure with no HTTP answer), and the runner marks it `runner_unavailable`, as it does an authentication failure (bl-39). The attempt ends without taking a `retries.max_attempts` slot and the whole run holds: nothing is dispatched until a probe, 1 minute later, then 2, 4, 8 and at most 15 minutes apart, for as long as the network stays down. No issue is ever parked by the hold. The first successful turn lifts it and dispatch resumes.
+
+What you see: `loop status` shows `held      runner unavailable  hold=1 next_probe=... reason="..."` above the issues, `loop trace <identifier>` shows `turn_failed ... category=runner_unavailable` and `runner_hold_started`, and the human log writes one `runner unavailable, hold 1, ...` line per hold. Nothing needs doing: once the network is back the next probe succeeds.
+
+The next attempt starts a new session. Its prompt gets the session brief, as after a rotation, and the workspace, its commits and the progress file are where the last attempt left them. The tokens the lost session had read are spent again to rebuild the context; resuming the session itself is m4-46. A failure after an idle sleep is the same case: the Mac wakes with no network yet, the turn fails with `ENOTFOUND`, and no attempt is spent (bl-156). On 2026-11-16 a 16 minute network loss failed the attempts of bl-117 and m3-07, which is what this rule prevents. Details in [network loss](spec-decisions.md#network-loss-extension-m4-08).
 
 ### Gradle daemons per Attempt
 
