@@ -364,6 +364,38 @@ object InterruptGraceExpired : EventDefinition("interrupt_grace_expired") {
     ) = traceDetails(context) { TRACE_KEYS.forEach { add(it, event.data[it]) } }
 }
 
+/**
+ * m4-04: the stop of an agent session gave the runtime its stop grace ([GRACE_MS], 5 seconds for Claude Code) and it was
+ * still there, so the runner killed it and what the runtime had not reported yet is lost. [WAKE] says whether a wake
+ * was running, [WAKE_MESSAGES] how many of its model messages counted in the spend from their own lines, and
+ * [ATTEMPT_TOKENS] and [TOTAL_COST_USD] are the attempt's usage known after them, absolute as on `usage`, each absent
+ * when unknown.
+ */
+object StopGraceExpired : EventDefinition("stop_grace_expired") {
+    const val GRACE_MS = "grace_ms"
+    const val WAKE = "wake"
+    const val WAKE_MESSAGES = "wake_messages"
+    const val ATTEMPT_TOKENS = Usage.ATTEMPT_TOKENS
+    const val TOTAL_COST_USD = Usage.TOTAL_COST_USD
+
+    private val TRACE_KEYS = listOf(GRACE_MS, WAKE, WAKE_MESSAGES, ATTEMPT_TOKENS, TOTAL_COST_USD)
+
+    override val trace = TraceShow.TIMELINE
+    override val sample =
+        mapOf(
+            GRACE_MS to "5000",
+            WAKE to "true",
+            WAKE_MESSAGES to "2",
+            ATTEMPT_TOKENS to "1200000",
+            TOTAL_COST_USD to "3.38",
+        )
+
+    override fun traceDetails(
+        event: RecordedEvent,
+        context: TraceContext,
+    ) = traceDetails(context) { TRACE_KEYS.forEach { add(it, event.data[it]) } }
+}
+
 /** The agent session could not be stopped (m3-07): its process group may still run, or a file it held is left. */
 object SessionStopFailed : EventDefinition("session_stop_failed") {
     const val REASON = "reason"

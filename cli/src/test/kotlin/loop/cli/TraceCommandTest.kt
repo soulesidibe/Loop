@@ -1334,6 +1334,39 @@ class TraceCommandTest {
     }
 
     @Test
+    fun `m4-04 stop_grace_expired shows the grace, the wake and the usage known after the stop`() {
+        val lines =
+            trace(
+                event("attempt_started", "13:48:40", "a1"),
+                event(
+                    "stop_grace_expired",
+                    "13:49:10",
+                    "a1",
+                    data =
+                        mapOf(
+                            "grace_ms" to "5000",
+                            "wake" to "true",
+                            "wake_messages" to "2",
+                            "attempt_tokens" to "9000",
+                            "total_cost_usd" to "0.09",
+                        ),
+                ),
+                event(
+                    "stop_grace_expired",
+                    "13:50:10",
+                    "a1",
+                    data = mapOf("grace_ms" to "5000", "wake" to "false", "wake_messages" to "0"),
+                ),
+            )
+
+        val out = lines.joinToString("\n")
+        val details = "grace_ms=5000 wake=true wake_messages=2 attempt_tokens=9000 total_cost_usd=0.09"
+        assertTrue(line("13:49:10", "stop_grace_expired", details) in lines, out)
+        // An attempt without a usage report leaves the usage out.
+        assertTrue(line("13:50:10", "stop_grace_expired", "grace_ms=5000 wake=false wake_messages=0") in lines, out)
+    }
+
+    @Test
     fun `m4-02 context_window_unknown shows the model and the runner in each attempt`() {
         val unknown = mapOf("model" to "openai/gpt-unknown-9", "runner" to "codex-app-server")
         val lines =

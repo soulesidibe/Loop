@@ -26,12 +26,14 @@ public interface AgentSession {
     public suspend fun stop()
 
     /**
-     * Ends the session like [stop], and gives [usage] each usage report of what the session read while it stopped
-     * (bl-132): a wake still running between turns, a turn the runtime started on its own after a background task's
-     * notification, may report usage after the last turn ended. Each report is absolute for the session, like the
-     * [RunnerEvent.Usage] of a turn. A runner that reads nothing at its stop reports nothing: the default calls [stop].
+     * Ends the session like [stop], and gives [report] what the session read while it stopped, in the order it read it
+     * (bl-132, m4-04): a wake still running between turns, a turn the runtime started on its own after a background
+     * task's notification, may report usage after the last turn ended. Each [RunnerEvent.Usage] is absolute for the
+     * session, like the usage of a turn. A [RunnerEvent.StopGraceExpired] says the stop grace ended before the runtime
+     * exited, after the usage the runtime's lines had reported so far. Reports come before a failed stop throws. A
+     * runner that reads nothing at its stop reports nothing: the default calls [stop].
      */
-    public suspend fun stop(usage: suspend (RunnerEvent.Usage) -> Unit) {
+    public suspend fun stop(report: suspend (RunnerEvent) -> Unit) {
         stop()
     }
 

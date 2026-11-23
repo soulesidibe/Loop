@@ -14,6 +14,7 @@ object EventDefinitions {
             TurnInputRequired,
             AttemptStalled,
             InterruptGraceExpired,
+            StopGraceExpired,
             SessionStopFailed,
             SessionRotated,
             RunnerOutput,

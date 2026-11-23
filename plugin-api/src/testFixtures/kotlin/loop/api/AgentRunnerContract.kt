@@ -160,6 +160,7 @@ public abstract class AgentRunnerContract {
                         is RunnerEvent.ContextUsage -> event.sessionId to event.turnId
                         is RunnerEvent.RateLimit -> event.sessionId to event.turnId
                         is RunnerEvent.WakeTurn -> event.sessionId to event.turnId
+                        is RunnerEvent.StopGraceExpired -> fail("StopGraceExpired outside a stop: $event")
                         is RunnerEvent.TurnCompleted -> event.sessionId to event.turnId
                         is RunnerEvent.TurnFailed -> event.sessionId to event.turnId
                         is RunnerEvent.TurnInputRequired -> event.sessionId to event.turnId

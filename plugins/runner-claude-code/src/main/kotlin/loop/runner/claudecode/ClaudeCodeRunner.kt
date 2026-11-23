@@ -295,23 +295,26 @@ class ClaudeCodeRunner internal constructor(
 
         /**
          * bl-132: a wake still running when the session stops, or one that ended while the process was idle, wrote
-         * `result` lines no turn read. Their usage is added to the session's and given to [usage] once the process is
-         * released, before a failed stop throws, so it counts in the attempt's spend.
+         * `result` lines no turn read. Their usage is added to the session's and given to [report] once the process is
+         * released, before a failed stop throws, so it counts in the attempt's spend. A wake still running when the stop
+         * grace ends is reported from its lines, then [RunnerEvent.StopGraceExpired] (m4-04).
          */
-        override suspend fun stop(usage: suspend (RunnerEvent.Usage) -> Unit) {
-            val reports = mutableListOf<RunnerEvent.Usage>()
+        override suspend fun stop(report: suspend (RunnerEvent) -> Unit) {
+            val reports = mutableListOf<RunnerEvent>()
             val problems = shutdown { reports += it }
-            reports.forEach { usage(it) }
+            reports.forEach { report(it) }
             if (problems.isNotEmpty()) throw IllegalStateException(problems.joinToString("; ") { it.removePrefix(LOOP_PREFIX) })
         }
 
         /**
          * Closes stdin, gives the process [stopGrace] to exit, then kills its group and deletes the settings folder.
          * The groups an earlier turn's kill left with members ([retire]) are probed again. Each stdout `result` line
-         * read meanwhile adds its usage to the session's, and the session total is given to [usage] (bl-132). Returns
-         * the problems met, as `loop:` lines; empty when everything was released. Safe to call twice.
+         * read meanwhile adds its usage to the session's, and the session total is given to [report] (bl-132). When
+         * the grace ends with the process still there, the usage of the wake it was running, read from its lines, is
+         * added and given the same way, then a [RunnerEvent.StopGraceExpired] (m4-04). Returns the problems met, as
+         * `loop:` lines; empty when everything was released. Safe to call twice.
          */
-        suspend fun shutdown(usage: (RunnerEvent.Usage) -> Unit = {}): List<String> =
+        suspend fun shutdown(report: (RunnerEvent) -> Unit = {}): List<String> =
             withContext(NonCancellable) {
                 val process = live
                 live = null
@@ -319,23 +322,29 @@ class ClaudeCodeRunner internal constructor(
                 try {
                     if (process != null) {
                         process.stdin.close()
+                        val wake = StopWake()
                         // Once the process exits the launcher kills what is left of its group and reports what it could not.
+                        var graceExpired = false
                         val exited =
                             try {
-                                withTimeoutOrNull(stopGrace) {
-                                    for (event in process.events) {
-                                        if (event !is ProcessEvent.Line) continue
-                                        if (GROUP_PROBLEMS.any { event.text.startsWith(it) }) {
-                                            problems += event.text
-                                        } else if (event.stream == Stream.Stdout) {
-                                            stopped(event.text)?.let(usage)
+                                val read =
+                                    withTimeoutOrNull(stopGrace) {
+                                        for (event in process.events) {
+                                            if (event !is ProcessEvent.Line) continue
+                                            if (GROUP_PROBLEMS.any { event.text.startsWith(it) }) {
+                                                problems += event.text
+                                            } else if (event.stream == Stream.Stdout) {
+                                                stopped(event.text, wake)?.let(report)
+                                            }
                                         }
                                     }
-                                } != null
+                                graceExpired = read == null
+                                read != null
                             } catch (e: Exception) {
                                 // The launcher failed while the process was idle: whether the group is gone is unknown, the probe decides.
                                 false
                             }
+                        if (graceExpired) graceExpired(wake).forEach(report)
                         process.job?.cancelAndJoin()
                         val pid = process.pid
                         if (!exited && pid != null && probe(pid)) leftGroups += pid
@@ -351,15 +360,52 @@ class ClaudeCodeRunner internal constructor(
 
         /**
          * A stdout [line] read while the session stops: a `result` line's usage is added to the session's, and the
-         * session total is returned as a report of the latest turn. Null for any other line, or before any turn.
+         * session total is returned as a report of the latest turn. Null for any other line, or before any turn. A
+         * main session `init` or `assistant` line marks a running [wake] and keeps its message's usage, which a `result`
+         * line covers and clears (m4-04).
          */
-        private fun stopped(line: String): RunnerEvent.Usage? {
+        private fun stopped(
+            line: String,
+            wake: StopWake,
+        ): RunnerEvent.Usage? {
             val ids = latest ?: return null
-            val result = StreamJsonMapper.parse(line) as? StreamLine.Result ?: return null
-            val segment = result.usage ?: return null
-            val total = continuity.usage.plus(segment)
-            continuity.usage = total
-            return StreamJsonMapper.usageEvent(total, ids.sessionId, ids.turnId)
+            when (val parsed = StreamJsonMapper.parse(line)) {
+                is StreamLine.Init -> wake.running = true
+                is StreamLine.Assistant -> if (parsed.parentToolUseId == null) wake.read(parsed)
+                is StreamLine.Result -> {
+                    wake.clear()
+                    val segment = parsed.usage ?: return null
+                    val total = continuity.usage.plus(segment)
+                    continuity.usage = total
+                    return StreamJsonMapper.usageEvent(total, ids.sessionId, ids.turnId)
+                }
+                else -> Unit
+            }
+            return null
+        }
+
+        /**
+         * m4-04: the stop grace ended with the process still there. The usage the running [wake]'s lines reported is
+         * added to the session's and reported, then [RunnerEvent.StopGraceExpired]; nothing before any turn.
+         */
+        private fun graceExpired(wake: StopWake): List<RunnerEvent> {
+            val ids = latest ?: return emptyList()
+            val messages = wake.messages()
+            val usage =
+                messages.takeIf { it.isNotEmpty() }?.let {
+                    val total = it.fold(continuity.usage) { sum, part -> sum.plus(part) }
+                    continuity.usage = total
+                    total?.let { totals -> StreamJsonMapper.usageEvent(totals, ids.sessionId, ids.turnId) }
+                }
+            val expired =
+                RunnerEvent.StopGraceExpired(
+                    sessionId = ids.sessionId,
+                    turnId = ids.turnId,
+                    graceMs = stopGrace.inWholeMilliseconds,
+                    wake = wake.running,
+                    wakeMessages = messages.size,
+                )
+            return listOfNotNull(usage, expired)
         }
 
         private suspend fun probe(pid: Long): Boolean = withContext(Dispatchers.IO) { groupAlive(pid) }
@@ -821,6 +867,32 @@ class ClaudeCodeRunner internal constructor(
         var model: String? = null
         val countedMessages = mutableSetOf<String>()
         val runs = mutableMapOf<StreamLine.TaskRun, Int>()
+    }
+
+    /**
+     * What the stop of a session read of a wake (m4-04): whether one is [running], a main session `init` or `assistant`
+     * line read with no `result` line since, and the usage of its main session messages, one per message id as for the
+     * turn's estimate, a line without an id counting on its own.
+     */
+    private class StopWake {
+        var running = false
+        private val byId = linkedMapOf<String, StreamLine.UsageTotals>()
+        private val withoutId = mutableListOf<StreamLine.UsageTotals>()
+
+        fun read(line: StreamLine.Assistant) {
+            running = true
+            val usage = line.usage ?: return
+            val id = line.messageId
+            if (id == null) withoutId += usage else byId[id] = usage
+        }
+
+        fun clear() {
+            running = false
+            byId.clear()
+            withoutId.clear()
+        }
+
+        fun messages(): List<StreamLine.UsageTotals> = byId.values + withoutId
     }
 
     /**
