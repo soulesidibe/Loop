@@ -49,6 +49,8 @@ class Host(
     val runnerPreflight: (WorkflowFile) -> PreflightResult = ::runnerPreflight,
     /** The running build's version (m1-12), recorded on every attempt; tests can fake it. */
     val loopVersion: String = BuildInfo.UNKNOWN,
+    /** m4-09: what starts `loop run`'s sleep assertion, `caffeinate` on macOS, null on other systems; tests fake it. */
+    val awakeLauncher: AwakeLauncher? = AwakeLauncher.forSystem(),
 ) {
     /**
      * The process env as read in [main], unfiltered. The agent env starts from it (minus the

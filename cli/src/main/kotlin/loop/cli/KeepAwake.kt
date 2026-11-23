@@ -184,3 +184,21 @@ class KeepAwake(
         const val PROGRAM = "caffeinate"
     }
 }
+
+/** Shows every call to each of [observers] in order, so the human log and [KeepAwake] follow one run. */
+internal class RunObservers(
+    private vararg val observers: RunObserver,
+) : RunObserver {
+    override fun recorded(event: RecordedEvent) = observers.forEach { it.recorded(event) }
+
+    override fun runnerLine(
+        event: RecordedEvent,
+        line: String,
+    ) = observers.forEach { it.runnerLine(event, line) }
+
+    override fun polled(
+        eligible: List<String>,
+        running: Int,
+        maxRunning: Int,
+    ) = observers.forEach { it.polled(eligible, running, maxRunning) }
+}

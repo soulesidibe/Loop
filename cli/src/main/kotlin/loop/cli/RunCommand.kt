@@ -230,6 +230,8 @@ class RunCommand(
                 )
             }
         val humanLog = HumanLog(humanLogFile, clock, redactor, base = workflow.path.parent)
+        // m4-09, bl-156: an idle sleep assertion held while an attempt, a verification or a merge check runs.
+        val keepAwake = KeepAwake(host.awakeLauncher, log, context)
         // m2-19: the ledger line of each turn, in a file of its own like the human log; a failed write warns once.
         val ledgerPath = ledgerFile(host.loopHome, projectId)
         val ledgerLines =
@@ -294,7 +296,7 @@ class RunCommand(
                 attemptRecords = GzipAttemptRecords(redactor) { project, attempt -> attemptFile(host.loopHome, project, attempt) },
                 // m1-38: a step the store already holds for an attempt is never recorded again.
                 recordedThreshold = { attempt -> highestRecordedThreshold(store.eventsForAttempt(attempt).getOrThrow().map { it.event }) },
-                observer = humanLog,
+                observer = RunObservers(humanLog, keepAwake),
                 runnerFor = runnerOf,
                 workspacesFor = workspacesOf,
                 checkRunnerFor = checksOf,
@@ -341,6 +343,7 @@ class RunCommand(
         var stopReason: String? = null
         val onEnd: (Boolean) -> Unit = { failed ->
             try {
+                keepAwake.close()
                 if (!failed) {
                     val reason = stopReason
                     val fields = if (reason == null) emptyMap() else mapOf(RunStopped.ATTEMPTS_CANCELED to orchestrator.attemptsCanceled)
@@ -353,7 +356,7 @@ class RunCommand(
         }
         var broken = 0
         // The store closes inside untilSignal, so the shutdown hook waits for it.
-        untilSignal(log, context, redactor, onEnd) {
+        untilSignal(log, context, redactor, onEnd, keepAwake::close) {
             store.use {
                 try {
                     // m1-16, spec 8.6: the workspaces of terminal issues go before the first tick, in both modes.
@@ -407,12 +410,16 @@ class RunCommand(
      * with 0, or with [EXIT_INTERNAL_ERROR] when an internal error canceled the run, instead of
      * the JVM's signal code. When the grace runs out, or with `--once`, the hook just returns and
      * the JVM keeps its signal code, 143 for SIGTERM and 130 for SIGINT.
+     *
+     * m4-09: the hook calls [release] once the wait ends, so the sleep assertion ends with the run even when the grace
+     * ran out before [onEnd].
      */
     private fun untilSignal(
         log: KeyValueLog,
         context: LogContext,
         redactor: Redactor,
         onEnd: (failed: Boolean) -> Unit,
+        release: () -> Unit,
         block: suspend () -> Unit,
     ) {
         val job = Job()
@@ -420,7 +427,9 @@ class RunCommand(
         val hook =
             Thread({
                 job.cancel()
-                if (stopped.await(SHUTDOWN_WAIT_SECONDS, TimeUnit.SECONDS) && !once) {
+                val unwound = stopped.await(SHUTDOWN_WAIT_SECONDS, TimeUnit.SECONDS)
+                release()
+                if (unwound && !once) {
                     // Everything the run prints went out before the latch opened; halt skips nothing else.
                     System.out.flush()
                     System.err.flush()
