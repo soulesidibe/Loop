@@ -1397,7 +1397,7 @@ class AutoMergeOrchestratorTest {
 
             assertTrue(run.fellBack())
             assertContains(run.comment, "- protected_paths: the diff touches scripts/release.sh")
-            assertContains(run.comment, "Merge risk: not assessed, this Loop cannot run its merge risk reviewer, so the reviewer setup, not the result, is why the merge waits.")
+            assertContains(run.comment, "Merge risk: not assessed, $NO_REVIEWER_REASON.")
             assertEquals(null, run.sink.all(AutoMergeFallback.name).single()["band"])
         }
 
