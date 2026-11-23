@@ -132,6 +132,17 @@ class ClaudeCodeRiskReviewerTest {
         }
 
     @Test
+    fun `bl-96 a reviewer printing more than the output cap is a crash, only the first bytes kept in memory (finding 14 of bl-76)`() =
+        runBlocking {
+            val answer = """{"result":"{}","total_cost_usd":0.01}"""
+            val loud = ClaudeCodeRiskReviewer(fakeClaude("head -c 3000000 /dev/zero | tr '\\0' x\necho\necho '$answer'").toString(), host)
+
+            val crash = assertIs<RiskReviewError.Crashed>(loud.review(request()).exceptionOrNull())
+
+            assertContains(crash.message.orEmpty(), "printed more than 1048576 bytes")
+        }
+
+    @Test
     fun `a run past its timeout is stopped and is a timeout`() =
         runBlocking {
             val slow = ClaudeCodeRiskReviewer(fakeClaude("sleep 30").toString(), host)

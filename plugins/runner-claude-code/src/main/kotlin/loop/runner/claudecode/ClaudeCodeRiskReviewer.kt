@@ -16,6 +16,7 @@ import loop.api.RiskReviewRequest
 import loop.api.RiskReviewer
 import loop.runner.process.agentEnvironment
 import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.nio.file.Path
 import kotlin.io.path.createTempDirectory
 import kotlin.io.path.writeText
@@ -84,7 +85,7 @@ class ClaudeCodeRiskReviewer(
         val err = ByteArrayOutputStream()
         val threads =
             listOf(
-                Thread { process.inputStream.use { it.copyTo(out) } },
+                Thread { process.inputStream.use { copyCapped(it, out) } },
                 Thread { process.errorStream.use { it.copyTo(err) } },
                 Thread {
                     try {
@@ -101,6 +102,7 @@ class ClaudeCodeRiskReviewer(
             ?: return Result.failure(RiskReviewError.Timeout("no answer within ${request.timeoutMs} ms"))
         withContext(Dispatchers.IO) { threads.take(2).forEach { it.join(JOIN_MS) } }
         val stdout = out.toString(Charsets.UTF_8)
+        if (out.size() > STDOUT_MAX) return Result.failure(RiskReviewError.Crashed("$command printed more than $STDOUT_MAX bytes"))
         if (process.exitValue() != 0) {
             val detail = err.toString(Charsets.UTF_8).lines().firstOrNull { it.isNotBlank() } ?: stdout.lines().firstOrNull().orEmpty()
             return Result.failure(
@@ -108,6 +110,23 @@ class ClaudeCodeRiskReviewer(
             )
         }
         return parse(stdout)
+    }
+
+    /**
+     * Copies [input] into [out] up to one byte past [STDOUT_MAX], then reads and drops the rest, so a reviewer that prints
+     * without end never sits in memory whole (bl-96) and the size check still sees it went over.
+     */
+    private fun copyCapped(
+        input: InputStream,
+        out: ByteArrayOutputStream,
+    ) {
+        val buffer = ByteArray(READ_BYTES)
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            val room = STDOUT_MAX + 1 - out.size()
+            if (room > 0) out.write(buffer, 0, minOf(read, room))
+        }
     }
 
     private fun stop(process: Process) {
@@ -144,6 +163,12 @@ class ClaudeCodeRiskReviewer(
         const val READ_TOOLS = "Read,Grep,Glob"
         const val WRITE_TOOLS = "Bash,Edit,Write,MultiEdit,NotebookEdit,WebFetch,WebSearch,Task"
         const val DETAIL_MAX = 300
+
+        /** The bytes of stdout kept: the answer is one JSON line far below it. */
+        const val STDOUT_MAX = 1_048_576
+
+        /** The bytes read from stdout at a time. */
+        const val READ_BYTES = 8_192
         const val EMPTY_MCP_CONFIG = "{\"mcpServers\":{}}"
 
         /** No CLAUDE.md or other memory file of the workspace, the user or the auto memory reaches the reviewer. */
