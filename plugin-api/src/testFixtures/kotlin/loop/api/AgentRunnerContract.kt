@@ -159,6 +159,7 @@ public abstract class AgentRunnerContract {
                         is RunnerEvent.UsageEstimate -> event.sessionId to event.turnId
                         is RunnerEvent.ContextUsage -> event.sessionId to event.turnId
                         is RunnerEvent.RateLimit -> event.sessionId to event.turnId
+                        is RunnerEvent.WakeTurn -> event.sessionId to event.turnId
                         is RunnerEvent.TurnCompleted -> event.sessionId to event.turnId
                         is RunnerEvent.TurnFailed -> event.sessionId to event.turnId
                         is RunnerEvent.TurnInputRequired -> event.sessionId to event.turnId

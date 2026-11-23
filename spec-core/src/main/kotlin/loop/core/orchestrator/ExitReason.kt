@@ -17,6 +17,9 @@ internal object ExitReason {
     /** The turn count reached `agent.max_turns`. */
     const val MAX_TURNS = "max_turns"
 
+    /** The wake turns reached `agent.max_wake_turns` (m4-03); wake turns never count against `agent.max_turns`. */
+    const val MAX_WAKE_TURNS = "max_wake_turns"
+
     /** The runner has no session, so the attempt ran one turn. */
     const val NO_CONTINUATION = "no_continuation"
 
