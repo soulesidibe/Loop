@@ -132,6 +132,31 @@ class ClaudeCodeRiskReviewerTest {
         }
 
     @Test
+    fun `bl-96 a reviewer printing more than the output cap is a crash, only the first bytes kept in memory (finding 14 of bl-76)`() =
+        runBlocking {
+            val answer = """{"result":"{}","total_cost_usd":0.01}"""
+            val loud = ClaudeCodeRiskReviewer(fakeClaude("head -c 3000000 /dev/zero | tr '\\0' x\necho\necho '$answer'").toString(), host)
+
+            val crash = assertIs<RiskReviewError.Crashed>(loud.review(request()).exceptionOrNull())
+
+            assertContains(crash.message.orEmpty(), "printed more than 1048576 bytes")
+        }
+
+    @Test
+    fun `bl-96 a reviewer that exits while a child holds its output open answers within one join wait (finding 15 of bl-76)`() =
+        runBlocking {
+            val answer = """{"result":"{}","total_cost_usd":0.01}"""
+            val leaky = ClaudeCodeRiskReviewer(fakeClaude("cat > /dev/null\necho '$answer'\nsleep 30 &").toString(), host)
+
+            val started = System.nanoTime()
+            val review = leaky.review(request()).getOrThrow()
+
+            assertEquals("{}", review.text)
+            val elapsed = (System.nanoTime() - started) / 1_000_000
+            assertTrue(elapsed < 8_000, "the two output readers shared one wait, took $elapsed ms")
+        }
+
+    @Test
     fun `a run past its timeout is stopped and is a timeout`() =
         runBlocking {
             val slow = ClaudeCodeRiskReviewer(fakeClaude("sleep 30").toString(), host)
