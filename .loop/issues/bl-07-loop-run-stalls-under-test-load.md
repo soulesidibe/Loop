@@ -54,3 +54,5 @@ bl-183 was closed as a duplicate of this issue, priority raised from 3 to 2. New
 - `WaitingCommandTest` "a check interrupted by kill -9 still waits after the restart": "the rerun check never moved the issue" (`awaitState`, `WAIT_NANOS`). Local merge check, 14:52.
 
 `LoopFixture` wrote five diagnostics files under `$TMPDIR/loop-hangs/` that day, each with the process list and an empty thread section, so the thread dump of the hung process is missing. A working thread dump belongs to the first criterion. Since m4-00 step 2 adds `maxParallelForks` to `cli/build.gradle.kts`, the diagnostic run should use the parallel forks of step 2, the load every M4 agent will put on these tests.
+
+2026-11-23 soule: one more occurrence, on CI: `CodexClientToolsRunTest` "m3-22 the client tools take the arguments loop tool mcp declares" failed at `CodexClientToolsRunTest.kt:298`, no `tools/list` reply from `loop tool mcp` within its 60 s wait, run 45113835331 of m4-03 (which touches neither `cli` nor `mcp`). The second `loop tool mcp` failure on an ubuntu runner, after `ToolMcpCommandTest` on 2026-11-22.
