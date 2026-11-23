@@ -1,5 +1,6 @@
 package loop.runner.claudecode
 
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import loop.api.RunnerEvent
 import loop.api.SessionId
@@ -336,6 +337,73 @@ class StreamJsonMapperTest {
             assertNull(failed.category, fixture)
             assertNull(failed.retryAfter, fixture)
         }
+    }
+
+    // m4-08, bl-123: a lost network is runner_unavailable too.
+
+    @Test
+    fun `the recorded ENOTFOUND result of bl-123 is runner_unavailable`() {
+        val failed = assertUnavailable("network_enotfound", "turn_failed: API Error: Can't reach the API server")
+
+        assertTrue(failed.reason.endsWith("check your internet or DNS (ENOTFOUND)"), failed.reason)
+        assertNull(failed.retryAfter)
+        assertEquals("connection_failed", assertIs<StreamLine.Result>(lines("network_enotfound").last()).apiError)
+    }
+
+    @Test
+    fun `each network error code and text in an error result is runner_unavailable`() {
+        listOf(
+            "API Error: Can't reach the API server, check your internet or DNS (ENOTFOUND)",
+            "API Error: Can’t reach the API server",
+            "API Error: connect ECONNREFUSED 160.79.104.10:443",
+            "API Error: connect ETIMEDOUT 160.79.104.10:443",
+            "API Error: read ECONNRESET",
+            "API Error: getaddrinfo EAI_AGAIN api.anthropic.com",
+            "API Error: Connection error.",
+        ).forEach { text ->
+            val failed = errorResult(text)
+
+            assertEquals(RunnerEvent.TurnFailed.Category.RunnerUnavailable, failed.category, text)
+        }
+    }
+
+    @Test
+    fun `an error result with api_error connection_failed is runner_unavailable whatever its text`() {
+        val line = """{"type":"result","subtype":"success","is_error":true,"api_error":"connection_failed","result":"API Error"}"""
+        val result = assertIs<StreamLine.Result>(StreamJsonMapper.parse(line))
+
+        val failed = assertIs<RunnerEvent.TurnFailed>(StreamJsonMapper.turnEvents(result, SESSION, TURN, null).last())
+
+        assertEquals(RunnerEvent.TurnFailed.Category.RunnerUnavailable, failed.category)
+    }
+
+    @Test
+    fun `network words outside an error result, or in an ordinary error, leave the turn as it was`() {
+        val answer = """{"type":"result","subtype":"success","is_error":false,"result":"The test covers ENOTFOUND and ECONNRESET."}"""
+        val completed = StreamJsonMapper.turnEvents(assertIs(StreamJsonMapper.parse(answer)), SESSION, TURN, null).last()
+        assertEquals(RunnerEvent.TurnCompleted(SESSION, TURN, exitCode = 0), completed)
+
+        assertNull(errorResult("Tests failed: expected ECONNREFUSED", isError = false, subtype = "error_max_turns").category)
+        assertNull(errorResult("The build failed").category)
+    }
+
+    /** The terminal event of a `result` line with [text], an error with a success subtype by default. */
+    private fun errorResult(
+        text: String,
+        isError: Boolean = true,
+        subtype: String = "success",
+    ): RunnerEvent.TurnFailed {
+        val line =
+            JsonObject(
+                mapOf(
+                    "type" to JsonPrimitive("result"),
+                    "subtype" to JsonPrimitive(subtype),
+                    "is_error" to JsonPrimitive(isError),
+                    "result" to JsonPrimitive(text),
+                ),
+            ).toString()
+        val result = assertIs<StreamLine.Result>(StreamJsonMapper.parse(line))
+        return assertIs<RunnerEvent.TurnFailed>(StreamJsonMapper.turnEvents(result, SESSION, TURN, null).last(), text)
     }
 
     /** The fixture's turn fails as `runner_unavailable` with a reason starting with [reasonStart]. */
