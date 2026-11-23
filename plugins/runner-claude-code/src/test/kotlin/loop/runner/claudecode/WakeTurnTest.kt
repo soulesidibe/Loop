@@ -51,7 +51,10 @@ class WakeTurnTest {
     fun `a notification read while idle, of a run started in turn 1, makes turn 2 a wake turn`() {
         val claude =
             Replay(
-                Replay.Turn(listOf(wake[0], taskStarted("t1", "r1"), wake[1], wake[2]), idleAfter = listOf(taskNotification("t1", "r1"), wake[3], wake[4])),
+                Replay.Turn(
+                    listOf(wake[0], taskStarted("t1", "r1"), wake[1], wake[2]),
+                    idleAfter = listOf(taskNotification("t1", "r1"), wake[3], wake[4]),
+                ),
                 Replay.Turn(next),
             )
 
@@ -72,7 +75,10 @@ class WakeTurnTest {
     fun `a notification inside a wake's own init and result makes a wake turn`() {
         val claude =
             Replay(
-                Replay.Turn(listOf(wake[0], taskStarted("t1", "r1"), wake[1], wake[2]), idleAfter = listOf(wake[0], taskNotification("t1", "r1"))),
+                Replay.Turn(
+                    listOf(wake[0], taskStarted("t1", "r1"), wake[1], wake[2]),
+                    idleAfter = listOf(wake[0], taskNotification("t1", "r1")),
+                ),
                 Replay.Turn(next),
                 lateIdle = listOf(wake[3], withOrigin(wake[4], "r1")),
             )
@@ -174,7 +180,12 @@ class WakeTurnTest {
 
         assertEquals(listOf(wake[0], taskNotification("t1", "r1"), wake[3], withOrigin(wake[4], "r1")) + next, two.stdout())
         val reports = two.filterIsInstance<RunnerEvent.Usage>()
-        assertEquals(listOf(listOf(1500L, 49_500L, 13_400_000L, 189_000L), listOf(1600L, 49_550L, 13_400_010L, 189_005L)), reports.map { it.tokens() })
+        assertEquals(
+            listOf(listOf(1500L, 49_500L, 13_400_000L, 189_000L), listOf(1600L, 49_550L, 13_400_010L, 189_005L)),
+            reports.map {
+                it.tokens()
+            },
+        )
         assertEquals(listOf(9.75, 10.0), reports.map { it.totalCostUsd })
         assertEquals(1, two.wakes().size)
         assertIs<RunnerEvent.TurnCompleted>(two.last())
@@ -217,8 +228,14 @@ class WakeTurnTest {
         val lines = Fixtures.lines("wake_turns_10c2f759")
         val turnsJson =
             Json
-                .parseToJsonElement(Fixtures::class.java.getResource("/streams/wake_turns_10c2f759.turns.json")!!.toURI().toPath().toFile().readText())
-                .jsonObject
+                .parseToJsonElement(
+                    Fixtures::class.java
+                        .getResource("/streams/wake_turns_10c2f759.turns.json")!!
+                        .toURI()
+                        .toPath()
+                        .toFile()
+                        .readText(),
+                ).jsonObject
                 .getValue("turns")
                 .jsonArray
                 .map { it.jsonObject }
@@ -263,7 +280,11 @@ class WakeTurnTest {
 
     private fun List<RunnerEvent>.wakes(): List<RunnerEvent.WakeTurn> = filterIsInstance<RunnerEvent.WakeTurn>()
 
-    private fun List<RunnerEvent>.stdout(): List<String> = filterIsInstance<RunnerEvent.Output>().filter { it.stream == Stream.Stdout }.map { it.line }
+    private fun List<RunnerEvent>.stdout(): List<String> =
+        filterIsInstance<RunnerEvent.Output>()
+            .filter {
+                it.stream == Stream.Stdout
+            }.map { it.line }
 
     private fun RunnerEvent.Usage.tokens(): List<Long> = listOf(inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens)
 

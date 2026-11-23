@@ -429,6 +429,13 @@ class FakeRunner(
     /** Runs on [AgentSession.interrupt] with the number of the session. */
     var onInterrupt: (Int) -> Unit = {}
 
+    /**
+     * m4-03: scripted wakes. True for turn `t` of session `s` (numbered from 1) makes it a wake turn: a
+     * [RunnerEvent.WakeTurn] goes right before its terminal event, as a runner sends it once the turn read the
+     * notification of a background task run an earlier turn started.
+     */
+    var wakes: (session: Int, turn: Int) -> Boolean = { _, _ -> false }
+
     override fun run(
         ctx: AttemptContext,
         prompt: String,
@@ -449,7 +456,18 @@ class FakeRunner(
                 turn: Int,
             ): Flow<RunnerEvent> {
                 turnInputs += turn to input
-                return turns(turn, input)
+                if (!wakes(number, turn)) return turns(turn, input)
+                return flow {
+                    var woken = false
+                    turns(turn, input).collect { event ->
+                        val ids = event.terminalIds()
+                        if (!woken && ids != null) {
+                            woken = true
+                            emit(RunnerEvent.WakeTurn(ids.first, ids.second))
+                        }
+                        emit(event)
+                    }
+                }
             }
 
             override suspend fun stop() {
@@ -469,6 +487,15 @@ class FakeRunner(
         }
     }
 }
+
+/** The session and turn ids of a terminal event, null for any other event. */
+private fun RunnerEvent.terminalIds(): Pair<SessionId, TurnId>? =
+    when (this) {
+        is RunnerEvent.TurnCompleted -> sessionId to turnId
+        is RunnerEvent.TurnFailed -> sessionId to turnId
+        is RunnerEvent.TurnInputRequired -> sessionId to turnId
+        else -> null
+    }
 
 /** One call of [FakeHookRunner]. */
 data class HookCall(

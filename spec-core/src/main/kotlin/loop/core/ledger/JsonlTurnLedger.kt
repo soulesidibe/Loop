@@ -66,6 +66,7 @@ class JsonlTurnLedger(
                 "peak_fraction" to JsonPrimitive(turn.peak?.fraction?.let(::fourDecimals)),
                 "rotations" to JsonPrimitive(turn.rotations),
                 "interrupted" to text(turn.interrupted),
+                "wake" to JsonPrimitive(turn.wake),
             )
         return JsonObject(fields).toString()
     }

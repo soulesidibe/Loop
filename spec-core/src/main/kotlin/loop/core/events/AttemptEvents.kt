@@ -233,6 +233,12 @@ abstract class TurnEvent(
 
         /** m3-12: `hard_limit` when Loop interrupted the turn because its session reached `context.hard_limit`. */
         const val INTERRUPTED = "interrupted"
+
+        /**
+         * m4-03: `true` on the end of a wake turn, one that read the notification of a background task run an earlier
+         * turn started. It does not count against `agent.max_turns`; absent for an ordinary turn.
+         */
+        const val WAKE = "wake"
         const val REASON = "reason"
 
         /** bl-39: the runner's failure category, `runner_unavailable`, absent for an ordinary failure. */
@@ -262,16 +268,20 @@ object TurnCompleted : TurnEvent("turn_completed") {
         event: RecordedEvent,
         details: TraceDetails,
     ) {
+        details.add(WAKE, event.data[WAKE])
         details.add(INTERRUPTED, event.data[INTERRUPTED])
     }
 
     override fun humanSentence(
         data: Map<String, String>,
         facts: HumanFacts,
-    ) = if (data[INTERRUPTED] != null) {
-        "turn ${data[TURN]} was interrupted at the hard limit" + facts.spend
-    } else {
-        "turn ${data[TURN]} finished" + facts.spend
+    ): String {
+        val wake = if (data[WAKE] == "true") ", a wake turn" else ""
+        return if (data[INTERRUPTED] != null) {
+            "turn ${data[TURN]}$wake was interrupted at the hard limit" + facts.spend
+        } else {
+            "turn ${data[TURN]} finished$wake" + facts.spend
+        }
     }
 }
 
@@ -285,6 +295,7 @@ object TurnFailed : TurnEvent("turn_failed") {
         event: RecordedEvent,
         details: TraceDetails,
     ) {
+        details.add(WAKE, event.data[WAKE])
         details.add(CATEGORY, event.data[CATEGORY])
         details.add(REASON, event.data[REASON])
     }

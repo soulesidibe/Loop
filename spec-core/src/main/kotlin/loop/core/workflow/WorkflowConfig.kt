@@ -474,7 +474,7 @@ data class HooksConfig(
     val onBudgetWarning: String? = null,
 )
 
-/** Spec 5.3.5, plus Loop's `agent.env` (bl-01). */
+/** Spec 5.3.5, plus Loop's `agent.env` (bl-01) and `agent.max_wake_turns` (m4-03). */
 data class AgentConfig(
     val maxConcurrentAgents: Int = 10,
     val maxTurns: Int = 20,
@@ -486,6 +486,12 @@ data class AgentConfig(
      * replaced by the attempt's workspace path when the runner builds the env, nothing else is expanded.
      */
     val env: Map<String, String> = emptyMap(),
+    /**
+     * `agent.max_wake_turns`: the wake turns an attempt may run, turns that read the notification of a background task
+     * run an earlier turn started. They never count against [maxTurns]; reaching this cap ends the attempt with
+     * `max_wake_turns`, so a chatty background task cannot keep it alive forever.
+     */
+    val maxWakeTurns: Int = 30,
 )
 
 /**

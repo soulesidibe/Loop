@@ -494,16 +494,30 @@ class ClaudeCodeRunnerTest {
         val chatter = (1..20).map { ProcessEvent.Line(Stream.Stdout, subagentLine(it)) }
         val noise = (21..40).map { ProcessEvent.Line(Stream.Stdout, subagentLine(it)) }
         val claude = Scripted(listOf(listOf(wake.take(3), next)), idle = chatter + wake[0] + wake[3] + noise + wake[4])
-        val runner = ClaudeCodeRunner(ClaudeCodeSettings(command = "claude"), HOST_ENV, emptySet(), claude.launch, groupAlive = { false }, idleLineBound = 5)
+        val runner =
+            ClaudeCodeRunner(
+                ClaudeCodeSettings(command = "claude"),
+                HOST_ENV,
+                emptySet(),
+                claude.launch,
+                groupAlive = { false },
+                idleLineBound = 5,
+            )
 
         val (_, second) = twoTurns(runner, "Fix it", "Keep going", pause = 800.milliseconds)
 
-        val warning = "loop: warning: the claude-code process wrote more than 5 lines while idle, 35 of them dropped, its usage and result lines kept"
+        val warning =
+            "loop: warning: the claude-code process wrote more than 5 lines while idle, 35 of them dropped, its usage and result lines kept"
         assertEquals(RunnerEvent.Output(Stream.Stderr, warning), second[1])
         val kept = chatter.take(5).map { it.text } + wake[0].text + wake[3].text + wake[4].text + next.map { it.text }
         assertEquals(kept, second.filterIsInstance<RunnerEvent.Output>().filter { it.stream == Stream.Stdout }.map { it.line })
         val reports = second.filterIsInstance<RunnerEvent.Usage>()
-        assertEquals(listOf(listOf(1500L, 49_500L, 13_400_000L, 189_000L), listOf(1600L, 49_550L, 13_400_010L, 189_005L)), reports.map { it.tokens() })
+        assertEquals(
+            listOf(listOf(1500L, 49_500L, 13_400_000L, 189_000L), listOf(1600L, 49_550L, 13_400_010L, 189_005L)),
+            reports.map {
+                it.tokens()
+            },
+        )
         assertEquals(listOf(9.75, 10.0), reports.map { it.totalCostUsd })
         assertIs<RunnerEvent.TurnCompleted>(second.last())
     }
@@ -514,7 +528,15 @@ class ClaudeCodeRunnerTest {
         val wake = Fixtures.lines("background_wake").map { ProcessEvent.Line(Stream.Stdout, it) }
         val chatter = (1..20).map { ProcessEvent.Line(Stream.Stdout, subagentLine(it)) }
         val claude = Scripted(listOf(listOf(listOf(wake[0]) + chatter + wake.subList(1, 3))))
-        val runner = ClaudeCodeRunner(ClaudeCodeSettings(command = "claude"), HOST_ENV, emptySet(), claude.launch, groupAlive = { false }, idleLineBound = 5)
+        val runner =
+            ClaudeCodeRunner(
+                ClaudeCodeSettings(command = "claude"),
+                HOST_ENV,
+                emptySet(),
+                claude.launch,
+                groupAlive = { false },
+                idleLineBound = 5,
+            )
 
         val events = runBlocking { withTimeout(20.seconds) { runner.run(context(emptyMap()), "Fix it").toList() } }
 
@@ -1250,7 +1272,12 @@ class ClaudeCodeRunnerTest {
         assertEquals(listOf("-p", "--resume", "claude-wake-session"), claude.argvOf(1).take(3))
         // m4-03: each field of the sums again, the woken segment's then the resumed one's, and the latest cost.
         val reports = second.filterIsInstance<RunnerEvent.Usage>()
-        assertEquals(listOf(listOf(1500L, 49_500L, 13_400_000L, 189_000L), listOf(1600L, 49_550L, 13_400_010L, 189_005L)), reports.map { it.tokens() })
+        assertEquals(
+            listOf(listOf(1500L, 49_500L, 13_400_000L, 189_000L), listOf(1600L, 49_550L, 13_400_010L, 189_005L)),
+            reports.map {
+                it.tokens()
+            },
+        )
         assertEquals(listOf(9.75, 0.0521), reports.map { it.totalCostUsd })
         assertIs<RunnerEvent.TurnCompleted>(second.last())
     }
