@@ -725,20 +725,26 @@ class AutoMergeOrchestratorTest {
         }
 
     @Test
-    fun `bl-96 with no window for the reviewer's model a diff over the read cap is cut, said in the prompt, and floors the band (bl-140)`() =
+    fun `bl-140 with no window for the reviewer's model a diff over the read cap is cut, said in the prompt, and floors the band`() =
         runTest {
             val reviewer = reviewer()
             val long = (1..120).joinToString("") { "val line%03d = \"%s\"\n".format(it, "x".repeat(990)) }
             val run =
                 autoMerge(
-                    workflow = workflow(context = ContextConfig(windows = emptyMap()), autoMerge = AutoMergeConfig(enabled = true, maxDiffLines = 1000)),
+                    workflow =
+                        workflow(
+                            context = ContextConfig(windows = emptyMap()),
+                            autoMerge = AutoMergeConfig(enabled = true, maxDiffLines = 1000),
+                        ),
                     reviewer = reviewer,
                     worktree = { verifiedWorktree(text = long) },
                 )
 
             val prompt = reviewer.requests.single().prompt
             assertTrue(
-                Regex("The diff above is cut to fit the reviewer's prompt limit: more than \\d+ of its characters are left out").containsMatchIn(prompt),
+                Regex(
+                    "The diff above is cut to fit the reviewer's prompt limit: more than \\d+ of its characters are left out",
+                ).containsMatchIn(prompt),
                 prompt.takeLast(3_000),
             )
             val assessed = run.sink.all(MergeRiskAssessed.name).single()
@@ -1328,7 +1334,10 @@ class AutoMergeOrchestratorTest {
 
             assertTrue(run.sink.events.none { it.kind == AutoMergeFallback.name }, run.sink.events.toString())
             assertEquals(1, run.remote.merges.size)
-            assertContains(reviewer.requests.single().prompt, "Files changed: 4, lines changed: 122, 1 of them outside tests and docs (limit 10).")
+            assertContains(
+                reviewer.requests.single().prompt,
+                "Files changed: 4, lines changed: 122, 1 of them outside tests and docs (limit 10).",
+            )
         }
 
     @Test

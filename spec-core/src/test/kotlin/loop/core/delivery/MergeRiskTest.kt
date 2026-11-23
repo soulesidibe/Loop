@@ -526,7 +526,8 @@ class MergeRiskTest {
         val list = fitted.prompt.substringAfter("## Changed files").substringBefore("## Diff against")
         assertContains(list, "<untrusted-f00d>\n- src/a.kt: +3 -0\n- src/b.kt: +40 -2\n- src/c.kt: +5 -1\n</untrusted-f00d>")
         assertFalse("left out" in fitted.prompt, fitted.prompt)
-        val uncounted = MergeRisk.facts(
+        val uncounted =
+            MergeRisk.facts(
                 listOf(DiffEntry("img.png", 0, 0, counted = false)),
                 RiskConfig(),
                 tests,

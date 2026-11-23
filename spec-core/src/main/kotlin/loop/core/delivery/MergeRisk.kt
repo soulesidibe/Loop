@@ -458,7 +458,8 @@ object MergeRisk {
 
     /** At most [SHOWN_PATHS] paths, each [printable], then how many more. */
     private fun shown(paths: List<String>): String =
-        paths.take(SHOWN_PATHS).joinToString(", ") { printable(it) } + if (paths.size > SHOWN_PATHS) " and ${paths.size - SHOWN_PATHS} more" else ""
+        paths.take(SHOWN_PATHS).joinToString(", ") { printable(it) } +
+            if (paths.size > SHOWN_PATHS) " and ${paths.size - SHOWN_PATHS} more" else ""
 
     /**
      * The reviewer's verdicts read from its answer [text]: a JSON object, alone or inside a fenced block, holding
