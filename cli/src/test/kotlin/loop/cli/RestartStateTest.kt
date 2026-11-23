@@ -181,9 +181,10 @@ class RestartStateTest {
         /**
          * Long enough for a JVM to start before the retry falls due, short enough for a test. 6 s was too short
          * with parallel forks (m4-00): the second `loop run` restored the entry after its due time, 2 runs in 5.
+         * 15 s was too short on a loaded machine (bl-96): two full builds of 26 and 29 minutes restored it 3 s late.
          */
-        const val BACKOFF_MS = 15_000L
+        const val BACKOFF_MS = 30_000L
         const val POLL_MS = 50L
-        val WAIT_NANOS = TimeUnit.SECONDS.toNanos(40)
+        val WAIT_NANOS = TimeUnit.SECONDS.toNanos(60)
     }
 }
