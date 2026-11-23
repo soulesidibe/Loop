@@ -1,5 +1,6 @@
 package loop.core.delivery
 
+import loop.api.ActionsJobs
 import loop.api.ActionsRuns
 import loop.api.Mergeability
 import loop.core.events.IssueCommented
@@ -77,14 +78,16 @@ data class AutoMergeFacts(
  * What the CI condition reads (m2-28, send back 5 of PR #75), right after the merge risk review so a head pushed a
  * moment before has had time to register its runs: the [mergeability] of pull request [pullRequestNumber], the [ci]
  * mode, and under [CiMode.Actions] only the Actions runs of the [mergedHead], [headRuns] (m3-15), with the [noRun]
- * rule, the CI wait having already applied the grace. Under [CiMode.None] no run is read and [headRuns] is null
- * (m4-05, bl-146).
+ * rule, the CI wait having already applied the grace, and the jobs read for its failed runs, [headJobs] by run id
+ * (m4-07), so a run GitHub did not start is told from a red one. Under [CiMode.None] no run is read and [headRuns] is
+ * null (m4-05, bl-146).
  */
 data class CiFacts(
     val pullRequestNumber: Long,
     val mergedHead: String,
     val mergeability: Result<Mergeability>,
     val headRuns: Result<ActionsRuns>? = null,
+    val headJobs: Map<Long, Result<ActionsJobs>> = emptyMap(),
     val ci: CiMode = CiMode.None,
     val noRun: CiNoRun = CiNoRun.Fail,
 )
@@ -117,8 +120,9 @@ object AutoMerge {
 
     /**
      * The CI condition on [facts], null when it holds (send back 5 of PR #75, m3-15, m4-05). Under [CiMode.Actions] the
-     * pull request is mergeable and `clean`, and the Actions runs of the merged head pass [CiWait.verdict]: a red or
-     * pending verdict fails it, and a head with no run unless `ci_no_run` is `pass`. Under [CiMode.None] green means the
+     * pull request is mergeable and `clean`, and the Actions runs of the merged head pass [CiWait.verdict]: a red, not
+     * started (m4-07) or pending verdict fails it, each with its own reason, and a head with no run unless `ci_no_run`
+     * is `pass`. Under [CiMode.None] green means the
      * merge check passed, which the gate proved before reading CI, so no run is read and only the pull request must be
      * mergeable, `unstable` included. Anything that cannot be read fails, closed.
      */
@@ -141,7 +145,12 @@ object AutoMerge {
         val head = short(facts.mergedHead)
         val read = facts.headRuns ?: return "the Actions runs of the merged head $head were not read"
         val runs = read.getOrElse { return "cannot read the Actions runs of the merged head $head: ${firstLine(it)}" }
-        return when (val verdict = CiWait.verdict(runs)) {
+        val jobs =
+            CiWait.jobsToRead(runs).mapNotNull { run ->
+                val jobs = facts.headJobs[run.id] ?: return@mapNotNull null
+                run.id to jobs.getOrElse { return "cannot read the jobs of the Actions run ${run.id} on the merged head $head: ${firstLine(it)}" }
+            }
+        return when (val verdict = CiWait.verdict(runs, jobs.toMap())) {
             is CiVerdict.Green -> null
             is CiVerdict.Red ->
                 "Actions runs on the merged head $head did not pass: " +

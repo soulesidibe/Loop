@@ -325,7 +325,11 @@ object CiWaiting : KeyedEvent("ci_waiting", Delivery.SHA) {
     ) = "waits for the Actions runs of ${data[Delivery.SHA]?.take(SHORT_SHA)} before the merge"
 }
 
-/** m3-15: how the CI wait ended, its outcome and the ids of the runs it kept. */
+/**
+ * m3-15: how the CI wait ended, its outcome and the ids of the runs it kept. Since m4-07 [NOT_STARTED] is a run GitHub
+ * refused to start (billing or limits): a failure of its own, never red and never no run, so nothing reads it as broken
+ * code.
+ */
 object CiFinished : KeyedEvent("ci_finished", Delivery.OUTCOME, Delivery.RUNS) {
     const val GREEN = "green"
     const val RED = "red"
@@ -345,6 +349,7 @@ object CiFinished : KeyedEvent("ci_finished", Delivery.OUTCOME, Delivery.RUNS) {
         NO_RUN_PASS -> "CI passed, the merged head has no Actions run and ci_no_run is pass"
         NO_RUN_FAIL -> "CI failed, the merged head has no Actions run and ci_no_run is fail"
         TIMEOUT -> "CI timed out, Actions runs of the merged head are still pending"
+        NOT_STARTED -> "CI not started, GitHub did not start the Actions runs of the merged head, the code was not judged"
         else -> "CI wait ended, ${data[Delivery.OUTCOME]}"
     }
 }
