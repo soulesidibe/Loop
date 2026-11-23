@@ -263,8 +263,7 @@ class CiWaitOrchestratorTest {
     private fun recordedJson(name: String): JsonObject =
         Json
             .parseToJsonElement(
-                Path
-                    .of(System.getProperty("loop.githubRecorded"))
+                RECORDED
                     .resolve("$name.json")
                     .toFile()
                     .readText(),
@@ -945,6 +944,12 @@ class CiWaitOrchestratorTest {
 
     private companion object {
         val PROJECT = ProjectId("p1")
+
+        /**
+         * The GitHub answers recorded in m4-00, read in place from the github tracker's test resources. Gradle runs the
+         * tests of spec-core in its project folder, so the path is relative to it.
+         */
+        val RECORDED: Path = Path.of("../plugins/tracker-github/src/test/resources/github/recorded").toAbsolutePath().normalize()
 
         /** The run GitHub refused for billing on 2026-11-16, recorded in m4-00 (bl-98). */
         const val REFUSED_RUN = 43779352010L
