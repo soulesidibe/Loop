@@ -1428,8 +1428,17 @@ class Orchestrator(
         )
     }
 
-    /** The issue as the tracker has it by id: null inside a success when it is gone, a failure when the read failed. */
-    private suspend fun refreshIssue(attempt: Attempt): Result<Issue?> {
+    /**
+     * The issue as the tracker has it by id: null inside a success when it is gone, a failure when the read failed,
+     * logged at warn as `event=tracker`.
+     */
+    private suspend fun refreshIssue(attempt: Attempt): Result<Issue?> =
+        readIssue(attempt).onFailure { error ->
+            log.log(LogLevel.WARN, "tracker", LogOutcome.FAILED, attempt.logContext(), reason = error.describe())
+        }
+
+    /** [refreshIssue] without its warning, for a caller that logs the failure its own way (bl-152). */
+    private suspend fun readIssue(attempt: Attempt): Result<Issue?> {
         val result =
             try {
                 tracker.fetchIssuesByIds(listOf(attempt.issue.id))
@@ -1438,11 +1447,7 @@ class Orchestrator(
             } catch (e: Exception) {
                 Result.failure(e)
             }
-        return result
-            .map { issues -> issues.firstOrNull() }
-            .onFailure { error ->
-                log.log(LogLevel.WARN, "tracker", LogOutcome.FAILED, attempt.logContext(), reason = error.describe())
-            }
+        return result.map { issues -> issues.firstOrNull() }
     }
 
     /** What [Attempt.execute] returns; [refresh] is set when the turn loop ended on a by-id refresh. */
@@ -1484,11 +1489,10 @@ class Orchestrator(
     }
 
     /**
-     * What the attempt's first prompt rendered with, so a rotation renders the template again the same way (m3-11); its
-     * issue is the one the latest rotation read, the one a failed read falls back to (bl-132).
+     * What the attempt's first prompt rendered with, so a rotation renders the template again the same way (m3-11). The
+     * issue is not kept: a rotation renders the one it reads, else the one the turn end read (bl-152).
      */
     private data class PromptInputs(
-        val issue: Issue,
         val attempt: Int?,
         val findings: String?,
         val workspaceReused: Boolean,
@@ -2462,7 +2466,7 @@ class Orchestrator(
                         return Executed(AttemptOutcome.Failed, "template error: ${error.describe()}")
                     }
             verifyFindings -= issue.id
-            promptInputs = PromptInputs(issue, attempt, findings, workspaceReused, workspace.path, fetchedBase)
+            promptInputs = PromptInputs(attempt, findings, workspaceReused, workspace.path, fetchedBase)
             // m3-12: only a session that can rotate needs the commit, and the working tree (bl-136), its progress starts from.
             if (runner.capabilities.occupancy) {
                 val (head, tree) = workspaceFacts(workspace.path)
@@ -2508,10 +2512,14 @@ class Orchestrator(
 
         /**
          * Stops the session at the attempt's end, with the usage callback like every stop (m4-04), then writes the
-         * `stop` ledger line of what a stop read that no turn line holds. Its failure is recorded and ignored.
+         * `stop` ledger line of what a stop read that no turn line holds. Its failure is recorded and ignored. A rotation
+         * still pending, its old session stopped but no turn of the new one started, is recorded first, without a new
+         * session's ids (bl-152): a `loop stop`, a reconciliation stop or an error that ends the attempt in the middle of
+         * the rotation then keeps `session_rotated` in the trace.
          */
         private suspend fun endSession() =
             withContext(NonCancellable) {
+                recordRotation(newThreadId = null, runtimeSessionId = null)
                 session?.let { stopUsage.stop(it) }
                 session = null
                 StopUsage.line(lastTurnLine, ledger, clock.now())?.let { line ->
@@ -2905,7 +2913,7 @@ class Orchestrator(
                 val crossing = hard ?: occupancy.crossing(workflow.config.context.windows, workflow.config.context.softLimit)
                 if (crossing != null && runner.capabilities.occupancy) {
                     val limit = if (hard != null) SessionRotated.HARD_LIMIT else SessionRotated.SOFT_LIMIT
-                    when (val rotation = rotate(ctx, crossing, limit, number)) {
+                    when (val rotation = rotate(ctx, crossing, limit, number, checkNotNull(refresh))) {
                         is Rotation.Ended -> {
                             recordFinishing(turn)
                             return rotation.executed
@@ -2938,13 +2946,15 @@ class Orchestrator(
          * is the template rendered with `loop.retry_kind` = `rotation` and a session brief. Not a retry: no `max_attempts`
          * slot, no backoff. The second rotation in a row without progress parks the issue with `split_issue` instead
          * (m3-12), a rotation past `context.max_rotations` with `max_rotations`, and a failed stop ends the attempt as an
-         * error retry rather than start a second process beside one that may still live.
+         * error retry rather than start a second process beside one that may still live. [turnEnd] is the issue the turn
+         * end's refresh read, the one the rotated prompt shows when the read at the rotation fails (bl-152).
          */
         private suspend fun rotate(
             ctx: AttemptContext,
             crossing: OccupancyMeter.Crossing,
             limit: String,
             number: Int,
+            turnEnd: Issue,
         ): Rotation {
             val maxRotations = workflow.config.context.maxRotations
             val occupancyData =
@@ -3019,9 +3029,9 @@ class Orchestrator(
                 fields = mapOf("rotation" to rotations, "max_rotations" to maxRotations, "fraction" to crossing.fractionText()),
                 reason = limit,
             )
-            // bl-132: the issue as the tracker has it now, the one Loop holds when that read fails.
-            val issue = rotationIssue(inputs.issue)
-            promptInputs = inputs.copy(issue = issue)
+            // bl-132: the issue as the tracker has it now, the one the turn end read when that read fails (bl-152). A
+            // cancel during the read leaves the rotation pending, and the session's end records it (bl-152).
+            val issue = rotationIssue(turnEnd)
             // The new session knows nothing of the turn that just ended: it gets the findings of this attempt's latest
             // verdict, none when that verdict is not a refutation (bl-132), the dispatch findings only before any
             // verdict of the attempt, and the notices of the requests the last drain could not apply, the way the
@@ -3068,11 +3078,12 @@ class Orchestrator(
         /**
          * The issue a rotated prompt renders (bl-132): read by id and completed as at dispatch (bl-06), so the new
          * session sees what changed since. A failed read or completion, or an issue the tracker no longer has, falls
-         * back to [held], the issue Loop holds for the rotation, with a warning on the operator log.
+         * back to [turnEnd], the issue the turn end's refresh read moments before (bl-152), with one warning on the
+         * operator log, `event=rotation_issue`.
          */
-        private suspend fun rotationIssue(held: Issue): Issue {
+        private suspend fun rotationIssue(turnEnd: Issue): Issue {
             val problem =
-                refreshIssue(this).fold(
+                readIssue(this).fold(
                     onSuccess = { fresh ->
                         if (fresh == null) {
                             "the tracker no longer has it"
@@ -3082,9 +3093,9 @@ class Orchestrator(
                     },
                     onFailure = { it.describe() },
                 )
-            val reason = "the rotated prompt shows the issue as Loop holds it, the read before it failed: $problem"
+            val reason = "the rotated prompt shows the issue as the turn end read it, the read before it failed: $problem"
             log.log(LogLevel.WARN, "rotation_issue", LogOutcome.FAILED, logContext(), reason = reason)
-            return held
+            return turnEnd
         }
 
         /**

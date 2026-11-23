@@ -36,11 +36,14 @@ public interface TrackerAdapter {
     ): Result<Unit>
 
     /**
-     * Completes [issue] just before its prompt is rendered, once per dispatch (bl-06): a tracker that keeps
-     * what the agent must see outside the issue it lists, such as GitHub comments, adds it to the returned
-     * issue, for example to its [Issue.description]. A failure means the prompt cannot be rendered with all of
-     * it, so the attempt does not start. The default returns [issue] unchanged, for a tracker whose issue is
-     * already complete, like the files tracker whose comments are part of the body.
+     * Completes [issue] just before a prompt is rendered (bl-06): a tracker that keeps what the agent must see
+     * outside the issue it lists, such as GitHub comments, adds it to the returned issue, for example to its
+     * [Issue.description]. It is called once per dispatch, where a failure means the prompt cannot be rendered
+     * with all of it, so the attempt does not start. It is called again at each rotation of the agent session,
+     * after the old session's [AgentSession.stop] with its usage callback, on the issue read again by id
+     * (bl-132): there a failure starts the new session anyway, with the issue as the turn end read it (bl-152).
+     * The default returns [issue] unchanged, for a tracker whose issue is already complete, like the files
+     * tracker whose comments are part of the body.
      */
     public suspend fun completeIssue(issue: Issue): Result<Issue> = Result.success(issue)
 
