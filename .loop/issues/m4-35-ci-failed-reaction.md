@@ -3,7 +3,7 @@ id: m4-35
 title: "The ci_failed reaction, proven on recorded Actions answers"
 state: todo
 priority: 3
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [m4-34]
 ---
 

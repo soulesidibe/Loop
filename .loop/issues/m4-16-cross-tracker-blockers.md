@@ -3,7 +3,7 @@ id: m4-16
 title: "Cross tracker blockers from a Blocked by line in the body"
 state: todo
 priority: 2
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [m4-15]
 ---
 

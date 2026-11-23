@@ -3,7 +3,7 @@ id: m4-54
 title: "Verification extracted from the orchestrator into loop.core.verify"
 state: todo
 priority: 3
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [m4-37]
 ---
 

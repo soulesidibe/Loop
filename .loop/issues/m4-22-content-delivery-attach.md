@@ -3,7 +3,7 @@ id: m4-22
 title: "Content delivery: attach to the issue, human by default"
 state: todo
 priority: 2
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [m4-21, m4-29]
 ---
 

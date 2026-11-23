@@ -3,7 +3,7 @@ id: m4-30
 title: "Notification hook and terminal channel: you are told when a run needs you"
 state: todo
 priority: 3
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [m4-26, m4-01]
 ---
 

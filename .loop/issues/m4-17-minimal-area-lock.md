@@ -3,7 +3,7 @@ id: m4-17
 title: "Minimal area lock, from front matter and a GitHub Area line"
 state: todo
 priority: 2
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [m4-16]
 ---
 

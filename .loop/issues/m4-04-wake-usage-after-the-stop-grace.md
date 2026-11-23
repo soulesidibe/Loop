@@ -3,7 +3,7 @@ id: m4-04
 title: "The usage of a wake read at or after the stop is counted"
 state: todo
 priority: 2
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [m4-03]
 ---
 

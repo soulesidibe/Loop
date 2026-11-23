@@ -3,7 +3,7 @@ id: m4-42
 title: "OpenTelemetry export plugin"
 state: todo
 priority: 3
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [m4-01, m4-13]
 ---
 
