@@ -1,6 +1,8 @@
 package loop.tracker.github
 
 import com.sun.net.httpserver.HttpServer
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.test.runTest
 import loop.api.DeliveryError
 import org.junit.jupiter.api.AfterEach
@@ -13,6 +15,8 @@ import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.PosixFilePermissions
+import java.util.Collections
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
@@ -506,6 +510,85 @@ class GitPushTest {
             assertEquals(tip, pusher().fetch("release/2026.11").getOrThrow())
             assertEquals(tip, git(workDir, "rev-parse", "refs/loop/base/release/2026.11"))
         }
+
+    @Test
+    fun `two fetches in two workspaces of one repository run one after the other and both pin the base`() =
+        runTest {
+            val tip = upstream()
+            git(workDir, "worktree", "add", "--quiet", "--detach", tmp.resolve("ws-a").toString())
+            git(workDir, "worktree", "add", "--quiet", "--detach", tmp.resolve("ws-b").toString())
+            val race = FetchRace(wait = 2.seconds)
+
+            val (a, b) =
+                coroutineScope {
+                    val a = async { race.pusher("a", tmp.resolve("ws-a")).fetch("main") }
+                    val b = async { race.pusher("b", tmp.resolve("ws-b")).fetch("main") }
+                    a.await() to b.await()
+                }
+
+            assertEquals(tip, a.getOrThrow())
+            assertEquals(tip, b.getOrThrow())
+            assertEquals(tip, git(workDir, "rev-parse", "refs/loop/base/main"))
+            assertEquals(1, race.timedOut(), "both network fetches ran at once: ${race.starts}")
+            val order = race.starts.joinToString("")
+            assertTrue(order.matches(Regex("a+b+|b+a+")), "the git processes of the two fetches interleaved: $order")
+        }
+
+    @Test
+    fun `fetches of two different repositories do not wait on each other`() =
+        runTest {
+            val tip = upstream()
+            git(tmp, "clone", "--quiet", "--no-local", "work", "project-2")
+            val race = FetchRace(wait = 10.seconds)
+
+            val (a, b) =
+                coroutineScope {
+                    val a = async { race.pusher("a", workDir).fetch("main") }
+                    val b = async { race.pusher("b", tmp.resolve("project-2")).fetch("main") }
+                    a.await() to b.await()
+                }
+
+            assertEquals(tip, a.getOrThrow())
+            assertEquals(tip, b.getOrThrow())
+            assertEquals(tip, git(workDir, "rev-parse", "refs/loop/base/main"))
+            assertEquals(tip, git(tmp.resolve("project-2"), "rev-parse", "refs/loop/base/main"))
+            assertEquals(0, race.timedOut(), "one fetch waited for the other: ${race.starts}")
+        }
+
+    /**
+     * Two fetches, tagged `a` and `b`, that see each other: right before its network `git fetch` starts, each one
+     * signals it and waits up to [wait] for the other's. [starts] holds the tag of every git process they start, but
+     * the read of the common folder, which tells repositories apart before any lock.
+     */
+    private inner class FetchRace(
+        private val wait: Duration,
+    ) {
+        val starts: MutableList<String> = Collections.synchronizedList(mutableListOf())
+        private val fetching = mapOf("a" to CountDownLatch(1), "b" to CountDownLatch(1))
+        private val waits = Collections.synchronizedList(mutableListOf<Boolean>())
+
+        fun pusher(
+            tag: String,
+            projectDir: Path,
+        ) = GitPush(projectDir, url, token, env, startProcess = { builder -> start(tag, builder) })
+
+        /** How many fetches gave up waiting for the other one. */
+        fun timedOut(): Int = waits.count { !it }
+
+        private fun start(
+            tag: String,
+            builder: ProcessBuilder,
+        ): Process {
+            val args = builder.command()
+            if ("--git-common-dir" !in args) starts += tag
+            if ("fetch" in args) {
+                fetching.getValue(tag).countDown()
+                val other = fetching.getValue(if (tag == "a") "b" else "a")
+                waits += other.await(wait.inWholeMilliseconds, TimeUnit.MILLISECONDS)
+            }
+            return builder.start()
+        }
+    }
 
     @Test
     fun `the token reaches the base fetch alone, no git process holding it reads the project, and the project side runs no hook`() =
