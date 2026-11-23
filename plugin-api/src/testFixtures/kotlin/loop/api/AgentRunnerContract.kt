@@ -35,8 +35,10 @@ import kotlin.time.Duration.Companion.seconds
  * [RunnerEvent.TurnStarted] (turns 2 to n) and ends with exactly one terminal event; that
  * [RunnerEvent.Usage] values are absolute and never decrease within a session; that cancelling
  * the flow leaves no agent process or child of it; that the declared [RunnerCapabilities] match
- * what the runner does (continuation, usage, cost, occupancy); and that a
- * [RunnerEvent.TurnFailed] category is null or `runner_unavailable` (bl-39).
+ * what the runner does (continuation, usage, cost, occupancy); that a
+ * [RunnerEvent.TurnFailed] category is null or `runner_unavailable` (bl-39); and that a session's
+ * [AgentSession.stop] with a report callback reports only usage absolute for the session and at most
+ * one [RunnerEvent.StopGraceExpired], last (bl-152).
  */
 public abstract class AgentRunnerContract {
     @TempDir
@@ -206,6 +208,52 @@ public abstract class AgentRunnerContract {
         assertEquals(2, resumed.turn)
         assertEquals("${resumed.threadId}-${resumed.turnId.value}", resumed.sessionId.value)
         assertTrue(second.none { it is RunnerEvent.SessionStarted }, "turn 2 emits no SessionStarted: $second")
+    }
+
+    @Test
+    public fun `a stop with a report gives only absolute usage of the session and at most one StopGraceExpired, last`() {
+        val runner = succeedingRunner(report())
+        assumeTrue(runner.capabilities.continuation, "the runner declares no continuation")
+        val session = assertNotNull(runner.openSession(context()), "the runner declares continuation")
+        val (turn, reported) =
+            CompletableFuture
+                .supplyAsync {
+                    runBlocking {
+                        val reported = mutableListOf<RunnerEvent>()
+                        val turn =
+                            try {
+                                session.runTurn("first", 1).toList()
+                            } finally {
+                                session.stop { reported += it }
+                            }
+                        turn to reported.toList()
+                    }
+                }.get(TIMEOUT.inWholeSeconds, TimeUnit.SECONDS)
+
+        reported.forEach { event ->
+            assertTrue(
+                event is RunnerEvent.Usage || event is RunnerEvent.StopGraceExpired,
+                "its stop reported an event other than Usage and StopGraceExpired: $event",
+            )
+        }
+        val usage = reported.filterIsInstance<RunnerEvent.Usage>()
+        if (!runner.capabilities.usage) assertTrue(usage.isEmpty(), "the runner declares no usage, but its stop reported $usage")
+        val thread = assertIs<RunnerEvent.SessionStarted>(turn.first()).threadId
+        usage.forEach { report ->
+            assertTrue(
+                report.sessionId.value.startsWith("$thread-"),
+                "usage reported at the stop is not of the session's thread $thread: $report",
+            )
+        }
+        val absolute = listOfNotNull(turn.filterIsInstance<RunnerEvent.Usage>().lastOrNull()) + usage
+        absolute.zipWithNext().forEach { (before, after) ->
+            val down = before.tokens().zip(after.tokens()).any { (b, a) -> a < b }
+            val costDown = before.totalCostUsd != null && after.totalCostUsd != null && after.totalCostUsd < before.totalCostUsd
+            assertTrue(!down && !costDown, "usage went down at the stop, from $before to $after")
+        }
+        val graces = reported.filterIsInstance<RunnerEvent.StopGraceExpired>()
+        assertTrue(graces.size <= 1, "its stop reported more than one StopGraceExpired: $graces")
+        if (graces.isNotEmpty()) assertIs<RunnerEvent.StopGraceExpired>(reported.last(), "StopGraceExpired is not last of $reported")
     }
 
     @Test

@@ -30,6 +30,50 @@ class AgentRunnerContractCapabilitiesTest {
         contract.`ContextUsage is reported exactly when the runner declares occupancy`()
         contract.`Usage values are absolute and never decrease within a session`()
         contract.`a TurnFailed category is null or runner_unavailable`()
+        contract.`a stop with a report gives only absolute usage of the session and at most one StopGraceExpired, last`()
+    }
+
+    @Test
+    fun `a runner whose stop reports a turn event fails the contract`() {
+        val runner = ScriptedRunner(HONEST, stopReports = { listOf(RunnerEvent.TurnCompleted(it, TurnId("turn-1"), 0)) })
+
+        assertFailsContract("its stop reported an event other than Usage and StopGraceExpired") {
+            contractFor(runner).`a stop with a report gives only absolute usage of the session and at most one StopGraceExpired, last`()
+        }
+    }
+
+    @Test
+    fun `a runner whose stop reports usage below the last turn's fails the contract`() {
+        val runner = ScriptedRunner(HONEST, stopReports = { listOf(RunnerEvent.Usage(it, TurnId("turn-1"), 1, 1, 1, 1, 0.5)) })
+
+        assertFailsContract("usage went down at the stop") {
+            contractFor(runner).`a stop with a report gives only absolute usage of the session and at most one StopGraceExpired, last`()
+        }
+    }
+
+    @Test
+    fun `a runner whose stop reports usage of another thread fails the contract`() {
+        val other = SessionId("other-turn-1")
+        val runner = ScriptedRunner(HONEST, stopReports = { listOf(RunnerEvent.Usage(other, TurnId("turn-1"), 500, 500, 500, 500, 0.5)) })
+
+        assertFailsContract("is not of the session's thread") {
+            contractFor(runner).`a stop with a report gives only absolute usage of the session and at most one StopGraceExpired, last`()
+        }
+    }
+
+    @Test
+    fun `a runner whose stop reports usage after StopGraceExpired fails the contract`() {
+        val runner =
+            ScriptedRunner(HONEST, stopReports = {
+                listOf(
+                    RunnerEvent.StopGraceExpired(it, TurnId("turn-1"), graceMs = 5_000, wake = true, wakeMessages = 1),
+                    RunnerEvent.Usage(it, TurnId("turn-1"), 500, 500, 500, 500, 0.5),
+                )
+            })
+
+        assertFailsContract("StopGraceExpired is not last") {
+            contractFor(runner).`a stop with a report gives only absolute usage of the session and at most one StopGraceExpired, last`()
+        }
     }
 
     @Test
@@ -150,7 +194,9 @@ class AgentRunnerContractCapabilitiesTest {
 
     /**
      * A runner in memory: each turn emits its start, two [RunnerEvent.Usage] reports when [usage] (tokens from
-     * [tokens], by turn and report, cost [cost]), a [RunnerEvent.ContextUsage] when [occupancy], then its end.
+     * [tokens], by turn and report, cost [cost]), a [RunnerEvent.ContextUsage] when [occupancy], then its end. A
+     * session's stop with a report callback reports [stopReports] of the session id of its turn 1, by default a wake's
+     * usage above every turn's.
      */
     private class ScriptedRunner(
         override val capabilities: RunnerCapabilities,
@@ -160,8 +206,11 @@ class AgentRunnerContractCapabilitiesTest {
         private val occupancy: Boolean = false,
         private val tokens: (turn: Int, report: Int) -> Long = { turn, report -> 100L * turn + report },
         private val fails: Boolean = false,
+        private val stopReports: (
+            SessionId,
+        ) -> List<RunnerEvent> = { listOf(RunnerEvent.Usage(it, TurnId("turn-1"), 500, 500, 500, 500, cost)) },
     ) : AgentRunner {
-        fun failing(): ScriptedRunner = ScriptedRunner(capabilities, sessions, usage, cost, occupancy, tokens, fails = true)
+        fun failing(): ScriptedRunner = ScriptedRunner(capabilities, sessions, usage, cost, occupancy, tokens, fails = true, stopReports)
 
         override fun run(
             ctx: AttemptContext,
@@ -179,6 +228,10 @@ class AgentRunnerContractCapabilitiesTest {
                     ): Flow<RunnerEvent> = turn(turn)
 
                     override suspend fun stop() = Unit
+
+                    override suspend fun stop(report: suspend (RunnerEvent) -> Unit) {
+                        if (usage) stopReports(SessionId("thread-turn-1")).forEach { report(it) }
+                    }
                 }
             }
 
