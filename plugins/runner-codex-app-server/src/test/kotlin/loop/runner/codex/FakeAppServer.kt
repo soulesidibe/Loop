@@ -21,6 +21,8 @@ import java.nio.file.attribute.PosixFilePermissions
 import kotlin.io.path.createDirectories
 import kotlin.io.path.setPosixFilePermissions
 import kotlin.io.path.writeText
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * A scripted codex app server (m3-17): a bash script in its own folder that replays [Script] steps in order, the base
@@ -243,6 +245,13 @@ class FakeAppServer private constructor(
 
         /** The turn id [Script.handshake] answers with by default. */
         const val TURN_ID = "019a0000-0000-7000-8000-000000000002"
+
+        /**
+         * The read timeout of the tests that are not about it. A fake is a new bash script, and on a loaded machine, a
+         * full build beside other agents' builds, starting one took more than the 5 s default, so a test failed with
+         * `response_timeout` before the script read its first line. The read timeout tests set their own.
+         */
+        val READ_TIMEOUT: Duration = 60.seconds
 
         /** The real `initialize` and `thread/start` responses of codex 0.167.0, recorded in m3-02. */
         private val real: List<JsonObject> by lazy {

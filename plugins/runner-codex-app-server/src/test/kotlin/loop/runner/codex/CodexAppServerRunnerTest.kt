@@ -126,7 +126,7 @@ class CodexAppServerRunnerTest {
             }
         val runner =
             CodexAppServerRunner(
-                CodexAppServerSettings(server.command, strictMcp = false),
+                CodexAppServerSettings(server.command, readTimeout = FakeAppServer.READ_TIMEOUT, strictMcp = false),
                 hostEnv = hostEnv() + mapOf("GH_TOKEN" to "from-host"),
                 removedEnvNames = setOf("GH_TOKEN"),
                 addedEnv = emptyMap(),
@@ -149,7 +149,7 @@ class CodexAppServerRunnerTest {
             }
         val runner =
             CodexAppServerRunner(
-                CodexAppServerSettings(server.command),
+                CodexAppServerSettings(server.command, readTimeout = FakeAppServer.READ_TIMEOUT),
                 hostEnv = hostEnv() + mapOf("KEPT_VALUE" to "kept", "GONE_SECRET" to "secret", "ANTHROPIC_API_KEY" to "key"),
                 removedEnvNames = setOf("GONE_SECRET"),
                 addedEnv = mapOf("ADDED_VALUE" to "{workspace}/added"),
@@ -779,7 +779,7 @@ class CodexAppServerRunnerTest {
     private fun runner(
         command: String,
         loopVersion: String = "test-build",
-        readTimeout: Duration = CodexAppServerSettings().readTimeout,
+        readTimeout: Duration = FakeAppServer.READ_TIMEOUT,
         turnTimeout: Duration = CodexAppServerSettings().turnTimeout,
         stopGrace: Duration = 5.seconds,
         launch: ((LaunchSpec) -> Flow<ProcessEvent>)? = null,

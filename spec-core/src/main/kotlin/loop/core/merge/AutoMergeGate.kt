@@ -235,7 +235,13 @@ internal class AutoMergeGate(
         val kind = checkNotNull(workflow.config.kinds?.code)
         val risk = kind.delivery.risk
         val model = risk.reviewer ?: return riskFailed("no risk reviewer is configured")
-        val reviewer = reviewerFor(workflow) ?: return riskFailed("this Loop has no risk reviewer for its runner")
+        // m4-06: the host picks the reviewer apart from the runner, Claude Code's for every runner.kind, so no reviewer
+        // means its command cannot run here: the reviewer setup, not the result, keeps the merge waiting.
+        val reviewer =
+            reviewerFor(workflow)
+                ?: return riskFailed(
+                    "this Loop cannot run its merge risk reviewer, so the reviewer setup, not the result, is why the merge waits",
+                )
         budgetPassed(workflow, wait.issueId)?.let { return riskFailed(it) }
         val facts = MergeRisk.facts(diff, risk, testGlobs, kind.delivery.autoMerge.maxDiffLines, kind.delivery.autoMerge.docPaths)
         val text =

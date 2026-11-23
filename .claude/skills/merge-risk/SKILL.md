@@ -15,7 +15,11 @@ This is the maintainer's own review step for Loop's pull requests, with the mode
 
 The main session starts it as a subagent on Sonnet 5.5: Agent tool, `model: "sonnet"`, in the background, with this prompt:
 
-> Read `.claude/skills/merge-risk/SKILL.md` and follow it for PR <n> (issue <id>). Read only: change no file, push nothing, comment nowhere. Return the report in the skill's output format.
+> Read `.claude/skills/merge-risk/SKILL.md` and follow it for PR <n> (issue <id>). Read only: change no file, push nothing, comment nowhere, and never run `git checkout`, `git switch`, `git reset` or `git stash` in this checkout. Return the report in the skill's output format.
+
+### Never in the operator's checkout
+
+A reviewer never runs `git checkout`, `git switch`, `git reset` or `git stash` in the operator's checkout: it holds the live `WORKFLOW.md` a running Loop reads, and moving it changes what Loop runs (bl-100, the run of 2026-11-16). Read the pull request instead with `gh pr diff <n>`, `git diff <base>...<head>` and `git show <ref>:<path>`, which change nothing. When you need the files of the head on disk, make a separate worktree outside the checkout, `git worktree add --detach <scratch folder> <head sha>`, read there, and remove it with `git worktree remove <scratch folder>` when you are done. Loop's own reviewer follows the same rule: it runs in the issue workspace, without Bash.
 
 This assessment does not hunt for bugs in depth. The Fable 5.2 recheck does that, and this skill decides when it runs (see "Fable recheck required").
 
