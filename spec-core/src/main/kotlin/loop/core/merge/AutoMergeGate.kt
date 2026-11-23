@@ -3,7 +3,6 @@ package loop.core.merge
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import loop.api.ActionsRuns
 import loop.api.AttemptId
 import loop.api.AttemptLedger
 import loop.api.DeliveryExecutor
@@ -161,7 +160,7 @@ internal class AutoMergeGate(
         }
         val risk = assessRisk(wait, issue, workflow, workspace, base, mergedHead, diff, record)
         // Send back 5 of PR #75: CI is read after the review, so the checks of the head just pushed had time to register.
-        val ci = AutoMerge.ciFailure(ciFacts(executor, workspace, number, base, mergedHead, delivery.pullRequest?.merge))
+        val ci = AutoMerge.ciFailure(ciFacts(executor, number, mergedHead, delivery.pullRequest?.merge))
         if (ci == null && risk.fallBack == null && risk.assessment != null) return GateOutcome.Merge(risk.assessment)
         val reasons = listOfNotNull(ci?.let { "${it.condition.wire}: ${it.reason}" }, risk.fallBack)
         return fallBack(listOfNotNull(ci), risk.assessment, risk.skipped, reasons.joinToString("; "))
@@ -178,36 +177,22 @@ internal class AutoMergeGate(
     )
 
     /**
-     * What the CI condition reads of pull request [number] and the [mergedHead] checked against [base], read now: the
-     * Actions runs of the merged head (m3-15) and, under `ci: none` only, those of the base tip and the workflow files
-     * of the merged head, which say whether runs are expected.
+     * What the CI condition reads of pull request [number] and its [mergedHead], read now: its mergeability and, under
+     * `ci: actions` only, the Actions runs of the merged head (m3-15). Under `ci: none` no run is read, of the merged
+     * head or the base tip, and no workflow file (m4-05, bl-146).
      */
     private suspend fun ciFacts(
         executor: DeliveryExecutor,
-        workspace: Path,
         number: Long,
-        base: String,
         mergedHead: String,
         merge: MergeConfig?,
     ): CiFacts {
         val ci = merge?.ci ?: CiMode.None
-        val none = Result.success(ActionsRuns(0, emptyList()))
         return CiFacts(
             pullRequestNumber = number,
             mergedHead = mergedHead,
             mergeability = mergeability(executor, number),
-            headRuns = provider { executor.actionsRuns(mergedHead) },
-            baseRuns = if (ci == CiMode.None) provider { executor.actionsRuns(base) } else none,
-            workflows =
-                if (ci == CiMode.None) {
-                    step {
-                        git.files(workspace, mergedHead, WORKFLOWS_DIR).filter { path ->
-                            WORKFLOW_SUFFIXES.any { path.endsWith(it) }
-                        }
-                    }
-                } else {
-                    Result.success(emptyList())
-                },
+            headRuns = if (ci == CiMode.Actions) provider { executor.actionsRuns(mergedHead) } else null,
             ci = ci,
             noRun = merge?.ciNoRun ?: CiNoRun.Fail,
         )
@@ -472,7 +457,5 @@ internal class AutoMergeGate(
         private const val REASON_MAX = 500
         const val MERGEABLE_READS = 5
         const val MERGEABLE_READ_DELAY_MS = 2_000L
-        private const val WORKFLOWS_DIR = ".github/workflows/"
-        private val WORKFLOW_SUFFIXES = listOf(".yml", ".yaml")
     }
 }
