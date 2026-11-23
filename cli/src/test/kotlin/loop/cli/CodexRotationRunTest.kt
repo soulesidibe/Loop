@@ -137,6 +137,7 @@ class CodexRotationRunTest {
         |  required_labels: [ready-for-agent]
         |context:
         |  prompt_limit: 0.20
+        |  hard_limit: 0.25 # m3-11 limits, above the default of 0.21 (m4-02), so 220 tokens rotate at the soft limit
         |  windows:
         |    $MODEL: 1000
         |workspace:
