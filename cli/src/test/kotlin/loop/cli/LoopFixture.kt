@@ -318,7 +318,7 @@ class LoopFixture(
         timeoutSeconds: Long = 60,
     ): LoopResult = start(*args, cwd = cwd, env = env).await(timeoutSeconds)
 
-    /** A launcher run started by [start]; the start script execs java, so [process] is the JVM. */
+    /** A launcher run started by [start]; perl and the start script exec, so [process] is the JVM. */
     inner class RunningLoop(
         val process: Process,
         private val args: List<String>,
@@ -400,8 +400,11 @@ class LoopFixture(
         val run = ++runs
         val stdout = outputDir.resolve("run-$run.out").toFile()
         val stderr = outputDir.resolve("run-$run.err").toFile()
+        // SIGINT back to its default, as a terminal gives its foreground job: a build started from a
+        // background job passes SIGINT on ignored, and a JVM keeps an ignored SIGINT, so loop run
+        // would never see a Ctrl-C (bl-107). perl execs, so the pid stays the JVM's.
         val builder =
-            ProcessBuilder(listOf(launcher) + args)
+            ProcessBuilder(listOf("perl", "-e", "\$SIG{INT} = 'DEFAULT'; exec { \$ARGV[0] } @ARGV", launcher) + args)
                 .directory(cwd.toFile())
                 .redirectOutput(stdout)
                 .redirectError(stderr)
