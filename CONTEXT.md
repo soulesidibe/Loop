@@ -143,6 +143,10 @@ _Avoid_: Prompt section, prompt part
 What a new agent session receives when it continues an attempt after a rotation: the goal, the workspace state, check results, counters and the agent's own notes, built from facts.
 _Avoid_: Handoff, summary
 
+**Wake turn**:
+A turn that reads the notification of a background task run (a subagent, a long command) that an earlier turn of the same agent session started. It does not count against `agent.max_turns`, only against `agent.max_wake_turns`; its usage counts like any turn's.
+_Avoid_: Wake (the run the runtime starts on its own after the notification, which a wake turn may or may not hold)
+
 **Secret**:
 A credential value Loop knows from the host environment (a `$NAME` under `tracker.provider.*` other than a path, the `$NAME` of `delivery.pull_request.token`, or an Anthropic key), or a value matching a token pattern. Loop replaces it with a marker before writing anything. Paths are not secrets.
 _Avoid_: Env ref (a `$NAME` reference, which can also be a path)
