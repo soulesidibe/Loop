@@ -1,7 +1,7 @@
 ---
 id: m4-04
 title: "The usage of a wake read at or after the stop is counted"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-agent]
 blocked_by: [m4-03]
@@ -47,3 +47,16 @@ Out of this issue: the rest of bl-152 (the rotated issue re-read outside a guard
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-23 09:33Z loop: Loop opened pull request #23 for this issue: https://github.com/soulesidibe/Loop/pull/23
+
+2026-11-23 09:47Z loop: Loop did not merge pull request #23 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Failed conditions:
+  - diff_size: the diff changes 1171 lines, over the limit of 1000
+  Merge risk: not assessed, a condition failed.
+  Once approved, Loop runs the merge check again and merges.
+
+2026-11-23 10:21Z loop: Loop did not merge pull request #23, ci: Actions runs did not pass: build (failure). The pull request stays open and the result waits for a new approval.
+  Failed runs:
+  - build (failure): https://github.com/soulesidibe/Loop/actions/runs/45152945562
+  Rerun the runs on GitHub or fix the branch, then approve again with loop approve.
