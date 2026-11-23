@@ -22,6 +22,7 @@ object EventDefinitions {
             HookFinished,
             // Context occupancy and rate limits, apart from spend.
             ContextUsage,
+            ContextWindowUnknown,
             RateLimit,
             // Spend.
             Usage,

@@ -1043,8 +1043,16 @@ class WorkflowLoader(
     private fun parseContext(context: YamlMap?): ContextConfig {
         val defaults = ContextConfig()
         val soft = context.fraction("context.soft_limit", "soft_limit") ?: defaults.softLimit
-        val hard = context.fraction("context.hard_limit", "hard_limit") ?: defaults.hardLimit
+        val configuredHard = context.fraction("context.hard_limit", "hard_limit")
+        val hard = configuredHard ?: defaults.hardLimit
         val prompt = context.fraction("context.prompt_limit", "prompt_limit") ?: defaults.promptLimit
+        if (soft > hard && configuredHard == null) {
+            // m4-02: a soft limit that passed under the old default hard limit of 0.25 says what changed.
+            throw WorkflowError.InvalidConfig(
+                "context.soft_limit ($soft) must not be above the default context.hard_limit ($hard): " +
+                    "set context.hard_limit or lower context.soft_limit",
+            )
+        }
         if (soft > hard) {
             throw WorkflowError.InvalidConfig("context.soft_limit ($soft) must not be above context.hard_limit ($hard)")
         }

@@ -732,7 +732,7 @@ class TraceCommandTest {
         val tokens =
             Regex(
                 """ prompt_tokens=(\d+) template_tokens=(\d+) issue_tokens=(\d+) verify_findings_tokens=0 session_brief_tokens=0 """ +
-                    """lessons_tokens=0 context_sources_tokens=0 prompt_limit_tokens=50000 over_limit=false token_counter=estimate$""",
+                    """lessons_tokens=0 context_sources_tokens=0 prompt_limit_tokens=23750 over_limit=false token_counter=estimate$""",
             ).find(line)
                 ?.groupValues
                 ?.drop(1)
@@ -1331,6 +1331,26 @@ class TraceCommandTest {
         assertTrue(expired in lines, out)
         // A model without a known window and a session without a usage report leave those fields out.
         assertTrue("  13:50:10  interrupt_grace_expired grace_ms=10000 occupancy_tokens=260000" in lines, out)
+    }
+
+    @Test
+    fun `m4-02 context_window_unknown shows the model and the runner in each attempt`() {
+        val unknown = mapOf("model" to "openai/gpt-unknown-9", "runner" to "codex-app-server")
+        val lines =
+            trace(
+                event("attempt_started", "13:48:40", "a1"),
+                event("context_window_unknown", "13:48:50", "a1", data = unknown),
+                event("attempt_started", "13:49:40", "a2"),
+                event("context_window_unknown", "13:49:50", "a2", data = unknown),
+                event("context_window_unknown", "13:49:55", "a2", data = mapOf("runner" to "command")),
+            )
+
+        val out = lines.joinToString("\n")
+        val details = "model=openai/gpt-unknown-9 runner=codex-app-server"
+        assertTrue(line("13:48:50", "context_window_unknown", details) in lines, out)
+        assertTrue(line("13:49:50", "context_window_unknown", details) in lines, out)
+        // A runner that named no model leaves the model out.
+        assertTrue(line("13:49:55", "context_window_unknown", "runner=command") in lines, out)
     }
 
     @Test

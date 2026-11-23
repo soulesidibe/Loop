@@ -2,6 +2,7 @@ package loop.cli
 
 import loop.api.RecordedEvent
 import loop.core.events.ContextUsage
+import loop.core.events.ContextWindowUnknown
 import loop.core.events.TurnEvent
 import loop.core.events.TurnStarted
 import java.util.Locale
@@ -18,6 +19,13 @@ internal data class SessionOccupancy(
     val latest: Long?,
     val peak: Long?,
     val window: Long?,
+    /**
+     * m4-02: true when the session's model has no window, so no soft or hard limit holds for it: its latest
+     * `context_usage` has no window, or it has none yet and the session recorded `context_window_unknown`.
+     */
+    val noWindow: Boolean = false,
+    /** The model of the session's latest report, or of its `context_window_unknown`, null when the runner named none. */
+    val model: String? = null,
 ) {
     /** [latest] over [window] with 4 decimals, null without both. */
     val fraction: String? get() = fractionOf(latest)
@@ -39,13 +47,18 @@ internal fun sessionsOf(ofAttempt: List<RecordedEvent>): List<SessionOccupancy> 
     val starts = ofAttempt.filter { it.kind == TurnStarted.name && it.data[TurnEvent.THREAD_ID] != null }
     val threadOf = starts.filter { it.sessionId != null }.associate { it.sessionId to it.data.getValue(TurnEvent.THREAD_ID) }
     val usages = ofAttempt.filter { it.kind == ContextUsage.name }
+    val unknowns = ofAttempt.filter { it.kind == ContextWindowUnknown.name }
     return starts.map { it.data.getValue(TurnEvent.THREAD_ID) }.distinct().map { thread ->
         val data = usages.lastOrNull { threadOf[it.sessionId] == thread }?.data
+        val unknown = unknowns.lastOrNull { threadOf[it.sessionId] == thread }?.data
+        val window = data?.get(ContextUsage.WINDOW)?.toLongOrNull()
         SessionOccupancy(
             thread = thread,
             latest = data?.get(ContextUsage.LATEST_TOKENS)?.toLongOrNull(),
             peak = data?.get(ContextUsage.PEAK_TOKENS)?.toLongOrNull(),
-            window = data?.get(ContextUsage.WINDOW)?.toLongOrNull(),
+            window = window,
+            noWindow = if (data != null) window == null else unknown != null,
+            model = data?.get(ContextUsage.MODEL) ?: unknown?.get(ContextWindowUnknown.MODEL),
         )
     }
 }
