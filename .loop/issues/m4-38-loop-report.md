@@ -2,7 +2,7 @@
 id: m4-38
 title: "loop report --since, with touches marked not reliable and no cost shown as not reported"
 state: todo
-priority: 3
+priority: 1
 labels: [ready-for-agent]
 blocked_by: [bl-147, m4-01, m4-13, m4-18, m4-33]
 ---

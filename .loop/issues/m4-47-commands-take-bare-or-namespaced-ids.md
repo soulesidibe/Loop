@@ -2,7 +2,7 @@
 id: m4-47
 title: "Commands take bare or namespaced ids, and a single tracker project shows bare ids"
 state: todo
-priority: 2
+priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-12]
 ---

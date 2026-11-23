@@ -1,7 +1,7 @@
 ---
 id: bl-96
 title: "Auto merge diff size counts tests and docs, and the reviewer never sees large diffs"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-agent]
 blocked_by: [m4-05]
@@ -118,3 +118,5 @@ Filed from the 2026-11-16 run review.
 2026-11-23 20:30Z loop: Loop opened pull request #28 for this issue: https://github.com/soulesidibe/Loop/pull/28
 
 2026-11-23 20:30Z loop: Loop could not merge pull request #28: merging main at 784068c922a8d892c6db7a84d3f275e227825b8d into loop/bl-96 conflicts (conflict in cli/src/test/kotlin/loop/cli/LoopFixture.kt, cli/src/test/kotlin/loop/cli/RestartStateTest.kt). The merge was aborted and the branch is unchanged. The next attempt merges refs/loop/base/main into its branch, resolves the conflict and submits the result again.
+
+2026-11-23 20:49Z loop: Loop updated pull request #28 for this issue: https://github.com/soulesidibe/Loop/pull/28
