@@ -171,7 +171,8 @@ object CiWait {
             is CiVerdict.NotStarted ->
                 CiDecision.Fail(
                     NOT_STARTED,
-                    "GitHub did not start the Actions runs, for billing or limits, so the code was not judged: ${runNames(verdict.notStarted)}",
+                    "GitHub did not start the Actions runs, for billing or limits, so the code was not judged: " +
+                        runNames(verdict.notStarted),
                 )
             is CiVerdict.Pending ->
                 if (waitedMs >= merge.ciTimeoutMs) {
@@ -232,7 +233,9 @@ object CiWait {
                 append(runLines.joinToString("\n"))
             }
             if (notStarted) {
-                append("\n\nCheck the Actions billing and limits of the repository, rerun the runs on GitHub, then approve again with loop approve.")
+                append(
+                    "\n\nCheck the Actions billing and limits of the repository, rerun the runs on GitHub, then approve again with loop approve.",
+                )
             } else {
                 append("\n\nRerun the runs on GitHub or fix the branch, then approve again with loop approve.")
             }

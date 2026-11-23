@@ -146,7 +146,12 @@ class CiWaitTest {
         val unread = run(7, conclusion = "failure")
         val table =
             listOf(
-                JobsRow("a failed run whose only job has zero steps is not started", runs(refused), mapOf(refused.id to jobs(0)), "not_started"),
+                JobsRow(
+                    "a failed run whose only job has zero steps is not started",
+                    runs(refused),
+                    mapOf(refused.id to jobs(0)),
+                    "not_started",
+                ),
                 JobsRow("every job with zero steps is not started", runs(refused), mapOf(refused.id to jobs(0, 0, 0)), "not_started"),
                 JobsRow("a failed run with steps stays red", runs(built), mapOf(built.id to jobs(7)), "red"),
                 JobsRow("one job with steps among refused ones is red", runs(built), mapOf(built.id to jobs(0, 3)), "red"),
@@ -158,7 +163,12 @@ class CiWaitTest {
                     mapOf(refused.id to jobs(0, total = 150)),
                     "red",
                 ),
-                JobsRow("a not started run next to a green one is not started", runs(refused, green), mapOf(refused.id to jobs(0)), "not_started"),
+                JobsRow(
+                    "a not started run next to a green one is not started",
+                    runs(refused, green),
+                    mapOf(refused.id to jobs(0)),
+                    "not_started",
+                ),
                 JobsRow(
                     "a not started run next to a pending one is not started, the head can no longer turn green",
                     runs(refused, queued),

@@ -187,7 +187,7 @@ class AutoMergeTest {
         )
         val forbidden = Result.failure<ActionsJobs>(IllegalStateException("403 the token needs the Actions: read permission"))
         val unread = ciReason(actions.copy(headRuns = runs(refused), headJobs = mapOf(refused.id to forbidden)))
-        assertContains(unread, "cannot read the jobs of the Actions run ${refused.id} on the merged head aaaaaaaaaaaa: 403")
+        assertContains(unread, "cannot read the jobs of the Actions run ${refused.id} of aaaaaaaaaaaa: 403")
         assertContains(unread, "Actions: read")
     }
 

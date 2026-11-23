@@ -147,8 +147,9 @@ object AutoMerge {
         val runs = read.getOrElse { return "cannot read the Actions runs of the merged head $head: ${firstLine(it)}" }
         val jobs =
             CiWait.jobsToRead(runs).mapNotNull { run ->
-                val jobs = facts.headJobs[run.id] ?: return@mapNotNull null
-                run.id to jobs.getOrElse { return "cannot read the jobs of the Actions run ${run.id} on the merged head $head: ${firstLine(it)}" }
+                val read = facts.headJobs[run.id] ?: return@mapNotNull null
+                val jobs = read.getOrElse { return "cannot read the jobs of the Actions run ${run.id} of $head: ${firstLine(it)}" }
+                run.id to jobs
             }
         return when (val verdict = CiWait.verdict(runs, jobs.toMap())) {
             is CiVerdict.Green -> null

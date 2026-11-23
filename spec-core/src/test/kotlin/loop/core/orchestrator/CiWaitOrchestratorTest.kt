@@ -261,7 +261,14 @@ class CiWaitOrchestratorTest {
 
     /** A body GitHub answered, recorded in m4-00 under `plugins/tracker-github/src/test/resources/github/recorded/`. */
     private fun recordedJson(name: String): JsonObject =
-        Json.parseToJsonElement(Path.of(System.getProperty("loop.githubRecorded")).resolve("$name.json").toFile().readText()).jsonObject
+        Json
+            .parseToJsonElement(
+                Path
+                    .of(System.getProperty("loop.githubRecorded"))
+                    .resolve("$name.json")
+                    .toFile()
+                    .readText(),
+            ).jsonObject
 
     private fun JsonObject.text(key: String): String? = get(key)?.jsonPrimitive?.contentOrNull
 
@@ -579,7 +586,10 @@ class CiWaitOrchestratorTest {
                     .second.text
             assertContains(comment, "Loop did not merge pull request #7, ci: GitHub did not start the Actions runs")
             assertContains(comment, "the code was not judged")
-            assertContains(comment, "Runs not started:\n- build (failure): https://github.com/soulesidibe/Loop-private/actions/runs/$REFUSED_RUN")
+            assertContains(
+                comment,
+                "Runs not started:\n- build (failure): https://github.com/soulesidibe/Loop-private/actions/runs/$REFUSED_RUN",
+            )
             assertContains(comment, "Check the Actions billing and limits of the repository")
             assertFalse(comment.contains("Failed runs"), comment)
             assertEquals("ci", setup.all("issue_commented").last()["reason"])
