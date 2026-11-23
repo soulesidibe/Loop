@@ -333,7 +333,7 @@ class CodexTelemetryTest {
 
     private fun runner(command: String): CodexAppServerRunner =
         CodexAppServerRunner(
-            CodexAppServerSettings(command, strictMcp = false),
+            CodexAppServerSettings(command, readTimeout = FakeAppServer.READ_TIMEOUT, strictMcp = false),
             hostEnv = mapOf("PATH" to System.getenv("PATH"), "HOME" to home.toString()),
             removedEnvNames = emptySet(),
             addedEnv = emptyMap(),

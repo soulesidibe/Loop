@@ -647,7 +647,13 @@ class CodexServerRequestsTest {
     ): CodexAppServerRunner =
         CodexAppServerRunner(
             // Strict MCP adds config/read to the startup; the tests of other requests leave it out, the strict tests set it.
-            CodexAppServerSettings(command, turnTimeout = 10.seconds, strictMcp = strictMcp, holdoutDir = holdoutDir),
+            CodexAppServerSettings(
+                command,
+                turnTimeout = 10.seconds,
+                readTimeout = FakeAppServer.READ_TIMEOUT,
+                strictMcp = strictMcp,
+                holdoutDir = holdoutDir,
+            ),
             hostEnv = mapOf("PATH" to System.getenv("PATH"), "HOME" to home.toString()),
             removedEnvNames = emptySet(),
             addedEnv = emptyMap(),

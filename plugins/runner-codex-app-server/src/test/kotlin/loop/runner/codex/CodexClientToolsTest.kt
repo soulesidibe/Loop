@@ -418,7 +418,7 @@ class CodexClientToolsTest {
 
     private fun runner(command: String): CodexAppServerRunner =
         CodexAppServerRunner(
-            CodexAppServerSettings(command, turnTimeout = 10.seconds, strictMcp = false),
+            CodexAppServerSettings(command, turnTimeout = 10.seconds, readTimeout = FakeAppServer.READ_TIMEOUT, strictMcp = false),
             hostEnv = mapOf("PATH" to System.getenv("PATH"), "HOME" to home.toString()),
             removedEnvNames = emptySet(),
             addedEnv = emptyMap(),
