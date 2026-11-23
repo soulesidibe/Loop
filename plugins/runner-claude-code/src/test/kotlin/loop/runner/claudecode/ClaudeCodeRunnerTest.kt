@@ -486,6 +486,43 @@ class ClaudeCodeRunnerTest {
     }
 
     @Test
+    fun `an idle process queues at most the bound of lines no turn needs, every usage and result line kept (m4-03, bl-122)`() {
+        // A chatty background subagent writes 40 lines while the process is idle, around a wake with its init, its main
+        // session answer and its result. With a bound of 5, 35 subagent lines are dropped, nothing the next turn needs.
+        val wake = Fixtures.lines("background_wake").map { ProcessEvent.Line(Stream.Stdout, it) }
+        val next = Fixtures.lines("idle_next_turn").map { ProcessEvent.Line(Stream.Stdout, it) }
+        val chatter = (1..20).map { ProcessEvent.Line(Stream.Stdout, subagentLine(it)) }
+        val noise = (21..40).map { ProcessEvent.Line(Stream.Stdout, subagentLine(it)) }
+        val claude = Scripted(listOf(listOf(wake.take(3), next)), idle = chatter + wake[0] + wake[3] + noise + wake[4])
+        val runner = ClaudeCodeRunner(ClaudeCodeSettings(command = "claude"), HOST_ENV, emptySet(), claude.launch, groupAlive = { false }, idleLineBound = 5)
+
+        val (_, second) = twoTurns(runner, "Fix it", "Keep going", pause = 800.milliseconds)
+
+        val warning = "loop: warning: the claude-code process wrote more than 5 lines while idle, 35 of them dropped, its usage and result lines kept"
+        assertEquals(RunnerEvent.Output(Stream.Stderr, warning), second[1])
+        val kept = chatter.take(5).map { it.text } + wake[0].text + wake[3].text + wake[4].text + next.map { it.text }
+        assertEquals(kept, second.filterIsInstance<RunnerEvent.Output>().filter { it.stream == Stream.Stdout }.map { it.line })
+        val reports = second.filterIsInstance<RunnerEvent.Usage>()
+        assertEquals(listOf(listOf(1500L, 49_500L, 13_400_000L, 189_000L), listOf(1600L, 49_550L, 13_400_010L, 189_005L)), reports.map { it.tokens() })
+        assertEquals(listOf(9.75, 10.0), reports.map { it.totalCostUsd })
+        assertIs<RunnerEvent.TurnCompleted>(second.last())
+    }
+
+    @Test
+    fun `a turn reads every line of the process, past the idle bound (m4-03)`() {
+        // The bound holds only between turns: a turn's own subagent lines are never dropped.
+        val wake = Fixtures.lines("background_wake").map { ProcessEvent.Line(Stream.Stdout, it) }
+        val chatter = (1..20).map { ProcessEvent.Line(Stream.Stdout, subagentLine(it)) }
+        val claude = Scripted(listOf(listOf(listOf(wake[0]) + chatter + wake.subList(1, 3))))
+        val runner = ClaudeCodeRunner(ClaudeCodeSettings(command = "claude"), HOST_ENV, emptySet(), claude.launch, groupAlive = { false }, idleLineBound = 5)
+
+        val events = runBlocking { withTimeout(20.seconds) { runner.run(context(emptyMap()), "Fix it").toList() } }
+
+        assertEquals((listOf(wake[0]) + chatter + wake.subList(1, 3)).map { it.text }, events.outputLines())
+        assertIs<RunnerEvent.TurnCompleted>(events.last())
+    }
+
+    @Test
     fun `a turn waits for a wake still running when it starts, then ends at the result line of its own input (m3-07)`() {
         // The wake has written its assistant line when turn 2 starts, its result line comes 700 ms later. Turn 2's input
         // is written only after it, so the wake's result cannot end turn 2.
@@ -1211,11 +1248,10 @@ class ClaudeCodeRunnerTest {
 
         assertEquals(2, claude.invocations)
         assertEquals(listOf("-p", "--resume", "claude-wake-session"), claude.argvOf(1).take(3))
-        val usage = second.filterIsInstance<RunnerEvent.Usage>().last()
-        assertEquals(
-            13_640_000L + 165L,
-            usage.inputTokens + usage.outputTokens + usage.cacheReadInputTokens + usage.cacheCreationInputTokens,
-        )
+        // m4-03: each field of the sums again, the woken segment's then the resumed one's, and the latest cost.
+        val reports = second.filterIsInstance<RunnerEvent.Usage>()
+        assertEquals(listOf(listOf(1500L, 49_500L, 13_400_000L, 189_000L), listOf(1600L, 49_550L, 13_400_010L, 189_005L)), reports.map { it.tokens() })
+        assertEquals(listOf(9.75, 0.0521), reports.map { it.totalCostUsd })
         assertIs<RunnerEvent.TurnCompleted>(second.last())
     }
 
@@ -1606,6 +1642,12 @@ class ClaudeCodeRunnerTest {
                 }
             }
         }
+
+    /** The [n]th message of a background subagent, as Claude Code writes it while the main session is idle. */
+    private fun subagentLine(n: Int): String =
+        """{"type":"assistant","message":{"id":"msg_sub_$n","type":"message","role":"assistant","content":[{"type":"text",""" +
+            """"text":"step $n"}],"usage":{"input_tokens":3,"output_tokens":7,"cache_read_input_tokens":900,""" +
+            """"cache_creation_input_tokens":0}},"parent_tool_use_id":"toolu_agent","session_id":"claude-wake-session"}"""
 
     private fun RunnerEvent.Usage.tokens(): List<Long> = listOf(inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens)
 

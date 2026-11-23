@@ -118,6 +118,19 @@ public sealed interface RunnerEvent {
         )
     }
 
+    /**
+     * Turn [turnId] is a wake turn (m4-03): it read the notification of a background task run (a subagent, a long
+     * command) that an earlier turn of the session started. Where the turn read it does not matter, before its input,
+     * inside a wake the runtime ran on its own, or folded into the turn's answer; a run started in the same turn makes
+     * no wake turn. A wake turn never counts against `agent.max_turns`, only against `agent.max_wake_turns`; its usage
+     * counts like any turn's. A runner emits it at most once per turn, before the terminal event, and a runner that
+     * cannot tell never emits it.
+     */
+    public data class WakeTurn(
+        public val sessionId: SessionId,
+        public val turnId: TurnId,
+    ) : RunnerEvent
+
     /** The turn ended normally with [exitCode]. */
     public data class TurnCompleted(
         public val sessionId: SessionId,
