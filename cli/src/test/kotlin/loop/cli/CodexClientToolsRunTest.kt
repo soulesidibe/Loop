@@ -172,6 +172,7 @@ class CodexClientToolsRunTest {
             |  codex:
             |    command: "$command"
             |    strict_mcp: false
+            |    read_timeout_ms: 30000
             |agent:
             |  max_turns: 1
             |retries:

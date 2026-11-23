@@ -36,24 +36,36 @@ class RestartStateTest {
 
         val first = fixture.loop("run", "--once", fixture.workflow.toString())
         assertEquals(0, first.exitCode, first.toString())
+        // The first retry is due 10 s out, which a loaded machine can spend between two JVMs (bl-96). It fails
+        // too, so the retry restored below is the second, due 20 s out.
+        val firstDue = Instant.parse(fixture.query("SELECT due_at FROM retry_states").single()["due_at"]!!)
+        while (Clock.System.now() <= firstDue) Thread.sleep(POLL_MS)
+        val retry = fixture.loop("run", "--once", fixture.workflow.toString())
+        assertEquals(0, retry.exitCode, retry.toString())
         val stored = fixture.query("SELECT attempt, due_at, error, failures FROM retry_states").single()
-        assertEquals("1", stored["attempt"], stored.toString())
-        assertEquals("1", stored["failures"], stored.toString())
+        assertEquals("2", stored["attempt"], stored.toString())
+        assertEquals("2", stored["failures"], stored.toString())
         val dueAt = Instant.parse(stored["due_at"]!!)
 
         val second = fixture.start("run", fixture.workflow.toString())
         try {
-            awaitAgentCalls(2) ?: fail("the restored retry never fired\n${second.await(30)}")
+            awaitAgentCalls(3) ?: fail("the restored retry never fired\n${second.await(30)}")
         } finally {
             second.process.destroy()
         }
         val ended = second.await(30)
-        val firstRun = fixture.query("SELECT run_id FROM events WHERE kind = 'attempt_started' ORDER BY seq").first()["run_id"]
+        val earlierRuns =
+            fixture
+                .query("SELECT run_id FROM events WHERE kind = 'attempt_started' ORDER BY seq")
+                .take(2)
+                .map { it["run_id"] }
+        // The `--once` retry run restored the first retry; the last restore is the new run's.
         val restored =
             fixture
-                .query("SELECT ts, run_id, data FROM events WHERE kind = 'retry_scheduled' AND data LIKE '%\"restored\":\"true\"%'")
-                .single()
-        assertTrue(restored["run_id"] != firstRun, "the restored retry is recorded in the new run\n$ended")
+                .query(
+                    "SELECT ts, run_id, data FROM events WHERE kind = 'retry_scheduled' AND data LIKE '%\"restored\":\"true\"%' ORDER BY seq",
+                ).last()
+        assertTrue(restored["run_id"] !in earlierRuns, "the restored retry is recorded in the new run\n$ended")
         assertContains(restored["data"]!!, "\"due_at\":\"$dueAt\"")
         // The new run started, and restored the entry, before the due time: it waited for it.
         val restoredAt = Instant.parse(restored["ts"]!!)
@@ -179,11 +191,11 @@ class RestartStateTest {
 
     private companion object {
         /**
-         * Long enough for a JVM to start before the retry falls due, short enough for a test. 6 s was too short
-         * with parallel forks (m4-00): the second `loop run` restored the entry after its due time, 2 runs in 5.
-         * 15 s was too short on a loaded machine (bl-96): two full builds of 26 and 29 minutes restored it 3 s late.
+         * The cap on a retry's delay, `min(10 s * 2^(attempt - 1), cap)`: the second retry waits 20 s, long enough
+         * for a JVM to start before it falls due, short enough for a test. A 6 s cap was too short with parallel
+         * forks (m4-00), and the first retry's 10 s too short on a loaded machine (bl-96).
          */
-        const val BACKOFF_MS = 30_000L
+        const val BACKOFF_MS = 20_000L
         const val POLL_MS = 50L
         val WAIT_NANOS = TimeUnit.SECONDS.toNanos(60)
     }

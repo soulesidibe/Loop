@@ -554,7 +554,8 @@ class RunCommandTest {
         fixture.issue("t-1")
         val pidFile = root.resolve("agent.pid")
         fixture.agentScript.writeText("#!/bin/sh\necho \$\$ > '$pidFile'\nsleep 30\n")
-        val running = fixture.start("run", fixture.workflow.toString())
+        // Started as from a terminal, even when the build runs with SIGINT ignored (bl-96).
+        val running = fixture.start("run", fixture.workflow.toString(), defaultSigint = true)
         try {
             val pid =
                 awaitPid(pidFile) ?: run {

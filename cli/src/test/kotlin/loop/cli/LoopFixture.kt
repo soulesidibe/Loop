@@ -383,18 +383,26 @@ class LoopFixture(
             }
     }
 
-    /** Starts the installed launcher like [loop] without waiting for it. */
+    /**
+     * Starts the installed launcher like [loop] without waiting for it.
+     *
+     * [defaultSigint] starts it with SIGINT at its default, as a terminal does. A process started with SIGINT
+     * ignored, as `nohup` or a detached `loop run` leaves it, passes that on, and the JVM then never sees Ctrl-C.
+     */
     fun start(
         vararg args: String,
         cwd: Path = projectDir,
         env: Map<String, String?> = emptyMap(),
+        defaultSigint: Boolean = false,
     ): RunningLoop {
         val launcher = System.getProperty("loop.launcher") ?: fail("system property loop.launcher is not set")
         val run = ++runs
         val stdout = outputDir.resolve("run-$run.out").toFile()
         val stderr = outputDir.resolve("run-$run.err").toFile()
+        // perl execs the launcher in place, so the pid stays the launcher's.
+        val prefix = if (defaultSigint) listOf("perl", "-e", SIGINT_DEFAULT) else emptyList()
         val builder =
-            ProcessBuilder(listOf(launcher) + args)
+            ProcessBuilder(prefix + launcher + args)
                 .directory(cwd.toFile())
                 .redirectOutput(stdout)
                 .redirectError(stderr)
@@ -416,5 +424,8 @@ class LoopFixture(
         private const val DUMP_TIMEOUT_SECONDS = 20L
         private const val QUIT_DUMP_WAIT_MS = 3_000L
         private val STATE_LINE = Regex("""^state:(.*)$""", RegexOption.MULTILINE)
+
+        /** Sets SIGINT back to its default, then execs its arguments with no shell. */
+        private const val SIGINT_DEFAULT = "\$SIG{INT} = 'DEFAULT'; exec { \$ARGV[0] } @ARGV or die \"exec \$ARGV[0]: \$!\\n\";"
     }
 }
