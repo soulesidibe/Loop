@@ -120,9 +120,7 @@ class GitPush(
                             prepare(repository, objects, sha256, what = "fetch")
                             haves.forEachIndexed { index, have -> seed(repository, "$HAVE_REF$index", have) }
                             checkUrl(repository, push = false)
-                            val fetched = receive(repository, base)
-                            land(repository.resolve("objects"), objects)
-                            fetched
+                            receive(repository, base).also { land(repository.resolve("objects"), objects) }
                         }
                     record(base, fetched)
                     fetched
