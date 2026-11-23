@@ -1,7 +1,7 @@
 ---
 id: m4-53
 title: "The files tracker label write is safe"
-state: todo
+state: done
 priority: 3
 labels: [ready-for-agent]
 blocked_by: [m4-01]

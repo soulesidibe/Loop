@@ -1,7 +1,7 @@
 ---
 id: m4-49
 title: "A fetch mutex per repository for parallel verifications"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-agent]
 blocked_by: [m4-01]
