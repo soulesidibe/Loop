@@ -53,3 +53,13 @@ Out of this issue: usage after the stop grace (m4-04), the other bl-122 findings
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
 
 2026-11-21 soule: the wake turn rule and its replay criteria follow the bl-170 decision (option E): a turn that reads the notification of a background task run started in an earlier turn is a wake turn, wherever it reads it. On attempt 10c2f759 that frees turns 2, 3, 4 and 6.
+
+2026-11-23 03:44Z agent 2e4b349f: CONTEXT.md is a protected path, so the glossary entry for wake turn was taken out of this branch (5b27df1). Proposed text, for a human to add if wanted: "**Wake turn**: A turn that reads the notification of a background task run (a subagent, a long command) that an earlier turn of the same agent session started. It does not count against `agent.max_turns`, only against `agent.max_wake_turns`; its usage counts like any turn's. _Avoid_: Wake (the run the runtime starts on its own after the notification, which a wake turn may or may not hold)". The plan and docs/spec-decisions.md (Wake turns, extension, m4-03) describe wake turns and the new key.
+
+2026-11-23 03:58Z loop: Loop opened pull request #20 for this issue: https://github.com/soulesidibe/Loop/pull/20
+
+2026-11-23 04:08Z loop: Loop did not merge pull request #20 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Failed conditions:
+  - diff_size: the diff changes 1128 lines, over the limit of 1000
+  Merge risk: not assessed, a condition failed.
+  Once approved, Loop runs the merge check again and merges.

@@ -1,7 +1,7 @@
 ---
 id: m4-02
 title: "Default limits keep the 25 percent rule, and a model with no window is visible"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-agent]
 blocked_by: [m4-00]
@@ -50,3 +50,5 @@ Out of this issue: the other bl-138 findings (token estimate, reviewer window, C
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-23 02:14Z loop: Loop opened pull request #18 for this issue: https://github.com/soulesidibe/Loop/pull/18
