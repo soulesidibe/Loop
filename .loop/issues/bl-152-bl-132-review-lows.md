@@ -37,3 +37,5 @@ None. Backlog, not scheduled in a milestone. Found by the merge risk reviews of 
 2026-11-23 11:54Z loop: Loop opened pull request #26 for this issue: https://github.com/soulesidibe/Loop/pull/26
 
 2026-11-23 16:10Z loop: Loop did not merge pull request #26: main at ca9029cab5b3601fdabcc1c086ec18d86f2da31b was merged into loop/bl-152, but the checks failed on the result (a check failed). The merge commit stays on the branch. The next attempt fixes the result and submits it again.
+
+2026-11-23 18:48Z loop: Loop updated pull request #26 for this issue: https://github.com/soulesidibe/Loop/pull/26

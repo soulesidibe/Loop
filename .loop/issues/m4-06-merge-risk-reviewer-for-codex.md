@@ -58,3 +58,5 @@ Out of this issue: a Codex native reviewer, a reviewer section in the workflow, 
   - protected_paths: the diff touches .claude/skills/merge-risk/SKILL.md (protected by **/.claude/)
   Merge risk: not assessed, a condition failed.
   Once approved, Loop runs the merge check again and merges.
+
+2026-11-23 18:49Z loop: Loop did not merge pull request #27: main at a76b69007fe601a2fcb5bd76dee1b932c3c75332 was merged into loop/m4-06, but the checks failed on the result (a check failed). The merge commit stays on the branch. The next attempt fixes the result and submits it again.
