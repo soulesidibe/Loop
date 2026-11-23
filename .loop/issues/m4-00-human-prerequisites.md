@@ -61,3 +61,4 @@ Out of this issue: bl-129's low findings (`workspaceReused = false` defaults in 
   Step 2: `maxParallelForks` is half the cores, at least 1 (5 here, 2 on a 4 core Actions runner). Wall time of `:cli:test`: 22.1 minutes in one fork (bl-142), 12.4 to 14.0 minutes with forks over the eight runs. Runs 6 to 8, after the test fix, were green in a row: 746, 810 and 744 s. The forks help less than 5 times because the end to end tests spawn JVMs of their own; splitting them into their own task stays the fallback.
   Step 3: `timeout-minutes: 45` in `.github/workflows/build.yml`. The first Actions run after it is checked on this commit's push.
   Step 4: the live checkout has `ci: actions` committed and no uncommitted `WORKFLOW.md` change, and Actions runs of the public repository are green again (bl-182's rerun, 2026-11-22).
+  Step 3 checked: the first Actions run after the change, 45094398121 on main, was green in 14.5 minutes, inside the 45 minute limit.
