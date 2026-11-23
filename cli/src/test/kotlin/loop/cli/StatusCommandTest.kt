@@ -84,6 +84,7 @@ class StatusCommandTest {
         latest: Long,
         peak: Long,
         window: Long? = 1_000_000,
+        model: String = "anthropic/claude-opus-5-5",
     ) = event(
         "context_usage",
         issue,
@@ -93,7 +94,7 @@ class StatusCommandTest {
             buildMap {
                 put("latest_tokens", "$latest")
                 put("peak_tokens", "$peak")
-                put("model", "anthropic/claude-opus-5-5")
+                put("model", model)
                 window?.let {
                     put("window", "$it")
                     put("fraction", String.format(java.util.Locale.ROOT, "%.4f", latest.toDouble() / it))
@@ -464,7 +465,7 @@ class StatusCommandTest {
             // t-3's model has no window: tokens only.
             event("attempt_started", "t-3", C1, "2026-11-11T10:05:00Z", data = mapOf("occupancy" to "true")),
             turnStarted("t-3", C1, "2026-11-11T10:05:01Z", "th5", 1),
-            contextUsage("t-3", C1, "2026-11-11T10:05:30Z", "th5", 1, latest = 7_000, peak = 8_000, window = null),
+            contextUsage("t-3", C1, "2026-11-11T10:05:30Z", "th5", 1, latest = 7_000, peak = 8_000, window = null, model = UNKNOWN),
         )
         val lock = holdRunFile()
         try {
@@ -476,7 +477,71 @@ class StatusCommandTest {
                     "running   t-1  attempt 1  a2000000  started=10:02:03 turns=2 " +
                         "latest_tokens=40000 peak_tokens=120000 window=1000000 fraction=0.0400 peak_fraction=0.1200",
                     "running   t-2  attempt 1  b1000000  started=10:03:00 turns=2",
-                    "running   t-3  attempt 1  c1000000  started=10:05:00 turns=1 latest_tokens=7000 peak_tokens=8000",
+                    "running   t-3  attempt 1  c1000000  started=10:05:00 turns=1 latest_tokens=7000 peak_tokens=8000 window=none",
+                    "          ${noWindow(UNKNOWN)}",
+                ),
+                result.stdout
+                    .trimEnd()
+                    .lines()
+                    .drop(3),
+            )
+        } finally {
+            lock.release()
+        }
+    }
+
+    @Test
+    fun `m4-02 status shows a running session whose model has no window as such, before and after its first turn ends`() {
+        fixture.seed(
+            // t-1 is in its first turn: context_window_unknown came at the first report, no context_usage yet.
+            event("attempt_started", "t-1", A2, "2026-11-11T10:02:03Z", data = mapOf("occupancy" to "true")),
+            turnStarted("t-1", A2, "2026-11-11T10:02:04Z", "th1", 1),
+            event(
+                "context_window_unknown",
+                "t-1",
+                A2,
+                "2026-11-11T10:02:10Z",
+                data = mapOf("model" to UNKNOWN, "runner" to "codex-app-server"),
+                session = "th1-tu1",
+            ),
+            // t-2's runner named no model; its turn ended, so its occupancy is known in tokens.
+            event("attempt_started", "t-2", B1, "2026-11-11T10:03:00Z", data = mapOf("occupancy" to "true")),
+            turnStarted("t-2", B1, "2026-11-11T10:03:01Z", "th8", 1),
+            event("context_window_unknown", "t-2", B1, "2026-11-11T10:03:10Z", data = mapOf("runner" to "command"), session = "th8-tu1"),
+            event(
+                "context_usage",
+                "t-2",
+                B1,
+                "2026-11-11T10:03:30Z",
+                data = mapOf("latest_tokens" to "90000", "peak_tokens" to "90000"),
+                session = "th8-tu1",
+            ),
+            // t-3 was rerouted onto a model with a window: its latest report has a fraction, so it has a window.
+            event("attempt_started", "t-3", C1, "2026-11-11T10:05:00Z", data = mapOf("occupancy" to "true")),
+            turnStarted("t-3", C1, "2026-11-11T10:05:01Z", "th5", 1),
+            event(
+                "context_window_unknown",
+                "t-3",
+                C1,
+                "2026-11-11T10:05:10Z",
+                data = mapOf("model" to UNKNOWN, "runner" to "codex-app-server"),
+                session = "th5-tu1",
+            ),
+            contextUsage("t-3", C1, "2026-11-11T10:05:30Z", "th5", 1, latest = 7_000, peak = 8_000),
+        )
+        val lock = holdRunFile()
+        try {
+            val result = fixture.loop("status", fixture.workflow.toString())
+
+            assertEquals(0, result.exitCode, result.toString())
+            assertEquals(
+                listOf(
+                    "running   t-1  attempt 1  a2000000  started=10:02:03 turns=1 window=none",
+                    "          ${noWindow(UNKNOWN)}",
+                    "running   t-2  attempt 1  b1000000  started=10:03:00 turns=1 latest_tokens=90000 peak_tokens=90000 window=none",
+                    "          ${noWindow(null)}",
+                    "running   t-3  attempt 1  c1000000  started=10:05:00 turns=1 " +
+                        "latest_tokens=7000 peak_tokens=8000 window=1000000 fraction=0.0070 peak_fraction=0.0080",
                 ),
                 result.stdout
                     .trimEnd()
@@ -694,5 +759,11 @@ class StatusCommandTest {
         const val POLL_MS = 300L
         const val NO_OCCUPANCY =
             "the runner reports no context occupancy, so only the prompt limit and the turn cap (agent.max_turns) hold for this attempt"
+        const val UNKNOWN = "openai/gpt-unknown-9"
+
+        /** m4-02: the line under a running session whose [model] has no window, null for a runner that named none. */
+        fun noWindow(model: String?): String =
+            (model?.let { "no window for $it in context.windows" } ?: "the runner named no model") +
+                ", so the soft and hard limits do not hold for this session"
     }
 }

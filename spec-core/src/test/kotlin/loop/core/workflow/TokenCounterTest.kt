@@ -49,8 +49,11 @@ class TokenCounterTest {
 
     @Test
     fun `the limit is the fraction of the window rounded down, computed in decimal`() {
-        assertEquals(50_000, ContextConfig(promptLimit = 0.05).promptLimitFor(null)?.tokens)
-        assertEquals(70_000, ContextConfig(promptLimit = 0.07).promptLimitFor(null)?.tokens)
+        val million = mapOf("a/b" to 1_000_000L)
+        assertEquals(50_000, ContextConfig(promptLimit = 0.05, windows = million).promptLimitFor(null)?.tokens)
+        assertEquals(70_000, ContextConfig(promptLimit = 0.07, windows = million).promptLimitFor(null)?.tokens)
+        // m4-02: with the shipped windows, the smallest is the Codex model's 475000.
+        assertEquals(23_750, ContextConfig(promptLimit = 0.05).promptLimitFor(null)?.tokens)
         // 0.29 times 100 is 28.999999999999996 in floating point.
         assertEquals(29, ContextConfig(promptLimit = 0.29, windows = mapOf("a/b" to 100L)).promptLimitFor(null)?.tokens)
         assertEquals(333, ContextConfig(promptLimit = 0.333, windows = mapOf("a/b" to 1_001L)).promptLimitFor(null)?.tokens)

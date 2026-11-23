@@ -26,6 +26,7 @@ import kotlin.time.Instant
  * `loop run` works in another process. With a machine config (m3-16) it also prints the machine slots in use, the cap
  * and the machine day spend. Since m3-09 a running attempt shows its running session's latest and peak occupancy, and
  * an attempt whose runner declares no occupancy gets a line saying only the prompt limit and the turn cap hold for it.
+ * Since m4-02 a running session whose model has no window shows `window=none` and a line naming the model.
  * Since bl-172 a merge wait shows its place in the delivery queue, `queue=1` for the head, and since bl-175 one line says
  * when the live run keeps the delivery queue paused after a CI timeout.
  */
@@ -168,12 +169,17 @@ class StatusCommand(
                     // m3-09: the running session's occupancy, its fractions only when the window is known.
                     "latest_tokens" to occupancy?.latest?.toString(),
                     "peak_tokens" to occupancy?.peak?.toString(),
-                    "window" to occupancy?.window?.toString(),
+                    // m4-02: a session whose model has no window says so, never a blank fraction.
+                    "window" to (occupancy?.window?.toString() ?: NO_WINDOW.takeIf { occupancy?.noWindow == true }),
                     "fraction" to occupancy?.fraction,
                     "peak_fraction" to occupancy?.peakFraction,
                 ),
                 // m3-09: the weaker guarantee of a runner that declares no occupancy (plan 8.3).
-                notes = if (row.declaresOccupancy == false) listOf(NO_OCCUPANCY) else emptyList(),
+                notes =
+                    listOfNotNull(
+                        NO_OCCUPANCY.takeIf { row.declaresOccupancy == false },
+                        occupancy?.takeIf { it.noWindow }?.let { noWindow(it.model) },
+                    ),
             )
         } +
             snapshot.retrying.map { row ->
@@ -232,6 +238,13 @@ class StatusCommand(
         const val PAUSED = "paused"
         const val NO_OCCUPANCY =
             "the runner reports no context occupancy, so only the prompt limit and the turn cap (agent.max_turns) hold for this attempt"
+        const val NO_WINDOW = "none"
+
+        /** m4-02: the note of a running session whose [model] has no window, null for a runner that named none. */
+        fun noWindow(model: String?): String =
+            (model?.let { "no window for $it in context.windows" } ?: "the runner named no model") +
+                ", so the soft and hard limits do not hold for this session"
+
         const val STATE_WIDTH = 10
         const val SHORT_ID = 8
         const val TIME_START = 11

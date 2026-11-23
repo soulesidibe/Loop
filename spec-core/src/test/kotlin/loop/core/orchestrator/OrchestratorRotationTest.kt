@@ -76,7 +76,9 @@ class OrchestratorRotationTest {
             config =
                 WorkflowConfig(
                     agent = AgentConfig(maxTurns = maxTurns),
-                    context = ContextConfig(maxRotations = maxRotations, windows = windows),
+                    // The m3-11 hard limit of 0.25, above the default of 0.21 (m4-02), so these soft limit cases reach
+                    // the soft limit and not the hard one.
+                    context = ContextConfig(hardLimit = 0.25, maxRotations = maxRotations, windows = windows),
                     kinds = checks?.let { KindsConfig(KindConfig(it, delivery = DeliveryConfig(DeliveryPolicy.Auto))) },
                     retries = RetriesConfig(maxAttempts = 5),
                 ),

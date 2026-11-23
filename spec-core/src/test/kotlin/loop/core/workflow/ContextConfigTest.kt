@@ -50,11 +50,43 @@ class ContextConfigTest {
         val context = context("")
 
         assertEquals(0.20, context.softLimit)
-        assertEquals(0.25, context.hardLimit)
+        assertEquals(0.21, context.hardLimit)
         assertEquals(0.05, context.promptLimit)
         assertEquals(2000, context.toolOutputTokens)
         assertEquals(5, context.maxRotations)
-        assertEquals(mapOf("anthropic/claude-opus-5-5" to 1_000_000L), context.windows)
+        assertEquals(mapOf("anthropic/claude-opus-5-5" to 1_000_000L, "openai/gpt-6.1-sol" to 475_000L), context.windows)
+    }
+
+    @Test
+    fun `m4-02 the defaults are a hard limit of 0_21 and a soft limit of 0_20`() {
+        val context = ContextConfig()
+
+        assertEquals(0.21, context.hardLimit)
+        assertEquals(0.20, context.softLimit)
+        assertEquals(475_000L, ContextConfig.DEFAULT_WINDOWS["openai/gpt-6.1-sol"])
+        assertEquals(1_000_000L, ContextConfig.DEFAULT_WINDOWS["anthropic/claude-opus-5-5"])
+    }
+
+    @Test
+    fun `m4-02 a soft limit above the default hard limit is refused, naming the default and the two fixes`() {
+        assertEquals(
+            "context.soft_limit (0.23) must not be above the default context.hard_limit (0.21): " +
+                "set context.hard_limit or lower context.soft_limit",
+            error("context:\n  soft_limit: 0.23"),
+        )
+    }
+
+    @Test
+    fun `m4-02 a soft limit above the default hard limit passes with a hard limit set`() {
+        val context = context("context:\n  soft_limit: 0.23\n  hard_limit: 0.25")
+
+        assertEquals(0.23, context.softLimit)
+        assertEquals(0.25, context.hardLimit)
+    }
+
+    @Test
+    fun `m4-02 the default soft limit passes under a hard limit set at it`() {
+        assertEquals(0.20, context("context:\n  hard_limit: 0.20").softLimit)
     }
 
     @Test
@@ -91,7 +123,10 @@ class ContextConfigTest {
                 """.trimMargin(),
             )
 
-        assertEquals(mapOf("anthropic/claude-opus-5-5" to 500_000L, "openai/gpt-x" to 400_000L), context.windows)
+        assertEquals(
+            mapOf("anthropic/claude-opus-5-5" to 500_000L, "openai/gpt-6.1-sol" to 475_000L, "openai/gpt-x" to 400_000L),
+            context.windows,
+        )
     }
 
     @Test
@@ -126,7 +161,7 @@ class ContextConfigTest {
     fun `the soft limit cannot be above the hard limit`() {
         assertEquals(
             "context.soft_limit (0.3) must not be above context.hard_limit (0.25)",
-            error("context:\n  soft_limit: 0.3"),
+            error("context:\n  soft_limit: 0.3\n  hard_limit: 0.25"),
         )
     }
 
@@ -192,6 +227,28 @@ class ContextConfigTest {
         // The file as read (m1-15) is not what this test is about.
         assertEquals(
             PreflightResult.Failed("invalid_config", "context.hard_limit must be a fraction above 0 and at most 1, got 2"),
+            assertIs<PreflightResult.Failed>(result).copy(source = null),
+        )
+    }
+
+    @Test
+    fun `m4-02 preflight refuses a soft limit of 0_23 with no hard limit, naming the default hard limit`() {
+        val result =
+            runBlocking {
+                Preflight(
+                    loader = loader,
+                    path = write("context:\n  soft_limit: 0.23"),
+                    templates = TemplateEngine(),
+                    trackerCheck = { null },
+                ).check()
+            }
+
+        assertEquals(
+            PreflightResult.Failed(
+                "invalid_config",
+                "context.soft_limit (0.23) must not be above the default context.hard_limit (0.21): " +
+                    "set context.hard_limit or lower context.soft_limit",
+            ),
             assertIs<PreflightResult.Failed>(result).copy(source = null),
         )
     }

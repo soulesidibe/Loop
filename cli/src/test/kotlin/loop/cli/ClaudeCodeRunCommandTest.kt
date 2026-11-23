@@ -194,11 +194,13 @@ class ClaudeCodeRunCommandTest {
     @Test
     fun `m3-11 a session over the soft limit is rotated at its turn end into a new claude process, without --resume`() {
         val calls = root.resolve("claude-calls")
+        // m3-14: the prompt limit at the soft limit, 200 tokens of the 1000 token window, so the rotated prompt fits
+        // whole and shows the brief as it is built. The m3-11 hard limit of 0.25, above the default of 0.21 (m4-02), so
+        // the 220 token report rotates at the soft limit.
+        val context = "context:\n  prompt_limit: 0.20\n  hard_limit: 0.25\n  windows:\n    anthropic/claude-fake: 1000\n"
         fixture.workflow.writeText(
             claudeWorkflow(rotatingClaude(calls))
-                // m3-14: the prompt limit at the soft limit, 200 tokens of the 1000 token window, so the rotated prompt
-                // fits whole and shows the brief as it is built.
-                .replace("workspace:", "context:\n  prompt_limit: 0.20\n  windows:\n    anthropic/claude-fake: 1000\nworkspace:")
+                .replace("workspace:", "${context}workspace:")
                 .replace(
                     "Work on {{ issue.identifier }}",
                     "Work on {{ issue.identifier }}{% if loop.retry_kind %} kind={{ loop.retry_kind }}{% endif %}" +

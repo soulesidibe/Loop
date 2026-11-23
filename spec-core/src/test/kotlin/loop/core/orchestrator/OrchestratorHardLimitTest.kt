@@ -410,7 +410,7 @@ class OrchestratorHardLimitTest {
             val tracker = FakeTracker(listOf(issue("m3-12")))
             val runner =
                 runner(onTurn = { session, _ -> if (session == 2) tracker.moveIssue("id-m3-12", "review") }) { session, _ ->
-                    if (session == 1) 220_000L else 30_000L
+                    if (session == 1) 205_000L else 30_000L
                 }
 
             orchestrator(tracker, runner).tick()

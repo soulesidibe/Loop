@@ -515,16 +515,33 @@ data class BudgetsConfig(
  * [DEFAULT_WINDOWS] with the configured entries added or overriding them.
  */
 data class ContextConfig(
-    val softLimit: Double = 0.20,
-    val hardLimit: Double = 0.25,
+    val softLimit: Double = DEFAULT_SOFT_LIMIT,
+    val hardLimit: Double = DEFAULT_HARD_LIMIT,
     val promptLimit: Double = 0.05,
     val toolOutputTokens: Int = 2000,
     val maxRotations: Int = 5,
     val windows: Map<String, Long> = DEFAULT_WINDOWS,
 ) {
     companion object {
-        /** The windows Loop ships, from the plan (8.2). */
-        val DEFAULT_WINDOWS: Map<String, Long> = mapOf("anthropic/claude-opus-5-5" to 1_000_000L)
+        /** The soft limit when the workflow sets none, the early rotation at a turn's end. */
+        const val DEFAULT_SOFT_LIMIT = 0.20
+
+        /**
+         * The hard limit when the workflow sets none (m4-02, bl-144): 0.21, not 0.25. The hard limit fires on the first
+         * report at or above it, so a session peaks above it by up to one request; 0.21 leaves room for that jump under
+         * the 25 percent rule.
+         */
+        const val DEFAULT_HARD_LIMIT = 0.21
+
+        /**
+         * The windows Loop ships: the plan's Claude window (8.2), and the window of the pinned Codex model, the
+         * `modelContextWindow` codex reported in the M3 exit run (m4-02).
+         */
+        val DEFAULT_WINDOWS: Map<String, Long> =
+            mapOf(
+                "anthropic/claude-opus-5-5" to 1_000_000L,
+                "openai/gpt-6.1-sol" to 475_000L,
+            )
     }
 }
 

@@ -577,7 +577,7 @@ class OrchestratorTest {
 
             val building = sink.events.phases().phase(AttemptPhase.BuildingPrompt)
             // 29 characters, 10 tokens; "Work on : " is 10 characters, 4 tokens. The fake runner names no model, so the
-            // limit is 0.05 of the smallest window, the 1000000 of the defaults.
+            // limit is 0.05 of the smallest window, the 475000 of the defaults (m4-02).
             assertEquals(
                 listOf(
                     "prompt_tokens" to "10",
@@ -587,7 +587,7 @@ class OrchestratorTest {
                     "slot_session_brief_tokens" to "0",
                     "slot_lessons_tokens" to "0",
                     "slot_context_sources_tokens" to "0",
-                    "prompt_limit_tokens" to "50000",
+                    "prompt_limit_tokens" to "23750",
                     "over_limit" to "false",
                     "token_counter" to "estimate",
                 ),
@@ -653,7 +653,7 @@ class OrchestratorTest {
                 mapOf(
                     "prompt_chars" to "28",
                     "prompt_tokens" to "10",
-                    "prompt_limit_tokens" to "50000",
+                    "prompt_limit_tokens" to "23750",
                     "over_limit" to "false",
                     "token_counter" to "estimate",
                 ),
