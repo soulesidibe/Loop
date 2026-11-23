@@ -468,6 +468,38 @@ class OrchestratorRotationTest {
         }
 
     @Test
+    fun `bl-132 a rotated prompt shows the issue as dispatched when the read at the rotation fails, with a warning`() =
+        runTest {
+            val tracker = FakeTracker(listOf(issue("m3-11")))
+            val runner =
+                runner(
+                    onTurn = { session, _ ->
+                        if (session == 2) {
+                            tracker.fetchByIdsFailure = null
+                            tracker.moveIssue("id-m3-11", "review")
+                        }
+                    },
+                ) { session, _ -> if (session == 1) listOf(240_000L) else listOf(10_000L) }
+            // bl-152: the fallback is the issue the turn end read, here still the issue as dispatched, since the edit
+            // lands after that read, during the stop, and the read right before the rotated prompt fails.
+            runner.onStop = {
+                if (runner.sessionsOpened == 1) {
+                    tracker.issues[0] = tracker.issues[0].copy(title = "Title as edited")
+                    tracker.fetchByIdsFailure = TrackerError.Unavailable(IOException("tracker down"))
+                }
+            }
+
+            val summary = orchestrator(tracker, runner, workflow(template = TITLED)).tick().attempts.single()
+
+            assertEquals(AttemptOutcome.Succeeded, summary.outcome)
+            assertEquals(1, sink.ofKind("session_rotated").size)
+            val rotated = runner.turnInputs[1].second
+            assertTrue(rotated.startsWith("Do m3-11: Title of m3-11 kind=rotation\n"), rotated)
+            val warning = logLines.single { "level=warn" in it && "event=rotation_issue" in it }
+            assertTrue("tracker down" in warning, warning)
+        }
+
+    @Test
     fun `bl-152 a rotated prompt shows the issue the turn end read when the read at the rotation fails, with one warning`() =
         runTest {
             val tracker = FakeTracker(listOf(issue("m3-11")))
