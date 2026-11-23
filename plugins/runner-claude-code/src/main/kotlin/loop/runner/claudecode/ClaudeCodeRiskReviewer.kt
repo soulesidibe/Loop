@@ -100,7 +100,11 @@ class ClaudeCodeRiskReviewer(
             }
         withTimeoutOrNull(request.timeoutMs) { process.onExit().await() }
             ?: return Result.failure(RiskReviewError.Timeout("no answer within ${request.timeoutMs} ms"))
-        withContext(Dispatchers.IO) { threads.take(2).forEach { it.join(JOIN_MS) } }
+        // One wait for both readers, so a child that keeps stdout and stderr open delays the answer once (bl-96).
+        val deadline = System.nanoTime() + JOIN_MS * 1_000_000
+        withContext(Dispatchers.IO) {
+            threads.take(2).forEach { it.join(maxOf(1, (deadline - System.nanoTime()) / 1_000_000)) }
+        }
         val stdout = out.toString(Charsets.UTF_8)
         if (out.size() > STDOUT_MAX) return Result.failure(RiskReviewError.Crashed("$command printed more than $STDOUT_MAX bytes"))
         if (process.exitValue() != 0) {
