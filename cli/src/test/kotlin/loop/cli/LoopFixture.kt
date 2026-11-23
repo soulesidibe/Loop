@@ -231,10 +231,10 @@ class LoopFixture(
             }
         }
 
-    /** Runs [sql], a statement that returns no rows, on the store file while no `loop run` holds it. */
-    fun execute(sql: String) {
+    /** Runs the write [sql] on the store file, for a test that sets up a state no run reaches in time. */
+    fun update(sql: String) {
         DriverManager.getConnection("jdbc:sqlite:$storeFile").use { connection ->
-            connection.createStatement().use { st -> st.executeUpdate(sql) }
+            connection.createStatement().use { it.executeUpdate(sql) }
         }
     }
 
@@ -318,7 +318,7 @@ class LoopFixture(
         timeoutSeconds: Long = 60,
     ): LoopResult = start(*args, cwd = cwd, env = env).await(timeoutSeconds)
 
-    /** A launcher run started by [start]; the start script execs java, so [process] is the JVM. */
+    /** A launcher run started by [start]; perl and the start script exec, so [process] is the JVM. */
     inner class RunningLoop(
         val process: Process,
         private val args: List<String>,
@@ -390,24 +390,21 @@ class LoopFixture(
             }
     }
 
-    /**
-     * Starts the installed launcher like [loop] without waiting for it. With [interruptible], SIGINT is reset to its
-     * default before the launcher runs: a build started in the background inherits SIGINT ignored, and a JVM that starts
-     * with SIGINT ignored never runs its shutdown hooks on one (bl-152). `perl` execs the launcher, so the pid stays.
-     */
+    /** Starts the installed launcher like [loop] without waiting for it. */
     fun start(
         vararg args: String,
         cwd: Path = projectDir,
         env: Map<String, String?> = emptyMap(),
-        interruptible: Boolean = false,
     ): RunningLoop {
         val launcher = System.getProperty("loop.launcher") ?: fail("system property loop.launcher is not set")
         val run = ++runs
         val stdout = outputDir.resolve("run-$run.out").toFile()
         val stderr = outputDir.resolve("run-$run.err").toFile()
-        val resetSigint = if (interruptible) listOf("perl", "-e", RESET_SIGINT) else emptyList()
+        // SIGINT back to its default, as a terminal gives its foreground job: a build started from a
+        // background job passes SIGINT on ignored, and a JVM keeps an ignored SIGINT, so loop run
+        // would never see a Ctrl-C (bl-107). perl execs, so the pid stays the JVM's.
         val builder =
-            ProcessBuilder(resetSigint + launcher + args)
+            ProcessBuilder(listOf("perl", "-e", "\$SIG{INT} = 'DEFAULT'; exec { \$ARGV[0] } @ARGV", launcher) + args)
                 .directory(cwd.toFile())
                 .redirectOutput(stdout)
                 .redirectError(stderr)
@@ -428,7 +425,6 @@ class LoopFixture(
         const val RUN_ID: String = "5b2f0c3d-0000-4000-8000-000000000001"
         private const val DUMP_TIMEOUT_SECONDS = 20L
         private const val QUIT_DUMP_WAIT_MS = 3_000L
-        private const val RESET_SIGINT = "\$SIG{INT} = 'DEFAULT'; exec @ARGV or die \"exec: \$!\\n\";"
         private val STATE_LINE = Regex("""^state:(.*)$""", RegexOption.MULTILINE)
     }
 }

@@ -2,7 +2,7 @@
 id: m4-20
 title: "Verification and fingerprint on a workspace without git, and an empty workspace"
 state: todo
-priority: 2
+priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-19]
 ---

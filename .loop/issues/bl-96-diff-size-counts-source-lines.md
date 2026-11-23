@@ -1,7 +1,7 @@
 ---
 id: bl-96
 title: "Auto merge diff size counts tests and docs, and the reviewer never sees large diffs"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-agent]
 blocked_by: [m4-05]
@@ -114,3 +114,9 @@ Filed from the 2026-11-16 run review.
   Evidence: with gradle under SIGINT ignored, the SIGINT test and RestartStateTest pass; CodexClientToolsRunTest and ktlintCheck pass.
 
 2026-11-23 17:30Z agent 652b0f2e: bl-96 turn 7: the build exited 143 (SIGTERM) as cli:test started, before any test failed. I take it as stopped from outside: main moved to a76b690, one agent at a time again. I merged main and put OwnWorkflowTest back to main's copy, which expects max_concurrent_agents 1. OwnWorkflowTest (17 tests) and ktlintCheck pass. Turn 6's cli test fixes are unchanged.
+
+2026-11-23 20:30Z loop: Loop opened pull request #28 for this issue: https://github.com/soulesidibe/Loop/pull/28
+
+2026-11-23 20:30Z loop: Loop could not merge pull request #28: merging main at 784068c922a8d892c6db7a84d3f275e227825b8d into loop/bl-96 conflicts (conflict in cli/src/test/kotlin/loop/cli/LoopFixture.kt, cli/src/test/kotlin/loop/cli/RestartStateTest.kt). The merge was aborted and the branch is unchanged. The next attempt merges refs/loop/base/main into its branch, resolves the conflict and submits the result again.
+
+2026-11-23 20:49Z loop: Loop updated pull request #28 for this issue: https://github.com/soulesidibe/Loop/pull/28

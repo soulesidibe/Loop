@@ -8,6 +8,7 @@ import loop.core.workflow.AutoMergeConfig
 import loop.core.workflow.CiMode
 import loop.core.workflow.CiNoRun
 import loop.core.workflow.DenyGuard
+import loop.core.workflow.TestLanguage
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -58,6 +59,13 @@ class AutoMergeTest {
         val shown = AutoMerge.failures(holding.copy(shownHead = "c".repeat(40))).single()
         assertEquals(AutoMergeCondition.MERGE_CHECK, shown.condition)
         assertContains(shown.reason, "shows the head cccccccccccc")
+    }
+
+    @Test
+    fun `bl-96 a pull request that shows no head fails merge_check (finding 7 of bl-76)`() {
+        val failure = AutoMerge.failures(holding.copy(shownHead = null)).single()
+        assertEquals(AutoMergeCondition.MERGE_CHECK, failure.condition)
+        assertEquals("pull request #7 shows no head, so the checked aaaaaaaaaaaa cannot be proven its head", failure.reason)
     }
 
     private val ci =
@@ -272,6 +280,20 @@ class AutoMergeTest {
     }
 
     @Test
+    fun `bl-96 local Claude memory files and gitmodules are protected by default (finding 23 of bl-76)`() {
+        for ((path, glob) in listOf(
+            "CLAUDE.local.md" to "**/CLAUDE.local.md",
+            "app/CLAUDE.local.md" to "**/CLAUDE.local.md",
+            ".gitmodules" to "**/.gitmodules",
+            "vendor/.gitmodules" to "**/.gitmodules",
+        )) {
+            val failure = AutoMerge.failures(holding.copy(diff = holding.diff + DiffEntry(path, 1, 0))).single()
+            assertEquals(AutoMergeCondition.PROTECTED_PATHS, failure.condition, path)
+            assertContains(failure.reason, "the diff touches $path (protected by $glob)")
+        }
+    }
+
+    @Test
     fun `round 2 of PR #75, protected_paths matches case variants of a root file, a nested file and a folder glob`() {
         for ((path, glob) in listOf(
             "workflow.md" to "WORKFLOW.md",
@@ -295,7 +317,65 @@ class AutoMergeTest {
     fun `a diff over the size limit fails diff_size`() {
         val failure = AutoMerge.failures(holding.copy(autoMerge = AutoMergeConfig(enabled = true, maxDiffLines = 19))).single()
         assertEquals(AutoMergeCondition.DIFF_SIZE, failure.condition)
-        assertEquals("the diff changes 20 lines, over the limit of 19", failure.reason)
+        assertEquals("the diff changes 20 lines outside tests and docs, over the limit of 19", failure.reason)
+    }
+
+    private val testGlobs = TestLanguage.BUILT_IN.flatMap { it.files }
+
+    @Test
+    fun `bl-96 a diff large only in tests and docs passes diff_size, only the other lines count against the limit`() {
+        val facts =
+            holding.copy(
+                testGlobs = testGlobs,
+                diff =
+                    listOf(
+                        DiffEntry("src/main/kotlin/App.kt", 10, 2),
+                        DiffEntry("src/test/kotlin/AppTest.kt", 900, 40),
+                        DiffEntry("docs/guide.txt", 500, 100),
+                        DiffEntry("app/README.md", 300, 0),
+                    ),
+                autoMerge = AutoMergeConfig(enabled = true, maxDiffLines = 12),
+            )
+
+        assertEquals(emptyList(), AutoMerge.failures(facts))
+        assertEquals(12, AutoMerge.sizedLines(facts.diff, testGlobs, AutoMergeConfig.DEFAULT_DOC_PATHS))
+    }
+
+    @Test
+    fun `bl-96 the lines outside tests and docs over the limit fail diff_size, the reason giving the lines in all`() {
+        val failure =
+            AutoMerge
+                .failures(holding.copy(testGlobs = testGlobs, autoMerge = AutoMergeConfig(enabled = true, maxDiffLines = 11)))
+                .single()
+
+        assertEquals(AutoMergeCondition.DIFF_SIZE, failure.condition)
+        assertEquals("the diff changes 12 lines outside tests and docs, over the limit of 11, 20 lines in all", failure.reason)
+    }
+
+    @Test
+    fun `bl-96 doc_paths replace the default doc globs, and tests and docs match with their exact case`() {
+        val diff =
+            listOf(
+                DiffEntry("guides/setup.txt", 50, 0),
+                DiffEntry("README.md", 7, 0),
+                DiffEntry("DOCS/notes.txt", 3, 0),
+                DiffEntry("src/TEST/kotlin/AppTest.KT", 2, 0),
+            )
+
+        assertEquals(12, AutoMerge.sizedLines(diff, testGlobs, listOf("guides/")))
+        assertEquals(55, AutoMerge.sizedLines(diff, testGlobs, AutoMergeConfig.DEFAULT_DOC_PATHS))
+    }
+
+    @Test
+    fun `bl-96 a test or doc file whose lines git did not count still fails diff_size`() {
+        val failure =
+            AutoMerge
+                .failures(
+                    holding.copy(testGlobs = testGlobs, diff = holding.diff + DiffEntry("docs/diagram.md", 0, 0, counted = false)),
+                ).single()
+
+        assertEquals(AutoMergeCondition.DIFF_SIZE, failure.condition)
+        assertEquals("the lines of docs/diagram.md were not counted, so the diff size is unknown", failure.reason)
     }
 
     @Test
@@ -317,11 +397,11 @@ class AutoMergeTest {
     @Test
     fun `the fallback comment names each failed condition and the merge risk`() {
         val failures = AutoMerge.failures(holding.copy(unpinned = true, diff = holding.diff + DiffEntry("WORKFLOW.md", 1, 1)))
-        val text = AutoMerge.fallbackComment("7", failures, risk = null, riskSkipped = "a condition failed")
+        val text = AutoMerge.fallbackComment("7", failures, risk = null, riskSkipped = "no risk reviewer is configured")
 
         assertContains(text, "Loop did not merge pull request #7 on its own")
         assertContains(text, "- protected_paths: the diff touches WORKFLOW.md (protected by WORKFLOW.md)")
         assertContains(text, "- diff_base_pinned:")
-        assertContains(text, "Merge risk: not assessed, a condition failed.")
+        assertContains(text, "Merge risk: not assessed, no risk reviewer is configured.")
     }
 }

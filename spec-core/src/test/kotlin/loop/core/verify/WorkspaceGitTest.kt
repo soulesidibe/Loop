@@ -196,6 +196,48 @@ class WorkspaceGitTest {
         assertEquals(20, workspaceGit.diffText(repo, base, head, maxChars = 20).length)
     }
 
+    @Test
+    fun `bl-96 a binary file whose name starts with a newline keeps its name and counts its lines (finding 24 of bl-76)`() {
+        val (_, base) = forked()
+        val name = "\nlead.dat"
+        repo.resolve(name).toFile().writeBytes(byteArrayOf(0, 1, '\n'.code.toByte(), 2, '\n'.code.toByte(), 3))
+        git("add", "--", name)
+        git("commit", "-q", "-m", "binary")
+        val head = git("rev-parse", "HEAD")
+
+        assertEquals(
+            listOf(DiffEntry(name, 3, 0), DiffEntry("b.txt", 1, 0)),
+            workspaceGit.diffStat(repo, base, head),
+        )
+    }
+
+    @Test
+    fun `bl-96 a gitlink move counts even when the shared config ignores submodules (finding 23 of bl-76)`() {
+        val (_, base) = forked()
+        git("config", "diff.ignoreSubmodules", "all")
+        git("update-index", "--add", "--cacheinfo", "160000,${"1".repeat(40)},vendor/lib")
+        git("commit", "-q", "-m", "gitlink")
+        val head = git("rev-parse", "HEAD")
+
+        assertEquals(
+            listOf(DiffEntry("b.txt", 1, 0), DiffEntry("vendor/lib", 1, 0)),
+            workspaceGit.diffStat(repo, base, head).sortedBy { it.path },
+        )
+        assertTrue("vendor/lib" in workspaceGit.diffText(repo, base, head, maxChars = 10_000))
+    }
+
+    @Test
+    fun `bl-96 the reviewer's diff text keeps its first characters of a large diff, and a git failure names its exit code`() {
+        val (_, base) = forked()
+        val head = commit("big.txt", (1..20_000).joinToString("") { "line $it of a large diff\n" }, "big")
+
+        val text = workspaceGit.diffText(repo, base, head, maxChars = 1_000)
+        assertEquals(1_000, text.length)
+        assertTrue(text.startsWith("diff --git "), text.take(100))
+        val error = assertFailsWith<IOException> { workspaceGit.diffText(repo, "0".repeat(40), head, maxChars = 1_000) }
+        assertTrue("git diff exited with code" in error.message!!, error.message)
+    }
+
     /** A branch whose last commit adds a 3 line Kotlin file, the base of its fork and the head. */
     private fun kotlinChange(): Pair<String, String> {
         val (_, base) = forked()

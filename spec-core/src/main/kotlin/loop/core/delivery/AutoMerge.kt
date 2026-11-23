@@ -37,7 +37,7 @@ enum class AutoMergeCondition(
     /** The diff touches none of `auto_merge.protected_paths`. */
     PROTECTED_PATHS("protected_paths"),
 
-    /** The diff changes at most `auto_merge.max_diff_lines` lines. */
+    /** The diff changes at most `auto_merge.max_diff_lines` lines outside tests and docs (bl-96), and git counted every file. */
     DIFF_SIZE("diff_size"),
 
     /** No verification of the delivered attempt judged `diff_policy` against `guards.base` (`diff_base_unpinned`, bl-32). */
@@ -54,8 +54,9 @@ data class FailedCondition(
  * What the auto merge conditions read (m2-28), gathered by the auto merge gate right before the merge: the attempt's
  * [verifiedVerdict], the [hiddenChecksPassed] of the wait against the kind's [holdouts], the delivered [fingerprint],
  * the [mergedHead] and the head the provider shows, [shownHead], the [denyGuards] of the kind's `diff_policy`, the
- * [diff] against the checked base, the [autoMerge] config and whether the attempt recorded `diff_base_unpinned`,
- * [unpinned]. The CI condition reads [CiFacts] instead, later.
+ * [diff] against the checked base, the [autoMerge] config, whether the attempt recorded `diff_base_unpinned`,
+ * [unpinned], and the [testGlobs] of the guards' languages, whose files `diff_size` does not count (bl-96). The CI
+ * condition reads [CiFacts] instead, later.
  */
 data class AutoMergeFacts(
     val verifiedVerdict: Boolean,
@@ -69,6 +70,7 @@ data class AutoMergeFacts(
     val diff: List<DiffEntry>,
     val autoMerge: AutoMergeConfig,
     val unpinned: Boolean,
+    val testGlobs: List<String> = emptyList(),
 )
 
 /**
@@ -149,6 +151,20 @@ object AutoMerge {
         }
     }
 
+    /**
+     * The lines of [diff], added plus deleted, that count against `max_diff_lines` (bl-96): those of every file that
+     * matches neither [testGlobs] nor [docPaths]. Both match with their exact case, so a case variant counts.
+     */
+    fun sizedLines(
+        diff: List<DiffEntry>,
+        testGlobs: List<String>,
+        docPaths: List<String>,
+    ): Int {
+        val tests = ProtectedPaths(testGlobs)
+        val docs = ProtectedPaths(docPaths)
+        return diff.filter { tests.match(it.path) == null && docs.match(it.path) == null }.sumOf { it.added + it.deleted }
+    }
+
     private fun firstLine(error: Throwable): String = (error.message ?: error::class.simpleName).orEmpty().lines().first()
 
     internal fun shown(items: List<String>): String =
@@ -170,7 +186,10 @@ object AutoMerge {
                 when {
                     facts.fingerprint != MergeCheck.cleanFingerprint(facts.mergedHead) ->
                         "the delivered fingerprint ${facts.fingerprint} is not the merged head ${short(facts.mergedHead)}"
-                    facts.shownHead != null && !facts.shownHead.equals(facts.mergedHead, ignoreCase = true) ->
+                    facts.shownHead == null ->
+                        "pull request #${facts.pullRequestNumber} shows no head, so the checked ${short(facts.mergedHead)} " +
+                            "cannot be proven its head"
+                    !facts.shownHead.equals(facts.mergedHead, ignoreCase = true) ->
                         "pull request #${facts.pullRequestNumber} shows the head ${short(facts.shownHead)}, " +
                             "not the checked ${short(facts.mergedHead)}"
                     else -> null
@@ -196,12 +215,15 @@ object AutoMerge {
                 }
             }
             AutoMergeCondition.DIFF_SIZE -> {
-                val lines = facts.diff.sumOf { it.added + it.deleted }
+                val total = facts.diff.sumOf { it.added + it.deleted }
+                val lines = sizedLines(facts.diff, facts.testGlobs, facts.autoMerge.docPaths)
                 val limit = facts.autoMerge.maxDiffLines
                 val uncounted = facts.diff.filter { !it.counted }.map { it.path }
                 when {
                     uncounted.isNotEmpty() -> "the lines of ${shown(uncounted)} were not counted, so the diff size is unknown"
-                    lines > limit -> "the diff changes $lines lines, over the limit of $limit"
+                    lines > limit ->
+                        "the diff changes $lines lines outside tests and docs, over the limit of $limit" +
+                            if (total != lines) ", $total lines in all" else ""
                     else -> null
                 }
             }

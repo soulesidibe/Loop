@@ -2,7 +2,7 @@
 id: m4-07
 title: "A CI run GitHub refused to start is not started, not red"
 state: todo
-priority: 2
+priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-06]
 ---

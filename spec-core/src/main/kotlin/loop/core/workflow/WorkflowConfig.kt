@@ -79,12 +79,14 @@ data class DeliveryConfig(
 /**
  * `delivery.auto_merge` (m2-28, story 100): [enabled] is the opt in every `policy: auto` on a `code` kind needs. With
  * `pull_request.merge`, an auto merge also needs a diff that touches none of the [protectedPaths], globs anchored at
- * the workspace root like `guards.protect`, and changes at most [maxDiffLines] lines, added plus deleted.
+ * the workspace root like `guards.protect`, and changes at most [maxDiffLines] lines, added plus deleted, in files that
+ * are neither a test (the guards' language globs) nor a doc, one of the [docPaths] (bl-96).
  */
 data class AutoMergeConfig(
     val enabled: Boolean = false,
     val protectedPaths: List<String> = DEFAULT_PROTECTED_PATHS,
     val maxDiffLines: Int = DEFAULT_MAX_DIFF_LINES,
+    val docPaths: List<String> = DEFAULT_DOC_PATHS,
 ) {
     companion object {
         /**
@@ -112,8 +114,21 @@ data class AutoMergeConfig(
                 "**/AGENTS.md",
                 ".mcp.json",
                 "**/.gitattributes",
+                "**/CLAUDE.local.md",
+                "**/.gitmodules",
             )
         const val DEFAULT_MAX_DIFF_LINES: Int = 400
+
+        /** The docs whose lines `max_diff_lines` does not count (bl-96): Markdown and other prose files, and `docs/`. */
+        val DEFAULT_DOC_PATHS: List<String> =
+            listOf(
+                "**/*.md",
+                "**/*.mdx",
+                "**/*.markdown",
+                "**/*.adoc",
+                "**/*.rst",
+                "docs/",
+            )
     }
 }
 

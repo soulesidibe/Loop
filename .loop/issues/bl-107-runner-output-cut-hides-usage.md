@@ -1,7 +1,7 @@
 ---
 id: bl-107
 title: "Runner output lines cut at 2,000 characters hide each request's token usage"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-agent]
 blocked_by: [m4-04]
@@ -51,3 +51,13 @@ Filed from the run review. Related: m3-08, m3-09, m3-11.
 2026-11-23 16:24Z agent ef901c99: Turn 2: the build check failed on two load bound :cli tests, not on the bl-107 test. RestartStateTest now moves the queued retry's due time 30 s out after the first run, instead of relying on the 10 s first backoff, and keeps its assertions (d62fab6). RunCommandTest "SIGINT to loop run stops it cleanly" also failed once: the hang dump shows the JVM idle with no shutdown thread after the signal was sent. It passes on rerun and I found no cause, so it is unchanged and worth a backlog issue if it comes back.
 
 2026-11-23 17:33Z agent ef901c99: Turn 3: the SIGINT test of loop run failed again, and the cause is found. The outer loop run is a detached process and appears to start the build check with SIGINT ignored. An ignored SIGINT survives exec, and a JVM started that way keeps it ignored, so the loop run under test never acts on the signal. Running the test under perl -e '$SIG{INT}="IGNORE"; exec @ARGV' ./gradlew reproduces it; from a normal shell it passes. No product change, since a background job ignoring Ctrl-C is right. LoopFixture.start now launches loop through perl with SIGINT reset to its default and exec, like a terminal's foreground job (67b00bf). With SIGINT ignored, 87 tests in the 11 cli classes that start loop pass.
+
+2026-11-23 19:20Z agent 66550d9c: Turn 4: no code change. Loop's last build check ended with exit 143 (SIGTERM) on its run and its rerun. bl-96's build check (attempt 652b0f2e) got 143 at the same moments, 18:16:47 and 18:17:07, so the signal came from outside both builds, not from this branch. What sent it is unknown. Before the kill, the first run had timing failures in 7 :cli classes. Four full builds were running at once then (bl-96, bl-107, bl-152, m4-06). Several of those classes run loop in process, so the LoopFixture change does not touch them. All 7 classes pass at low load, 37 tests (AbandonedAttemptTest, GitHubRunCommandTest, HoldoutCommandTest, LoopModeCommandTest, CodexRotationRunTest, ClaudeCodeStalledUsageTest, CodexClientToolsRunTest). Submitting the same commit again. If concurrent builds keep getting killed, that is worth a backlog issue.
+
+2026-11-23 19:34Z loop: Loop updated pull request #24 for this issue: https://github.com/soulesidibe/Loop/pull/24
+
+2026-11-23 19:59Z loop: Loop did not merge pull request #24: main at 61d5d8f38ce9fb00cd3ece71bc845596ef81c585 was merged into loop/bl-107, but the checks failed on the result (a check failed). The merge commit stays on the branch. The next attempt fixes the result and submits it again.
+
+2026-11-23 20:01Z agent fa9b2ac5: Turn 5: the merge check failed on OwnWorkflowTest "the limits are the ones of the spec" (expected 3, was 1). Main's a76b690 ("One agent at a time again") set max_concurrent_agents back to 1, and this branch still asserted the 3 it set in attempt 2. The test is restored to main's version, so the branch no longer touches it (8416584). OwnWorkflowTest passes, 17 tests, and ktlint passes.
+
+2026-11-23 20:14Z loop: Loop updated pull request #24 for this issue: https://github.com/soulesidibe/Loop/pull/24

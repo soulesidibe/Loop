@@ -2,7 +2,7 @@
 id: m4-29
 title: "loop approve messages match the outcome"
 state: todo
-priority: 3
+priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-00, m4-01, m4-47]
 ---
