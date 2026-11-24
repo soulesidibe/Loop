@@ -383,14 +383,17 @@ class OrchestratorNoProgressTest {
             advanceTimeBy(1_000)
             orchestrator.tick()
 
-            val requeues = sink.ofKind("retry_scheduled").filter { it.issueId == ISSUE_ID && it.data["error"] != null }
-            assertEquals(2, requeues.size, sink.events.toString())
-            requeues.forEach { requeue ->
-                assertEquals("no available orchestrator slots", requeue.data["error"])
-                assertEquals("1", requeue.data["no_progress"], requeue.data.toString())
-                assertEquals("3", requeue.data["max_continuations"], requeue.data.toString())
-            }
+            // Since m4-15 (bl-77) the second requeue, for the same reason, records nothing.
+            val requeue = sink.ofKind("retry_scheduled").single { it.issueId == ISSUE_ID && it.data["error"] != null }
+            assertEquals("no available orchestrator slots", requeue.data["error"])
+            assertEquals("1", requeue.data["no_progress"], requeue.data.toString())
+            assertEquals("3", requeue.data["max_continuations"], requeue.data.toString())
             holder.cancelAndJoin()
+
+            // The count survived both requeues: the continuation runs once the slot frees and counts on from it.
+            advanceTimeBy(30_000)
+            orchestrator.tick()
+            assertEquals(listOf("1", "2"), sink.noProgress(), sink.events.toString())
         }
 
     /**
