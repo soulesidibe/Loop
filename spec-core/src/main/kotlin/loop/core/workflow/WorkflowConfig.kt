@@ -489,13 +489,19 @@ data class HooksConfig(
     val onBudgetWarning: String? = null,
 )
 
-/** Spec 5.3.5, plus Loop's `agent.env` (bl-01) and `agent.max_wake_turns` (m4-03). */
+/** Spec 5.3.5, plus Loop's `agent.env` (bl-01), `agent.max_wake_turns` (m4-03) and `agent.max_concurrent_agents_by_tracker` (m4-15). */
 data class AgentConfig(
     val maxConcurrentAgents: Int = 10,
     val maxTurns: Int = 20,
     val maxRetryBackoffMs: Long = 300_000L,
     /** Keys are trimmed and lowercased states; invalid entries are dropped. */
     val maxConcurrentAgentsByState: Map<String, Int> = emptyMap(),
+    /**
+     * `agent.max_concurrent_agents_by_tracker` (m4-15): the attempts each tracker id may run at once, beside the two
+     * limits above. A tracker with no entry has no limit of its own. Keys are tracker ids of the workflow and values are
+     * positive, which the loader checked: unlike the per state caps, a bad entry is refused, not ignored.
+     */
+    val maxConcurrentAgentsByTracker: Map<String, Int> = emptyMap(),
     /**
      * `agent.env`: names added to the agent env of every attempt, values as written. Each `{workspace}` is
      * replaced by the attempt's workspace path when the runner builds the env, nothing else is expanded.

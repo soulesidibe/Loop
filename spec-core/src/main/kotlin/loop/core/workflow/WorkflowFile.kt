@@ -242,7 +242,7 @@ class WorkflowLoader(
 
         val polling = parsePolling(config.child("polling"))
         val hooks = parseHooks(config.child("hooks"))
-        val agent = parseAgent(config.child("agent"))
+        val agent = parseAgent(config.child("agent"), listOf(tracker.id) + extraTrackers.map { it.id })
         val codex = parseCodex(config.child("codex"))
         val retries = parseRetries(config.child("retries"))
         val budgets = parseBudgets(config.child("budgets"))
@@ -348,7 +348,11 @@ class WorkflowLoader(
         )
     }
 
-    private fun parseAgent(agent: YamlMap?): AgentConfig {
+    /** [trackerIds] are the ids of the workflow's trackers, the only keys `max_concurrent_agents_by_tracker` takes (m4-15). */
+    private fun parseAgent(
+        agent: YamlMap?,
+        trackerIds: List<String>,
+    ): AgentConfig {
         val defaults = AgentConfig()
         return AgentConfig(
             maxConcurrentAgents =
@@ -361,6 +365,7 @@ class WorkflowLoader(
                     ?: defaults.maxRetryBackoffMs,
             maxConcurrentAgentsByState =
                 agent.child("max_concurrent_agents_by_state", "agent.max_concurrent_agents_by_state").perState(),
+            maxConcurrentAgentsByTracker = agent.perTracker(trackerIds),
             env = agent.child("env", "agent.env").agentEnv(),
         )
     }
@@ -1043,6 +1048,29 @@ class WorkflowLoader(
         if (value != null && value > 0 && value <= 1) return value
         val shown = if (DECIMAL.matches(text.trim())) text.trim() else "\"$text\""
         throw WorkflowError.InvalidConfig("$name must be $FRACTION, got $shown")
+    }
+
+    /**
+     * m4-15: `agent.max_concurrent_agents_by_tracker`, tracker id to a positive count. A Loop key keeps no spec behavior,
+     * so unlike [perState] it refuses a key that is not one of [trackerIds] and a value below 1, rather than ignore them.
+     */
+    private fun YamlMap?.perTracker(trackerIds: List<String>): Map<String, Int> {
+        val name = "agent.max_concurrent_agents_by_tracker"
+        val limits =
+            when (val node = node("max_concurrent_agents_by_tracker")) {
+                null -> return emptyMap()
+                is YamlMap -> node
+                else -> throw WorkflowError.InvalidConfig("$name must be a map of tracker id to $POSITIVE")
+            }
+        return limits.entries.keys.associate { key ->
+            val id = key.content
+            if (id !in trackerIds) {
+                throw WorkflowError.InvalidConfig(
+                    "$name.$id names no tracker of this workflow, use one of ${trackerIds.joinToString(", ")}",
+                )
+            }
+            id to checkNotNull(limits.positiveInt("$name.$id", id))
+        }
     }
 
     /** Spec 5.3.5: keys trimmed and lowercased, blank keys and non-positive or non-numeric entries ignored. */
