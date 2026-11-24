@@ -23,8 +23,8 @@ public object RealIntegration {
     /** The variable that turns the profile on, a comma list of [TARGETS]. */
     public const val VARIABLE: String = "LOOP_REAL_INTEGRATION"
 
-    /** The targets the profile knows: `codex` (m3-24) and `github` (m3-25). */
-    public val TARGETS: Set<String> = setOf("codex", "github")
+    /** The targets the profile knows: `codex` (m3-24), `github` (m3-25) and `agy`. */
+    public val TARGETS: Set<String> = setOf("codex", "github", "agy")
 
     /** The targets [env] names in [VARIABLE], trimmed and lower cased, empty when it is unset or blank. */
     public fun targets(env: Map<String, String>): Set<String> =

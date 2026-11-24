@@ -54,7 +54,7 @@ class ContextConfigTest {
         assertEquals(0.05, context.promptLimit)
         assertEquals(2000, context.toolOutputTokens)
         assertEquals(5, context.maxRotations)
-        assertEquals(mapOf("anthropic/claude-opus-5-5" to 1_000_000L, "openai/gpt-6.1-sol" to 475_000L), context.windows)
+        assertEquals(ContextConfig.DEFAULT_WINDOWS, context.windows)
     }
 
     @Test
@@ -65,6 +65,25 @@ class ContextConfigTest {
         assertEquals(0.20, context.softLimit)
         assertEquals(475_000L, ContextConfig.DEFAULT_WINDOWS["openai/gpt-6.1-sol"])
         assertEquals(1_000_000L, ContextConfig.DEFAULT_WINDOWS["anthropic/claude-opus-5-5"])
+    }
+
+    @Test
+    fun `shipped gemini context windows default to 1_048_576 tokens`() {
+        val geminiModels =
+            listOf(
+                "google/gemini-4-neon-high",
+                "google/gemini-4-neon-medium",
+                "google/gemini-4-neon-low",
+                "google/gemini-4-neon-xhigh",
+                "google/gemini-3.8-flash-high",
+                "google/gemini-3.8-flash-medium",
+                "google/gemini-3.8-flash-low",
+            )
+
+        for (model in geminiModels) {
+            assertEquals(1_048_576L, ContextConfig.DEFAULT_WINDOWS[model], model)
+        }
+        assertEquals(2 + geminiModels.size, ContextConfig.DEFAULT_WINDOWS.size)
     }
 
     @Test
@@ -119,12 +138,18 @@ class ContextConfigTest {
                 |context:
                 |  windows:
                 |    anthropic/claude-opus-5-5: 500000
+                |    google/gemini-4-neon-high: 524288
                 |    openai/gpt-x: "400000"
                 """.trimMargin(),
             )
 
         assertEquals(
-            mapOf("anthropic/claude-opus-5-5" to 500_000L, "openai/gpt-6.1-sol" to 475_000L, "openai/gpt-x" to 400_000L),
+            ContextConfig.DEFAULT_WINDOWS +
+                mapOf(
+                    "anthropic/claude-opus-5-5" to 500_000L,
+                    "google/gemini-4-neon-high" to 524_288L,
+                    "openai/gpt-x" to 400_000L,
+                ),
             context.windows,
         )
     }

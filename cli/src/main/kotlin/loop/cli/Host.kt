@@ -483,8 +483,8 @@ private const val KEPT_ENV_PREFIX = "LC_"
 /**
  * The secrets Loop redacts (m1-11), env name to host env value: every `tracker.provider` value, and since m4-11 every
  * `provider` value of an extra tracker of `trackers:`, that is exactly `$NAME`, except the path keys ([PATH_KEYS]), the variable of
- * `kinds.code.delivery.pull_request.token` (m2-25), plus `ANTHROPIC_API_KEY`
- * and `ANTHROPIC_AUTH_TOKEN`. A `workspace.root` or `tracker.provider.dir` path stays visible.
+ * `kinds.code.delivery.pull_request.token` (m2-25), plus `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `GEMINI_API_KEY`
+ * and `GOOGLE_API_KEY`. A `workspace.root` or `tracker.provider.dir` path stays visible.
  * Unset and blank values are skipped, and so are values under
  * [SecretRedactor.MIN_SECRET_LENGTH] characters, see [shortSecretNames].
  */
@@ -524,7 +524,7 @@ fun secretValues(
  * A [SecretRedactor] for a command about to load the `WORKFLOW.md` at [path]. It learns the
  * [secretValues] of a best effort read of its `tracker.provider` map and of each extra tracker's `provider` (m4-11), so a load or preflight
  * failure message is covered even when validation fails. When the front matter does not parse,
- * only the Anthropic keys and the token patterns apply.
+ * only the Anthropic and Google keys and the token patterns apply.
  */
 fun startupRedactor(
     path: Path,
@@ -591,7 +591,7 @@ private fun secretRefs(
                 .filterKeys { it !in PATH_KEYS }
                 .values
                 .flatMap { it.credentialRefs() }
-        } + ANTHROPIC_KEYS
+        } + ANTHROPIC_KEYS + GOOGLE_KEYS
     return envValues(names.distinct(), env)
 }
 
@@ -617,6 +617,9 @@ private fun envValues(
 
 /** The Anthropic credentials the Claude Code runner drops from the agent env, redacted wherever they show up. */
 private val ANTHROPIC_KEYS = listOf("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+
+/** The Google API keys the agy preset drops from the agent env, redacted wherever they show up. */
+private val GOOGLE_KEYS = listOf("GEMINI_API_KEY", "GOOGLE_API_KEY")
 
 /** `tracker.provider` keys that hold a path, not a credential. */
 private val PATH_KEYS = setOf("dir")
