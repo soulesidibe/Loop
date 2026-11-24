@@ -3,7 +3,7 @@ id: m4-50
 title: "Resource locks in the run store, grants in queue order, no leak"
 state: todo
 priority: 1
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [m4-24]
 ---
 

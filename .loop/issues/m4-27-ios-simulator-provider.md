@@ -3,7 +3,7 @@ id: m4-27
 title: "iOS simulator provider"
 state: todo
 priority: 1
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [m4-01, m4-26]
 ---
 

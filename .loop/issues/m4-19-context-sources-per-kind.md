@@ -3,7 +3,7 @@ id: m4-19
 title: "Context sources per kind"
 state: todo
 priority: 1
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [m4-18]
 ---
 

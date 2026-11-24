@@ -3,7 +3,7 @@ id: m4-52
 title: "loop answer ends a Waiting(ask)"
 state: todo
 priority: 1
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [m4-31]
 ---
 

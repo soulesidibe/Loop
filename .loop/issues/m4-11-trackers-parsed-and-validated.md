@@ -1,7 +1,7 @@
 ---
 id: m4-11
 title: "trackers: parsed and validated, the primary tracker kept"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-10]
@@ -49,3 +49,11 @@ Out of this issue: namespaced ids (m4-12), polling and reconciliation per tracke
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-24 08:48Z loop: Loop opened pull request #37 for this issue: https://github.com/soulesidibe/Loop/pull/37
+
+2026-11-24 08:58Z loop: Loop did not merge pull request #37 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Failed conditions:
+  - diff_size: the diff changes 1185 lines, over the limit of 1000
+  Merge risk: not assessed, a condition failed.
+  Once approved, Loop runs the merge check again and merges.
