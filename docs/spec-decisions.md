@@ -1571,14 +1571,16 @@ The delivery policy is human: m2-24 moves to review once an operator approves it
 
 The summary addresses the operator and gives no `loop approve` command: it stays on the Issue, where a rework Attempt reads it in its prompt, and approving is the operator's. A command shows its first line, cut to 200 characters. A check that passed on its rerun (m2-08) reads `passed on its rerun`. A holdout check (m2-14) reads `hidden check <n>: passed`, with no command, exit code, duration or evidence. A restored wait with no Attempt id posts no summary.
 
-**`loop approve <issue> [--workflow WORKFLOW.md]`** approves the delivery from the terminal. The Issue is looked up like `loop resume`: in the tracker first, then by identifier among the waiting Issues. In one store transaction it marks the wait approved, `approved_by` (the `USER` of the environment, else `LOGNAME`, else `human`) and `approved_at` in the row's data. Then it records `approval_given` with the wait's Attempt id, `by` and `to`, and a `human_touch` with `touch` = `approve`, counted by the [ledger](#ledger-extension-m2-19). It prints `Approved m2-24, waiting since <time>. Loop moves it to review on its next tick.` It delivers nothing itself.
+**`loop approve <issue> [--workflow WORKFLOW.md]`** approves the delivery from the terminal. The Issue is looked up like `loop resume`: in the tracker first, then by id or identifier among the waiting Issues. In one store transaction it marks the wait approved, `approved_by` (the `USER` of the environment, else `LOGNAME`, else `human`) and `approved_at` in the row's data. Then it records `approval_given` with the wait's Attempt id, `by` and `to`, the state the Issue ends in: the wait's own, or `on_delivered.move_to` under `pull_request.merge`, since the merged Issue never stops at the handoff state (m4-29). It then records a `human_touch` with `touch` = `approve`, counted by the [ledger](#ledger-extension-m2-19). It prints `Approved m2-24, waiting since <time>. Loop moves it to review on its next tick.` It delivers nothing itself.
 
 | Case | Exit | Message |
 |---|---|---|
 | Approved | 0 | `Approved <issue>, waiting since <time>. Loop moves it to <to> on its next tick.` |
 | Already approved | 0 | `<issue> is already approved, Loop moves it to <to> on its next tick. Nothing changed.` |
+| Approved, under `pull_request.merge` (m4-29) | 0 | `Approved <issue>, waiting since <time>. Loop delivers its pull request on its next tick, runs the merge check and merges it, then moves it to <move_to>.` |
+| Already approved, under `pull_request.merge` (m4-29) | 0 | `<issue> is already approved, Loop delivers its pull request on its next tick, runs the merge check and merges it, then moves it to <move_to>. Nothing changed.` |
 | Workflow does not load | 1 | the load error |
-| Unknown issue | 2 | `loop approve: no issue "<issue>" in the tracker at <dir>.` |
+| Unknown issue | 2 | `loop approve: no issue "<issue>" in <tracker>.`, where `<tracker>` is `the tracker at <dir>` or `the github tracker of <owner>/<repo>` (m4-29) |
 | Store cannot be read or written | 3 | the store error |
 | No wait | 4 | `loop approve: <issue> is not waiting for approval. Nothing changed.` |
 | A wait for its checks | 4 | `loop approve: <issue> is waiting for verify, not for approval. Nothing changed.` |
