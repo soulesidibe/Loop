@@ -48,8 +48,10 @@ class TokenPatternsTest {
     @Test
     fun `a google oauth access token is redacted`() {
         val token = "ya29." + "a0AfB_byC1234567890-xyz"
+        val serviceAccount = "ya29.c." + "b0AaEkM1234567890_abc-xyz.extra"
 
         assertEquals("Bearer [redacted:google-oauth-token]", redactor.redact("Bearer $token"))
+        assertEquals("Bearer [redacted:google-oauth-token]", redactor.redact("Bearer $serviceAccount"))
     }
 
     @Test

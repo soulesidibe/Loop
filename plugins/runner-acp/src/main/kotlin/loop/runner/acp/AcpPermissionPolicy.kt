@@ -28,6 +28,8 @@ internal class AcpPermissionPolicy(
     private val protectedRoots: ProtectedWorkspaceRoots,
     private val strictMcp: Boolean,
     private val launcher: String? = null,
+    /** Internal Loop directories (isolated `--gemini-dir`, attempt folder) that the agent must never modify. */
+    private val protectedWriteDirs: () -> List<HoldoutFolder> = { emptyList() },
 ) {
     sealed interface Answer {
         /** Send [line] to the agent stdin and log [note] as a `loop:` stderr line (never quoting request data). */
@@ -105,10 +107,12 @@ internal class AcpPermissionPolicy(
     ): String? {
         val commands = (extractCommands(rawInput) + extractCommands(args)).distinct()
         if (commands.isEmpty()) return NO_COMMAND
+        val internalDirs = protectedWriteDirs()
         return when {
             commands.any { DeniedCommands.isDenied(it, launcher) } -> DENIED_COMMAND
             holdout != null && (commands.any { holdout.names(it, cwd) } || locations.any { holdout.covers(it, cwd) }) -> HOLDOUT
             commands.any { protectedRoots.names(it, cwd) } || locations.any { protectedRoots.covers(it, cwd) } -> PROTECTED_ROOT
+            internalDirs.any { dir -> commands.any { dir.names(it, cwd) } || locations.any { dir.covers(it, cwd) } } -> INTERNAL_LOOP_DIR
             else -> null
         }
     }
@@ -121,9 +125,11 @@ internal class AcpPermissionPolicy(
     ): String? {
         val paths = (locations + extractInputPaths(rawInput) + extractInputPaths(args)).distinct()
         if (paths.isEmpty()) return NO_PATH
+        val internalDirs = protectedWriteDirs()
         return when {
             holdout != null && paths.any { holdout.covers(it, cwd) } -> HOLDOUT
             paths.any { protectedRoots.covers(it, cwd) } -> PROTECTED_ROOT
+            internalDirs.any { dir -> paths.any { dir.covers(it, cwd) } } -> INTERNAL_LOOP_DIR
             else -> null
         }
     }
@@ -207,11 +213,11 @@ internal class AcpPermissionPolicy(
     private fun selectAllowOptionId(optionsElement: JsonElement?): String? {
         val options = (optionsElement as? JsonArray)?.filterIsInstance<JsonObject>()
         if (options.isNullOrEmpty()) return DEFAULT_ALLOW_OPTION
-        // Prefer allow_once so every subsequent call still passes through Loop's permission policy.
+        // Only accept allow_once so later calls of the same tool class never bypass Loop's policy.
         options.firstOrNull { it.string("kind") == "allow_once" }?.string("optionId")?.let { return it }
-        options.firstOrNull { it.string("optionId") == "allow_once" }?.string("optionId")?.let { return it }
-        options.firstOrNull { it.string("optionId") == "allow" }?.string("optionId")?.let { return it }
-        return options.firstOrNull { it.string("kind")?.startsWith("allow") == true }?.string("optionId")
+        return options
+            .firstOrNull { it.string("kind") == null && it.string("optionId") == "allow_once" }
+            ?.string("optionId")
     }
 
     private fun selectRejectOptionId(optionsElement: JsonElement?): String? {
@@ -402,6 +408,7 @@ internal class AcpPermissionPolicy(
         const val DENIED_COMMAND: String = "it runs a denied command (git push, gh, a history rewrite or an operator command)"
         const val HOLDOUT: String = "it touches the holdout folder"
         const val PROTECTED_ROOT: String = "it targets a protected workspace customization root"
+        const val INTERNAL_LOOP_DIR: String = "it targets an internal Loop config or attempt directory"
         const val NON_LOOP_MCP: String = "strict_mcp declines non-Loop MCP tools"
         const val UNSUPPORTED_TOOL: String = "the tool is not allowed by Loop's fail-closed permission policy"
         const val NO_ALLOW_OPTION: String = "no allow option was offered"

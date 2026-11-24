@@ -307,4 +307,97 @@ class AcpPermissionPolicyTest {
         val err = assertIs<AcpFrame.Error>(AcpFraming.decode(rpcWrite.line.trimEnd('\n')))
         assertEquals(-32601L, err.code)
     }
+
+    @Test
+    fun `never falls back to allow_always or bare allow when allow_once is absent`() {
+        val onlyAlways =
+            buildJsonArray {
+                add(
+                    buildJsonObject {
+                        put("optionId", "opt-allow-always")
+                        put("kind", "allow_always")
+                    },
+                )
+                add(
+                    buildJsonObject {
+                        put("optionId", "allow")
+                    },
+                )
+                add(
+                    buildJsonObject {
+                        put("optionId", "opt-reject-once")
+                        put("kind", "reject_once")
+                    },
+                )
+            }
+        val answer =
+            policy().answer(
+                permissionRequest(
+                    toolCall =
+                        buildJsonObject {
+                            put("name", "read_file")
+                            put("kind", "read")
+                            put("rawInput", buildJsonObject { put("Path", workspace.resolve("README.md").toString()) })
+                        },
+                    options = onlyAlways,
+                ),
+            )
+        val deny = assertIs<AcpPermissionPolicy.Answer.Write>(answer)
+        assertEquals("opt-reject-once", outcomeOf(deny)["optionId"]!!.jsonPrimitive.content)
+        assertTrue(AcpPermissionPolicy.NO_ALLOW_OPTION in deny.note, deny.note)
+    }
+
+    @Test
+    fun `declines file writes and commands targeting protected internal Loop directories`() {
+        val internalDir = home.resolve(".loop/attempts/proj-1/att-1").createDirectories()
+        val guardedPolicy =
+            AcpPermissionPolicy(
+                workspace = workspace,
+                holdout = HoldoutFolder(holdoutDir, home),
+                protectedRoots = ProtectedWorkspaceRoots(workspace, home),
+                strictMcp = true,
+                launcher = customLauncher,
+                protectedWriteDirs = { listOf(HoldoutFolder(internalDir, home)) },
+            )
+
+        val writeAttempt =
+            guardedPolicy.answer(
+                permissionRequest(
+                    toolCall =
+                        buildJsonObject {
+                            put("name", "write_file")
+                            put("kind", "edit")
+                            put(
+                                "rawInput",
+                                buildJsonObject {
+                                    put("Path", internalDir.resolve("agy-gemini-1234/antigravity-cli/settings.json").toString())
+                                },
+                            )
+                        },
+                ),
+            )
+        val writeDeny = assertIs<AcpPermissionPolicy.Answer.Write>(writeAttempt)
+        assertEquals("opt-reject-once", outcomeOf(writeDeny)["optionId"]!!.jsonPrimitive.content)
+        assertTrue(AcpPermissionPolicy.INTERNAL_LOOP_DIR in writeDeny.note, writeDeny.note)
+
+        val cmdAttempt =
+            guardedPolicy.answer(
+                permissionRequest(
+                    toolCall =
+                        buildJsonObject {
+                            put("name", "run_command")
+                            put("kind", "execute")
+                            put(
+                                "rawInput",
+                                buildJsonObject {
+                                    put("CommandLine", "rm -rf $internalDir/agy-gemini-1234")
+                                },
+                            )
+                        },
+                ),
+            )
+        val cmdDeny = assertIs<AcpPermissionPolicy.Answer.Write>(cmdAttempt)
+        assertEquals("opt-reject-once", outcomeOf(cmdDeny)["optionId"]!!.jsonPrimitive.content)
+        assertTrue(AcpPermissionPolicy.INTERNAL_LOOP_DIR in cmdDeny.note, cmdDeny.note)
+    }
 }

@@ -27,6 +27,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
@@ -228,6 +229,50 @@ class AcpRunnerTest {
             "response_error: session/set_model selected gemini-3.8-flash-low instead of gemini-4-neon-high",
             misFailed.reason,
         )
+
+        // Real agy order: session/set_model returns {} first, then config_option_update arrives during the turn.
+        val postMismatched =
+            FakeAcpServer.write(dir.resolve("post-mis"), name = "agy") {
+                initialize()
+                sessionNew(sessionId = "s-post-mis")
+                sessionSetModel(id = 3)
+                awaitClient()
+                notification(
+                    AcpHandshake.METHOD_SESSION_UPDATE,
+                    buildJsonObject {
+                        put("sessionId", "s-post-mis")
+                        put(
+                            "update",
+                            buildJsonObject {
+                                put("sessionUpdate", "config_option_update")
+                                put(
+                                    "configOptions",
+                                    kotlinx.serialization.json.buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", "model")
+                                                put("currentValue", "gemini-4-neon")
+                                            },
+                                        )
+                                        add(
+                                            buildJsonObject {
+                                                put("id", "thought_level")
+                                                put("currentValue", "low")
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    },
+                )
+                shell("sleep 30")
+            }
+        val postMisFailed = assertIs<RunnerEvent.TurnFailed>(runAll(agyRunner(postMismatched)).last())
+        assertEquals(
+            "response_error: session/set_model selected gemini-4-neon-low instead of gemini-4-neon-high",
+            postMisFailed.reason,
+        )
     }
 
     @Test
@@ -277,20 +322,22 @@ class AcpRunnerTest {
     }
 
     @Test
-    fun `resumeSession sends session load followed by session set_model and session prompt`() {
+    fun `agy preset resumeSession returns null while generic ACP resumeSession sends session load and handles unknown session errors`() {
+        val agyServer = FakeAcpServer.write(dir.resolve("agy-no-resume")) { agyHandshake() }
+        assertNull(agyRunner(agyServer).resumeSession(context(), "prev-acp-session"))
+
         val server =
-            FakeAcpServer.write(dir) {
+            FakeAcpServer.write(dir.resolve("gen-resume")) {
                 initialize(id = 1)
                 sessionLoad(id = 2, sessionId = "prev-acp-session")
-                sessionSetModel(id = 3, configUpdateModelId = "gemini-4-neon-high", sessionId = "prev-acp-session")
-                promptTurn(id = 4, stopReason = "end_turn")
+                promptTurn(id = 3, stopReason = "end_turn")
             }
-        val runner = agyRunner(server)
+        val runner = genericRunner(server)
 
         val events =
             runBlocking {
                 withTimeout(20.seconds) {
-                    val session = runner.resumeSession(context(), "prev-acp-session")
+                    val session = assertNotNull(runner.resumeSession(context(), "prev-acp-session"))
                     try {
                         session.runTurn("Continue work", 1).toList()
                     } finally {
@@ -304,9 +351,30 @@ class AcpRunnerTest {
         assertIs<RunnerEvent.TurnCompleted>(events.last())
 
         val sent = received(server)
-        assertEquals(listOf("initialize", "session/load", "session/set_model", "session/prompt"), sent.map { it.string("method") })
+        assertEquals(listOf("initialize", "session/load", "session/prompt"), sent.map { it.string("method") })
         assertEquals("prev-acp-session", sent[1]["params"]!!.jsonObject.string("sessionId"))
         assertEquals(workspace.toAbsolutePath().toString(), sent[1]["params"]!!.jsonObject.string("cwd"))
+
+        val missingSession =
+            FakeAcpServer.write(dir.resolve("gen-resume-miss")) {
+                initialize(id = 1)
+                awaitClient()
+                error(id = 2, code = -32002, message = "Session not found")
+                shell("sleep 30")
+            }
+        val missingEvents =
+            runBlocking {
+                withTimeout(20.seconds) {
+                    val session = assertNotNull(genericRunner(missingSession).resumeSession(context(), "missing-sess"))
+                    try {
+                        session.runTurn("Continue work", 1).toList()
+                    } finally {
+                        session.stop()
+                    }
+                }
+            }
+        val missingFailed = assertIs<RunnerEvent.TurnFailed>(missingEvents.last())
+        assertEquals("response_error: session/load failed with code -32002: Session not found", missingFailed.reason)
     }
 
     @Test

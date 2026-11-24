@@ -16,7 +16,7 @@ public data class TokenPattern(
                 TokenPattern("anthropic-key", Regex("""sk-ant-[A-Za-z0-9_-]{20,}""")),
                 TokenPattern("openai-key", Regex("""sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}""")),
                 TokenPattern("google-api-key", Regex("""AIza[0-9A-Za-z_-]{35}""")),
-                TokenPattern("google-oauth-token", Regex("""ya29\.[0-9A-Za-z_-]{20,}""")),
+                TokenPattern("google-oauth-token", Regex("""ya29\.[0-9A-Za-z._-]{20,}""")),
             )
     }
 }

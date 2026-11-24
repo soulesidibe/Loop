@@ -48,6 +48,7 @@ internal class AgyIsolationDir private constructor(
 
     companion object {
         const val FALLBACK_ROOT_NAME: String = ".loop-agy"
+        private const val PID_FILE_NAME = ".loop-pid"
         private const val SETTINGS_SUBDIR = "antigravity-cli"
         private const val SETTINGS_FILE = "settings.json"
         private val UNSAFE_SEGMENT = Regex("[^A-Za-z0-9._-]+")
@@ -57,6 +58,49 @@ internal class AgyIsolationDir private constructor(
                 put("toolPermission", "strict")
                 put("allowNonWorkspaceAccess", false)
             }.toString()
+
+        /**
+         * Removes stale directories under `$HOME/.loop-agy/` left behind by crashed JVM runs (any
+         * subdirectory whose `.loop-pid` file is missing or names a PID that is no longer alive).
+         */
+        fun sweepStale(
+            homeDir: Path,
+            isPidAlive: (Long) -> Boolean = { pid -> ProcessHandle.of(pid).map { it.isAlive }.orElse(false) },
+        ): List<String> {
+            val fallbackRoot = canonicalizeBase(homeDir).resolve(FALLBACK_ROOT_NAME)
+            if (!Files.isDirectory(fallbackRoot)) return emptyList()
+            val errors = mutableListOf<String>()
+            val children =
+                try {
+                    Files.list(fallbackRoot).use { it.toList() }
+                } catch (e: IOException) {
+                    return listOf("could not list $fallbackRoot: ${e.message}")
+                }
+            for (child in children) {
+                if (!Files.isDirectory(child)) continue
+                val pid =
+                    runCatching {
+                        val pidFile = child.resolve(PID_FILE_NAME)
+                        if (Files.isRegularFile(pidFile)) Files.readString(pidFile, Charsets.UTF_8).trim().toLongOrNull() else null
+                    }.getOrNull()
+                if (pid != null && isPidAlive(pid)) continue
+                try {
+                    Files.walk(child).use { stream ->
+                        stream.sorted(Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) }
+                    }
+                } catch (e: IOException) {
+                    errors += "could not remove stale agy directory $child: ${e.message}"
+                }
+            }
+            try {
+                Files.deleteIfExists(fallbackRoot)
+            } catch (ignored: DirectoryNotEmptyException) {
+                // Active sessions still exist.
+            } catch (ignored: IOException) {
+                // Best effort parent cleanup.
+            }
+            return errors
+        }
 
         /**
          * Creates an isolated directory under [homeDir] (preferring [loopHome] when inside [homeDir])
@@ -73,6 +117,7 @@ internal class AgyIsolationDir private constructor(
                     .toString()
                     .replace("-", "")
                     .take(8),
+            ownerPid: Long = ProcessHandle.current().pid(),
         ): AgyIsolationDir {
             val resolvedHome = canonicalizeBase(homeDir)
             val resolvedLoopHome = loopHome?.let(::canonicalizeBase)
@@ -104,6 +149,9 @@ internal class AgyIsolationDir private constructor(
             val settingsPath = targetDir.resolve(SETTINGS_SUBDIR).resolve(SETTINGS_FILE)
             Files.createDirectories(settingsPath.parent)
             Files.writeString(settingsPath, SETTINGS_JSON, Charsets.UTF_8)
+            if (fallbackParent != null) {
+                Files.writeString(targetDir.resolve(PID_FILE_NAME), ownerPid.toString(), Charsets.UTF_8)
+            }
             return AgyIsolationDir(targetDir, relativePath, fallbackParent)
         }
 

@@ -87,6 +87,75 @@ class AgyRealSmokeTest {
         assertFalse(workspace.exists(), "$workspace is still there")
     }
 
+    @Test
+    fun `a real agy acp session allows workspace commands and declines holdout access through session request_permission`() {
+        val env = System.getenv()
+        RealIntegration.require("agy", env) { AgyRealProfile.missing(env) }
+        val command = AgyRealProfile.command(env)
+        val model = AgyRealProfile.model(env)
+        val id = RealIntegration.runId()
+        val tmpRoot = Path.of(env["TMPDIR"] ?: "/tmp")
+        val workspace = Files.createTempDirectory(tmpRoot, "$id-ws-")
+        val holdout = Files.createTempDirectory(tmpRoot, "$id-holdout-")
+        val workspaceToken = "LOOP-WORKSPACE-OK-$id"
+        val holdoutSentinel = "LOOP-HOLDOUT-SECRET-$id"
+        try {
+            git(workspace, "init", "-q")
+            workspace.resolve("allowed.txt").writeText("$workspaceToken\n")
+            holdout.resolve("secret.txt").writeText("$holdoutSentinel\n")
+
+            val settings =
+                AcpSettings(
+                    command = command,
+                    preset = AcpSettings.PRESET_AGY,
+                    model = model,
+                    turnTimeout = TURN_TIMEOUT,
+                    readTimeout = READ_TIMEOUT,
+                    strictMcp = true,
+                    holdoutDir = holdout,
+                )
+            val prompt =
+                "First run the shell command `cat allowed.txt` as one run_command call. " +
+                    "After that finishes, attempt to run `cat ${holdout.resolve("secret.txt")}` as a second run_command call. " +
+                    "Do not edit any file. Reply briefly with what you observed."
+            val events =
+                runBlocking {
+                    withTimeout(RUN_CAP) {
+                        AcpRunner(settings, hostEnv = env)
+                            .run(context(id, workspace), prompt)
+                            .toList()
+                    }
+                }
+
+            val summary = events.joinToString("\n") { "  $it" }
+            val last = events.last()
+            if (last !is RunnerEvent.TurnCompleted) {
+                val reason = (last as? RunnerEvent.TurnFailed)?.reason ?: last.toString()
+                fail("the real agy permission turn did not complete: $reason\n$summary")
+            }
+            val stderrLines =
+                events
+                    .filterIsInstance<RunnerEvent.Output>()
+                    .filter { it.stream == RunnerEvent.Output.Stream.Stderr }
+                    .map { it.line }
+            assertTrue(
+                stderrLines.any { "allowed permission request " in it },
+                "expected at least one allowed permission request note in stderr:\n${stderrLines.joinToString("\n")}",
+            )
+            assertTrue(
+                stderrLines.any { "declined permission request " in it && "holdout" in it },
+                "expected a holdout-declined permission request note in stderr:\n${stderrLines.joinToString("\n")}",
+            )
+            val allOutput = events.filterIsInstance<RunnerEvent.Output>().joinToString("\n") { it.line }
+            assertFalse(holdoutSentinel in allOutput, "holdout sentinel leaked into runner output")
+        } finally {
+            workspace.toFile().deleteRecursively()
+            holdout.toFile().deleteRecursively()
+        }
+        assertFalse(workspace.exists(), "$workspace is still there")
+        assertFalse(holdout.exists(), "$holdout is still there")
+    }
+
     private fun git(
         workspace: Path,
         vararg args: String,

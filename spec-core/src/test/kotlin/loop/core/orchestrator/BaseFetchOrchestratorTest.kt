@@ -203,6 +203,11 @@ class BaseFetchOrchestratorTest {
                         .first.env,
                 "the agent's env does not get it, only the hooks",
             )
+            assertEquals(
+                listOf<String?>(fetchedSha, moved),
+                runner.calls.map { it.first.baseRef },
+                "AttemptContext.baseRef carries the host-fetched base without exporting LOOP_BASE_REF",
+            )
         }
 
     @Test

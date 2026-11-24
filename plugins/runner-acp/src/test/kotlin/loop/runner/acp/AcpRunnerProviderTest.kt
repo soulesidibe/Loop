@@ -124,6 +124,19 @@ class AcpRunnerProviderTest {
             }
         assertTrue(strictWithoutPreset.message!!.startsWith("runners.acp.strict_mcp "), strictWithoutPreset.message)
 
+        val permissiveWithAgy =
+            assertFailsWith<RunnerConfigException> {
+                provider.validate(
+                    mapOf(
+                        "command" to "agy acp",
+                        "preset" to "agy",
+                        "model" to "gemini-4-neon-high",
+                        "strict_mcp" to false,
+                    ),
+                )
+            }
+        assertEquals("runners.acp.strict_mcp must be true when runners.acp.preset is agy", permissiveWithAgy.message)
+
         val missingModelWithAgy =
             assertFailsWith<RunnerConfigException> {
                 provider.validate(mapOf("command" to "agy acp", "preset" to "agy"))

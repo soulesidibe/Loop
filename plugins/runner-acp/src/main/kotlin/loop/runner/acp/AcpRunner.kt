@@ -67,6 +67,8 @@ class AcpRunner internal constructor(
     /** Measures read and turn timeouts; a seam for virtual time tests. */
     private val timeSource: TimeSource = TimeSource.Monotonic,
     private val stopGrace: Duration = STOP_GRACE,
+    /** Receives cleanup warnings that cannot be emitted on a turn flow (for example during `stop()`). */
+    private val onWarn: (String) -> Unit = { line -> System.err.println(line) },
 ) : AgentRunner {
     constructor(
         settings: AcpSettings,
@@ -100,10 +102,15 @@ class AcpRunner internal constructor(
 
     override fun openSession(ctx: AttemptContext): AgentSession = AcpSession(ctx)
 
+    /**
+     * Under `preset: agy`, returns null because each session runs with a freshly isolated `--gemini-dir`
+     * that is deleted on stop, so transcripts are not persisted across sessions. Generic ACP sessions
+     * still support `session/load`.
+     */
     override fun resumeSession(
         ctx: AttemptContext,
         runtimeSessionId: String,
-    ): AgentSession = AcpSession(ctx, resumeFrom = runtimeSessionId)
+    ): AgentSession? = if (settings.isAgyPreset) null else AcpSession(ctx, resumeFrom = runtimeSessionId)
 
     private class LiveProcess(
         val events: Channel<ProcessEvent>,
@@ -142,6 +149,7 @@ class AcpRunner internal constructor(
                 protectedRoots = ProtectedWorkspaceRoots(ctx.workspace, homePath),
                 strictMcp = settings.strictMcp,
                 launcher = ctx.env["LOOP_LAUNCHER"],
+                protectedWriteDirs = ::internalProtectedDirs,
             )
         private val telemetry = AcpTelemetry(isAgyPreset = settings.isAgyPreset)
 
@@ -243,36 +251,46 @@ class AcpRunner internal constructor(
         private fun buildLaunchArgv(env: Map<String, String>): List<String> {
             val base = settings.argv
             if (!settings.isAgyPreset) return base
-            val args = mutableListOf<String>()
-            args += base
-            args += FLAG_DISABLE_TELEMETRY
-            args += FLAG_SANDBOX
-            if (settings.strictMcp) {
-                val homePath =
-                    env["HOME"]?.takeIf { it.isNotBlank() }?.let(Path::of)
-                        ?: hostEnv["HOME"]?.takeIf { it.isNotBlank() }?.let(Path::of)
-                        ?: Path.of(System.getProperty("user.home"))
-                val loopHomePath =
-                    env["LOOP_HOME"]?.takeIf { it.isNotBlank() }?.let(Path::of)
-                        ?: hostEnv["LOOP_HOME"]?.takeIf { it.isNotBlank() }?.let(Path::of)
-                val isolated =
-                    AgyIsolationDir.create(
-                        homeDir = homePath,
-                        loopHome = loopHomePath,
-                        projectId = ctx.projectId.value,
-                        attemptId = ctx.attemptId.value,
-                    )
-                isolationDir = isolated
-                args += FLAG_GEMINI_DIR
-                args += isolated.relativePath
+            val homePath =
+                env["HOME"]?.takeIf { it.isNotBlank() }?.let(Path::of)
+                    ?: hostEnv["HOME"]?.takeIf { it.isNotBlank() }?.let(Path::of)
+                    ?: Path.of(System.getProperty("user.home"))
+            AgyIsolationDir.sweepStale(homePath).forEach { onWarn("$LOOP_PREFIX$it") }
+            val loopHomePath =
+                env["LOOP_HOME"]?.takeIf { it.isNotBlank() }?.let(Path::of)
+                    ?: hostEnv["LOOP_HOME"]?.takeIf { it.isNotBlank() }?.let(Path::of)
+            val isolated =
+                AgyIsolationDir.create(
+                    homeDir = homePath,
+                    loopHome = loopHomePath,
+                    projectId = ctx.projectId.value,
+                    attemptId = ctx.attemptId.value,
+                )
+            isolationDir = isolated
+            return base + listOf(FLAG_DISABLE_TELEMETRY, FLAG_SANDBOX, FLAG_GEMINI_DIR, isolated.relativePath)
+        }
+
+        private fun internalProtectedDirs(): List<HoldoutFolder> {
+            val dirs = mutableListOf<Path>()
+            isolationDir?.path?.let { dirs.add(it) }
+            ctx.env["LOOP_TOOL_CONFIG"]
+                ?.takeIf { it.isNotBlank() }
+                ?.let { runCatching { Path.of(it).parent }.getOrNull() }
+                ?.let { dirs.add(it) }
+            val loopHome =
+                (ctx.env["LOOP_HOME"] ?: hostEnv["LOOP_HOME"])
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { runCatching { Path.of(it) }.getOrNull() }
+            if (loopHome != null) {
+                dirs.add(loopHome.resolve("attempts").resolve(ctx.projectId.value).resolve(ctx.attemptId.value))
             }
-            return args
+            return dirs.distinct().map { HoldoutFolder(it, homePath) }
         }
 
         private fun deleteIsolationDir() {
             val dir = isolationDir ?: return
             isolationDir = null
-            dir.delete()
+            dir.delete()?.let { onWarn("$LOOP_PREFIX$it") }
         }
 
         private fun agentEnv(): Map<String, String> {
@@ -344,7 +362,7 @@ class AcpRunner internal constructor(
                     if (turn == 1) {
                         if (!ctx.workspace.isDirectory()) return fail(null, "invalid_workspace_cwd: ${ctx.workspace}")
                         if (settings.isAgyPreset) {
-                            ProtectedRootsCheck.refusal(ctx.workspace, agentEnv())?.let { return fail(null, it) }
+                            ProtectedRootsCheck.refusal(ctx.workspace, ctx.baseRef)?.let { return fail(null, it) }
                         }
                         val mcpEnv = ctx.env + mapOf(ENV_SESSION_ID to sessionId.value, ENV_TURN_ID to turnId.value)
                         val mcpServers = AcpMcpConfig.mcpServers(mcpEnv)
@@ -360,7 +378,7 @@ class AcpRunner internal constructor(
                             )
                         }
                         if (settings.isAgyPreset) {
-                            ProtectedRootsCheck.refusal(ctx.workspace, agentEnv())?.let { return killAndFail(process, it) }
+                            ProtectedRootsCheck.refusal(ctx.workspace, ctx.baseRef)?.let { return killAndFail(process, it) }
                         }
                         process.stdin.send(handshake.continuePrompt(input))
                         allowInterrupt(process, checkNotNull(handshake.acpSessionId))
@@ -425,7 +443,9 @@ class AcpRunner internal constructor(
                             }
                             if (handshake.pendingHandshakeMethod == null) since = timeSource.markNow()
                             if (frame is AcpFrame.Notification) {
-                                handshake.observeNotification(frame)
+                                handshake.observeNotification(frame)?.let { mismatch ->
+                                    return killAndFail(process, mismatch.reason)
+                                }
                                 telemetry
                                     .readNotification(frame, sessionId, turnId, handshake.activeModelId)
                                     ?.let { out(it) }
@@ -458,7 +478,7 @@ class AcpRunner internal constructor(
                                         step.notes.forEach { out(loopNote(it)) }
                                         runtimeSessionId = step.acpSessionId
                                         if (settings.isAgyPreset) {
-                                            ProtectedRootsCheck.refusal(ctx.workspace, agentEnv())?.let {
+                                            ProtectedRootsCheck.refusal(ctx.workspace, ctx.baseRef)?.let {
                                                 return killAndFail(process, it)
                                             }
                                         }

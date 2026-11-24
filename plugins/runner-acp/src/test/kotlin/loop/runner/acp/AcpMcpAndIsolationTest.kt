@@ -19,13 +19,16 @@ import loop.runner.process.ProcessGroupLauncher
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
+import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
 import kotlin.io.path.readLines
 import kotlin.io.path.readText
+import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
@@ -124,6 +127,31 @@ class AcpMcpAndIsolationTest {
     }
 
     @Test
+    fun `AgyIsolationDir sweepStale removes dead-PID and pidless fallback directories while keeping live-PID ones`() {
+        val fallbackRoot = home.resolve(AgyIsolationDir.FALLBACK_ROOT_NAME).createDirectories()
+        val liveDir = fallbackRoot.resolve("att-live-11111111").createDirectories()
+        liveDir.resolve(".loop-pid").writeText("424242")
+        val deadDir = fallbackRoot.resolve("att-dead-22222222").createDirectories()
+        deadDir.resolve(".loop-pid").writeText("999999")
+        val pidlessDir = fallbackRoot.resolve("att-orphan-33333333").createDirectories()
+        pidlessDir.resolve("antigravity-cli").createDirectories()
+
+        val errors = AgyIsolationDir.sweepStale(home) { pid -> pid == 424242L }
+
+        assertTrue(errors.isEmpty(), "$errors")
+        assertTrue(liveDir.exists(), "live session directory must stay")
+        assertFalse(deadDir.exists(), "dead-PID directory must be swept")
+        assertFalse(pidlessDir.exists(), "pidless directory must be swept")
+        assertTrue(fallbackRoot.exists(), "parent stays while live dir remains")
+
+        // Once the live PID is gone, sweep removes it and the empty .loop-agy root.
+        val errors2 = AgyIsolationDir.sweepStale(home) { false }
+        assertTrue(errors2.isEmpty(), "$errors2")
+        assertFalse(liveDir.exists())
+        assertFalse(fallbackRoot.exists())
+    }
+
+    @Test
     fun `agy preset passes disable-telemetry, sandbox, and isolated relative gemini-dir and cleans up in stop`() {
         val capturedSettings = dir.resolve("captured-settings.json")
         val capturedArgs = dir.resolve("captured-args.txt")
@@ -207,16 +235,19 @@ class AcpMcpAndIsolationTest {
     }
 
     @Test
-    fun `resumeSession passes Loop MCP server in session load and cleans up isolated dir on failure`() {
+    fun `agy preset sweeps stale fallback dirs on spawn and cleans up fallback dir on turn failure`() {
+        val stale = home.resolve(".loop-agy/stale-dead-00000000").createDirectories()
+        stale.resolve(".loop-pid").writeText("99999999")
         val server =
             FakeAcpServer.write(dir) {
                 initialize(id = 1)
-                sessionLoad(id = 2, sessionId = "prev-sess-42")
+                sessionNew(id = 2, sessionId = "agy-fail-42")
                 awaitClient()
                 error(id = 3, code = -32602, message = "Unknown model ID")
                 shell("sleep 30")
             }
         val launched = mutableListOf<LaunchSpec>()
+        val warnings = mutableListOf<String>()
         val launcher = ProcessGroupLauncher(maxLineBytes = AcpFraming.MAX_LINE_BYTES)
         val runner =
             AcpRunner(
@@ -235,12 +266,57 @@ class AcpMcpAndIsolationTest {
                     launched += spec
                     launcher.launch(spec)
                 },
+                onWarn = { warnings += it },
             )
 
         val events =
             runBlocking {
                 withTimeout(20.seconds) {
-                    val session = runner.resumeSession(context(loopEnv(dir.resolve("outside-loop-home"))), "prev-sess-42")
+                    val session = runner.openSession(context(loopEnv(dir.resolve("outside-loop-home"))))
+                    try {
+                        session.runTurn("Work", 1).toList()
+                    } finally {
+                        session.stop()
+                    }
+                }
+            }
+
+        assertIs<RunnerEvent.TurnFailed>(events.last())
+        assertFalse(stale.exists(), "stale fallback dir must be swept on spawn")
+        assertTrue(warnings.isEmpty(), "$warnings")
+
+        val argv = launched.single().argv
+        val relGeminiDir = argv[argv.indexOf("--gemini-dir") + 1]
+        assertTrue(relGeminiDir.startsWith(".loop-agy/"), relGeminiDir)
+        assertFalse(Files.exists(home.resolve(relGeminiDir)))
+        assertFalse(Files.exists(home.resolve(".loop-agy")))
+    }
+
+    @Test
+    fun `generic ACP resumeSession passes Loop MCP server in session load`() {
+        val server =
+            FakeAcpServer.write(dir) {
+                initialize(id = 1)
+                sessionLoad(id = 2, sessionId = "prev-sess-42")
+                promptTurn(id = 3, stopReason = "end_turn")
+            }
+        val runner =
+            AcpRunner(
+                settings =
+                    AcpSettings(
+                        command = server.command,
+                        strictMcp = false,
+                        readTimeout = FakeAcpServer.READ_TIMEOUT,
+                    ),
+                hostEnv = mapOf("PATH" to System.getenv("PATH"), "HOME" to home.toString()),
+                removedEnvNames = emptySet(),
+                addedEnv = emptyMap(),
+            )
+
+        val events =
+            runBlocking {
+                withTimeout(20.seconds) {
+                    val session = assertNotNull(runner.resumeSession(context(loopEnv(home.resolve(".loop"))), "prev-sess-42"))
                     try {
                         session.runTurn("Resume", 1).toList()
                     } finally {
@@ -249,7 +325,7 @@ class AcpMcpAndIsolationTest {
                 }
             }
 
-        assertIs<RunnerEvent.TurnFailed>(events.last())
+        assertIs<RunnerEvent.TurnCompleted>(events.last())
         val started = assertIs<RunnerEvent.SessionStarted>(events.first())
         val sent = received(server)
         val loadParams = sent[1]["params"]!!.jsonObject
@@ -263,48 +339,6 @@ class AcpMcpAndIsolationTest {
         assertEquals(AcpMcpConfig.PASSED.toSet(), mcpEnv.keys)
         assertEquals(started.sessionId.value, mcpEnv["LOOP_SESSION_ID"])
         assertEquals(started.turnId.value, mcpEnv["LOOP_TURN_ID"])
-
-        val argv = launched.single().argv
-        val relGeminiDir = argv[argv.indexOf("--gemini-dir") + 1]
-        assertTrue(relGeminiDir.startsWith(".loop-agy/"), relGeminiDir)
-        assertFalse(Files.exists(home.resolve(relGeminiDir)))
-        assertFalse(Files.exists(home.resolve(".loop-agy")))
-    }
-
-    @Test
-    fun `agy preset with strict_mcp false omits gemini-dir while keeping disable-telemetry and sandbox`() {
-        val server =
-            FakeAcpServer.write(dir) {
-                agyHandshake()
-            }
-        val launched = mutableListOf<LaunchSpec>()
-        val launcher = ProcessGroupLauncher(maxLineBytes = AcpFraming.MAX_LINE_BYTES)
-        val runner =
-            AcpRunner(
-                settings =
-                    AcpSettings(
-                        command = server.agyCommand,
-                        preset = AcpSettings.PRESET_AGY,
-                        model = FakeAcpServer.DEFAULT_MODEL,
-                        readTimeout = FakeAcpServer.READ_TIMEOUT,
-                        strictMcp = false,
-                    ),
-                hostEnv = mapOf("PATH" to System.getenv("PATH"), "HOME" to home.toString()),
-                removedEnvNames = emptySet(),
-                addedEnv = emptyMap(),
-                launchProcess = { spec ->
-                    launched += spec
-                    launcher.launch(spec)
-                },
-            )
-
-        val events = runBlocking { withTimeout(20.seconds) { runner.run(context(), "Work").toList() } }
-
-        assertIs<RunnerEvent.TurnCompleted>(events.last())
-        assertEquals(
-            listOf(server.script.toString(), "acp", "--disable-telemetry", "--sandbox"),
-            launched.single().argv,
-        )
     }
 
     private fun loopEnv(loopHome: Path): Map<String, String> =

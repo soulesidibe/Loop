@@ -2550,6 +2550,7 @@ class Orchestrator(
                 log.log(LogLevel.WARN, "prompt_record", LogOutcome.FAILED, logContext(), reason = reason)
             }
 
+            val codeKind = workflow.config.kinds?.code
             val ctx =
                 AttemptContext(
                     runId = runId,
@@ -2558,6 +2559,7 @@ class Orchestrator(
                     attemptId = attemptId,
                     workspace = workspace.path,
                     env = env,
+                    baseRef = fetchedBase ?: codeKind?.guards?.base ?: codeKind?.delivery?.pullRequest?.base,
                 )
             thresholds = TokenThresholds(thresholdEvery, recordedThreshold())
             // An issue or a day already past its budget parks before a turn spends more (m2-20).

@@ -256,6 +256,100 @@ class AcpGuardsRunnerTest {
         assertEquals(1, received(server).count { it["method"]?.jsonPrimitive?.content == "session/prompt" })
     }
 
+    @Test
+    fun `uses host AttemptContext baseRef instead of LOOP_BASE_REF in env and protects internal Loop dirs mid-turn`() {
+        val repo = dir.resolve("git-ws").createDirectories()
+        runGit(repo, "init", "-b", "main")
+        runGit(repo, "config", "user.email", "test@example.com")
+        runGit(repo, "config", "user.name", "Test")
+        repo.resolve(".agents").createDirectories()
+        repo.resolve(".agents/hooks.json").writeText("""{"hooks":[]}""")
+        runGit(repo, "add", ".agents/hooks.json")
+        runGit(repo, "commit", "-m", "Base")
+        val baseSha = runGit(repo, "rev-parse", "HEAD").trim()
+
+        // Commit a modification to .agents/hooks.json; spoofing LOOP_BASE_REF=HEAD in env must NOT bypass baseRef.
+        repo.resolve(".agents/hooks.json").writeText("""{"hooks":[{"cmd":"evil"}]}""")
+        runGit(repo, "add", ".agents/hooks.json")
+        runGit(repo, "commit", "-m", "Evil hooks")
+
+        val server = FakeAcpServer.write(dir.resolve("spoof-srv")) { agyHandshake() }
+        val spoofedCtx =
+            context(
+                ws = repo,
+                env = mapOf("LOOP_BASE_REF" to "HEAD"),
+                baseRef = baseSha,
+            )
+        val spoofedEvents = runBlocking { withTimeout(20.seconds) { agyRunner(server).run(spoofedCtx, "Work").toList() } }
+        val spoofedFailed = assertIs<RunnerEvent.TurnFailed>(spoofedEvents.last())
+        assertTrue(".agents/hooks.json" in spoofedFailed.reason, spoofedFailed.reason)
+
+        // Reset back to baseSha and verify mid-turn writes into the attempt dir / LOOP_TOOL_CONFIG parent are declined.
+        runGit(repo, "reset", "--hard", baseSha)
+        val loopHome = home.resolve(".loop")
+        val attemptDir = loopHome.resolve("attempts/project-1/attempt-1")
+        val guardServer =
+            FakeAcpServer.write(dir.resolve("internal-srv")) {
+                initialize(id = 1)
+                sessionNew(id = 2, sessionId = "s-int-dir")
+                sessionSetModel(id = 3, configUpdateModelId = FakeAcpServer.DEFAULT_MODEL, sessionId = "s-int-dir")
+                awaitClient()
+                request(
+                    id = 301,
+                    method = AcpHandshake.METHOD_REQUEST_PERMISSION,
+                    params =
+                        buildJsonObject {
+                            put("sessionId", "s-int-dir")
+                            put(
+                                "toolCall",
+                                buildJsonObject {
+                                    put("name", "write_file")
+                                    put("kind", "edit")
+                                    put("rawInput", buildJsonObject { put("Path", attemptDir.resolve("tool-config.json").toString()) })
+                                },
+                            )
+                            put("options", options())
+                        },
+                )
+                awaitClient()
+                response(id = 4, result = buildJsonObject { put("stopReason", "end_turn") })
+            }
+        val cleanCtx =
+            context(
+                ws = repo,
+                env =
+                    mapOf(
+                        "LOOP_HOME" to loopHome.toString(),
+                        "LOOP_TOOL_CONFIG" to attemptDir.resolve("tool-config.json").toString(),
+                    ),
+                baseRef = baseSha,
+            )
+        val cleanEvents = runBlocking { withTimeout(20.seconds) { agyRunner(guardServer).run(cleanCtx, "Work").toList() } }
+        assertIs<RunnerEvent.TurnCompleted>(cleanEvents.last())
+        val permReply = received(guardServer).single { it["id"]?.jsonPrimitive?.content == "301" }
+        assertEquals(
+            "reject_once",
+            permReply["result"]!!
+                .jsonObject["outcome"]!!
+                .jsonObject["optionId"]!!
+                .jsonPrimitive.content,
+        )
+    }
+
+    private fun runGit(
+        dir: Path,
+        vararg args: String,
+    ): String {
+        val process =
+            ProcessBuilder(listOf("git") + args)
+                .directory(dir.toFile())
+                .redirectErrorStream(true)
+                .start()
+        val out = process.inputStream.readAllBytes().toString(Charsets.UTF_8)
+        check(process.waitFor() == 0) { "git ${args.joinToString(" ")} failed: $out" }
+        return out
+    }
+
     private fun agyRunner(server: FakeAcpServer): AcpRunner =
         AcpRunner(
             settings =
@@ -278,7 +372,11 @@ class AcpGuardsRunnerTest {
             .filter { it.isNotBlank() }
             .map { AcpFraming.json.parseToJsonElement(it).jsonObject }
 
-    private fun context(): AttemptContext =
+    private fun context(
+        ws: Path = workspace,
+        env: Map<String, String> = mapOf("LOOP_LAUNCHER" to "/opt/loop/bin/loop"),
+        baseRef: String? = null,
+    ): AttemptContext =
         AttemptContext(
             runId = RunId("run-1"),
             projectId = ProjectId("project-1"),
@@ -295,7 +393,8 @@ class AcpGuardsRunnerTest {
                     createdAt = null,
                 ),
             attemptId = AttemptId("attempt-1"),
-            workspace = workspace,
-            env = mapOf("LOOP_LAUNCHER" to "/opt/loop/bin/loop"),
+            workspace = ws,
+            env = env,
+            baseRef = baseRef,
         )
 }

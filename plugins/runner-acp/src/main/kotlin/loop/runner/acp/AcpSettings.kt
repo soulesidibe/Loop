@@ -114,6 +114,11 @@ data class AcpSettings(
                     )
                 }
             } else {
+                if (!strictMcp) {
+                    throw RunnerConfigException(
+                        "runners.$SECTION.strict_mcp must be true when runners.$SECTION.preset is $PRESET_AGY",
+                    )
+                }
                 if (!isAgyAcpCommand(words)) {
                     throw RunnerConfigException(
                         "runners.$SECTION.command must be $AGY_PROGRAM $AGY_SUBCOMMAND " +

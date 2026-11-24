@@ -113,6 +113,7 @@ internal class AcpHandshake(
     private var pendingPromptText: String? = null
     private var mcpServers: JsonArray = JsonArray(emptyList())
     private var observedModelDuringSetModel: String? = null
+    private var awaitingPostSetModelVerification: Boolean = false
 
     /** The ACP session id established by `session/new` or `session/load`. */
     var acpSessionId: String? = null
@@ -201,9 +202,23 @@ internal class AcpHandshake(
             params = buildJsonObject { put("sessionId", sessionId) },
         )
 
-    /** Observes model changes reported via `config_option_update` notifications during a turn. */
-    fun observeNotification(frame: AcpFrame.Notification) {
-        extractModelFromSessionUpdate(frame)?.let { activeModelId = it }
+    /**
+     * Observes model changes reported via `config_option_update` notifications during a turn.
+     * When `session/set_model` answered `{}` without an earlier model confirmation (the real `agy`
+     * order), verifies the first post-response update against `configuredModel` and returns
+     * [AcpHandshakeFailure.ModelMismatch] on mismatch.
+     */
+    fun observeNotification(frame: AcpFrame.Notification): AcpHandshakeFailure.ModelMismatch? {
+        val reported = extractModelFromSessionUpdate(frame) ?: return null
+        activeModelId = reported
+        if (awaitingPostSetModelVerification) {
+            awaitingPostSetModelVerification = false
+            val expected = configuredModel
+            if (expected != null && reported != expected) {
+                return AcpHandshakeFailure.ModelMismatch(expected = expected, actual = reported)
+            }
+        }
+        return null
     }
 
     /** Consumes one [frame] during startup phases; ignores notifications except `config_option_update`. */
@@ -369,8 +384,14 @@ internal class AcpHandshake(
     private fun handleSetModel(result: JsonObject): Step {
         val expected = checkNotNull(configuredModel) { "runners.acp.model is required when runners.acp.preset is agy" }
         val reported = extractModelFromSetModelResult(result) ?: observedModelDuringSetModel
-        if (reported != null && reported != expected) {
-            return Step.Failed(AcpHandshakeFailure.ModelMismatch(expected = expected, actual = reported))
+        if (reported != null) {
+            if (reported != expected) {
+                return Step.Failed(AcpHandshakeFailure.ModelMismatch(expected = expected, actual = reported))
+            }
+            awaitingPostSetModelVerification = false
+        } else {
+            // Real agy answers session/set_model with {} and sends config_option_update next; verify on arrival.
+            awaitingPostSetModelVerification = true
         }
         val sid = checkNotNull(acpSessionId)
         return sendFirstPrompt(sid)

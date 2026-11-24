@@ -282,6 +282,10 @@ class AcpTelemetryAndInterruptTest {
             )
         assertNull(serverError.category)
         assertNull(AcpErrors.classify("session/prompt", -32603, "Internal error").category)
+        // Ordinary workspace or tool errors mentioning capacity, access denied, or permission_denied stay null.
+        assertNull(AcpErrors.classify("session/prompt", -32000, "Buffer capacity exceeded in user test").category)
+        assertNull(AcpErrors.classify("session/prompt", -32000, "Access denied reading /etc/shadow").category)
+        assertNull(AcpErrors.classify("session/prompt", -32000, "PERMISSION_DENIED on workspace file").category)
     }
 
     @Test
