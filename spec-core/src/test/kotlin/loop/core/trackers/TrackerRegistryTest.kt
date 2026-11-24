@@ -44,7 +44,8 @@ class TrackerRegistryTest {
                 ),
             defined = listOf("open", "closed"),
         ) { provider, _ ->
-            if (provider["repo"] == "bad") throw TrackerConfigException("invalid_tracker_config", "tracker.provider.repo must be owner/name")
+            val refused = provider["repo"] == "bad"
+            if (refused) throw TrackerConfigException("invalid_tracker_config", "tracker.provider.repo must be owner/name")
             provider
         }
 
@@ -320,13 +321,19 @@ class TrackerRegistryTest {
 
         val workflow = loader(deferSecrets = true).load(path).getOrThrow()
 
-        assertEquals(listOf("trackers[0].provider.token uses \$MIRROR_TOKEN, which is not set"), workflow.deferredSecrets.map { it.sentence })
+        assertEquals(
+            listOf("trackers[0].provider.token uses \$MIRROR_TOKEN, which is not set"),
+            workflow.deferredSecrets.map { it.sentence },
+        )
         assertNull(workflow.trackers.entry("mirror")!!.settings)
     }
 
     @Test
     fun `the notice of extra trackers names them and the primary tracker Loop polls`() {
-        val trackers = load(primary + "trackers:\n  - { id: local, kind: files }\n  - { id: side, kind: files, provider: { dir: ./b } }\n").trackers
+        val trackers =
+            load(
+                primary + "trackers:\n  - { id: local, kind: files }\n  - { id: side, kind: files, provider: { dir: ./b } }\n",
+            ).trackers
 
         assertEquals(
             "trackers lists local and side, which Loop does not poll yet (m4-13), it polls only the primary tracker gh",

@@ -83,7 +83,10 @@ internal class TrackerParser(
         val plugin: TrackerProvider? =
             when {
                 trackerCheck != null ->
-                    trackerCheck.select(kind).getOrElse { throw WorkflowError.InvalidConfig(rename(name, it.message ?: "tracker.kind is invalid")) }
+                    trackerCheck.select(kind).getOrElse { error ->
+                        val message = error.message ?: "tracker.kind is invalid"
+                        throw WorkflowError.InvalidConfig(rename(name, message))
+                    }
                 kind == FILES_TRACKER -> null
                 else -> throw WorkflowError.InvalidConfig(TrackerCheck.unsupported(kind, listOf(FILES_TRACKER), "$name.kind"))
             }
@@ -143,9 +146,8 @@ internal class TrackerParser(
         plugin: TrackerProvider,
     ) {
         val unknown = states.firstOrNull { it !in plugin.definedStates } ?: return
-        throw WorkflowError.InvalidConfig(
-            "$key has \"$unknown\", which is not a state of the ${plugin.kind} tracker. Valid states: ${plugin.definedStates.joinToString(", ")}",
-        )
+        val valid = plugin.definedStates.joinToString(", ")
+        throw WorkflowError.InvalidConfig("$key has \"$unknown\", which is not a state of the ${plugin.kind} tracker. Valid states: $valid")
     }
 
     companion object {
