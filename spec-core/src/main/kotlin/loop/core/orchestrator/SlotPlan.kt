@@ -26,6 +26,8 @@ internal data class AttemptSlots(
     val launches: List<Issue>,
     val requeues: List<Issue>,
     val skips: List<Issue>,
+    /** m4-17: the issues the plan's `held` hook kept from a slot, each with its reason, such as `area_busy`. */
+    val held: Map<Issue, String> = emptyMap(),
 )
 
 /**
@@ -48,6 +50,8 @@ internal object SlotPlan {
      * eligibility, blockers and readiness, in [slotOrder]. A launch holds its slot for the rest of the plan, for the
      * total, for its state's cap and for its tracker's limit, so a capped state or tracker skips its later issues and
      * other states and trackers still get slots. [trackerOf] gives the tracker id of an issue id, null for none.
+     * [held] (m4-17) gives the reason an issue may not launch after the launches planned before it, such as an area
+     * one of them holds, or null; a held issue takes no slot and goes to [AttemptSlots.held].
      */
     fun attempts(
         agent: AgentConfig,
@@ -55,6 +59,7 @@ internal object SlotPlan {
         due: List<DueRetry>,
         candidates: List<Issue>,
         trackerOf: (String) -> String? = { null },
+        held: (Issue, List<Issue>) -> String? = { _, _ -> null },
     ): AttemptSlots {
         val retryDueAt = due.associate { it.issue.id to it.firstDueAt }
         val ordered = (due.map { it.issue } + candidates).distinctBy { it.id }.sortedWith(slotOrder(retryDueAt))
@@ -63,7 +68,13 @@ internal object SlotPlan {
         val launches = mutableListOf<Issue>()
         val requeues = mutableListOf<Issue>()
         val skips = mutableListOf<Issue>()
+        val holds = mutableMapOf<Issue, String>()
         for (issue in ordered) {
+            val hold = held(issue, launches)
+            if (hold != null) {
+                holds[issue] = hold
+                continue
+            }
             val state = issue.state.normalized()
             val tracker = trackerOf(issue.id)
             if (hasFreeSlot(agent, SlotUse(states, use.mergeChecks)) &&
@@ -79,7 +90,7 @@ internal object SlotPlan {
                 skips += issue
             }
         }
-        return AttemptSlots(launches, requeues, skips)
+        return AttemptSlots(launches, requeues, skips, holds)
     }
 
     /** The capacity rule: a running merge check holds a slot like an attempt. */

@@ -152,6 +152,7 @@ GitHub's REST limit is 5,000 requests an hour for a token. A poll costs one requ
 | `blocked_reason` | `author_association`, then the blockers | `untrusted_author (<ASSOCIATION>)`, or `untrusted_author (missing)` when GitHub gives none, when the issue's author is outside `tracker.provider.trusted_associations`, see [trusted authors](#trusted-authors). Otherwise the first blocker that holds it, such as `blocked_by #12 (open)`, or why its blockers cannot be read, see [blockers](#blockers). Null when nothing blocks it. |
 | `dispatchable` | `blocked_reason` | True when `blocked_reason` is null. |
 | `description` | `body` | Trimmed; empty or null is null. Comments are added at dispatch only, see [comments](#comments). |
+| `area` | `body` | The comma separated paths of the column 0 `Area:` lines of the body, outside fenced code blocks and HTML comments, normalized like the `files` tracker's `area` (m4-17, see [area lock](../spec-decisions.md#minimal-area-lock-extension-m4-17)). Empty when there is none. A malformed line, a prose one included, drops every `Area:` line of the body: the issue has no area and gets one warning, naming the line number and quoting none of the body, again after an edit to the line; it is never a malformed record. Issue comments never carry it. |
 | `created_at` | `created_at` | Parsed as an RFC 3339 instant; an unusable value is null. |
 | `updated_at` | none | Not provided. |
 

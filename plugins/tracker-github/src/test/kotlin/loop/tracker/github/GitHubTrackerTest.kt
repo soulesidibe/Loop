@@ -23,6 +23,7 @@ class GitHubTrackerTest {
     private val github = FakeGitHub()
     private val clock = TestClock(Instant.parse("2026-11-12T15:00:00Z"))
     private val malformed = mutableListOf<TrackerError.Malformed>()
+    private val warnings = mutableListOf<String>()
 
     private fun tracker(
         repo: String = "Hello-World",
@@ -35,6 +36,7 @@ class GitHubTrackerTest {
         clock,
         onMalformed = { malformed += it },
         pageSize = pageSize,
+        onWarning = { warnings += it },
     )
 
     private fun simulate(vararg issues: JsonObject) {
@@ -100,6 +102,78 @@ class GitHubTrackerTest {
                 assertTrue(issues.all { it.labels == listOf("ready-for-agent") && it.state == "open" }, "$issues")
             }
             assertEquals(emptyList(), malformed)
+        }
+
+    @Test
+    fun `m4-17 a column 0 Area line of the body is read into the area, normalized, from both reads`() =
+        runTest {
+            simulate(
+                FakeGitHub.issue(1, body = "Some text.\n\nArea: spec-core/, ./docs/agents , spec-core\n\nMore text."),
+                FakeGitHub.issue(2, body = "Area: cli\r\nArea: docs"),
+                FakeGitHub.issue(3, body = "No area here."),
+                FakeGitHub.issue(4, body = null),
+                FakeGitHub.issue(5, body = "```\nArea: spec-core\n```\n  Area: cli\narea: docs\nThe Area: line is prose."),
+                // HTML comments never carry it, on one line or several, and a comment after the paths is left out.
+                FakeGitHub.issue(
+                    6,
+                    body =
+                        "<!--\nArea: spec-core\n-->\n<!-- Area: docs -->\nArea: cli <!-- the runner -->\n" +
+                            "<!-- a --><!--\nArea: /etc\n-->",
+                ),
+            )
+            val tracker = tracker()
+
+            val listed = tracker.fetchIssuesByStates(listOf("open")).getOrThrow()
+            val byId = tracker.fetchIssuesByIds(listOf("1", "2", "3", "4", "5", "6")).getOrThrow()
+
+            for (issues in listOf(listed, byId)) {
+                assertEquals(
+                    listOf(listOf("spec-core", "docs/agents"), listOf("cli", "docs"), emptyList(), emptyList(), emptyList(), listOf("cli")),
+                    issues.map { it.area },
+                )
+            }
+            assertEquals(emptyList(), warnings)
+        }
+
+    @Test
+    fun `m4-17 a malformed Area line is ignored with one warning, the issue runs with no area`() =
+        runTest {
+            simulate(
+                FakeGitHub.issue(1, body = "Area: spec-core/*"),
+                FakeGitHub.issue(2, body = "Area: spec-core, , docs"),
+                FakeGitHub.issue(3, body = "Area: the `Issue` model in `plugin-api`"),
+                FakeGitHub.issue(4, body = "Area:"),
+                FakeGitHub.issue(5, body = "Area: cli\nArea: /etc"),
+                // Loop's own prose style: a sentence is no path list.
+                FakeGitHub.issue(6, body = "Text.\nArea: the orchestrator and its tests"),
+            )
+            val tracker = tracker()
+
+            val issues = tracker.fetchIssuesByStates(listOf("open")).getOrThrow()
+            tracker.fetchIssuesByStates(listOf("open")).getOrThrow()
+
+            assertEquals(List(6) { emptyList<String>() }, issues.map { it.area })
+            assertEquals(List(6) { null }, issues.map { it.blockedReason }, "a malformed area blocks nothing")
+            assertEquals(emptyList(), malformed)
+            assertEquals(6, warnings.size, "one warning per issue, not one per read: $warnings")
+            assertEquals(
+                "Hello-World-5: line 2 of its body is an Area line that is no list of repository relative paths, " +
+                    "so every Area line of the body is ignored and Hello-World-5 runs with no area.",
+                warnings[4],
+            )
+            assertTrue(warnings.none { "/etc" in it || "orchestrator" in it || "spec-core" in it }, "no body text is quoted: $warnings")
+        }
+
+    @Test
+    fun `m4-17 an issue's area warning is kept for its latest malformed line only, so an edit warns again and a fix forgets it`() =
+        runTest {
+            val tracker = tracker()
+            for (body in listOf("Area: a b", "Area: a b", "Area: c d", "Area: cli", "Area: c d")) {
+                simulate(FakeGitHub.issue(1, body = body))
+                tracker.fetchIssuesByStates(listOf("open")).getOrThrow()
+            }
+
+            assertEquals(3, warnings.size, "the first line, its edit, then the same line again after a fix: $warnings")
         }
 
     @Test

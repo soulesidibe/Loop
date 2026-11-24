@@ -9,6 +9,7 @@ import com.charleskorn.kaml.YamlScalar
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import loop.api.Issue
+import loop.api.IssueArea
 import loop.api.IssueComment
 import loop.api.TrackerAdapter
 import loop.api.TrackerError
@@ -32,7 +33,7 @@ import kotlin.io.path.readText
 
 /**
  * The `files` tracker: one markdown file per issue in [issuesDir], with `id`, `title`,
- * `state`, `priority`, `labels` and `blocked_by` in its front matter and the body as
+ * `state`, `priority`, `labels`, `blocked_by` and the optional `area` (m4-17) in its front matter and the body as
  * the description. A malformed file is skipped and passed to [onMalformed] when
  * fetching by states, and fails the call when fetching by ids.
  *
@@ -339,6 +340,7 @@ class FilesTracker(
         private val HEADING = Regex("^#{1,2}( .*|\t.*)?$")
 
         private const val LABELS = "labels"
+        private const val AREA = "area"
         private val PLAIN_LABEL = Regex("""[A-Za-z0-9]([A-Za-z0-9 _./-]*[A-Za-z0-9_./-])?""")
         private val YAML_NULLS = setOf("null", "~")
 
@@ -379,11 +381,22 @@ class FilesTracker(
                     blockedBy = map.textList("blocked_by") ?: return null,
                     description = frontMatter.body.trim().ifEmpty { null },
                     createdAt = null,
+                    area = map.area() ?: return null,
                 )
             return Parsed(issue, rawLabels, map)
         }
 
         private fun YamlMap.text(key: String): String? = (get<YamlNode>(key) as? YamlScalar)?.content?.trim()?.ifEmpty { null }
+
+        /**
+         * The `area` entry (m4-17), a list of repository relative paths or one path, normalized by [IssueArea]. Empty
+         * when absent, null when malformed: neither a list of scalars nor a scalar, or an entry that is no path.
+         */
+        private fun YamlMap.area(): List<String>? =
+            when (val node = get<YamlNode>(AREA)) {
+                is YamlScalar -> IssueArea.parse(listOf(node.content))
+                else -> IssueArea.parse(textList(AREA) ?: return null)
+            }
 
         /** Empty when absent, null when not a list of scalars. */
         private fun YamlMap.textList(key: String): List<String>? =
