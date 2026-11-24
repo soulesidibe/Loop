@@ -8,6 +8,7 @@ import kotlinx.coroutines.launch
 import loop.core.workflow.WorkflowFile
 import org.junit.jupiter.api.Assertions.assertTimeoutPreemptively
 import org.junit.jupiter.api.io.TempDir
+import org.junit.jupiter.api.parallel.Isolated
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
 import java.nio.file.Path
@@ -30,6 +31,7 @@ import kotlin.test.fail
  * redactor. The failure comes from an env map whose `get` throws for one name, which the workflow
  * loader reads for `workspace.root: $LOOP_TEST_BOOM`, so no production seam exists for the tests.
  */
+@Isolated
 class UncaughtExceptionCommandsTest {
     @TempDir
     lateinit var root: Path

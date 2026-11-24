@@ -53,6 +53,8 @@ class InstallCommandTest {
         builder.environment()["JAVA_HOME"] = System.getProperty("java.home")
         builder.environment()["LOOP_HOME"] = fixture.loopHome.toString()
         builder.environment()["HOME"] = fixture.homeDir.toString()
+        val sqliteTmp = Files.createDirectories(root.resolve("sqlite-tmp")).toAbsolutePath()
+        builder.environment()["LOOP_OPTS"] = "\"-Dorg.sqlite.tmpdir=$sqliteTmp\" -XX:TieredStopAtLevel=1 -XX:+UseSerialGC -Xmx256m"
         val process = builder.start()
         if (!process.waitFor(60, TimeUnit.SECONDS)) {
             process.destroyForcibly()

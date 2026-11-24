@@ -54,6 +54,7 @@ class LoopFixture(
     val workflow: Path = projectDir.resolve("WORKFLOW.md")
     val agentScript: Path = root.resolve("bin").createDirectories().resolve("agent.sh")
     private val outputDir: Path = root.resolve("out").createDirectories()
+    private val sqliteTmpDir: Path = root.resolve("sqlite-tmp").createDirectories()
     private var runs = 0
 
     init {
@@ -415,6 +416,9 @@ class LoopFixture(
         processEnv["LOOP_HOME"] = loopHome.toString()
         processEnv["HOME"] = homeDir.toString()
         processEnv["JAVA_HOME"] = System.getProperty("java.home")
+        // Keep sqlite-jdbc out of the host TMPDIR and skip C2 JIT in short-lived test launcher JVMs.
+        processEnv["LOOP_OPTS"] =
+            "\"-Dorg.sqlite.tmpdir=${sqliteTmpDir.toAbsolutePath()}\" -XX:TieredStopAtLevel=1 -XX:+UseSerialGC -Xmx256m"
         env.forEach { (key, value) -> if (value == null) processEnv.remove(key) else processEnv[key] = value }
         return RunningLoop(builder.start(), args.toList(), stdout, stderr)
     }
