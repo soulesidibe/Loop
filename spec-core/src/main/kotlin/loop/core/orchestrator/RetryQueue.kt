@@ -180,6 +180,9 @@ class RetryQueue {
     /** The scheduled retry of [issueId], null when none is queued. */
     fun entry(issueId: String): RetryEntry? = entries[issueId]
 
+    /** The issues with an entry, by id, each with its identifier. */
+    fun queued(): Map<String, String> = entries.mapValues { it.value.identifier }
+
     /** What the queue keeps for [issueId], null when it keeps nothing: no entry and both counters at zero. */
     fun snapshot(issueId: String): RetrySnapshot? {
         val entry = entries[issueId]

@@ -76,6 +76,56 @@ object RunStopped : EventDefinition("run_stopped") {
     override val sample = mapOf(REASON to HumanText.STOP_REQUESTED, ATTEMPTS_CANCELED to "1")
 }
 
+/**
+ * m4-10: the run noticed `loop drain` and dispatches nothing new from now on. Run level, with what still runs, each a
+ * comma separated list of identifiers, absent when empty: the running attempts, the waits that need no human and the
+ * queued retries of the issues whose attempt ran when the drain began.
+ */
+object RunDraining : EventDefinition("run_draining") {
+    const val ATTEMPTS = "attempts"
+    const val WAITS = "waits"
+    const val RETRIES = "retries"
+
+    override val trace = TraceShow.ISSUE_LEVEL
+    override val human = HumanShow.RUN
+    override val sample = mapOf(ATTEMPTS to "bl-1,bl-2", WAITS to "bl-3")
+
+    override fun humanSentence(
+        data: Map<String, String>,
+        facts: HumanFacts,
+    ): String {
+        val running = listOfNotNull(data[ATTEMPTS], data[WAITS], data[RETRIES]).flatMap { it.split(",") }.distinct()
+        return if (running.isEmpty()) {
+            "draining, nothing runs, the run stops"
+        } else {
+            "draining, nothing new starts, the run stops once ${running.joinToString(", ")} end"
+        }
+    }
+}
+
+/** m4-10: the drain of [RunDraining] ended, nothing runs any more, and the run stops with exit code 0. Run level. */
+object RunDrained : EventDefinition("run_drained") {
+    /** How long the drain lasted, from the `run_draining` of the run. */
+    const val DRAINED_MS = "drained_ms"
+
+    override val trace = TraceShow.ISSUE_LEVEL
+    override val human = HumanShow.RUN
+    override val sample = mapOf(DRAINED_MS to "252000")
+
+    override fun traceDetails(
+        event: RecordedEvent,
+        context: TraceContext,
+    ) = traceDetails(context) { add("drained", TraceText.millis(event.data[DRAINED_MS])) }
+
+    override fun humanSentence(
+        data: Map<String, String>,
+        facts: HumanFacts,
+    ): String {
+        val took = data[DRAINED_MS]?.toLongOrNull()?.let { " in ${HumanText.duration(it)}" }.orEmpty()
+        return "drained$took, the run stops"
+    }
+}
+
 /** A claim a dead process left, released by a later run (m1-36). */
 object ClaimReleased : EventDefinition("claim_released") {
     const val REASON = "reason"
