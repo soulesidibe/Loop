@@ -416,9 +416,15 @@ class LoopFixture(
         processEnv["LOOP_HOME"] = loopHome.toString()
         processEnv["HOME"] = homeDir.toString()
         processEnv["JAVA_HOME"] = System.getProperty("java.home")
+        val cdsOpt =
+            System
+                .getProperty("loop.cdsArchive")
+                ?.takeIf { it.isNotBlank() }
+                ?.let { " \"-XX:SharedArchiveFile=$it\" -Xlog:cds=off" }
+                .orEmpty()
         // Keep sqlite-jdbc out of the host TMPDIR and skip C2 JIT in short-lived test launcher JVMs.
         processEnv["LOOP_OPTS"] =
-            "\"-Dorg.sqlite.tmpdir=${sqliteTmpDir.toAbsolutePath()}\" -XX:TieredStopAtLevel=1 -XX:+UseSerialGC -Xmx256m"
+            "\"-Dorg.sqlite.tmpdir=${sqliteTmpDir.toAbsolutePath()}\" -XX:TieredStopAtLevel=1 -XX:+UseSerialGC -Xmx256m$cdsOpt"
         env.forEach { (key, value) -> if (value == null) processEnv.remove(key) else processEnv[key] = value }
         return RunningLoop(builder.start(), args.toList(), stdout, stderr)
     }

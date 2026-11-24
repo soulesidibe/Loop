@@ -174,6 +174,39 @@ kotlin.sourceSets.named("test") {
 }
 
 val launcherInstallDir = layout.buildDirectory.dir("install/loop")
+val cdsArchiveFile = layout.buildDirectory.file("tmp/cds/loop.jsa")
+
+// Dynamic AppCDS archive shared by short-lived test launcher JVMs in LoopFixture (m4 / CI speedup).
+val generateTestCdsArchive =
+    tasks.register<Exec>("generateTestCdsArchive") {
+        dependsOn(tasks.installDist)
+        // Without build-info.properties: a new commit alone does not regenerate the CDS archive.
+        inputs
+            .files(fileTree(launcherInstallDir) { exclude("build-info.properties") })
+            .withPropertyName("launcherInstall")
+            .withPathSensitivity(PathSensitivity.RELATIVE)
+        outputs.file(cdsArchiveFile)
+        val launcher = launcherInstallDir.map { it.file("bin/loop").asFile.absolutePath }
+        val archive = cdsArchiveFile.map { it.asFile.absolutePath }
+        val javaHome =
+            javaToolchains
+                .launcherFor { languageVersion.set(JavaLanguageVersion.of(21)) }
+                .map { it.metadata.installationPath.asFile.absolutePath }
+        executable = launcher.get()
+        args("--help")
+        doFirst {
+            val exec = this as Exec
+            val outFile = File(archive.get())
+            outFile.parentFile.mkdirs()
+            outFile.delete()
+            exec.standardOutput = OutputStream.nullOutputStream()
+            exec.environment("JAVA_HOME", javaHome.get())
+            exec.environment(
+                "LOOP_OPTS",
+                "-XX:TieredStopAtLevel=1 -XX:+UseSerialGC -Xmx256m \"-XX:ArchiveClassesAtExit=${outFile.absolutePath}\"",
+            )
+        }
+    }
 
 // Loop's own worktree hook scripts, tested against temporary repositories (m1-04 plan R11).
 val hookScriptsDir = layout.projectDirectory.dir("../scripts/hooks")
@@ -188,7 +221,13 @@ tasks.test {
     // Hook tests run real git in temporary repositories: no GIT_* variable from the host.
     setEnvironment(environment.filterKeys { !it.startsWith("GIT_") })
     // The cli tests spawn the installed launcher end to end.
-    dependsOn(tasks.installDist)
+    dependsOn(tasks.installDist, generateTestCdsArchive)
+    val cdsArchivePath = cdsArchiveFile.map { it.asFile.absolutePath }
+    jvmArgumentProviders.add(
+        CommandLineArgumentProvider {
+            listOf("-Dloop.cdsArchive=${cdsArchivePath.get()}")
+        },
+    )
     // JUnit runs test classes and methods concurrently in one worker JVM, capped so spawned launcher JVMs do not oversubscribe.
     maxParallelForks = 1
     val cliParallelism = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(2, 6)
