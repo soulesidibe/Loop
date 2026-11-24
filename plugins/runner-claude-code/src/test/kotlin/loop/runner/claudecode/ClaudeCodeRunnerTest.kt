@@ -124,6 +124,7 @@ class ClaudeCodeRunnerTest {
             "LOOP_WORKFLOW" to "/projects/demo/WORKFLOW.md",
             "LOOP_ISSUE_ID" to "id-t-1",
             "LOOP_ISSUE_IDENTIFIER" to "t-1",
+            "LOOP_TRACKER_ID" to "default",
             "LOOP_WORKSPACE_KEY" to "t-1",
             "LOOP_HOME" to home.toString(),
             "LOOP_PROJECT_ID" to "project-1",
@@ -164,6 +165,7 @@ class ClaudeCodeRunnerTest {
                             put("LOOP_ATTEMPT_ID", "attempt-1")
                             put("LOOP_ISSUE_ID", "id-t-1")
                             put("LOOP_ISSUE_IDENTIFIER", "t-1")
+                            put("LOOP_TRACKER_ID", "default")
                             put("LOOP_HOME", env.getValue("LOOP_HOME"))
                             put("LOOP_SESSION_ID", started.sessionId.value)
                             put("LOOP_TURN_ID", started.turnId.value)

@@ -45,6 +45,7 @@ import loop.core.log.KeyValueLog
 import loop.core.log.LogContext
 import loop.core.log.LogLevel
 import loop.core.log.LogOutcome
+import loop.core.trackers.NamespacedId
 import loop.core.verify.Fingerprinter
 import loop.core.verify.ProtectedPaths
 import loop.core.verify.WorkspaceFingerprint
@@ -221,7 +222,7 @@ internal class Merges(
             return false
         }
         val workspace =
-            locate(workflow, WorkspaceKey.of(wait.identifier)).getOrElse {
+            locate(workflow, keyOf(wait)).getOrElse {
                 return failed("cannot locate the workspace: ${it.describe()}")
             } ?: return failed("the workspace of ${wait.identifier} is gone")
         val outcome = gitStep { git.mergeTree(workspace, tip, head) }.getOrElse { return failed(it.describe()) }
@@ -234,7 +235,7 @@ internal class Merges(
             mapOf(MergeConflictEarly.ISSUE to wait.identifier, MergeConflictEarly.BASE to tip, MergeConflictEarly.PATHS to paths),
         )
         val detail = redactor.redact(conflict.detail).take(REASON_MAX)
-        val branch = PullRequestDelivery.branch(WorkspaceKey.of(wait.identifier).value)
+        val branch = PullRequestDelivery.branch(keyOf(wait).value)
         return !sentBack(
             wait,
             issue,
@@ -283,7 +284,7 @@ internal class Merges(
         issue: Issue?,
     ) {
         val context = waitContext(wait)
-        val branch = PullRequestDelivery.branch(WorkspaceKey.of(wait.identifier).value)
+        val branch = PullRequestDelivery.branch(keyOf(wait).value)
         val found =
             deliveryStep { executorFor(workflow()).findPullRequest(branch) }.getOrElse { error ->
                 log.log(
@@ -311,6 +312,9 @@ internal class Merges(
         )
     }
 
+    /** m4-12: the workspace key of [wait]'s issue, a primary tracker's issue keeping the key of its identifier. */
+    private fun keyOf(wait: Wait): WorkspaceKey = NamespacedId.workspaceKey(wait.issueId, wait.identifier, workflow().trackerId)
+
     private suspend fun runMergeCheck(
         start: Wait.Merge,
         issue: Issue,
@@ -334,7 +338,7 @@ internal class Merges(
             )
             return
         }
-        val branch = PullRequestDelivery.branch(WorkspaceKey.of(start.identifier).value)
+        val branch = PullRequestDelivery.branch(keyOf(start).value)
         val found =
             deliveryStep { executorFor(workflow).findPullRequest(branch) }.getOrElse {
                 mergeStepFailed(start, PullRequestDelivery.STEP_PULL_REQUEST, it)
@@ -385,7 +389,7 @@ internal class Merges(
         workflow: WorkflowFile,
     ): Wait.Merge? {
         val mergedHead = wait.mergedHead ?: return mergeRefused(wait, CiWait.STEP, "the wait holds no merged head")
-        val branch = PullRequestDelivery.branch(WorkspaceKey.of(wait.identifier).value)
+        val branch = PullRequestDelivery.branch(keyOf(wait).value)
         deliveryStep { executorFor(workflow).push(mergedHead, branch) }
             .getOrElse { return mergeStepFailed(wait, PullRequestDelivery.STEP_PUSH, it) }
         val verifiedHead = WorkspaceFingerprint.committedHead(wait.verifiedFingerprint.orEmpty())
@@ -540,7 +544,7 @@ internal class Merges(
                 fetchedBase = base to fetched
                 fetched
             }
-        val located = locate(workflow, WorkspaceKey.of(wait.identifier))
+        val located = locate(workflow, keyOf(wait))
         val workspace =
             located.getOrElse { return mergeRefused(wait, MergeCheck.STEP_CHECK, "cannot locate the workspace: ${it.describe()}") }
                 ?: return mergeRefused(wait, MergeCheck.STEP_CHECK, "the workspace of ${wait.identifier} is gone")
@@ -589,7 +593,7 @@ internal class Merges(
                         is WorkspaceGit.MergeOutcome.Conflict -> {
                             finishCheck(current, started, MergeCheck.CONFLICT, null)
                             val detail = redactor.redact(merged.detail).take(REASON_MAX)
-                            val branch = PullRequestDelivery.branch(WorkspaceKey.of(wait.identifier).value)
+                            val branch = PullRequestDelivery.branch(keyOf(wait).value)
                             val number = wait.numberText
                             return mergeCheckFailed(
                                 current,
@@ -611,7 +615,7 @@ internal class Merges(
             val findings = recheck(current, issue, workflow, workspace, checkedBase, head, diffPolicyOnly = true)
             if (findings != null) {
                 finishCheck(current, started, MergeCheck.REFUTED, null)
-                val branch = PullRequestDelivery.branch(WorkspaceKey.of(wait.identifier).value)
+                val branch = PullRequestDelivery.branch(keyOf(wait).value)
                 val number = wait.numberText
                 val reason = findings.first
                 return mergeCheckFailed(
@@ -628,7 +632,7 @@ internal class Merges(
             val findings = recheck(current, issue, workflow, workspace, checkedBase, mergedHead)
             if (findings != null) {
                 finishCheck(current, started, MergeCheck.REFUTED, mergedHead)
-                val branch = PullRequestDelivery.branch(WorkspaceKey.of(wait.identifier).value)
+                val branch = PullRequestDelivery.branch(keyOf(wait).value)
                 val number = wait.numberText
                 val reason = findings.first
                 return mergeCheckFailed(
@@ -665,7 +669,7 @@ internal class Merges(
         val context = waitContext(wait)
         val candidate = wait.candidate(head)
         if (!wait.candidateHead.equals(head, ignoreCase = true) && !storeWait(candidate, context)) return wait
-        val branch = PullRequestDelivery.branch(WorkspaceKey.of(wait.identifier).value)
+        val branch = PullRequestDelivery.branch(keyOf(wait).value)
         deliveryStep { executorFor(workflow).push(head, branch) }.getOrElse { error ->
             val reason = redactor.redact("the merge commit is pushed after the checks: ${error.describe()}").take(REASON_MAX)
             log.log(LogLevel.WARN, DELIVERY, LogOutcome.FAILED, context, reason = reason)
@@ -703,7 +707,7 @@ internal class Merges(
         intent: String,
     ): String? {
         val head = WorkspaceFingerprint.committedHead(stored) ?: return null
-        val workspace = locate(workflow, WorkspaceKey.of(wait.identifier)).getOrNull() ?: return null
+        val workspace = locate(workflow, keyOf(wait)).getOrNull() ?: return null
         val now = gitStep { fingerprinter.of(workspace).getOrThrow() }.getOrNull() ?: return null
         if (now == stored) return null
         if (gitStep { git.abortStrandedMerge(workspace, head) }.getOrDefault(false)) {
@@ -818,7 +822,7 @@ internal class Merges(
         val mergedHead =
             wait.mergedHead
                 ?: return mergeRefused(wait, MergeCheck.STEP_MERGE, "the wait holds no merged head")
-        val branch = PullRequestDelivery.branch(WorkspaceKey.of(wait.identifier).value)
+        val branch = PullRequestDelivery.branch(keyOf(wait).value)
         deliveryStep { executor.push(mergedHead, branch) }.getOrElse { return mergeStepFailed(wait, PullRequestDelivery.STEP_PUSH, it) }
         val verifiedHead = WorkspaceFingerprint.committedHead(wait.verifiedFingerprint.orEmpty())
         // m3-15 and bl-174: a head the CI wait or the early push pushed was recorded then.
@@ -835,7 +839,7 @@ internal class Merges(
         // m2-28: an approval the auto policy gave itself merges only through the auto merge gate.
         if (wait.approvedBy == AutoMerge.AUTO) {
             val workspace =
-                locate(workflow, WorkspaceKey.of(wait.identifier)).getOrNull()
+                locate(workflow, keyOf(wait)).getOrNull()
                     ?: return autoMergeFallBack(
                         wait,
                         GateOutcome.FallBack(emptyList(), null, "the workspace is gone", "the workspace is gone"),
@@ -973,7 +977,7 @@ internal class Merges(
         recordWaitEvent(wait, BaseFetched, mapOf(Delivery.SHA to tip, Delivery.BASE to pullRequest.base))
         fetchedBase = pullRequest.base to tip
         val workspace =
-            locate(workflow, WorkspaceKey.of(wait.identifier)).getOrNull()
+            locate(workflow, keyOf(wait)).getOrNull()
                 ?: return stop("cannot locate the workspace of ${wait.identifier}")
         val moved =
             gitStep {
@@ -1136,7 +1140,7 @@ internal class Merges(
         issue: Issue,
         workflow: WorkflowFile,
     ): Boolean {
-        val branch = PullRequestDelivery.branch(WorkspaceKey.of(wait.identifier).value)
+        val branch = PullRequestDelivery.branch(keyOf(wait).value)
         val found =
             deliveryStep { executorFor(workflow).findPullRequest(branch) }.getOrElse { error ->
                 val reason = redactor.redact("cannot read the pull request before the refusal: ${error.describe()}").take(REASON_MAX)

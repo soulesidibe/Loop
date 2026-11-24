@@ -5,9 +5,12 @@ import loop.api.Redactor
 import loop.api.SecretRedactor
 import loop.api.TrackerAdapter
 import loop.api.TrackerError
+import loop.core.trackers.NamespacedId
+import loop.core.trackers.NamespacedTracker
 import loop.core.workflow.DeferredSecret
 import loop.core.workflow.WorkflowFile
 import loop.core.workflow.WorkflowLoader
+import loop.store.IssueIdForms
 import loop.store.SqliteEventStore
 import java.nio.file.Path
 import kotlin.io.path.Path
@@ -81,7 +84,7 @@ class OpenedProject internal constructor(
     /**
      * The tracker named by `tracker.kind`, built by its plugin (m3-05), see [trackerFor] for the arguments. Throws
      * [StartupFailure] when no tracker plugin answers to the kind, or naming the variable when its [trackerSecret] is
-     * unset.
+     * unset. m4-12: a [NamespacedTracker], so its issues reach the core with namespaced ids.
      */
     fun tracker(
         onWarning: (String) -> Unit = {},
@@ -90,19 +93,30 @@ class OpenedProject internal constructor(
     ): TrackerAdapter {
         trackerSecret?.let { throw StartupFailure(it.sentence) }
         if (trackers.provider(workflow.trackerKind) == null) throw StartupFailure(unsupportedTracker(workflow, trackers))
-        return trackerFor(workflow, loopHome, onWarning, onMalformed, requiredLabels, trackers)
+        val primary = workflow.trackerId
+        return NamespacedTracker(primary, primary, trackerFor(workflow, loopHome, onWarning, onMalformed, requiredLabels, trackers))
     }
 
     /**
      * Opens the machine store for this project, as a writer through [redactor] or as a reader with [Redactor.NONE]
-     * by [Access]. A failure's message is the sentence `cannot open the store at <file>: <reason>`; the exit code is
+     * by [Access]. Its issue ids are read by [issueIdForms] (m4-12). A failure's message is the sentence `cannot open the store at <file>: <reason>`; the exit code is
      * the command's.
      */
     fun store(): Result<SqliteEventStore> =
         SqliteEventStore
-            .open(loopHome, workflow.path.parent, if (access == Access.WRITE) redactor else Redactor.NONE)
+            .open(loopHome, workflow.path.parent, if (access == Access.WRITE) redactor else Redactor.NONE, issueIdForms(workflow.trackerId))
             .fold(
                 onSuccess = { Result.success(it) },
                 onFailure = { Result.failure(IllegalStateException("cannot open the store at $storeFile: ${it.sentence()}", it)) },
             )
 }
+
+/**
+ * m4-12: how the store reads the issue ids of a project whose primary tracker is [primary], by the reading rule of
+ * [NamespacedId]: a bare id written before m4-12 is the primary tracker's.
+ */
+fun issueIdForms(primary: String): IssueIdForms =
+    IssueIdForms(
+        read = { NamespacedId.read(it, primary).value },
+        legacy = { NamespacedId.read(it, primary).bareFor(primary) },
+    )

@@ -36,12 +36,21 @@ internal class AttemptTool(
     /** The attempt of the environment, as the snapshot at [configPath] describes its project. */
     class Env(
         val attemptId: AttemptId,
+        /** `LOOP_ISSUE_ID`, the native id of the issue (m4-12). */
         val issueId: String,
         val issueName: String,
         val configPath: Path,
         val config: ToolConfig,
+        /** `LOOP_TRACKER_ID`, the tracker of the issue (m4-12), null when the attempt was started without it. */
+        val trackerId: String? = null,
     ) {
         val projectId: ProjectId get() = config.projectId
+
+        /**
+         * True when the core id [issueId] of an `attempt_started` event is this issue: its namespaced id
+         * `<LOOP_TRACKER_ID>:<LOOP_ISSUE_ID>` (m4-12), or the bare id an attempt started before m4-12 carries.
+         */
+        fun owns(issueId: String): Boolean = issueId == this.issueId || (trackerId != null && issueId == "$trackerId:${this.issueId}")
 
         /** The attempt directory, the folder of the snapshot, which holds the request queue. */
         val attemptDir: Path get() = configPath.parent
@@ -79,7 +88,7 @@ internal class AttemptTool(
                         )
                 }
             }
-        return Env(AttemptId(attemptId), issueId, host.env(ENV_ISSUE_IDENTIFIER) ?: issueId, configPath, config)
+        return Env(AttemptId(attemptId), issueId, host.env(ENV_ISSUE_IDENTIFIER) ?: issueId, configPath, config, host.env(ENV_TRACKER_ID))
     }
 
     fun openStore(env: Env): SqliteEventStore {
@@ -109,7 +118,7 @@ internal class AttemptTool(
                 EXIT_NOT_LIVE,
             )
         }
-        if (started.issueId != env.issueId) {
+        if (started.issueId?.let(env::owns) != true) {
             val owner = started.issueIdentifier ?: started.issueId
             refuse("attempt $short belongs to issue $owner, not ${env.issueName}. $NOTHING_QUEUED", EXIT_NOT_LIVE)
         }
@@ -152,7 +161,8 @@ internal class AttemptTool(
                 projectId = env.projectId,
                 data = data,
                 runId = started.runId,
-                issueId = env.issueId,
+                // m4-12: the core id of the attempt, namespaced, so the event is named with its tracker like the others.
+                issueId = started.issueId ?: env.issueId,
                 issueIdentifier = started.issueIdentifier ?: env.issueName,
                 attemptId = env.attemptId,
                 sessionId = host.env(ENV_SESSION_ID)?.let(::SessionId),
@@ -179,6 +189,7 @@ internal class AttemptTool(
         private const val ENV_ATTEMPT_ID = "LOOP_ATTEMPT_ID"
         private const val ENV_ISSUE_ID = "LOOP_ISSUE_ID"
         private const val ENV_ISSUE_IDENTIFIER = "LOOP_ISSUE_IDENTIFIER"
+        private const val ENV_TRACKER_ID = "LOOP_TRACKER_ID"
         private const val ENV_SESSION_ID = "LOOP_SESSION_ID"
         private const val ENV_TURN_ID = "LOOP_TURN_ID"
         private const val ENV_TOOL_CONFIG = "LOOP_TOOL_CONFIG"

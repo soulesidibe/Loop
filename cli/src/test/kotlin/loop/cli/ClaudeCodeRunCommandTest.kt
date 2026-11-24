@@ -59,7 +59,7 @@ class ClaudeCodeRunCommandTest {
 
         assertEquals(0, result.statusCode, result.output)
         assertEquals("review", fixture.stateOf("t-1"), result.output)
-        val rows = fixture.query("SELECT kind, phase, data FROM events WHERE issue_id = 't-1' ORDER BY seq")
+        val rows = fixture.query("SELECT kind, phase, data FROM events WHERE issue_id = 'default:t-1' ORDER BY seq")
         val session = assertNotNull(rows.firstOrNull { it["phase"] == "InitializingSession" }, "$rows")
         assertContains(session["data"].orEmpty(), "claude-e2e-session")
         val usage = assertNotNull(rows.firstOrNull { it["kind"] == "usage" }, "$rows")
@@ -85,7 +85,7 @@ class ClaudeCodeRunCommandTest {
 
         assertEquals(0, result.statusCode, result.output)
         assertEquals("review", fixture.stateOf("t-1"), result.output)
-        val rows = fixture.query("SELECT seq, kind, data FROM events WHERE issue_id = 't-1' ORDER BY seq")
+        val rows = fixture.query("SELECT seq, kind, data FROM events WHERE issue_id = 'default:t-1' ORDER BY seq")
         val threshold = rows.filter { it["kind"] == "token_threshold" }
         assertEquals(1, threshold.size, "$rows")
         val data = threshold.single()["data"].orEmpty()
@@ -113,7 +113,7 @@ class ClaudeCodeRunCommandTest {
         // 11.69M before the wake plus 1.95M after it, and the latest cost, which already holds the first.
         val row =
             fixture
-                .query("SELECT tokens, cache_read_input_tokens, cost_usd FROM attempts WHERE issue_id = 't-1'")
+                .query("SELECT tokens, cache_read_input_tokens, cost_usd FROM attempts WHERE issue_id = 'default:t-1'")
                 .single()
         assertEquals("13640000", row["tokens"], "$row")
         assertEquals("13400000", row["cache_read_input_tokens"], "$row")
@@ -144,8 +144,13 @@ class ClaudeCodeRunCommandTest {
 
         assertEquals(0, result.statusCode, result.output)
         assertEquals("todo", fixture.stateOf("t-1"), result.output)
-        assertEquals("budget", fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 't-1'").single()["reason"])
-        val parked = fixture.query("SELECT data FROM events WHERE kind = 'issue_parked' AND issue_id = 't-1'").single()["data"].orEmpty()
+        assertEquals("budget", fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 'default:t-1'").single()["reason"])
+        val parked =
+            fixture
+                .query(
+                    "SELECT data FROM events WHERE kind = 'issue_parked' AND issue_id = 'default:t-1'",
+                ).single()["data"]
+                .orEmpty()
         assertContains(parked, "\"reason\":\"budget\"")
         assertContains(parked, "\"budget\":\"per_attempt_usd\"")
         assertEquals(1, fixture.query("SELECT kind FROM events WHERE kind = 'budget_reached'").size)
@@ -173,7 +178,7 @@ class ClaudeCodeRunCommandTest {
         assertEquals(0, result.statusCode, result.output)
         val row =
             fixture
-                .query("SELECT tokens, input_tokens, cache_read_input_tokens, cost_usd FROM attempts WHERE issue_id = 't-1'")
+                .query("SELECT tokens, input_tokens, cache_read_input_tokens, cost_usd FROM attempts WHERE issue_id = 'default:t-1'")
                 .single()
         assertEquals("1004800", row["tokens"], "$row")
         assertEquals("1500", row["input_tokens"], "$row")
@@ -187,7 +192,12 @@ class ClaudeCodeRunCommandTest {
                 .single()
         assertContains(line, "\"tokens\":1004800")
         assertContains(line, "\"attempt_tokens\":1004800")
-        val parked = fixture.query("SELECT data FROM events WHERE kind = 'issue_parked' AND issue_id = 't-1'").single()["data"].orEmpty()
+        val parked =
+            fixture
+                .query(
+                    "SELECT data FROM events WHERE kind = 'issue_parked' AND issue_id = 'default:t-1'",
+                ).single()["data"]
+                .orEmpty()
         assertContains(parked, "\"budget\":\"per_attempt_tokens\"")
     }
 
@@ -223,7 +233,7 @@ class ClaudeCodeRunCommandTest {
         assertFalse("kind=" in first, first)
         assertContains(second, "Work on t-1 kind=rotation BRIEF ### Goal and acceptance criteria")
         assertContains(second, "- Rotations: 1")
-        val rows = fixture.query("SELECT kind, data FROM events WHERE issue_id = 't-1' ORDER BY seq")
+        val rows = fixture.query("SELECT kind, data FROM events WHERE issue_id = 'default:t-1' ORDER BY seq")
         val rotated = rows.filter { it["kind"] == "session_rotated" }
         assertEquals(1, rotated.size, "$rows")
         val data = rotated.single()["data"].orEmpty()
@@ -272,7 +282,7 @@ class ClaudeCodeRunCommandTest {
         }
         val second = calls.resolve("prompt-2").readLines().single()
         assertContains(second, "Work on t-1 kind=rotation")
-        val rows = fixture.query("SELECT kind, data FROM events WHERE issue_id = 't-1' ORDER BY seq")
+        val rows = fixture.query("SELECT kind, data FROM events WHERE issue_id = 'default:t-1' ORDER BY seq")
         val rotated = rows.single { it["kind"] == "session_rotated" }["data"].orEmpty()
         listOf("\"reason\":\"hard_limit\"", "\"occupancy_tokens\":\"300\"", "\"window\":\"1000\"", "\"rotation\":\"1\"")
             .forEach { assertContains(rotated, it) }
@@ -311,7 +321,7 @@ class ClaudeCodeRunCommandTest {
 
         assertEquals(0, result.statusCode, result.output)
         assertEquals("2", calls.resolve("count").readLines().single(), result.output)
-        val rows = fixture.query("SELECT kind, data FROM events WHERE issue_id = 't-1' ORDER BY seq")
+        val rows = fixture.query("SELECT kind, data FROM events WHERE issue_id = 'default:t-1' ORDER BY seq")
         val parked = rows.single { it["kind"] == "issue_parked" }["data"].orEmpty()
         assertContains(parked, "\"reason\":\"split_issue\"")
         assertContains(parked, "\"without_progress\":\"2\"")
@@ -484,7 +494,7 @@ class ClaudeCodeRunCommandTest {
 
     /** The agent queued its move and Loop applied it host side: one `issue_move_requested`, one `issue_moved` by host. */
     private fun assertHostAppliedMove() {
-        val kinds = fixture.query("SELECT kind, data FROM events WHERE issue_id = 't-1' ORDER BY seq")
+        val kinds = fixture.query("SELECT kind, data FROM events WHERE issue_id = 'default:t-1' ORDER BY seq")
         assertEquals(1, kinds.count { it["kind"] == "issue_move_requested" }, "$kinds")
         val moved = kinds.single { it["kind"] == "issue_moved" }
         assertContains(moved["data"].orEmpty(), "\"host\"")

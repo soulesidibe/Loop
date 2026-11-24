@@ -97,7 +97,7 @@ class CodexRotationRunTest {
         assertEquals(THREAD_1, interrupt.getValue("threadId").jsonPrimitive.content)
         assertEquals(TURN_1, interrupt.getValue("turnId").jsonPrimitive.content)
         assertContains(turnInput(calls, 2), "Work on t-1 kind=rotation BRIEF ### Goal and acceptance criteria")
-        val rows = fixture.query("SELECT kind, data FROM events WHERE issue_id = 't-1' ORDER BY seq")
+        val rows = fixture.query("SELECT kind, data FROM events WHERE issue_id = 'default:t-1' ORDER BY seq")
         // The interrupted turn is not a failed one.
         assertTrue(rows.none { it["kind"] == "turn_failed" }, "$rows")
         assertContains(rows.first { it["kind"] == "turn_completed" }["data"].orEmpty(), "\"interrupted\":\"hard_limit\"")

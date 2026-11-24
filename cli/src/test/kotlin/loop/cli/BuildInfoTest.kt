@@ -91,7 +91,7 @@ class BuildInfoTest {
         assertEquals(0, run.exitCode, run.toString())
         val recorded =
             fixture
-                .query("SELECT data FROM events WHERE kind = 'attempt_started' AND issue_id = 't-1'")
+                .query("SELECT data FROM events WHERE kind = 'attempt_started' AND issue_id = 'default:t-1'")
                 .map { row -> loopVersionOf(row["data"]!!) }
         assertEquals(listOf<String?>(installed), recorded)
     }

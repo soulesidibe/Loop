@@ -53,7 +53,7 @@ class ResumeCommandTest {
 
         val parkedAt =
             fixture
-                .query("SELECT parked_at FROM parked_issues WHERE issue_id = 't-1'")
+                .query("SELECT parked_at FROM parked_issues WHERE issue_id = 'default:t-1'")
                 .single()["parked_at"]!!
                 .take(SECONDS_PREFIX) + "Z"
         val resume = fixture.loop("resume", "t-1", cwd = fixture.projectDir)
@@ -83,7 +83,7 @@ class ResumeCommandTest {
             fixture
                 .query("SELECT issue_id, project_id, attempt_id, data FROM events WHERE kind = 'issue_unparked'")
                 .single()
-        assertEquals("t-1", row["issue_id"])
+        assertEquals("default:t-1", row["issue_id"])
         assertEquals(fixture.projectId(), row["project_id"])
         assertNull(row["attempt_id"])
         assertEquals("""{"reason":"resume"}""", row["data"])
@@ -97,7 +97,7 @@ class ResumeCommandTest {
         val resume = fixture.loop("resume", "t-1", cwd = fixture.projectDir)
         assertEquals(0, resume.exitCode, resume.toString())
         val touch = fixture.query("SELECT issue_id, attempt_id, data FROM events WHERE kind = 'human_touch'").single()
-        assertEquals("t-1", touch["issue_id"])
+        assertEquals("default:t-1", touch["issue_id"])
         assertNull(touch["attempt_id"])
         assertEquals("""{"touch":"resume"}""", touch["data"])
 
@@ -197,7 +197,7 @@ class ResumeCommandTest {
         assertEquals(1, fixture.agentCalls())
         assertEquals(
             "max_continuations",
-            fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 't-1'").single()["reason"],
+            fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 'default:t-1'").single()["reason"],
         )
         runOnce()
         assertEquals(1, fixture.agentCalls())
@@ -221,7 +221,7 @@ class ResumeCommandTest {
         runOnce()
         assertEquals(
             "unverified",
-            fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 't-1'").single()["reason"],
+            fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 'default:t-1'").single()["reason"],
         )
         val parkedRun = runOnce()
         assertContains(parkedRun.stdout, "No eligible issue.")

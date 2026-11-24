@@ -109,7 +109,7 @@ class AcceptanceCommandsCommandTest {
         assertEquals("todo", fixture.stateOf("t-1"), run.toString())
         assertEquals(
             listOf("unverified"),
-            fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 't-1'").map { it["reason"] },
+            fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 'default:t-1'").map { it["reason"] },
         )
         val trace = fixture.loop("trace", "t-1", "--workflow", fixture.workflow.toString())
         // The measured duration varies with the machine: only the shape of the reason is asserted.
@@ -132,7 +132,10 @@ class AcceptanceCommandsCommandTest {
 
         assertEquals(0, parked.exitCode, parked.toString())
         assertEquals("todo", fixture.stateOf("t-1"), parked.toString())
-        assertEquals(listOf("unverified"), fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 't-1'").map { it["reason"] })
+        assertEquals(
+            listOf("unverified"),
+            fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 'default:t-1'").map { it["reason"] },
+        )
         assertEquals(0, fixture.query("SELECT 1 FROM events WHERE kind = 'check_started'").size, "no command ran")
         val trace = fixture.loop("trace", "t-1", "--workflow", fixture.workflow.toString())
         val lines = trace.stdout.lines()
@@ -182,9 +185,14 @@ class AcceptanceCommandsCommandTest {
         }
     }
 
-    /** The frozen list row of t-1: its digest and its changed digest. */
+    /**
+     * The frozen list row of t-1: its digest and its changed digest. [freeze] writes the bare id a run before m4-12
+     * wrote, and the store keeps it, so the row holds either form.
+     */
     private fun frozenRow(): Map<String, String?> =
-        fixture.query("SELECT digest, changed_digest FROM acceptance_commands WHERE issue_id = 't-1'").single()
+        fixture
+            .query("SELECT digest, changed_digest FROM acceptance_commands WHERE issue_id IN ('t-1', 'default:t-1')")
+            .single()
 
     @Test
     fun `restored criteria that match the frozen list forget the changed list, a later resume accepts nothing`() {
@@ -192,7 +200,10 @@ class AcceptanceCommandsCommandTest {
         loopMode("{ type: acceptance_commands }")
         freeze("test -f hello.txt", "echo restored")
         val parked = fixture.loop("run", fixture.workflow.toString(), "--once")
-        assertEquals(listOf("unverified"), fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 't-1'").map { it["reason"] })
+        assertEquals(
+            listOf("unverified"),
+            fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 'default:t-1'").map { it["reason"] },
+        )
         assertEquals(AcceptanceCriteria.digest(listOf("test -f hello.txt")), frozenRow()["changed_digest"], parked.toString())
 
         // A human restores the criteria and unparks the issue through a label change.

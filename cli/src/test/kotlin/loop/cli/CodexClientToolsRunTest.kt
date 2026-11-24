@@ -266,7 +266,7 @@ class CodexClientToolsRunTest {
 
     private fun kinds(of: List<String>): List<String> =
         fixture
-            .query("SELECT kind FROM events WHERE issue_id = 't-1' ORDER BY seq")
+            .query("SELECT kind FROM events WHERE issue_id = 'default:t-1' ORDER BY seq")
             .mapNotNull { it["kind"] }
             .filter { it in of }
 

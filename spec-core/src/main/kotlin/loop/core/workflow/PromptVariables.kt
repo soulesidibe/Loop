@@ -2,12 +2,13 @@ package loop.core.workflow
 
 import loop.api.Issue
 import loop.core.template.TemplateSchema
+import loop.core.trackers.NamespacedId
 
 /**
  * The variables the prompt template renders with: the spec's `issue` and
  * `attempt` (5.4), and Loop's own under `loop` (plan 8.9), so far
  * `loop.verify_findings` (m2-06), `loop.workspace_reused` (bl-19), `loop.session_brief` (m3-10) and `loop.retry_kind`
- * (m3-11). The Orchestrator
+ * (m3-11), and Loop's `issue.tracker` (m4-12). The Orchestrator
  * and [Preflight] both build
  * them here, and the static check's [schema] is derived from the same map, so
  * they cannot drift.
@@ -16,7 +17,7 @@ object PromptVariables {
     /** A sample with every field set except `created_at`, which the files tracker never has. */
     val SAMPLE_ISSUE: Issue =
         Issue(
-            id = "sample-id",
+            id = "default:sample-id",
             identifier = "SAMPLE-1",
             title = "Sample title",
             state = "todo",
@@ -88,10 +89,16 @@ object PromptVariables {
             RETRY_KIND to retryKind,
         )
 
+    /**
+     * The `issue` fields. m4-12: `issue.id` and `issue.identifier` stay native, as the tracker wrote them, and
+     * `issue.tracker` is the tracker id of the namespaced id the core carries, null for a bare id, which only a test
+     * hands the core.
+     */
     private fun issueFields(issue: Issue): Map<String, Any?> =
         mapOf(
-            "id" to issue.id,
+            "id" to NamespacedId.nativeOf(issue.id),
             "identifier" to issue.identifier,
+            "tracker" to NamespacedId.trackerOf(issue.id),
             "title" to issue.title,
             "description" to issue.description,
             "priority" to issue.priority,

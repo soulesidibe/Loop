@@ -5,6 +5,7 @@ import kotlinx.coroutines.runBlocking
 import loop.api.ProjectId
 import loop.api.RecordedEvent
 import loop.api.Redactor
+import loop.core.trackers.NamespacedTracker
 import loop.store.SqliteEventStore
 import loop.tracker.files.FilesTracker
 import loop.tracker.github.GitHubTracker
@@ -50,7 +51,7 @@ class OpenProjectTest {
         assertEquals(ProjectId(fixture.projectId()), project.projectId)
         assertEquals("files", project.workflow.trackerKind)
         assertSame(project.redactor, scope.redactor)
-        assertIs<FilesTracker>(project.tracker())
+        assertIs<FilesTracker>(assertIs<NamespacedTracker>(project.tracker()).native)
         assertEquals(fixture.loopHome.resolve(SqliteEventStore.FILE_NAME), project.storeFile)
         project.store().getOrThrow().use { store ->
             assertEquals(emptyList(), runBlocking { store.list(project.projectId) }.getOrThrow())
@@ -70,7 +71,7 @@ class OpenProjectTest {
         val project = host(mapOf("GITHUB_TOKEN" to githubToken)).openProject(fixture.workflow.toString(), Access.READ, scope)
 
         assertEquals("github", project.workflow.trackerKind)
-        assertIs<GitHubTracker>(project.tracker())
+        assertIs<GitHubTracker>(assertIs<NamespacedTracker>(project.tracker()).native)
         assertEquals("[redacted:GITHUB_TOKEN]", scope.redactor.redact(githubToken))
         project.store().getOrThrow().use { store ->
             assertEquals(emptyList(), runBlocking { store.list(project.projectId) }.getOrThrow())

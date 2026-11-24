@@ -233,7 +233,7 @@ class GitHubRunCommandTest {
         assertTrue("Hello-World-26  succeeded  open" in result.stdout, result.toString())
         assertTrue("1 attempt, 1 succeeded, 0 failed." in result.stdout, result.toString())
         val dispatched = fixture.query("SELECT issue_id FROM events WHERE kind = 'attempt_started'")
-        assertEquals(listOf("26"), dispatched.map { it["issue_id"] })
+        assertEquals(listOf("default:26"), dispatched.map { it["issue_id"] })
         // Every request went to the loopback server with the token from the environment.
         val sent = requests.toList()
         assertTrue(sent.any { it.first.startsWith("GET /api/repos/octocat/Hello-World/issues?state=open") }, "$sent")
@@ -253,7 +253,7 @@ class GitHubRunCommandTest {
         assertEquals(0, fixture.agentCalls(), result.toString())
         assertEquals(0, fixture.query("SELECT 1 FROM events WHERE kind = 'attempt_started'").size)
         val skipped = fixture.query("SELECT issue_id, data FROM events WHERE kind = 'candidate_skipped' ORDER BY issue_id")
-        assertEquals(listOf("26", "27", "28"), skipped.map { it["issue_id"] }, "$skipped")
+        assertEquals(listOf("default:26", "default:27", "default:28"), skipped.map { it["issue_id"] }, "$skipped")
         for (event in skipped) {
             val data = Json.parseToJsonElement(event["data"].orEmpty()) as JsonObject
             assertEquals(JsonPrimitive("untrusted_author (NONE)"), data["reason"], "$event")
