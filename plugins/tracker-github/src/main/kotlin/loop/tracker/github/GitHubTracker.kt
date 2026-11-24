@@ -42,7 +42,7 @@ class GitHubTracker(
      * rate limit hold with pull request delivery and every other tracker of that origin and token. Its own by default.
      */
     clients: GitHubClients = GitHubClients(transport, clock),
-    /** Gets one operator warning per issue and malformed `Area:` line (m4-17), the first time it is read. */
+    /** Gets one operator warning for a malformed `Area:` line of an issue (m4-17), the first time it is read, see [GitHubArea]. */
     private val onWarning: (String) -> Unit = {},
 ) : TrackerAdapter {
     init {
@@ -64,8 +64,12 @@ class GitHubTracker(
 
     private val trusted = settings.trustedAssociations.map { it.uppercase() }.toSet()
 
-    /** Issue and malformed `Area:` line pairs already warned about, so each is warned once per process (m4-17). */
-    private val warnedAreas = ConcurrentHashMap.newKeySet<Pair<String, String>>()
+    /**
+     * The malformed `Area:` line each issue was last warned about, by issue number, as its line number and fingerprint
+     * (m4-17), so a line is warned once and an edit to it warns again. A read with no malformed line forgets the issue,
+     * and the map is emptied when it reaches [MAX_WARNED_AREAS], so it never outgrows that.
+     */
+    private val warnedAreas = ConcurrentHashMap<String, Pair<Int, Int>>()
 
     /** GitHub's comment count of every issue this tracker read, by id, as of its latest read (bl-06). */
     private val commentCounts = ConcurrentHashMap<String, Long>()
@@ -385,9 +389,7 @@ class GitHubTracker(
         val association = item.association()
         val identifier = "${settings.repo}-$number"
         val area = GitHubArea.read(item.string("body"))
-        if (area.malformed != null && warnedAreas.add("$number" to area.malformed)) {
-            onWarning("$identifier: the line `${area.malformed}` is malformed, so $identifier runs with no area.")
-        }
+        warnArea(number, identifier, area)
         return Issue(
             id = "$number",
             identifier = identifier,
@@ -409,6 +411,32 @@ class GitHubTracker(
                 },
             area = area.area,
         ).also { issue -> item.commentCount()?.let { commentCounts[issue.id] = it } ?: commentCounts.remove(issue.id) }
+    }
+
+    /**
+     * One operator warning for the malformed `Area:` line [area] found in issue [number], unless it was the last one
+     * warned about for that issue (m4-17). It names the line by number and never quotes the body, which an untrusted
+     * author may have written.
+     */
+    private fun warnArea(
+        number: Long,
+        identifier: String,
+        area: GitHubArea.Read,
+    ) {
+        val key = "$number"
+        val line = area.malformed
+        if (line == null) {
+            warnedAreas.remove(key)
+            return
+        }
+        val seen = line to area.fingerprint
+        if (warnedAreas[key] == seen) return
+        if (warnedAreas.size >= MAX_WARNED_AREAS) warnedAreas.clear()
+        warnedAreas[key] = seen
+        onWarning(
+            "$identifier: line $line of its body is an Area line that is no list of repository relative paths, " +
+                "so every Area line of the body is ignored and $identifier runs with no area.",
+        )
     }
 
     /** GitHub's `comments` count; null when it is missing or not a count. */
@@ -505,6 +533,9 @@ class GitHubTracker(
         const val MAX_PAGES: Int = 100
 
         const val MAX_PAGE_SIZE: Int = 100
+
+        /** The most issues whose malformed `Area:` line [GitHubTracker] remembers having warned about (m4-17). */
+        const val MAX_WARNED_AREAS: Int = 10_000
 
         const val API_VERSION: String = GitHubClient.API_VERSION
 
