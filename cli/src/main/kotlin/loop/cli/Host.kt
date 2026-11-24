@@ -23,8 +23,10 @@ import loop.runner.claudecode.ClaudeCodePreflight
 import loop.runner.claudecode.ClaudeCodeRiskReviewer
 import loop.runner.claudecode.ClaudeCodeSettings
 import loop.runner.claudecode.PreflightResult
+import loop.tracker.github.GitHubClients
 import loop.tracker.github.GitHubDelivery
 import loop.tracker.github.GitHubTracker
+import loop.tracker.github.GitHubTrackerProvider
 import loop.tracker.github.GitHubTrackerSettings
 import loop.tracker.github.GitHubTransport
 import loop.tracker.github.GitPush
@@ -170,7 +172,7 @@ fun workflowLoader(
  * settings the loader read. Throws [IllegalStateException] when no provider answers to the kind (bl-104), which a
  * workflow loaded through [plugins] never has. [onWarning] gets the adapter's operator
  * warnings, such as a `blocked_by` id with no issue file (m1-09). A move to a handoff state removes [requiredLabels],
- * by default the workflow's, read at each move (m2-23).
+ * by default the workflow's, read at each move (m2-23). A GitHub tracker sends through [gitHub] (m4-48).
  */
 fun trackerFor(
     workflow: WorkflowFile,
@@ -179,12 +181,15 @@ fun trackerFor(
     onMalformed: (TrackerError.Malformed) -> Unit = {},
     requiredLabels: () -> List<String> = { workflow.requiredLabels },
     plugins: TrackerPlugins = TrackerPlugins.classpath,
-): TrackerAdapter = adapterFor(workflow.trackers.primary, loopHome, onWarning, onMalformed, requiredLabels, plugins)
+    gitHub: GitHubClients = GitHubClients(),
+): TrackerAdapter = adapterFor(workflow.trackers.primary, loopHome, onWarning, onMalformed, requiredLabels, plugins, gitHub)
 
 /**
  * m4-11: the [TrackerRegistry] of [workflow], each tracker built by its plugin like [trackerFor] builds the primary
  * one. m4-13: a tracker's move to a handoff state removes its own `required_labels`, never another tracker's, as
  * [requiredLabels] gives them by tracker id at each move, by default those of [workflow]. `loop run` polls them all.
+ * m4-48: every GitHub tracker sends through [gitHub], so two of one origin and token share one rate limit hold, and
+ * `loop run` passes the clients its pull request delivery uses too.
  */
 fun trackerRegistryFor(
     workflow: WorkflowFile,
@@ -198,11 +203,13 @@ fun trackerRegistryFor(
             .orEmpty()
     },
     plugins: TrackerPlugins = TrackerPlugins.classpath,
+    gitHub: GitHubClients = GitHubClients(),
 ): TrackerRegistry =
     TrackerRegistry.build(workflow.trackers) { entry ->
-        adapterFor(entry, loopHome, onWarning, onMalformed, { requiredLabels(entry.id) }, plugins)
+        adapterFor(entry, loopHome, onWarning, onMalformed, { requiredLabels(entry.id) }, plugins, gitHub)
     }
 
+/** The adapter of [entry] by its plugin; the GitHub plugin builds it over [gitHub], the run's clients (m4-48). */
 private fun adapterFor(
     entry: TrackerEntry,
     loopHome: Path,
@@ -210,11 +217,20 @@ private fun adapterFor(
     onMalformed: (TrackerError.Malformed) -> Unit,
     requiredLabels: () -> List<String>,
     plugins: TrackerPlugins,
-): TrackerAdapter =
-    (plugins.provider(entry.kind) ?: throw IllegalStateException(plugins.unsupported(entry.kind))).create(
-        entry.settings,
-        TrackerContext(entry.dir, loopHome.resolve("locks"), onMalformed, onWarning, requiredLabels),
-    )
+    gitHub: GitHubClients,
+): TrackerAdapter {
+    val provider = plugins.provider(entry.kind) ?: throw IllegalStateException(plugins.unsupported(entry.kind))
+    val context = TrackerContext(entry.dir, loopHome.resolve("locks"), onMalformed, onWarning, requiredLabels)
+    return if (provider is GitHubTrackerProvider) {
+        provider.create(
+            entry.settings,
+            context,
+            gitHub,
+        )
+    } else {
+        provider.create(entry.settings, context)
+    }
+}
 
 /**
  * The pull request delivery of [workflow] (m2-25), null when its kind sets no `delivery.pull_request`. `repo` and
@@ -223,29 +239,34 @@ private fun adapterFor(
  * project repository, the folder of `WORKFLOW.md`, as the worktree hooks see it, to the explicit URL of `repo` on
  * the host of `api_url`. Null too when a setting is missing, which the preflight refuses first, or when `api_url`
  * gives no URL Loop may push to. Built anew on each call: `loop run` keeps one per settings in [DeliveryExecutors].
+ * Its GitHub requests go through [gitHub] (m4-48).
  */
 fun deliveryFor(
     workflow: WorkflowFile,
     env: Map<String, String>,
-): DeliveryExecutor? = DeliverySettings.of(workflow, env)?.build(env, JdkGitHubTransport(), Clock.System)
+    gitHub: GitHubClients = GitHubClients(),
+): DeliveryExecutor? = DeliverySettings.of(workflow, env)?.build(env, gitHub)
 
 /**
  * m3-15, note 12 of the triage: the pull request delivery of each workflow, built once per repository, API URL, token
- * and base and kept for the life of the run, so the rate limit hold of its [loop.tracker.github.GitHubClient] lasts
- * across ticks and no HTTP client is built per poll of the CI wait. A reload with the same settings keeps the same
- * executor. [toString] never shows a token. bl-50 later shares the hold with the tracker.
+ * and base and kept for the life of the run, so no HTTP client is built per poll of the CI wait. A reload with the same
+ * settings keeps the same executor. [toString] never shows a token. m4-48 (bl-50): its GitHub requests, the CI wait's
+ * polls included, go through the client of [gitHub] for its API URL and token, so they share one rate limit hold with
+ * the run's GitHub trackers of the same origin and token, kept for the life of the run. By default its own clients over
+ * [transport] and [clock].
  */
 class DeliveryExecutors(
     private val env: Map<String, String>,
-    private val transport: GitHubTransport = JdkGitHubTransport(),
-    private val clock: Clock = Clock.System,
+    transport: GitHubTransport = JdkGitHubTransport(),
+    clock: Clock = Clock.System,
+    private val gitHub: GitHubClients = GitHubClients(transport, clock),
 ) {
     private val built = ConcurrentHashMap<DeliverySettings, DeliveryExecutor>()
 
     /** The executor of [workflow]'s pull request delivery, the one already built for its settings; null like [deliveryFor]. */
     fun of(workflow: WorkflowFile): DeliveryExecutor? {
         val settings = DeliverySettings.of(workflow, env) ?: return null
-        return built.computeIfAbsent(settings) { it.build(env, transport, clock) }
+        return built.computeIfAbsent(settings) { it.build(env, gitHub) }
     }
 
     override fun toString(): String = "DeliveryExecutors(${built.keys.joinToString()})"
@@ -270,8 +291,7 @@ private class DeliverySettings(
 
     fun build(
         env: Map<String, String>,
-        transport: GitHubTransport,
-        clock: Clock,
+        gitHub: GitHubClients,
     ): DeliveryExecutor =
         GitHubDelivery(
             owner = owner,
@@ -281,8 +301,7 @@ private class DeliverySettings(
             apiUrl = apiUrl,
             base = base,
             env = env,
-            transport = transport,
-            clock = clock,
+            clients = gitHub,
         )
 
     companion object {

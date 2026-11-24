@@ -17,7 +17,9 @@ import kotlin.time.Instant
  * One token's requests to the GitHub REST API, shared by [GitHubTracker] and [GitHubPullRequests] (m2-25). Every
  * request carries the token and GitHub's headers, a write its JSON body too, and is sent once, never retried here.
  * After a rate limit answer, or a success that spends the last request, no request is sent until GitHub's reset
- * time, and every request fails fast with [TrackerError.RateLimited]. [toString] never shows the token.
+ * time, and every request fails fast with [TrackerError.RateLimited]. Since m4-48 that [hold] is the one of the API
+ * origin and token, which [GitHubClients] shares with every other client of the run for them (bl-50). [toString] never
+ * shows the token.
  */
 class GitHubClient(
     /** The API root, such as `https://api.github.com`, with no trailing `/`. */
@@ -25,11 +27,9 @@ class GitHubClient(
     token: String,
     private val transport: GitHubTransport = JdkGitHubTransport(),
     private val clock: Clock = Clock.System,
+    /** The rate limit hold of this client's origin and token, its own unless [GitHubClients] shares one (m4-48). */
+    private val hold: RateLimitHold = RateLimitHold(clock),
 ) {
-    /** No request is sent before this time, set by a rate limit; null when requests may go. */
-    @Volatile
-    private var heldUntil: Instant? = null
-
     private val headers =
         mapOf(
             "Authorization" to "Bearer $token",
@@ -63,7 +63,7 @@ class GitHubClient(
         expected: Set<Int>,
         body: String? = null,
     ): GitHubResponse {
-        heldUntil?.let { if (clock.now() < it) throw TrackerError.RateLimited(it) }
+        val ticket = hold.ticket()
         val response =
             try {
                 transport.send(method, url, if (body == null) headers else writeHeaders, body)
@@ -77,10 +77,14 @@ class GitHubClient(
                 ?.trim()
                 ?.toLongOrNull()
                 ?.let(Instant::fromEpochSeconds)
-        heldUntil = if (remaining == "0") reset else null
+        val limited = response.status == 429 || (response.status == 403 && (remaining == "0" || response.header("retry-after") != null))
+        if (response.status in SUCCESS || response.status in expected || !limited) {
+            // bl-22: an answer with requests to spare ends the hold only when no newer hold was set since it was sent.
+            if (remaining == "0" && reset != null) hold.hold(reset) else hold.clear(ticket)
+        }
         if (response.status in SUCCESS) return response
         if (response.status in expected) return response
-        if (response.status == 429 || (response.status == 403 && (remaining == "0" || response.header("retry-after") != null))) {
+        if (limited) {
             val retryAfter =
                 response
                     .header("retry-after")
@@ -88,7 +92,7 @@ class GitHubClient(
                     ?.toLongOrNull()
                     ?.let { clock.now() + it.seconds }
             val until = retryAfter ?: reset?.takeIf { remaining == "0" } ?: (clock.now() + SECONDARY_LIMIT_WAIT)
-            heldUntil = until
+            hold.hold(until)
             throw TrackerError.RateLimited(until)
         }
         throw TrackerError.Status(response.status, detail(response.body))

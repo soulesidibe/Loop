@@ -14,6 +14,7 @@ import loop.core.workflow.WorkflowFile
 import loop.core.workflow.WorkflowLoader
 import loop.store.IssueIdForms
 import loop.store.SqliteEventStore
+import loop.tracker.github.GitHubClients
 import java.nio.file.Path
 import kotlin.io.path.Path
 
@@ -108,7 +109,8 @@ class OpenedProject internal constructor(
     /**
      * m4-13: every tracker of the workflow, built by its plugin like [tracker] builds the primary one, each polled and
      * reconciled on its own. [requiredLabels] gives the labels a handoff move removes, by tracker id, see
-     * [trackerRegistryFor]. Throws [StartupFailure] like [tracker].
+     * [trackerRegistryFor]. Throws [StartupFailure] like [tracker]. m4-48: every GitHub tracker sends through [gitHub],
+     * the clients `loop run` shares with its pull request delivery.
      */
     fun trackerPoll(
         onWarning: (String) -> Unit = {},
@@ -119,10 +121,11 @@ class OpenedProject internal constructor(
                 ?.requiredLabels
                 .orEmpty()
         },
+        gitHub: GitHubClients = GitHubClients(),
     ): TrackerPoll {
         trackerSecret?.let { throw StartupFailure(it.sentence) }
         if (trackers.provider(workflow.trackerKind) == null) throw StartupFailure(unsupportedTracker(workflow, trackers))
-        return TrackerPoll.of(trackerRegistryFor(workflow, loopHome, onWarning, onMalformed, requiredLabels, trackers))
+        return TrackerPoll.of(trackerRegistryFor(workflow, loopHome, onWarning, onMalformed, requiredLabels, trackers, gitHub))
     }
 
     /**
