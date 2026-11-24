@@ -113,4 +113,14 @@ class PromptVariablesTest {
 
         assertTrue(parsed.isFailure)
     }
+
+    @Test
+    fun `m4-12 issue id and identifier stay native and issue tracker holds the tracker id`() {
+        val github = issue.copy(id = "gh:454", identifier = "example-app-454")
+        val source = "{{ issue.id }} {{ issue.identifier }} {{ issue.tracker }}"
+        val template = engine.parse(source, PromptVariables.schema).getOrThrow()
+
+        assertEquals("454 example-app-454 gh", template.render(PromptVariables.of(github, null)).getOrThrow())
+        assertEquals("sample-id SAMPLE-1 default", template.render(PromptVariables.of(issue, null)).getOrThrow())
+    }
 }
