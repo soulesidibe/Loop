@@ -39,6 +39,14 @@ class OccupancyMeterTest {
         assertNull(meter(900_000, model = "anthropic/unknown").crossing(windows, 0.20))
     }
 
+    @Test
+    fun `m4-46 the fraction is the latest report over its model's window, null without a report or a window`() {
+        assertEquals(0.12, meter(300_000, 120_000).fraction(windows))
+        assertNull(OccupancyMeter().fraction(windows))
+        assertNull(meter(120_000, model = null).fraction(windows))
+        assertNull(meter(120_000, model = "anthropic/unknown").fraction(windows))
+    }
+
     private companion object {
         const val MODEL = "anthropic/claude-opus-5-5"
     }

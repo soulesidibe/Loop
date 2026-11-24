@@ -47,6 +47,13 @@ internal class OccupancyMeter {
         }
     }
 
+    /** The latest report as a fraction of the window [windows] gives its model (m4-46), null before any report or without one. */
+    fun fraction(windows: Map<String, Long>): Double? {
+        val tokens = latest ?: return null
+        val window = model?.let { windows[it] }?.takeIf { it > 0 } ?: return null
+        return tokens.toDouble() / window
+    }
+
     /**
      * The soft limit check of a rotation (m3-11): the latest report and its model's window from [windows] when the latest
      * is at or above [limit] times the window, null otherwise, and null before any report or without a known window.

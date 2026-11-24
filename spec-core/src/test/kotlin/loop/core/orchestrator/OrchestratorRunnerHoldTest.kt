@@ -13,6 +13,8 @@ import loop.api.Redactor
 import loop.api.RunId
 import loop.api.RunnerEvent
 import loop.api.SecretRedactor
+import loop.api.SessionId
+import loop.api.TurnId
 import loop.core.log.KeyValueLog
 import loop.core.workflow.AgentConfig
 import loop.core.workflow.RetriesConfig
@@ -277,6 +279,130 @@ class OrchestratorRunnerHoldTest {
             assertEquals(emptyList(), sink.ofKind("issue_parked"))
         }
 
+    @Test
+    fun `m4-46 after a network hold a session below the soft limit resumes, with the same prompt and its brief`() =
+        runTest {
+            val sink = FakeSink()
+            val tracker = FakeTracker(listOf(issue("m1-02")))
+            val runner = heldRunner(tracker, heldOccupancy = 120_000)
+
+            heldThenProbe(orchestrator(tracker, runner, sink, workflow(maxAttempts = 1, prompt = BRIEF_PROMPT)))
+
+            assertEquals(listOf("claude-session-1"), runner.resumedSessions, "0.12 of the window is below the soft limit 0.20")
+            assertEquals(listOf(2), runner.resumedNumbers)
+            val probe = runner.turnInputs[1].second
+            assertTrue(probe.startsWith("m1-02 attempt=[1]\n# Brief\n### Goal and acceptance criteria"), probe)
+            assertEquals(1, sink.ofKind("runner_hold_lifted").size)
+        }
+
+    @Test
+    fun `m4-46 after a network hold a session at the soft limit starts fresh with the brief`() =
+        runTest {
+            val sink = FakeSink()
+            val tracker = FakeTracker(listOf(issue("m1-02")))
+            val runner = heldRunner(tracker, heldOccupancy = 200_000)
+
+            heldThenProbe(orchestrator(tracker, runner, sink, workflow(maxAttempts = 1, prompt = BRIEF_PROMPT)))
+
+            assertEquals(emptyList(), runner.resumedSessions, "0.20 of the window is at the soft limit")
+            assertEquals(2, runner.sessionsOpened)
+            val probe = runner.turnInputs[1].second
+            assertTrue(probe.startsWith("m1-02 attempt=[1]\n# Brief\n### Goal and acceptance criteria"), probe)
+        }
+
+    @Test
+    fun `m4-46 a runner that cannot resume, as Codex, starts fresh with the brief after a hold`() =
+        runTest {
+            val sink = FakeSink()
+            val tracker = FakeTracker(listOf(issue("m1-02")))
+            val runner = heldRunner(tracker, heldOccupancy = 120_000, resumes = false)
+
+            heldThenProbe(orchestrator(tracker, runner, sink, workflow(maxAttempts = 1, prompt = BRIEF_PROMPT)))
+
+            assertEquals(emptyList(), runner.resumedSessions)
+            assertEquals(2, runner.sessionsOpened, "the probe opens a fresh session")
+            val probe = runner.turnInputs[1].second
+            assertTrue(probe.startsWith("m1-02 attempt=[1]\n# Brief\n### Goal and acceptance criteria"), probe)
+        }
+
+    @Test
+    fun `m4-46 a rotation of the resumed session opens a fresh session, it never resumes`() =
+        runTest {
+            val sink = FakeSink()
+            val tracker = FakeTracker(listOf(issue("m1-02")))
+            // The resumed session crosses the soft limit (0.205, under the hard limit 0.21), so it rotates at its turn end.
+            val runner = heldRunner(tracker, heldOccupancy = 120_000, resumedOccupancy = 205_000)
+
+            heldThenProbe(orchestrator(tracker, runner, sink, workflow(maxAttempts = 1, prompt = BRIEF_PROMPT)))
+
+            assertEquals(3, runner.sessionsOpened)
+            assertEquals(listOf(2), runner.resumedNumbers, "only the probe resumes, the rotation's session 3 is fresh")
+            assertEquals("soft_limit", sink.ofKind("session_rotated").single().data["reason"])
+        }
+
+    @Test
+    fun `m4-46 an ordinary failure below the soft limit starts fresh`() =
+        runTest {
+            val sink = FakeSink()
+            val tracker = FakeTracker(listOf(issue("m1-02")))
+            val runner = heldRunner(tracker, heldOccupancy = 120_000, category = null)
+            val orchestrator = orchestrator(tracker, runner, sink, workflow(maxAttempts = 3, prompt = BRIEF_PROMPT))
+
+            orchestrator.tick()
+            assertEquals(emptyList(), sink.ofKind("runner_hold_started"))
+            advanceTimeBy(1.minutes)
+            orchestrator.tick()
+
+            assertEquals(2, runner.sessionsOpened)
+            assertEquals(emptyList(), runner.resumedSessions)
+        }
+
+    /** Ticks the first attempt, which the hold takes, then the probe once the first period ended. */
+    private suspend fun TestScope.heldThenProbe(orchestrator: Orchestrator) {
+        orchestrator.tick()
+        advanceTimeBy(1.minutes)
+        orchestrator.tick()
+    }
+
+    /**
+     * A runner declaring occupancy, with the model [OPUS] whose window is 1,000,000 tokens. Session 1 reports
+     * [heldOccupancy] and loses the network ([category], `runner_unavailable` by default). Each later session `s`
+     * starts with the runtime session id `claude-session-s`, reports [resumedOccupancy] when it is session 2, then
+     * completes; session 2 without a rotation, or session 3, moves the issue to review, so the attempt ends.
+     */
+    private fun heldRunner(
+        tracker: FakeTracker,
+        heldOccupancy: Long,
+        resumes: Boolean = true,
+        resumedOccupancy: Long = 30_000,
+        category: RunnerEvent.TurnFailed.Category? = RunnerEvent.TurnFailed.Category.RunnerUnavailable,
+    ): FakeRunner =
+        FakeRunner().also { runner ->
+            runner.occupancy = true
+            runner.resumes = resumes
+            runner.sessionScript = { turn, _ ->
+                val number = runner.sessionsOpened
+                flow {
+                    val turnId = TurnId("s${number}t$turn")
+                    val sessionId = SessionId("th$number-${turnId.value}")
+                    if (turn == 1) {
+                        emit(RunnerEvent.SessionStarted(sessionId, "th$number", turnId, runtimeSessionId = "claude-session-$number"))
+                    } else {
+                        emit(RunnerEvent.TurnStarted(sessionId, "th$number", turnId, turn))
+                    }
+                    if (number == 1) {
+                        emit(RunnerEvent.ContextUsage(sessionId, turnId, heldOccupancy, OPUS))
+                        emit(RunnerEvent.TurnFailed(sessionId, turnId, exitCode = null, reason = NETWORK_REASON, category = category))
+                    } else {
+                        val occupancy = if (number == 2) resumedOccupancy else 30_000L
+                        emit(RunnerEvent.ContextUsage(sessionId, turnId, occupancy, OPUS))
+                        if (occupancy < 200_000) tracker.moveIssue("id-m1-02", "review")
+                        emit(RunnerEvent.TurnCompleted(sessionId, turnId, exitCode = 0))
+                    }
+                }
+            }
+        }
+
     /** The turn a lost network ends, as the Claude Code runner maps the recorded result line of bl-123. */
     private fun networkTurn(): Flow<RunnerEvent> =
         flow {
@@ -316,6 +442,7 @@ class OrchestratorRunnerHoldTest {
 
     private companion object {
         val PROJECT = ProjectId("p1")
+        const val OPUS = "anthropic/claude-opus-5-5"
         const val PROMPT = "{{ issue.identifier }} {% if attempt %}retry {{ attempt }}{% else %}first{% endif %}"
         const val REASON = "turn_failed: Failed to authenticate. API Error: 403 Attention Required! | Cloudflare"
         const val NETWORK_REASON = "turn_failed: API Error: Can't reach the API server, check your internet or DNS (ENOTFOUND)"
