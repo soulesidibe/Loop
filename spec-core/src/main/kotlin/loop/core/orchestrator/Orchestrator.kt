@@ -654,6 +654,7 @@ class Orchestrator(
             (candidates + fire.dispatch.map { it.issue })
                 .filter(::isEligible)
                 .distinctBy { it.id }
+                .let { trackers.withCrossTrackerBlockers(it, effective.trackers) }
                 // The plan's order, so the skips below are recorded in the order the slots fill.
                 .sortedWith(SlotPlan.slotOrder(retryDueAt))
         val skips = mutableMapOf<Issue, String>()

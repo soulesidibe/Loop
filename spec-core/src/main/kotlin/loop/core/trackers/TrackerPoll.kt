@@ -84,6 +84,15 @@ class TrackerPoll(
         return TrackerRead(issues, failures, ::trackerOf, byTracker.size)
     }
 
+    /**
+     * [issues] with the cross tracker blockers of their `Blocked by` lines checked against the trackers of [config]
+     * (m4-16): see [CrossTrackerBlockers.check]. The dispatch calls it once per tick on its eligible candidates.
+     */
+    suspend fun withCrossTrackerBlockers(
+        issues: List<Issue>,
+        config: TrackersConfig,
+    ): List<Issue> = CrossTrackerBlockers.check(issues, config, this)
+
     /** Every tracker read with the same [states]; fails when one of them fails. The orchestrator calls [poll]. */
     override suspend fun fetchIssuesByStates(states: List<String>): Result<List<Issue>> {
         val issues = mutableListOf<Issue>()
