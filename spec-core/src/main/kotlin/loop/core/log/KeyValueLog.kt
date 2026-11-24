@@ -11,7 +11,8 @@ import kotlin.time.Clock
 
 enum class LogLevel { INFO, WARN, ERROR }
 
-enum class LogOutcome { STARTED, COMPLETED, FAILED, IDLE, SCHEDULED, PARKED, RESUMED, REACHED, RELEASED, ROTATED }
+/** m4-42: [FOUND] is the plugin list `loop run` logs at startup, which never reads as a completed run. */
+enum class LogOutcome { STARTED, COMPLETED, FAILED, IDLE, SCHEDULED, PARKED, RESUMED, REACHED, RELEASED, ROTATED, FOUND }
 
 /** Ids printed after `outcome`, in this order; null ids are omitted. */
 data class LogContext(

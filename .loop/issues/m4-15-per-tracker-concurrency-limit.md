@@ -44,3 +44,15 @@ Out of this issue: bl-77 findings 3 and 5 (`firstDueAt` lost on restart and its 
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-24 21:25Z loop: Loop opened pull request #48 for this issue: https://github.com/soulesidibe/Loop/pull/48
+
+2026-11-24 21:29Z loop: Loop did not merge pull request #48 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.40.
+  - alignment: aligned, The diff delivers the per tracker key with refusals, the slot rule in TrackerSlots, the quieter requeue, the tests and the docs, and Orchestrator.kt changes only call sites.
+  - impact: medium, It changes the core slot planning and the retry coordinator's refresh and event recording, which every dispatch tick goes through, plus workflow config parsing.
+  - verification: strong, New tests cover config refusals, the slot plan, the two tracker orchestrator case, and the requeue volume counted over many ticks, though the per state retry case rests on an existing test.
+  - rollback_cost: two_way, The new queue fields live in memory only and the stored retry state format does not change, so a revert leaves nothing behind.
+  - error_detection: partial, Bad config is refused loudly at preflight, but a retry judged on a cached issue copy could act on stale state for up to one poll interval without any signal.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 1 of 14 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.

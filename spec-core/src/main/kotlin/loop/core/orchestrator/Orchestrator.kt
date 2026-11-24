@@ -1344,7 +1344,7 @@ class Orchestrator(
                     AttemptStarted.OCCUPANCY to
                         attempt.runner.capabilities.occupancy
                             .toString(),
-                ),
+                ) + attempt.setupData(),
         )
         log.log(LogLevel.INFO, "attempt", LogOutcome.STARTED, attempt.logContext())
         attempt.writeClaim()
@@ -1676,6 +1676,16 @@ class Orchestrator(
          */
         private val ledger = LedgerMeter()
         private val ledgerSetup = LedgerMeter.setupOf(workflow, runner.model, issue.id)
+
+        /** m4-42: the ledger setup `attempt_started` carries, so an exporter names it on every span of the attempt. */
+        fun setupData(): Map<String, String> =
+            mapOfNotNull(
+                AttemptStarted.TRACKER to ledgerSetup.tracker,
+                AttemptStarted.KIND to ledgerSetup.kind,
+                AttemptStarted.RUNNER to ledgerSetup.runner,
+                AttemptStarted.MODEL to ledgerSetup.model,
+                AttemptStarted.TEMPLATE_VERSION to ledgerSetup.templateVersion,
+            )
 
         /** The latest turn line of this attempt, which a `stop` line copies (m4-04). */
         private var lastTurnLine: LedgerTurn? = null
