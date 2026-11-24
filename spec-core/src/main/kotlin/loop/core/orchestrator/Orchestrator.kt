@@ -135,6 +135,7 @@ import loop.core.merge.RecheckOutcome
 import loop.core.merge.WorkspaceMergeGit
 import loop.core.template.Template
 import loop.core.template.TemplateEngine
+import loop.core.trackers.AreaLock
 import loop.core.trackers.NamespacedId
 import loop.core.trackers.TrackerPoll
 import loop.core.trackers.TrackerSlots
@@ -481,6 +482,9 @@ class Orchestrator(
 
     private val claimed = mutableSetOf<String>()
 
+    /** The area lock of the dispatch (m4-17): two issues whose areas overlap are never worked at once. */
+    private val areas = AreaLock()
+
     /**
      * The waits of the project (m2-04, m2-24, m2-26, bl-79): a waiting issue is never dispatched and its retries never
      * fire, whatever its tracker state. The store is read once per tick. A merge check holds an agent slot like an
@@ -670,7 +674,14 @@ class Orchestrator(
         for (issue in dispatchable.filter { it.id in notReady }) {
             skips[issue] = "$NOT_READY (missing ${notReady.getValue(issue.id).joinToString(", ")})"
         }
-        val eligible = dispatchable.filter { it.id !in notReady }
+        // m4-17: a candidate whose area overlaps a claimed issue's, or an earlier candidate's, is skipped in its place.
+        val eligible =
+            areas.admit(
+                dispatchable.filter { it.id !in notReady },
+                holders = claimed + waits.verifying + retries.queued().keys,
+                seen = executions.values.map { it.issue } + issues,
+                skips = skips,
+            )
         if (eligible.isEmpty()) {
             bounceNotReady(dispatchable.filter { it.id in notReady }, notReady)
             recordSkips(skips)

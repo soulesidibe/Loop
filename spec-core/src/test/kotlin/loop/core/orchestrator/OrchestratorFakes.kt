@@ -192,6 +192,7 @@ fun issue(
     createdAt: Instant? = null,
     blockedReason: String? = null,
     description: String? = null,
+    area: List<String> = emptyList(),
 ): Issue =
     Issue(
         id = "id-$identifier",
@@ -204,6 +205,7 @@ fun issue(
         description = description,
         createdAt = createdAt,
         blockedReason = blockedReason,
+        area = area,
     )
 
 /**
