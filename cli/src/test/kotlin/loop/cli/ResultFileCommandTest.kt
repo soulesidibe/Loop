@@ -165,7 +165,7 @@ class ResultFileCommandTest {
         assertContains(verdict, reason)
         assertEquals(
             listOf("unverified"),
-            fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 't-1'").map { it["reason"] },
+            fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 'default:t-1'").map { it["reason"] },
         )
         assertContains(events("attempt_finished").single()["data"].orEmpty(), "\"reason\":\"unverified\"")
         assertTrue(trace("t-1").any { "issue_parked" in it && "reason=unverified" in it })

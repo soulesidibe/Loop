@@ -39,7 +39,7 @@ class AttemptSweepTest {
         assertTrue(attemptFile.exists(), "a file next to the attempt directories is kept")
         val dropped =
             fixture.query("SELECT issue_id, attempt_id, data FROM events WHERE kind = 'tool_request_dropped'").single()
-        assertEquals("t-1", dropped["issue_id"])
+        assertEquals("default:t-1", dropped["issue_id"])
         assertEquals(LEFTOVER, dropped["attempt_id"])
         val data = dropped["data"]!!
         assertTrue("\"request\"" in data && "\"move\"" in data && "\"to\"" in data && "\"review\"" in data, data)

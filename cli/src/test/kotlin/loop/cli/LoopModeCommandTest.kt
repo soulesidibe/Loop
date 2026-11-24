@@ -249,7 +249,7 @@ class LoopModeCommandTest {
         assertContains(verdict, "\"reason\":\"$reason")
         assertEquals(
             listOf("unverified"),
-            fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 't-1'").map { it["reason"] },
+            fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 'default:t-1'").map { it["reason"] },
         )
         val finished = fixture.query("SELECT data FROM events WHERE kind = 'attempt_finished'").single()["data"].orEmpty()
         assertContains(finished, "\"reason\":\"unverified\"")

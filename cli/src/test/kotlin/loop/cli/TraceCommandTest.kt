@@ -34,7 +34,7 @@ class TraceCommandTest {
         val out = result.stdout
         val storedPhases =
             fixture
-                .query("SELECT phase FROM events WHERE issue_id = 't-1' AND kind = 'phase' ORDER BY seq")
+                .query("SELECT phase FROM events WHERE issue_id = 'default:t-1' AND kind = 'phase' ORDER BY seq")
                 .map { it["phase"]!! }
         assertEquals(EXPECTED_PHASES, storedPhases)
         val lines = out.lines()
@@ -1536,7 +1536,7 @@ class TraceCommandTest {
 
     private fun distinct(column: String): List<String> =
         fixture
-            .query("SELECT DISTINCT $column FROM events WHERE issue_id = 't-1' AND $column IS NOT NULL")
+            .query("SELECT DISTINCT $column FROM events WHERE issue_id = 'default:t-1' AND $column IS NOT NULL")
             .map { it[column]!! }
 
     private companion object {

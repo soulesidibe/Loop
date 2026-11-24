@@ -60,7 +60,7 @@ class RunCommandTest {
             assertFalse(fixture.workspace(id).exists(), "workspace created for $id")
         }
         val dispatched = fixture.query("SELECT DISTINCT issue_id FROM events WHERE issue_id IS NOT NULL")
-        assertEquals(listOf("t-1"), dispatched.map { it["issue_id"] })
+        assertEquals(listOf("default:t-1"), dispatched.map { it["issue_id"] })
     }
 
     @Test
@@ -155,7 +155,7 @@ class RunCommandTest {
         val result = fixture.loop("run", fixture.workflow.toString(), "--once")
 
         assertEquals(0, result.exitCode, result.toString())
-        val kinds = fixture.query("SELECT kind, data FROM events WHERE issue_id = 't-1' ORDER BY seq")
+        val kinds = fixture.query("SELECT kind, data FROM events WHERE issue_id = 'default:t-1' ORDER BY seq")
         assertEquals(0, kinds.count { it["kind"] == "session_rotated" }, "$kinds")
         assertEquals(0, kinds.count { it["kind"] == "context_usage" }, "$kinds")
         assertEquals(3, kinds.count { it["kind"] == "turn_completed" }, "$kinds")
@@ -253,7 +253,7 @@ class RunCommandTest {
 
     private fun attemptsStarted(issueId: String): Int =
         fixture
-            .query("SELECT count(*) AS n FROM events WHERE kind = 'attempt_started' AND issue_id = '$issueId'")
+            .query("SELECT count(*) AS n FROM events WHERE kind = 'attempt_started' AND issue_id = 'default:$issueId'")
             .single()["n"]!!
             .toInt()
 
@@ -313,7 +313,7 @@ class RunCommandTest {
         }
         assertTrue(
             lines.any {
-                "issue_id=t-1" in it && "issue_identifier=t-1" in it && "session_id=$sessionId" in it
+                "issue_id=default:t-1" in it && "issue_identifier=t-1" in it && "session_id=$sessionId" in it
             },
             "no line with issue_id, issue_identifier and session_id\n${result.stderr}",
         )

@@ -35,7 +35,7 @@ class ClaudeCodeStalledUsageTest {
 
         assertEquals(0, result.statusCode, result.output)
         val columns = "outcome, reason, tokens, input_tokens, cache_read_input_tokens, cost_usd"
-        val row = fixture.query("SELECT $columns FROM attempts WHERE issue_id = 't-1'").single()
+        val row = fixture.query("SELECT $columns FROM attempts WHERE issue_id = 'default:t-1'").single()
         assertEquals("failed", row["outcome"], "$row")
         assertEquals("stalled", row["reason"], "$row")
         assertEquals("$TOKENS", row["tokens"], "$row")
@@ -68,7 +68,7 @@ class ClaudeCodeStalledUsageTest {
         val result = LoopCommand(host()).test(listOf("run", fixture.workflow.toString(), "--once"))
 
         assertEquals(0, result.statusCode, result.output)
-        val row = fixture.query("SELECT reason, tokens, cost_usd FROM attempts WHERE issue_id = 't-1'").single()
+        val row = fixture.query("SELECT reason, tokens, cost_usd FROM attempts WHERE issue_id = 'default:t-1'").single()
         assertEquals("stalled", row["reason"], "$row")
         assertNull(row["tokens"], "$row")
         assertNull(row["cost_usd"], "$row")
@@ -90,7 +90,7 @@ class ClaudeCodeStalledUsageTest {
 
             assertEquals(0, stop.exitCode, stop.toString())
             assertEquals(0, run.exitCode, run.toString())
-            val row = fixture.query("SELECT outcome, reason, tokens, cost_usd FROM attempts WHERE issue_id = 't-1'").single()
+            val row = fixture.query("SELECT outcome, reason, tokens, cost_usd FROM attempts WHERE issue_id = 'default:t-1'").single()
             assertEquals("canceled", row["outcome"], "$row\n$run")
             assertEquals("stop_requested", row["reason"], "$row\n$run")
             assertEquals("$TOKENS", row["tokens"], "$row\n$run")
@@ -110,13 +110,13 @@ class ClaudeCodeStalledUsageTest {
         val result = LoopCommand(host()).test(listOf("run", fixture.workflow.toString(), "--once"))
 
         assertEquals(0, result.statusCode, result.output)
-        assertEquals("budget", fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 't-1'").single()["reason"], result.output)
+        assertEquals("budget", fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 'default:t-1'").single()["reason"], result.output)
         val reached = fixture.query("SELECT data FROM events WHERE kind = 'budget_reached'").single()["data"].orEmpty()
         assertContains(reached, "\"budget\":\"per_attempt_usd\"")
         assertContains(reached, "\"used\":\"12.5\"")
         assertEquals(0, fixture.query("SELECT kind FROM events WHERE kind = 'attempt_stalled'").size)
         assertEquals(0, fixture.query("SELECT kind FROM events WHERE kind = 'retry_scheduled'").size)
-        val row = fixture.query("SELECT cost_usd FROM attempts WHERE issue_id = 't-1'").single()
+        val row = fixture.query("SELECT cost_usd FROM attempts WHERE issue_id = 'default:t-1'").single()
         assertEquals(12.5, assertNotNull(row["cost_usd"], "$row").toDouble(), 1e-9)
     }
 

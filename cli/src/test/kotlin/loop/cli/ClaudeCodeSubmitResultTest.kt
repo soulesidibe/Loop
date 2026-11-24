@@ -74,7 +74,7 @@ class ClaudeCodeSubmitResultTest {
         assertEquals("review", fixture.stateOf("t-1"), result.output + result.stderr)
         val kinds =
             fixture
-                .query("SELECT kind FROM events WHERE issue_id = 't-1' ORDER BY seq")
+                .query("SELECT kind FROM events WHERE issue_id = 'default:t-1' ORDER BY seq")
                 .mapNotNull { it["kind"] }
                 .filter { it in setOf("result_requested", "result_submitted", "check_started", "check_finished", "verdict", "issue_moved") }
         assertEquals(listOf("result_requested", "result_submitted", "check_started", "check_finished", "verdict", "issue_moved"), kinds)

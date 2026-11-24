@@ -132,7 +132,7 @@ class AbandonedAttemptTest {
             )
         assertEquals(listOf(OPEN_1, OPEN_2, OPEN_3), closed.map { it["attempt_id"] })
         assertEquals(listOf(RUN_A, RUN_A, RUN_B), closed.map { it["run_id"] })
-        assertEquals(listOf("t-1", "t-2", "t-2"), closed.map { it["issue_id"] })
+        assertEquals(listOf("default:t-1", "default:t-2", "default:t-2"), closed.map { it["issue_id"] })
         closed.forEach { row ->
             assertContains(row["data"]!!, "\"outcome\":\"canceled\"")
             assertContains(row["data"]!!, "\"reason\":\"abandoned\"")

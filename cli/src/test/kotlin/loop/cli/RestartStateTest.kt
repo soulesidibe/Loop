@@ -86,7 +86,7 @@ class RestartStateTest {
         assertEquals(0, second.exitCode, second.toString())
         assertEquals(2, fixture.agentCalls(), second.toString())
         val parked = fixture.query("SELECT issue_id, reason FROM parked_issues").single()
-        assertEquals("t-1", parked["issue_id"])
+        assertEquals("default:t-1", parked["issue_id"])
         assertEquals("max_attempts", parked["reason"])
         val event = fixture.query("SELECT data FROM events WHERE kind = 'issue_parked'").single()
         assertContains(event["data"]!!, "\"failures\":\"2\"")
@@ -120,7 +120,7 @@ class RestartStateTest {
             dead.process.destroyForcibly()
             readPid(pidFile)?.let(::kill9)
         }
-        assertEquals("t-1", deadClaim["issue_id"])
+        assertEquals("default:t-1", deadClaim["issue_id"])
         val deadAttempt = assertNotNull(deadClaim["attempt_id"])
         val deadRun = assertNotNull(deadClaim["run_id"])
         val deadSession = assertNotNull(deadClaim["session_id"], "the claim carries the session of its attempt")
