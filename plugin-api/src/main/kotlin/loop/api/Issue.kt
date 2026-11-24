@@ -26,6 +26,11 @@ public data class Issue(
      * node id; null when the tracker has no id apart from [id]. Opaque to the orchestrator.
      */
     public val nativeRef: Map<String, String>? = null,
+    /**
+     * The repository relative paths, folders or files, the issue declares it edits (m4-17), normalized by
+     * [IssueArea]; empty when it declares none. Two issues whose areas overlap are never worked at once.
+     */
+    public val area: List<String> = emptyList(),
 ) {
     /** False while a blocker holds the issue back; the orchestrator dispatches only dispatchable issues. */
     public val dispatchable: Boolean get() = blockedReason == null
