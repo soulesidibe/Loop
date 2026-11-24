@@ -63,7 +63,10 @@ class ExporterPlugins private constructor(
         sections.entries.firstNotNullOfOrNull { (key, written) ->
             val provider = provider(key) ?: return@firstNotNullOfOrNull unsupported(key)
             val config = sectionOf(written) ?: return@firstNotNullOfOrNull "$SECTION.$key must be a map"
-            provider.profile.check("$SECTION.$key", config, env).problem?.let { return@firstNotNullOfOrNull it.message }
+            provider.profile
+                .check("$SECTION.$key", config, env)
+                .problem
+                ?.let { return@firstNotNullOfOrNull it.message }
             try {
                 provider.validate(config, env)
                 null
@@ -80,7 +83,13 @@ class ExporterPlugins private constructor(
         sections.entries.flatMap { (key, written) ->
             val provider = provider(key) ?: return@flatMap emptyList()
             val config = sectionOf(written) ?: return@flatMap emptyList()
-            provider.profile.check("$SECTION.$key", config, env).unknownKeys.map { "$it is not a key of the $key exporter, Loop ignores it" }
+            provider.profile
+                .check(
+                    "$SECTION.$key",
+                    config,
+                    env,
+                ).unknownKeys
+                .map { "$it is not a key of the $key exporter, Loop ignores it" }
         }
 
     /** The env names whose values the enabled exporters send, such as a header's `$NAME`: the run's redactor learns them. */

@@ -78,7 +78,8 @@ class ExporterPluginsTest {
         }
     }
 
-    private fun plugins(provider: EventExporterProvider) = ExporterPlugins.of(listOf(ExporterPlugins.Found(provider, PluginFolder.CLASSPATH))).getOrThrow()
+    private fun plugins(provider: EventExporterProvider) =
+        ExporterPlugins.of(listOf(ExporterPlugins.Found(provider, PluginFolder.CLASSPATH))).getOrThrow()
 
     private fun event(
         kind: String,
@@ -104,9 +105,17 @@ class ExporterPluginsTest {
     @Test
     fun `m4-42 the preflight check refuses a bad endpoint, an unknown exporter and a section that is not a map`() {
         val plugins = ExporterPlugins.classpath
+
         fun problem(sections: Map<String, Any?>) = plugins.problem(sections, emptyMap())
 
-        assertEquals("exporters.otel.endpoint must start with http:// or https://", problem(mapOf("otel" to mapOf("endpoint" to "localhost:4318"))))
+        assertEquals(
+            "exporters.otel.endpoint must start with http:// or https://",
+            problem(
+                mapOf(
+                    "otel" to mapOf("endpoint" to "localhost:4318"),
+                ),
+            ),
+        )
         assertEquals("exporters.otel.endpoint is required", problem(mapOf("otel" to null)))
         assertEquals("exporters.datadog has no exporter plugin, use otel", problem(mapOf("datadog" to mapOf("x" to "y"))))
         assertEquals("exporters.otel must be a map", problem(mapOf("otel" to "http://localhost:4318")))
@@ -130,7 +139,12 @@ class ExporterPluginsTest {
     fun `m4-42 two providers of one key fail, naming both`() {
         val found = listOf(ExporterPlugins.Found(Capturing(), PluginFolder.CLASSPATH), ExporterPlugins.Found(Capturing(), "/plugins/x.jar"))
 
-        val message = ExporterPlugins.of(found).exceptionOrNull()?.message.orEmpty()
+        val message =
+            ExporterPlugins
+                .of(found)
+                .exceptionOrNull()
+                ?.message
+                .orEmpty()
 
         assertContains(message, "two exporter plugins provide exporters.capture")
         assertContains(message, "/plugins/x.jar")
@@ -160,7 +174,13 @@ class ExporterPluginsTest {
             val store = Store()
 
             val results =
-                ExportingSink(store, enabled, onFailure = { key, error, count -> failures += "$key: ${error.message}, $count" }).use { sink ->
+                ExportingSink(store, enabled, onFailure = {
+                    key,
+                    error,
+                    count,
+                    ->
+                    failures += "$key: ${error.message}, $count"
+                }).use { sink ->
                     runBlocking { (1..3).map { sink.record(event("poll")) } }
                 }
 

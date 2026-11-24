@@ -79,7 +79,13 @@ class OtelEventExporterTest {
         val verification = spans.named("loop.verification").single()
         assertEquals(attempt.spanId, verification.parentSpanId)
         assertEquals("verified", verification.attr("loop.verdict"))
-        assertEquals(7, spans.spans.map { it.spanId }.toSet().size)
+        assertEquals(
+            7,
+            spans.spans
+                .map { it.spanId }
+                .toSet()
+                .size,
+        )
 
         // Each span runs from the event that opened it to the event that ended it.
         assertEquals(nanos(script.at(0)) to nanos(script.at(17)), attempt.startEpochNanos to attempt.endEpochNanos)
@@ -139,7 +145,13 @@ class OtelEventExporterTest {
         // Only the turn spans have a turn, only the turn and session spans a session.
         assertEquals(null, spans.named("loop.attempt").single().attr("loop.session_id"))
         assertEquals(null, spans.named("loop.verification").single().attr("loop.turn_id"))
-        assertEquals("loop", spans.spans.first().resource.getAttribute(AttributeKey.stringKey("service.name")))
+        assertEquals(
+            "loop",
+            spans.spans
+                .first()
+                .resource
+                .getAttribute(AttributeKey.stringKey("service.name")),
+        )
     }
 
     @Test
@@ -166,13 +178,31 @@ class OtelEventExporterTest {
 
         exporter.recordAll(script)
 
-        assertEquals(StatusCode.ERROR, spans.named("loop.turn").single().status.statusCode)
-        assertEquals(StatusCode.ERROR, spans.named("loop.verification").single().status.statusCode)
+        assertEquals(
+            StatusCode.ERROR,
+            spans
+                .named("loop.turn")
+                .single()
+                .status.statusCode,
+        )
+        assertEquals(
+            StatusCode.ERROR,
+            spans
+                .named("loop.verification")
+                .single()
+                .status.statusCode,
+        )
         val attempt = spans.named("loop.attempt").single()
         assertEquals(StatusCode.ERROR, attempt.status.statusCode)
         assertEquals("failed", attempt.attr("loop.outcome"))
         assertEquals("checks", attempt.attr("loop.reason"))
-        assertEquals(StatusCode.UNSET, spans.named("loop.session").single().status.statusCode)
+        assertEquals(
+            StatusCode.UNSET,
+            spans
+                .named("loop.session")
+                .single()
+                .status.statusCode,
+        )
     }
 
     @Test

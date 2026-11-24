@@ -90,8 +90,13 @@ public class OtelSettings(
         internal fun headerEnvNames(config: Map<String, Any?>): Set<String> =
             (config["headers"] as? Map<*, *>)
                 ?.values
-                ?.mapNotNull { (it as? String)?.trim()?.let(ENV_REF::matchEntire)?.groupValues?.get(1) }
-                ?.toSet()
+                ?.mapNotNull {
+                    (it as? String)
+                        ?.trim()
+                        ?.let(ENV_REF::matchEntire)
+                        ?.groupValues
+                        ?.get(1)
+                }?.toSet()
                 .orEmpty()
 
         /** An http or https URL with a host, and no user info, query or fragment, which could hold a secret. */
@@ -124,7 +129,11 @@ public class OtelSettings(
             written.orEmpty().entries.associate { (name, value) ->
                 val key = "$SECTION.headers.$name"
                 val envName =
-                    (value as? String)?.trim()?.let(ENV_REF::matchEntire)?.groupValues?.get(1)
+                    (value as? String)
+                        ?.trim()
+                        ?.let(ENV_REF::matchEntire)
+                        ?.groupValues
+                        ?.get(1)
                         ?: throw ExporterConfigException("$key must be a \$NAME reference to the env, never the secret itself")
                 val resolved = env[envName]
                 if (resolved == null || resolved.isBlank()) {

@@ -16,7 +16,11 @@ class OtelRedactionTest {
         val learned = "s3cr3t-from-the-env"
         val redactor = SecretRedactor().apply { learn(mapOf("OTEL_TOKEN" to learned)) }
         val spans = RecordingSpanExporter()
-        val exporter = OtelEventExporter(spans, timeout = 5.seconds, clock = { kotlin.time.Clock.System.now() })
+        val exporter =
+            OtelEventExporter(spans, timeout = 5.seconds, clock = {
+                kotlin.time.Clock.System
+                    .now()
+            })
         val sink = RedactingEventSink(redactor, exporter)
         val script = AttemptScript()
         script.event("attempt_started", data = AttemptScript.SETUP)

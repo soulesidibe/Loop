@@ -11,9 +11,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import loop.api.EventSink
 import loop.api.Redactor
 import loop.api.RunId
-import loop.api.EventSink
 import loop.api.SecretRedactor
 import loop.core.events.DeliveryQueuePaused
 import loop.core.events.RunStopped
@@ -101,8 +101,8 @@ class RunCommand(
             host.openProject(workflowPath ?: DEFAULT_WORKFLOW, Access.WRITE, scope) { loader, path ->
                 preflight =
                     Preflight(loader, path, templates, promptModel = { promptModel(it, host) }) {
-                        trackerProblem(it, trackers) ?: Holdouts.problem(it, holdoutDir) ?: deliveryProblem(it, host.rawEnv) ?:
-                            exporterProblem(it)
+                        trackerProblem(it, trackers) ?: Holdouts.problem(it, holdoutDir) ?: deliveryProblem(it, host.rawEnv)
+                            ?: exporterProblem(it)
                     }
                 when (val checked = runBlocking { preflight.check() }) {
                     // m3-16: a malformed machine config fails the startup preflight too, naming the key.
@@ -371,37 +371,37 @@ class RunCommand(
                 // m4-42: the exporters take what their queues hold before the store closes.
                 sink.use {
                     try {
-                    // m1-16, spec 8.6: the workspaces of terminal issues go before the first tick, in both modes.
-                    orchestrator.removeTerminalWorkspaces()
-                    if (once) {
-                        broken = printSummary(orchestrator.tick(), redactor)
-                    } else {
-                        orchestrator.runUntilCancelled()
-                        // m4-10: the daemon returns only once it drained after `loop drain`.
-                        stopReason = DRAINED
-                    }
-                } catch (e: CancellationException) {
-                    // The attempts have unwound (each recorded canceled with this reason); the store is still open.
-                    val reason = cancelReason(runFiles)
-                    stopReason = reason
-                    withContext(NonCancellable) {
-                        val event =
-                            RunStopped.event(
-                                ts = clock.now(),
-                                projectId = projectId,
-                                data =
-                                    mapOf(
-                                        RunStopped.REASON to reason,
-                                        RunStopped.ATTEMPTS_CANCELED to orchestrator.attemptsCanceled.toString(),
-                                    ),
-                                runId = runId,
-                            )
-                        store.record(event).onFailure { error ->
-                            log.log(LogLevel.WARN, "store", LogOutcome.FAILED, context, reason = error.sentence())
+                        // m1-16, spec 8.6: the workspaces of terminal issues go before the first tick, in both modes.
+                        orchestrator.removeTerminalWorkspaces()
+                        if (once) {
+                            broken = printSummary(orchestrator.tick(), redactor)
+                        } else {
+                            orchestrator.runUntilCancelled()
+                            // m4-10: the daemon returns only once it drained after `loop drain`.
+                            stopReason = DRAINED
                         }
+                    } catch (e: CancellationException) {
+                        // The attempts have unwound (each recorded canceled with this reason); the store is still open.
+                        val reason = cancelReason(runFiles)
+                        stopReason = reason
+                        withContext(NonCancellable) {
+                            val event =
+                                RunStopped.event(
+                                    ts = clock.now(),
+                                    projectId = projectId,
+                                    data =
+                                        mapOf(
+                                            RunStopped.REASON to reason,
+                                            RunStopped.ATTEMPTS_CANCELED to orchestrator.attemptsCanceled.toString(),
+                                        ),
+                                    runId = runId,
+                                )
+                            store.record(event).onFailure { error ->
+                                log.log(LogLevel.WARN, "store", LogOutcome.FAILED, context, reason = error.sentence())
+                            }
+                        }
+                        throw e
                     }
-                    throw e
-                }
                 }
             }
         }
@@ -453,7 +453,11 @@ class RunCommand(
                 mapOf(
                     "runners" to runners.kinds.sorted().joinToString(","),
                     "trackers" to trackers.kinds.sorted().joinToString(","),
-                    "exporters" to exporters.keys.sorted().joinToString(",").ifEmpty { "none" },
+                    "exporters" to
+                        exporters.keys
+                            .sorted()
+                            .joinToString(",")
+                            .ifEmpty { "none" },
                     "enabled_exporters" to enabled.joinToString(",") { it.key }.ifEmpty { "none" },
                 ),
         )
