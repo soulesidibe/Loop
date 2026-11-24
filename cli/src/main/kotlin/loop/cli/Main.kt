@@ -8,6 +8,7 @@ import com.github.ajalt.clikt.core.parse
 import com.github.ajalt.clikt.core.subcommands
 import com.github.ajalt.clikt.parameters.options.versionOption
 import loop.api.Redactor
+import java.nio.file.Path
 import kotlin.io.path.Path
 import kotlin.system.exitProcess
 
@@ -69,6 +70,7 @@ internal fun runMain(
     env: Map<String, String>,
     exit: (Int) -> Unit,
     err: (String) -> Unit,
+    workingDir: Path = Path("").toAbsolutePath().normalize(),
     build: () -> CliktCommand,
 ) {
     try {
@@ -86,7 +88,7 @@ internal fun runMain(
             if (!env["LOOP_TOOL_CONFIG"].isNullOrBlank()) {
                 fallbackRedactor(env)
             } else {
-                workflowRedactor(env)
+                workflowRedactor(env, workingDir)
             }
         err("${commandPathOf(args)}: internal error: ${redactor.redact(e.sentence())}")
         exit(EXIT_INTERNAL_ERROR)
@@ -94,9 +96,12 @@ internal fun runMain(
 }
 
 /** The fallback redactor of a best effort read of `LOOP_WORKFLOW` or `./WORKFLOW.md`, else the plain fallback. */
-private fun workflowRedactor(env: Map<String, String>): Redactor =
+private fun workflowRedactor(
+    env: Map<String, String>,
+    workingDir: Path,
+): Redactor =
     runCatching {
-        val path = Path(env["LOOP_WORKFLOW"]?.takeIf { it.isNotBlank() } ?: DEFAULT_WORKFLOW)
+        val path = workingDir.resolve(env["LOOP_WORKFLOW"]?.takeIf { it.isNotBlank() } ?: DEFAULT_WORKFLOW)
         val home = Path(env["HOME"]?.takeIf { it.isNotBlank() } ?: System.getProperty("user.home"))
         startupRedactor(path, workflowLoader(env, home), env)
     }.getOrElse { fallbackRedactor(env) }

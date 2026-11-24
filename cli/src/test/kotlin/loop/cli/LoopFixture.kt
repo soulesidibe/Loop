@@ -1,5 +1,9 @@
 package loop.cli
 
+import com.github.ajalt.clikt.core.context
+import com.github.ajalt.clikt.core.terminal
+import com.github.ajalt.mordant.terminal.Terminal
+import com.github.ajalt.mordant.terminal.TerminalRecorder
 import kotlinx.coroutines.runBlocking
 import loop.api.AttemptId
 import loop.api.ProjectId
@@ -319,6 +323,57 @@ class LoopFixture(
         timeoutSeconds: Long = 60,
     ): LoopResult = start(*args, cwd = cwd, env = env).await(timeoutSeconds)
 
+    /**
+     * Runs [LoopCommand] in-process through [runMain] with the same env/cwd isolation as [loop].
+     * Safe for read, formatting, and state-mutation commands (never spawns a JVM). Output is captured
+     * only through Clikt's [TerminalRecorder], so JVM warnings, direct `System.out`/`System.err` writes,
+     * the start script, and `exitProcess` are not observed here. Keep [loop] for `run`, signal, launcher,
+     * empty-stderr end-to-end smoke tests, and commands that take the run lock (`stop`, `drain`, `install`)
+     * while another run holds it in the same JVM.
+     */
+    fun inProcess(
+        vararg args: String,
+        cwd: Path = projectDir,
+        env: Map<String, String?> = emptyMap(),
+    ): LoopResult {
+        val processEnv =
+            System
+                .getenv()
+                .filterKeys { !it.startsWith("LOOP_") && !it.startsWith("GIT_") && it != "JAVA_OPTS" }
+                .toMutableMap()
+        processEnv["GIT_CONFIG_NOSYSTEM"] = "1"
+        processEnv["LOOP_HOME"] = loopHome.toString()
+        processEnv["HOME"] = homeDir.toString()
+        processEnv["JAVA_HOME"] = System.getProperty("java.home")
+        env.forEach { (key, value) -> if (value == null) processEnv.remove(key) else processEnv[key] = value }
+        val host =
+            Host(
+                env = processEnv,
+                launcherProperty = System.getProperty("loop.launcher"),
+                userHome = homeDir.toString(),
+                workingDir = cwd,
+            )
+        val recorder = TerminalRecorder()
+        var exitCode = 0
+        val extraErr = StringBuilder()
+        runMain(
+            args = args.toList().toTypedArray(),
+            env = processEnv,
+            exit = { exitCode = it },
+            err = { extraErr.appendLine(it) },
+            workingDir = cwd,
+        ) {
+            LoopCommand(host).context {
+                terminal = Terminal(terminalInterface = recorder)
+            }
+        }
+        return LoopResult(
+            exitCode = exitCode,
+            stdout = recorder.stdout(),
+            stderr = recorder.stderr() + extraErr.toString(),
+        )
+    }
+
     /** A launcher run started by [start]; perl and the start script exec, so [process] is the JVM. */
     inner class RunningLoop(
         val process: Process,
@@ -416,9 +471,15 @@ class LoopFixture(
         processEnv["LOOP_HOME"] = loopHome.toString()
         processEnv["HOME"] = homeDir.toString()
         processEnv["JAVA_HOME"] = System.getProperty("java.home")
+        val cdsOpt =
+            System
+                .getProperty("loop.cdsArchive")
+                ?.takeIf { it.isNotBlank() }
+                ?.let { " \"-XX:SharedArchiveFile=$it\" -Xlog:cds*=off" }
+                .orEmpty()
         // Keep sqlite-jdbc out of the host TMPDIR and skip C2 JIT in short-lived test launcher JVMs.
         processEnv["LOOP_OPTS"] =
-            "\"-Dorg.sqlite.tmpdir=${sqliteTmpDir.toAbsolutePath()}\" -XX:TieredStopAtLevel=1 -XX:+UseSerialGC -Xmx256m"
+            "\"-Dorg.sqlite.tmpdir=${sqliteTmpDir.toAbsolutePath()}\" -XX:TieredStopAtLevel=1 -XX:+UseSerialGC -Xmx256m$cdsOpt"
         env.forEach { (key, value) -> if (value == null) processEnv.remove(key) else processEnv[key] = value }
         return RunningLoop(builder.start(), args.toList(), stdout, stderr)
     }

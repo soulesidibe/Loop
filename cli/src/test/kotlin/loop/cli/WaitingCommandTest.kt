@@ -97,7 +97,7 @@ class WaitingCommandTest {
             assertEquals("todo", fixture.stateOf("t-1"))
             assertEquals(1, fixture.agentCalls(), "the waiting issue was dispatched again\n${run.stdoutSoFar()}")
             assertEquals(1, fixture.query("SELECT 1 FROM events WHERE kind = 'attempt_started'").size)
-            val status = fixture.loop("status", fixture.workflow.toString())
+            val status = fixture.inProcess("status", fixture.workflow.toString())
             assertEquals(0, status.exitCode, status.toString())
             val line = status.stdout.lines().singleOrNull { it.startsWith("waiting") } ?: fail("no waiting line\n$status")
             assertTrue(
@@ -137,7 +137,7 @@ class WaitingCommandTest {
         // The wait survives the dead process, and loop status still lists it without a live run.
         val kept = fixture.query("SELECT identifier, reason, attempt_id FROM waiting_issues").single()
         assertEquals(mapOf("identifier" to "t-1", "reason" to "verify", "attempt_id" to deadAttempt), kept)
-        val between = fixture.loop("status", fixture.workflow.toString())
+        val between = fixture.inProcess("status", fixture.workflow.toString())
         assertContains(between.stdout, "No run in progress.")
         assertTrue(between.stdout.lines().any { it.startsWith("waiting") && "reason=verify" in it }, between.toString())
 
@@ -162,7 +162,7 @@ class WaitingCommandTest {
             assertEquals("todo", fixture.stateOf("t-1"))
             assertEquals(0, fixture.query("SELECT 1 FROM events WHERE kind = 'attempt_started' AND run_id = '$newRun'").size)
             assertEquals(1, fixture.agentCalls())
-            val status = fixture.loop("status", fixture.workflow.toString())
+            val status = fixture.inProcess("status", fixture.workflow.toString())
             assertTrue(status.stdout.lines().any { it.startsWith("waiting") && "reason=verify" in it }, status.toString())
             println(status.stdout)
 

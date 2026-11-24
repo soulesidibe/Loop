@@ -55,6 +55,8 @@ class Host(
     val loopVersion: String = BuildInfo.UNKNOWN,
     /** m4-09: what starts `loop run`'s sleep assertion, `caffeinate` on macOS, null on other systems; tests fake it. */
     val awakeLauncher: AwakeLauncher? = AwakeLauncher.forSystem(),
+    /** Working directory for resolving relative workflow paths; defaults to the JVM's cwd. */
+    val workingDir: Path = Path("").toAbsolutePath().normalize(),
 ) {
     /**
      * The process env as read in [main], unfiltered. The agent env starts from it (minus the

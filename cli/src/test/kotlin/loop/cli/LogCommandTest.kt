@@ -37,7 +37,7 @@ class LogCommandTest {
 
     @Test
     fun `defaults to WORKFLOW md in the current folder and says when there is no log yet`() {
-        val result = fixture.loop("log")
+        val result = fixture.inProcess("log")
 
         assertEquals(0, result.exitCode, result.toString())
         assertEquals("No human log yet for this project, loop run writes it to ${fixture.humanLog}.", result.stdout.trim())
@@ -60,7 +60,7 @@ class LogCommandTest {
 
     @Test
     fun `a workflow that does not load exits 1`() {
-        val result = fixture.loop("log", root.resolve("missing/WORKFLOW.md").toString())
+        val result = fixture.inProcess("log", root.resolve("missing/WORKFLOW.md").toString())
 
         assertEquals(1, result.exitCode, result.toString())
         assertTrue(result.stderr.startsWith("loop log: "), result.stderr)
