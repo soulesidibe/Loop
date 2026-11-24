@@ -92,6 +92,8 @@ internal data class RunningRow(
      * before m3-09, which said nothing about it.
      */
     val declaresOccupancy: Boolean? = null,
+    /** The core id of the issue, which `loop status` shows the identifier by (m4-47); null in a row built without it. */
+    val issueId: String? = null,
 )
 
 /** A retry the live run scheduled and has not fired yet; the fields are those of its `retry_scheduled` event. */
@@ -104,6 +106,8 @@ internal data class RetryingRow(
     val retry: String?,
     val dueAt: String?,
     val error: String?,
+    /** The core id of the issue, which `loop status` shows the identifier by (m4-47); null in a row built without it. */
+    val issueId: String? = null,
 )
 
 internal data class ParkedRow(
@@ -113,6 +117,8 @@ internal data class ParkedRow(
     val reason: String,
     val state: String,
     val parkedAt: Instant,
+    /** The core id of the issue, which `loop status` shows the identifier by (m4-47); null in a row built without it. */
+    val issueId: String? = null,
 )
 
 /** An issue Loop is waiting on (m2-04), from its record in the store. */
@@ -124,6 +130,8 @@ internal data class WaitingRow(
     val since: Instant,
     /** bl-172: the place of a merge wait in the delivery queue, from 1 for the head, null for any other wait. */
     val queue: Int? = null,
+    /** The core id of the issue, which `loop status` shows the identifier by (m4-47); null in a row built without it. */
+    val issueId: String? = null,
 )
 
 /** The event kinds [runtimeSnapshot] reads. */
@@ -188,6 +196,7 @@ internal fun runtimeSnapshot(
                             tokens = tokens,
                             occupancy = runningSession(ofAttempt)?.takeIf { it.latest != null || it.noWindow },
                             declaresOccupancy = open.data[AttemptStarted.OCCUPANCY]?.toBooleanStrictOrNull(),
+                            issueId = open.issueId,
                         )
                     return@forEach
                 }
@@ -201,6 +210,7 @@ internal fun runtimeSnapshot(
                             retry = retry.data["attempt"],
                             dueAt = retry.data["due_at"],
                             error = retry.data["error"],
+                            issueId = retry.issueId,
                         )
                 }
             }
@@ -212,7 +222,7 @@ internal fun runtimeSnapshot(
             .map { record ->
                 val latest = ordered.lastOrNull { it.kind == AttemptStarted.name && it.issueId == record.issueId }
                 val attempt = (record.attemptId ?: latest?.attemptId)?.let(numbers::get)
-                WaitingRow(record.identifier, attempt, record.reason.wire, record.since, places[record.issueId])
+                WaitingRow(record.identifier, attempt, record.reason.wire, record.since, places[record.issueId], record.issueId)
             }
     val parkedRows =
         parked
@@ -221,7 +231,7 @@ internal fun runtimeSnapshot(
                 val parkedBy = ordered.lastOrNull { it.kind == IssueParked.name && it.issueId == record.issueId && it.attemptId != null }
                 val latest = ordered.lastOrNull { it.kind == AttemptStarted.name && it.issueId == record.issueId }
                 val attempt = (parkedBy?.attemptId ?: latest?.attemptId)?.let(numbers::get)
-                ParkedRow(record.identifier, attempt, record.reason.wire, record.state, record.parkedAt)
+                ParkedRow(record.identifier, attempt, record.reason.wire, record.state, record.parkedAt, record.issueId)
             }
     val queuePause = liveRun?.let { queuePauseOf(ordered, it) }
     return RuntimeSnapshot(

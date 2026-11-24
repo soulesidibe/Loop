@@ -7,6 +7,7 @@ import loop.api.RunId
 import loop.api.SecretRedactor
 import loop.api.SessionId
 import loop.api.TurnId
+import loop.core.trackers.IssueIdDisplay
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -203,5 +204,22 @@ class KeyValueLogTest {
         broken.log(LogLevel.INFO, "hook", LogOutcome.COMPLETED, fields = mapOf("hook" to "s3cr3t"))
 
         assertTrue(lines.single().endsWith("hook=[redacted]"), lines.single())
+    }
+
+    @Test
+    fun `m4-47 issue_id is shown by the display rule given, bare in a project with no extra tracker`() {
+        val single = IssueIdDisplay("default", listOf("default"), namespaced = false)
+        val bare = KeyValueLog(out = { lines += it }, clock = clock, redactor = Redactor.NONE, issueIds = single::id)
+        val several = IssueIdDisplay("gh", listOf("gh", "local"), namespaced = true)
+        val namespaced = KeyValueLog(out = { lines += it }, clock = clock, redactor = Redactor.NONE, issueIds = several::id)
+
+        bare.log(LogLevel.INFO, "attempt", LogOutcome.STARTED, LogContext(issueId = "default:t-1", issueIdentifier = "t-1"))
+        namespaced.log(LogLevel.INFO, "attempt", LogOutcome.STARTED, LogContext(issueId = "gh:454", issueIdentifier = "example-app-454"))
+        log.log(LogLevel.INFO, "attempt", LogOutcome.STARTED, LogContext(issueId = "default:t-1"))
+
+        assertTrue(lines[0].endsWith("issue_id=t-1 issue_identifier=t-1"), lines[0])
+        assertTrue(lines[1].endsWith("issue_id=gh:454 issue_identifier=example-app-454"), lines[1])
+        // Without a display rule, ids are logged as the core carries them.
+        assertTrue(lines[2].endsWith("issue_id=default:t-1"), lines[2])
     }
 }

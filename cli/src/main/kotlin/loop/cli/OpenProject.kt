@@ -5,6 +5,7 @@ import loop.api.Redactor
 import loop.api.SecretRedactor
 import loop.api.TrackerAdapter
 import loop.api.TrackerError
+import loop.core.trackers.IssueIdDisplay
 import loop.core.trackers.NamespacedId
 import loop.core.trackers.NamespacedTracker
 import loop.core.workflow.DeferredSecret
@@ -77,6 +78,12 @@ class OpenedProject internal constructor(
      * A command that can do without the tracker checks it before calling [tracker].
      */
     val trackerSecret: DeferredSecret? = workflow.deferredSecrets.firstOrNull { it.keyPath.startsWith("tracker.provider.") }
+
+    /**
+     * m4-47: how the command reads the issue ids typed in it and shows ids, by the trackers of the project: bare ids
+     * with no `trackers:`, namespaced ids with it.
+     */
+    val ids: IssueIdDisplay = IssueIdDisplay.of(workflow.trackers)
 
     /** The machine store file (ADR 0001), for a message. */
     val storeFile: Path = loopHome.resolve(SqliteEventStore.FILE_NAME)

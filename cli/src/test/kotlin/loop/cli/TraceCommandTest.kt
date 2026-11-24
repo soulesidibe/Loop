@@ -87,6 +87,93 @@ class TraceCommandTest {
         assertEquals("", result.stdout.trim())
     }
 
+    // m4-47: a bare id is the primary tracker's, a namespaced id names its tracker.
+
+    /** Seeds one finished attempt of [issueId], the core id, whose identifier is `t-1`. */
+    private fun seedAttemptOf(issueId: String) {
+        val started = fixture.attemptStarted("a-1", issueId).copy(issueIdentifier = "t-1")
+        fixture.seed(started, started.copy(kind = "attempt_finished", data = mapOf("outcome" to "succeeded", "turns" to "1")))
+    }
+
+    /** Adds the extra `files` tracker `local` to the workflow, so ids are shown namespaced. */
+    private fun withExtraTracker() {
+        fixture.projectDir
+            .resolve("other")
+            .toFile()
+            .mkdirs()
+        fixture.writeWorkflow(extra = "trackers:\n  - id: local\n    kind: files\n    provider:\n      dir: ./other\n")
+    }
+
+    @Test
+    fun `m4-47 a bare and a namespaced id of the primary tracker trace the same issue, shown bare with no trackers`() {
+        fixture.issue("t-1")
+        seedAttemptOf("default:t-1")
+
+        val bare = fixture.inProcess("trace", "t-1", cwd = fixture.projectDir)
+        val namespaced = fixture.inProcess("trace", "default:t-1", cwd = fixture.projectDir)
+
+        listOf(bare, namespaced).forEach { result ->
+            assertEquals(0, result.exitCode, result.toString())
+            assertTrue(
+                result.stdout
+                    .lines()
+                    .first()
+                    .startsWith("Issue t-1 \"Issue t-1\""),
+                result.toString(),
+            )
+            assertTrue(result.stdout.lines().any { it.startsWith("Attempt 1 ") }, result.toString())
+        }
+    }
+
+    @Test
+    fun `m4-47 with trackers, both forms trace the primary's issue and the heading shows the namespaced id`() {
+        withExtraTracker()
+        fixture.issue("t-1")
+        seedAttemptOf("default:t-1")
+
+        val bare = fixture.inProcess("trace", "t-1", cwd = fixture.projectDir)
+        val namespaced = fixture.inProcess("trace", "default:t-1", cwd = fixture.projectDir)
+
+        listOf(bare, namespaced).forEach { result ->
+            assertEquals(0, result.exitCode, result.toString())
+            assertTrue(
+                result.stdout
+                    .lines()
+                    .first()
+                    .startsWith("Issue default:t-1 \"Issue t-1\""),
+                result.toString(),
+            )
+        }
+    }
+
+    @Test
+    fun `m4-47 a namespaced id of an extra tracker traces its issue from the store, not the primary's`() {
+        withExtraTracker()
+        fixture.issue("t-1")
+        seedAttemptOf("local:t-1")
+
+        val result = fixture.inProcess("trace", "local:t-1", cwd = fixture.projectDir)
+
+        assertEquals(0, result.exitCode, result.toString())
+        assertEquals("Issue local:t-1", result.stdout.lines().first(), result.toString())
+        assertTrue(result.stdout.lines().any { it.startsWith("Attempt 1 ") }, result.toString())
+        // The bare id is the primary's t-1, which has no attempt.
+        val primary = fixture.inProcess("trace", "t-1", cwd = fixture.projectDir)
+        assertContains(primary.stdout, "No attempt recorded for this issue")
+    }
+
+    @Test
+    fun `m4-47 a namespaced id whose tracker is not in the registry is refused with exit 2, naming the tracker`() {
+        fixture.issue("t-1")
+        seedAttemptOf("default:t-1")
+
+        val result = fixture.inProcess("trace", "gh:t-1", cwd = fixture.projectDir)
+
+        assertEquals(2, result.exitCode, result.toString())
+        assertEquals("loop trace: no tracker \"gh\" in this project, its tracker is default.", result.stderr.trim())
+        assertEquals("", result.stdout.trim())
+    }
+
     // The Loop version in the attempt header, m1-12.
 
     /** Seeds one finished attempt of t-1 whose `attempt_started` carries [startedData], and returns its trace. */

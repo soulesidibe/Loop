@@ -116,7 +116,8 @@ class RunCommand(
         val redactor = project.redactor
         // Background threads log too, so the lines are written under one lock and do not mix.
         val sinkLock = Any()
-        val log = KeyValueLog({ line -> synchronized(sinkLock) { echo(line, err = true) } }, clock, redactor)
+        // m4-47: the logs show bare ids with no `trackers:`, namespaced ids with it.
+        val log = KeyValueLog({ line -> synchronized(sinkLock) { echo(line, err = true) } }, clock, redactor, project.ids::id)
         operatorLog = log
         // m3-05: unknown keys under a plugin's section stay allowed, for forward compatibility, with a warning each.
         workflow.configWarnings.forEach { warn(redactor.redact(it)) }
@@ -234,7 +235,7 @@ class RunCommand(
                     reason = error.sentence(),
                 )
             }
-        val humanLog = HumanLog(humanLogFile, clock, redactor, base = workflow.path.parent)
+        val humanLog = HumanLog(humanLogFile, clock, redactor, base = workflow.path.parent, names = project.ids::name)
         // m4-09, bl-156: an idle sleep assertion held while an attempt, a verification or a merge check runs.
         val keepAwake = KeepAwake(host.awakeLauncher, log, context)
         // m2-19: the ledger line of each turn, in a file of its own like the human log; a failed write warns once.

@@ -11,6 +11,7 @@ Written 2026-11-11 in issue m1-12. Terms follow [`CONTEXT.md`](../CONTEXT.md). T
    - [Java](#java)
 3. [Known limits](#known-limits)
 4. [Running Loop on its own issues](#running-loop-on-its-own-issues)
+   - [Issue ids in commands](#issue-ids-in-commands)
    - [Drain before a stop](#drain-before-a-stop)
    - [Sleep while work runs](#sleep-while-work-runs)
    - [Network loss](#network-loss)
@@ -97,6 +98,16 @@ Since bl-59 Loop fetches `main` itself before every attempt, the first and every
 Loop's own `WORKFLOW.md` uses the plain hooks of [`workspaces.md`](workspaces.md#usage) and a prompt that syncs with `refs/loop/base/main`, which Loop fetches before each run. The earlier `fetch-base.sh` workaround is gone.
 
 Workspaces live in `workspaces/` at the repository root, which is gitignored. The agent keeps its progress file and evidence in `.scratch/<identifier>/` inside its workspace, also gitignored, so they are never committed.
+
+### Issue ids in commands
+
+Since m4-12 the store, the ledger and events name every issue with its tracker, as `<tracker id>:<native id>`, such as `default:m4-12`. Since m4-47 you type and read ids as before:
+
+- **Typing an id.** `loop trace`, `loop approve` and `loop resume` take a bare id, such as `loop approve m4-12`, which means the primary tracker. A namespaced id, such as `loop trace gh:454`, names its tracker. One whose tracker is not in the project is refused with exit 2, naming the tracker id: `loop approve: no tracker "gh" in this project, its tracker is default. Nothing changed.`
+- **The agent tools.** `loop tool move`, `loop tool comment` and the `loop` MCP server name their issue from `LOOP_TRACKER_ID` and `LOOP_ISSUE_ID`. With no `LOOP_TRACKER_ID` the issue is the primary tracker's.
+- **Reading ids.** Loop's own `WORKFLOW.md` has one tracker and no `trackers:`, so the logs, `loop trace`, `loop show` and `loop status` show bare ids, `issue_id=m4-12`, as before m4-12. A project with extra trackers in `trackers:` shows namespaced ids everywhere, the primary's included, such as `issue_id=default:m4-12` and `gh:example-app-454`.
+
+Details in [Issue ids in commands and their display](spec-decisions.md#issue-ids-in-commands-and-their-display-extension-m4-47).
 
 ### Drain before a stop
 

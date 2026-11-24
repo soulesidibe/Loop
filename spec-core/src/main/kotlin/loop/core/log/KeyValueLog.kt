@@ -40,6 +40,11 @@ class KeyValueLog(
     private val out: (String) -> Unit,
     private val clock: Clock,
     private val redactor: Redactor,
+    /**
+     * How the core id of an issue is shown as `issue_id` (m4-47): as the core carries it by default, `IssueIdDisplay.id`
+     * in `loop run`, so a project with no extra tracker logs bare ids.
+     */
+    private val issueIds: (String) -> String = { it },
 ) {
     fun log(
         level: LogLevel,
@@ -56,7 +61,7 @@ class KeyValueLog(
         pairs += "outcome" to outcome.name.lowercase()
         pairs += "run_id" to context.runId?.value
         pairs += "project_id" to context.projectId?.value
-        pairs += "issue_id" to context.issueId
+        pairs += "issue_id" to context.issueId?.let(issueIds)
         pairs += "issue_identifier" to context.issueIdentifier?.let(::redact)
         pairs += "attempt_id" to context.attemptId?.value
         pairs += "session_id" to context.sessionId?.value

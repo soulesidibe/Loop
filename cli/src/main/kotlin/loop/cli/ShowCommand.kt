@@ -23,6 +23,7 @@ import loop.core.events.SessionRotated
 import loop.core.events.Usage
 import loop.core.orchestrator.attemptFile
 import loop.core.orchestrator.attemptsFolder
+import loop.core.trackers.IssueIdDisplay
 import loop.core.verify.EvidenceFiles
 import loop.store.AttemptRecordLine
 import loop.store.GzipAttemptRecords
@@ -72,9 +73,9 @@ class ShowCommand(
             View.PROMPT -> echo(prompt(projectId, attemptId))
             View.EVENTS -> {
                 val full = fullRunnerLines(projectId, attemptId, events)
-                events.forEach { echo(jsonLine(it, full)) }
+                events.forEach { echo(jsonLine(it, full, project.ids)) }
             }
-            View.COST -> echo(cost(events.map { it.event }))
+            View.COST -> echo(cost(events.map { it.event }, project.ids))
             View.EVIDENCE -> echo(evidence(projectId, events.map { it.event }))
         }
     }
@@ -177,11 +178,12 @@ class ShowCommand(
     /**
      * One recorded event as a JSON object on one line, every stored field, null fields left out. A cut
      * `runner_output` whose record is in [fullLines] prints that full line, without its `truncated` flag;
-     * one whose record is gone prints as stored.
+     * one whose record is gone prints as stored. The issue id is shown by [ids] (m4-47), bare with no `trackers:`.
      */
     private fun jsonLine(
         stored: StoredEvent,
         fullLines: Map<Long, String>,
+        ids: IssueIdDisplay,
     ): String {
         val event = stored.event.withFullLine(fullLines)
         val fields =
@@ -190,7 +192,7 @@ class ShowCommand(
                 "ts" to JsonPrimitive(event.ts.toString()),
                 "run_id" to event.runId?.value?.let(::JsonPrimitive),
                 "project_id" to JsonPrimitive(event.projectId.value),
-                "issue_id" to event.issueId?.let(::JsonPrimitive),
+                "issue_id" to event.issueId?.let { JsonPrimitive(ids.id(it)) },
                 "issue_identifier" to event.issueIdentifier?.let(::JsonPrimitive),
                 "attempt_id" to event.attemptId?.value?.let(::JsonPrimitive),
                 "session_id" to event.sessionId?.value?.let(::JsonPrimitive),
@@ -211,12 +213,16 @@ class ShowCommand(
     /**
      * The attempt line, then the latest `usage` event: absolute totals that replace the earlier ones,
      * never summed (spec-decisions, token accounting). Then the peak occupancy of each session of the attempt
-     * (m3-09) and its rotations (m3-11), when it recorded a session.
+     * (m3-09) and its rotations (m3-11), when it recorded a session. The issue is shown by [ids] (m4-47).
      */
-    private fun cost(events: List<RecordedEvent>): String =
+    private fun cost(
+        events: List<RecordedEvent>,
+        ids: IssueIdDisplay,
+    ): String =
         buildString {
             val first = events.first()
-            appendLine("Attempt ${first.attemptId?.value}  issue ${first.issueIdentifier ?: first.issueId}")
+            val issue = first.issueIdentifier?.let { ids.name(first.issueId, it) } ?: first.issueId?.let(ids::id)
+            appendLine("Attempt ${first.attemptId?.value}  issue $issue")
             val usage = events.lastOrNull { it.kind == Usage.name }?.data
             if (usage == null) {
                 append("No usage recorded for this attempt.")

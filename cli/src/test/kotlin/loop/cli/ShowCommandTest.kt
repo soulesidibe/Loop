@@ -54,7 +54,8 @@ class ShowCommandTest {
         assertEquals(stored.size, printed.size, result.stdout)
         stored.zip(printed).forEach { (row, line) ->
             assertEquals(row["seq"], line.text("seq"), "$line")
-            COLUMNS.forEach { column -> assertEquals(row[column], line.text(column), "$column of $line") }
+            // m4-47: the store holds the namespaced id, a project with no `trackers:` shows it bare.
+            COLUMNS.forEach { column -> assertEquals(shown(column, row[column]), line.text(column), "$column of $line") }
             val data = row["data"]?.let { Json.parseToJsonElement(it) } ?: JsonObject(emptyMap())
             assertEquals(data, line["data"] ?: JsonObject(emptyMap()), "data of $line")
         }
@@ -580,6 +581,12 @@ class ShowCommandTest {
 
     private fun JsonObject.text(key: String): String? = this[key]?.jsonPrimitive?.content
 
+    /** The stored [value] of [column] as `--events` prints it: the issue id of the primary tracker bare (m4-47). */
+    private fun shown(
+        column: String,
+        value: String?,
+    ): String? = if (column == "issue_id") value?.removePrefix("default:") else value
+
     private fun gunzip(file: Path): String = GZIPInputStream(Files.newInputStream(file)).use { it.readBytes().toString(Charsets.UTF_8) }
 
     private fun gzip(text: String): ByteArray {
@@ -595,7 +602,7 @@ class ShowCommandTest {
         /** 5000 characters, with a marker at each end so a cut shows. */
         val LONG_LINE = "start-" + "y".repeat(4990) + "-end"
 
-        /** The stored columns `--events` prints as is, besides `seq` and `data`. */
+        /** The stored columns `--events` prints, besides `seq` and `data`, the issue id shown by m4-47. */
         val COLUMNS = listOf("ts", "run_id", "issue_id", "issue_identifier", "attempt_id", "session_id", "turn_id", "kind", "phase")
     }
 }
