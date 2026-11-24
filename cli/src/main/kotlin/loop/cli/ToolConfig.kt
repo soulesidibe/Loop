@@ -13,6 +13,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import loop.api.ProjectId
 import loop.core.orchestrator.ToolConfigWriter
 import loop.core.trackers.IssueIdDisplay
+import loop.core.trackers.TrackerEntry
 import loop.core.workflow.ConfigValue
 import loop.core.workflow.ContextConfig
 import loop.core.workflow.WorkflowFile
@@ -115,22 +116,25 @@ private fun JsonObject.string(key: String): String =
 
 /**
  * Writes `tool-config.json` (m1-23): `version`, `project_id`, `workflow_dir`, `tracker_kind`,
- * `defined_states`, `tool_output_tokens` (m3-14), `tracker_id` and `tracker_ids` (m4-47) and `provider`, the non credential `tracker.provider` fields with `dir` resolved
- * to an absolute path. A value that is exactly `$NAME`, at any depth inside `tracker.provider` and
- * other than the `dir` path key, is a credential and is omitted, never replaced with a placeholder.
- * A literal value is copied as written. Written to a temp file, then moved in place.
+ * `defined_states`, `tool_output_tokens` (m3-14), `tracker_id` and `tracker_ids` (m4-47) and `provider`, the non
+ * credential `provider` fields with `dir` resolved to an absolute path. `tracker_kind`, `defined_states` and `provider`
+ * are those of the issue's own tracker (m4-14); `tracker_id` stays the primary's, which bare ids are read by. A value
+ * that is exactly `$NAME`, at any depth inside `provider` and other than the `dir` path key, is a credential and is
+ * omitted, never replaced with a placeholder. A literal value is copied as written. Written to a temp file, then moved
+ * in place.
  */
 object ToolConfigSnapshotWriter : ToolConfigWriter {
     override fun write(
         target: Path,
         projectId: ProjectId,
         workflow: WorkflowFile,
+        tracker: TrackerEntry,
         definedStates: List<String>,
     ) {
         val provider =
-            workflow.config.trackerProvider
+            tracker.provider
                 .mapNotNull { (key, value) ->
-                    if (key == DIR_KEY) key to JsonPrimitive(workflow.trackerDir.toString()) else value.toJson()?.let { key to it }
+                    if (key == DIR_KEY) key to JsonPrimitive(tracker.dir.toString()) else value.toJson()?.let { key to it }
                 }.toMap()
         val snapshot =
             JsonObject(
@@ -138,7 +142,7 @@ object ToolConfigSnapshotWriter : ToolConfigWriter {
                     "version" to JsonPrimitive(TOOL_CONFIG_VERSION),
                     "project_id" to JsonPrimitive(projectId.value),
                     "workflow_dir" to JsonPrimitive(workflow.path.parent.toString()),
-                    "tracker_kind" to JsonPrimitive(workflow.trackerKind),
+                    "tracker_kind" to JsonPrimitive(tracker.kind),
                     "defined_states" to JsonArray(definedStates.map(::JsonPrimitive)),
                     TOOL_OUTPUT_TOKENS to JsonPrimitive(workflow.config.context.toolOutputTokens),
                     TRACKER_ID to JsonPrimitive(workflow.trackerId),

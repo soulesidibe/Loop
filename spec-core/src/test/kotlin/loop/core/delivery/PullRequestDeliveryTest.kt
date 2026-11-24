@@ -45,10 +45,8 @@ class PullRequestDeliveryTest {
         commented: String? = null,
         judgmentCalls: Int = 2,
     ) = DeliveryFacts(
-        issueId = "id-t-1",
+        issue = issue("t-1", state = "in_progress").copy(nativeRef = nativeRef),
         identifier = "t-1",
-        title = "Title of t-1",
-        nativeRef = nativeRef,
         attemptId = attempt,
         fingerprint = fingerprint,
         checks =
@@ -82,6 +80,16 @@ class PullRequestDeliveryTest {
             assertEquals("id-t-1", issueId)
             assertEquals("loop", comment.author)
             assertEquals("Loop opened pull request #7 for this issue: https://github.com/acme/widgets/pull/7", comment.text)
+        }
+
+    @Test
+    fun `m4-14 the comment and the move are made with the current issue, its native_ref included`() =
+        runTest {
+            val ref = mapOf("repo" to "acme/widgets", "number" to "12", "node_id" to "I_12")
+
+            assertIs<DeliveryOutcome.Delivered>(delivery().deliver(facts(nativeRef = ref), handoff))
+
+            assertEquals(listOf("id-t-1" to ref, "id-t-1" to ref), tracker.writtenIssues.map { it.id to it.nativeRef })
         }
 
     @Test

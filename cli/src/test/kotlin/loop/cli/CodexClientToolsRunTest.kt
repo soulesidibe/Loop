@@ -11,11 +11,13 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import loop.runner.claudecode.PreflightResult
 import loop.runner.codex.LoopClientTools
+import loop.tracker.github.GitHubTracker
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.PosixFilePermissions
 import kotlin.io.path.createDirectories
+import kotlin.io.path.listDirectoryEntries
 import kotlin.io.path.readLines
 import kotlin.io.path.readText
 import kotlin.io.path.writeText
@@ -115,11 +117,73 @@ class CodexClientToolsRunTest {
     }
 
     @Test
+    fun `m4-14 with a files and a GitHub tracker each Codex session's comment and move reach its issue's own tracker only`() {
+        RecordedGitHubIssue().use { github ->
+            val codex =
+                fakeCodex(
+                    "comment" to buildJsonObject { put("text", question) },
+                    "move" to buildJsonObject { put("state", "needs_info") },
+                )
+            useCodex(codex, github)
+            fixture.issue("l-1")
+
+            val result = LoopCommand(host(GITHUB_TOKEN)).test(listOf("run", fixture.workflow.toString(), "--once"))
+
+            assertEquals(0, result.statusCode, result.output + result.stderr)
+            assertEquals("needs_info", fixture.stateOf("l-1"), result.output + result.stderr)
+            assertEquals(
+                1,
+                fixture
+                    .issueFile("l-1")
+                    .readText()
+                    .split(question)
+                    .size - 1,
+                fixture.issueFile("l-1").readText(),
+            )
+            assertEquals(
+                listOf(
+                    "POST /api/repos/octocat/Hello-World/issues/26/comments",
+                    "POST /api/repos/octocat/Hello-World/issues/26/labels",
+                    "DELETE /api/repos/octocat/Hello-World/issues/26/labels/gh-ready",
+                ),
+                github.writePaths,
+                result.output + result.stderr,
+            )
+            assertContains(github.writes.first().body, "archived items")
+            val applied = listOf("issue_comment_requested", "issue_move_requested", "issue_commented", "issue_moved")
+            for (issue in listOf("local:l-1", "gh:26")) {
+                assertEquals(applied, kinds(applied + "tool_request_failed", issue), issue)
+            }
+            // Each session's move lists the states of its issue's own tracker, and both calls were queued.
+            val sessions = sessions(codex)
+            val moveStates =
+                sessions.map { session ->
+                    threadStart(session)
+                        .getValue("dynamicTools")
+                        .jsonArray
+                        .map { it.jsonObject }
+                        .single { it.getValue("name").jsonPrimitive.content == "move" }
+                        .getValue("inputSchema")
+                        .jsonObject
+                        .getValue("properties")
+                        .jsonObject
+                        .getValue("state")
+                        .jsonObject
+                        .getValue("enum")
+                        .jsonArray
+                        .map { it.jsonPrimitive.content }
+                }
+            assertEquals(setOf(FILES_STATES, GitHubTracker.DEFINED_STATES), moveStates.toSet())
+            sessions.forEach { session -> assertEquals(listOf(true, true), answers(session).map { it.first }, "${answers(session)}") }
+        }
+    }
+
+    @Test
     fun `m3-22 the client tools take the arguments loop tool mcp declares, move narrowed to the tracker's states`() {
         fixture.issue("t-1")
         fixture.seed(fixture.attemptStarted(ATTEMPT, "t-1"))
         val listed = listTools(fixture.toolEnv(ATTEMPT, "t-1"))
-        val states = listOf("todo", "in_progress", "review", "needs_info", "done", "canceled")
+        val states = FILES_STATES
         val specs = LoopClientTools("files", states).specs.map { it.jsonObject }
 
         assertEquals(LoopClientTools.NAMES, listed.map { it.getValue("name").jsonPrimitive.content })
@@ -156,14 +220,18 @@ class CodexClientToolsRunTest {
 
     // Helpers.
 
-    private fun useCodex(command: Path) =
-        fixture.workflow.writeText(
-            """
+    private fun useCodex(
+        command: Path,
+        github: RecordedGitHubIssue? = null,
+    ) = fixture.workflow.writeText(
+        """
             |---
             |tracker:
+            |${if (github == null) "" else "  id: local"}
             |  kind: files
             |  active_states: [todo]
             |  required_labels: [ready-for-agent]
+            |${github?.trackersYaml?.trimEnd()?.replace("\n", "\n|").orEmpty()}
             |workspace:
             |  root: ./workspaces
             |runner:
@@ -187,13 +255,14 @@ class CodexClientToolsRunTest {
             |---
             |Work on {{ issue.identifier }}
             |
-            """.trimMargin(),
-        )
+        """.trimMargin(),
+    )
 
     /**
      * Writes a scripted app server: it answers the startup with the real codex 0.167.0 answers (m3-02), runs [before]
      * in the workspace, then sends one `item/tool/call` per entry of [calls], each once the answer to the one before
-     * arrived, and completes the turn. Every client line goes to `received.jsonl` beside the script.
+     * arrived, and completes the turn. Every client line goes to `received-<pid>.jsonl` beside the script, one file per
+     * session, so the sessions of two issues run at once do not mix.
      */
     private fun fakeCodex(
         vararg calls: Pair<String, JsonObject>,
@@ -203,7 +272,7 @@ class CodexClientToolsRunTest {
         var files = 0
 
         fun line(text: String): String = dir.resolve("line-${++files}.json").also { it.writeText(text + "\n") }.toString()
-        val read = "IFS= read -r line || exit 0\nprintf '%s\\n' \"\$line\" >> '$dir/received.jsonl'\n"
+        val read = "IFS= read -r line || exit 0\nprintf '%s\\n' \"\$line\" >> '$dir'/received-\$\$.jsonl\n"
         val script = StringBuilder("#!/bin/bash\n")
         script.append(read).append("cat '${line(INITIALIZE)}'\n")
         script.append(read).append(read).append("cat '${line(THREAD_START)}'\n")
@@ -225,25 +294,33 @@ class CodexClientToolsRunTest {
             script.append("cat '${line(request.toString())}'\n").append(read)
         }
         script.append("cat '${line(TURN_COMPLETED)}'\n")
-        script.append("while IFS= read -r line; do printf '%s\\n' \"\$line\" >> '$dir/received.jsonl'; done\nexit 0\n")
+        script.append("while IFS= read -r line; do printf '%s\\n' \"\$line\" >> '$dir'/received-\$\$.jsonl; done\nexit 0\n")
         val file = dir.resolve("codex")
         file.writeText(script.toString())
         Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rwxr-xr-x"))
         return file
     }
 
-    private fun received(codex: Path): List<JsonObject> =
-        codex.resolveSibling("received.jsonl").readLines().map { Json.parseToJsonElement(it).jsonObject }
+    /** The client lines of each session, by session. */
+    private fun sessions(codex: Path): List<List<JsonObject>> =
+        codex.parent
+            .listDirectoryEntries("received-*.jsonl")
+            .map { file -> file.readLines().map { Json.parseToJsonElement(it).jsonObject } }
 
-    private fun threadStart(codex: Path): JsonObject =
-        received(codex).single { it["method"]?.jsonPrimitive?.content == "thread/start" }.getValue("params").jsonObject
+    private fun received(codex: Path): List<JsonObject> = sessions(codex).single()
 
-    /** Loop's answers to the tool calls, in order: `success` and the one text. */
-    private fun answers(codex: Path): List<Pair<Boolean, String>> {
+    private fun threadStart(codex: Path): JsonObject = threadStart(received(codex))
+
+    private fun threadStart(session: List<JsonObject>): JsonObject =
+        session.single { it["method"]?.jsonPrimitive?.content == "thread/start" }.getValue("params").jsonObject
+
+    /** Loop's answers to the tool calls of the one session, in order: `success` and the one text. */
+    private fun answers(codex: Path): List<Pair<Boolean, String>> = answers(received(codex))
+
+    /** Loop's answers to the tool calls of [session], in order. */
+    private fun answers(session: List<JsonObject>): List<Pair<Boolean, String>> {
         val byId =
-            received(
-                codex,
-            ).filter { it["method"] == null && it["id"] != null }.associateBy { it.getValue("id").jsonPrimitive.content }
+            session.filter { it["method"] == null && it["id"] != null }.associateBy { it.getValue("id").jsonPrimitive.content }
         return generateSequence(FIRST_CALL_ID) { it + 1 }
             .map { byId[it.toString()] }
             .takeWhile { it != null }
@@ -264,9 +341,12 @@ class CodexClientToolsRunTest {
             }.toList()
     }
 
-    private fun kinds(of: List<String>): List<String> =
+    private fun kinds(
+        of: List<String>,
+        issue: String = "default:t-1",
+    ): List<String> =
         fixture
-            .query("SELECT kind FROM events WHERE issue_id = 'default:t-1' ORDER BY seq")
+            .query("SELECT kind FROM events WHERE issue_id = '$issue' ORDER BY seq")
             .mapNotNull { it["kind"] }
             .filter { it in of }
 
@@ -306,7 +386,7 @@ class CodexClientToolsRunTest {
             .map { it.jsonObject }
     }
 
-    private fun host(): Host =
+    private fun host(githubToken: String? = null): Host =
         Host(
             env =
                 mapOf(
@@ -314,7 +394,7 @@ class CodexClientToolsRunTest {
                     "HOME" to fixture.homeDir.toString(),
                     "LOOP_HOME" to fixture.loopHome.toString(),
                     "JAVA_HOME" to System.getProperty("java.home"),
-                ),
+                ) + listOfNotNull(githubToken?.let { "GITHUB_TOKEN" to it }),
             launcherProperty = System.getProperty("loop.launcher"),
             userHome = fixture.homeDir.toString(),
             runnerPreflight = { PreflightResult() },
@@ -322,6 +402,8 @@ class CodexClientToolsRunTest {
 
     private companion object {
         const val ATTEMPT = "attempt-codex-tools"
+        const val GITHUB_TOKEN = "ghp_m414CodexToken0123456789abcdefghij"
+        val FILES_STATES = listOf("todo", "in_progress", "review", "needs_info", "done", "canceled")
         const val FIRST_CALL_ID = 100
         const val THREAD_ID = "01a1e51d-2053-7123-b68c-519b77a7d22a"
         const val TURN_ID = "01a1e51d-0000-7000-8000-000000000003"

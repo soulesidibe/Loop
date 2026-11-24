@@ -29,11 +29,13 @@ class TrackerRead internal constructor(
  * active states and read with its own terminal states, and a tracker that fails is reported in [TrackerRead.failures]
  * and skipped while the others go on. As a [TrackerAdapter] it routes each by id read and write to the issue's own
  * tracker, read from the issue's namespaced id (m4-12), and hands the id over unchanged: each adapter of a
- * [TrackerRegistry] is a [NamespacedTracker], which gives its native adapter the native id.
+ * [TrackerRegistry] is a [NamespacedTracker], which gives its native adapter the native id. Writes follow
+ * [WriteRouting] (m4-14): one for an issue whose tracker is not here fails, never falling back to the primary.
  *
- * With one tracker every id goes to it, so an adapter that is not namespaced works as before. The adapters are built
- * once, at startup; [poll] and [terminal] take the states of the workflow in effect, so a reload of a tracker's states
- * reaches the next tick, and an adapter whose tracker left the workflow is no longer read.
+ * With one tracker every id is read from it, and a lone adapter that is not namespaced takes every write, so it works
+ * as before. The adapters are built once, at startup; [poll] and [terminal] take the states of the workflow in effect,
+ * so a reload of a tracker's states reaches the next tick, and an adapter whose tracker left the workflow is no longer
+ * read.
  */
 class TrackerPoll(
     private val primary: String,
@@ -47,8 +49,14 @@ class TrackerPoll(
     /** The tracker ids, the primary first. */
     val ids: List<String> get() = adapters.keys.toList()
 
-    /** The primary tracker's states: the tool config snapshot stays the primary's until m4-14. */
+    /** The primary tracker's states. The tool config snapshot of an attempt takes [definedStatesOf] its issue (m4-14). */
     override val definedStates: List<String> get() = adapterOf(primary).definedStates
+
+    /** Every write goes to the tracker of its issue, or fails naming a tracker the registry does not have (m4-14). */
+    private val writes = WriteRouting(primary, adapters)
+
+    /** The states of the tracker of [issueId] (m4-14), the primary's when no tracker of this poll has it. */
+    fun definedStatesOf(issueId: String): List<String> = writes.route(issueId).getOrNull()?.definedStates ?: definedStates
 
     /** The tracker id of [issueId]: its namespace when a tracker of this poll has it, else the primary's. */
     fun trackerOf(issueId: String): String {
@@ -99,18 +107,28 @@ class TrackerPoll(
     override suspend fun moveIssue(
         issueId: String,
         toState: String,
-    ): Result<Unit> = adapterOf(trackerOf(issueId)).moveIssue(issueId, toState)
+    ): Result<Unit> = writes.moveIssue(issueId, toState)
 
     override suspend fun addComment(
         issueId: String,
         comment: IssueComment,
-    ): Result<Unit> = adapterOf(trackerOf(issueId)).addComment(issueId, comment)
+    ): Result<Unit> = writes.addComment(issueId, comment)
+
+    override suspend fun moveIssue(
+        issue: Issue,
+        toState: String,
+    ): Result<Unit> = writes.moveIssue(issue, toState)
+
+    override suspend fun addComment(
+        issue: Issue,
+        comment: IssueComment,
+    ): Result<Unit> = writes.addComment(issue, comment)
 
     override suspend fun updateLabels(
         issueId: String,
         add: List<String>,
         remove: List<String>,
-    ): Result<Unit> = adapterOf(trackerOf(issueId)).updateLabels(issueId, add, remove)
+    ): Result<Unit> = writes.updateLabels(issueId, add, remove)
 
     override suspend fun completeIssue(issue: Issue): Result<Issue> = adapterOf(trackerOf(issue.id)).completeIssue(issue)
 

@@ -10,6 +10,7 @@ import loop.api.TrackerError
  * hands over gets the [NamespacedId] `<trackerId>:<id>`, its identifier staying native. An id the core passes back is
  * read with [NamespacedId.read], a bare id being the [primary] tracker's: the adapter gets the native id of its own
  * issues, a read by id drops the others and a write for another tracker's issue fails with [TrackerError.NotFound].
+ * A write by issue hands the adapter the current issue with its native id, its `native_ref` kept (m4-14).
  */
 class NamespacedTracker(
     val trackerId: String,
@@ -36,6 +37,16 @@ class NamespacedTracker(
         issueId: String,
         comment: IssueComment,
     ): Result<Unit> = write(issueId) { native.addComment(it, comment) }
+
+    override suspend fun moveIssue(
+        issue: Issue,
+        toState: String,
+    ): Result<Unit> = write(issue.id) { native.moveIssue(issue.copy(id = it), toState) }
+
+    override suspend fun addComment(
+        issue: Issue,
+        comment: IssueComment,
+    ): Result<Unit> = write(issue.id) { native.addComment(issue.copy(id = it), comment) }
 
     override suspend fun updateLabels(
         issueId: String,

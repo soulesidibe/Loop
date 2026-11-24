@@ -6,6 +6,7 @@ import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import loop.api.AttemptId
 import loop.api.ProjectId
+import loop.core.trackers.TrackerEntry
 import loop.core.workflow.WorkflowFile
 import java.io.IOException
 import java.nio.file.FileAlreadyExistsException
@@ -60,21 +61,31 @@ private const val ATTEMPTS_DIR = "attempts"
 private const val ATTEMPT_FILE_SUFFIX = ".jsonl.gz"
 
 /**
- * Writes the tool config snapshot at [target] for an Attempt of [projectId] run with [workflow].
- * [definedStates] are the orchestrator's own tracker's states. The cli implements it, so spec-core
- * holds no tracker specific knowledge. A failure throws; the orchestrator fails the Attempt.
+ * Writes the tool config snapshot at [target] for an Attempt of [projectId] run with [workflow]. [tracker] is the
+ * tracker of the Attempt's issue and [definedStates] its adapter's states (m4-14), so the agent's `move` is checked
+ * against the issue's own tracker. The cli implements it, so spec-core holds no tracker specific knowledge. A failure
+ * throws; the orchestrator fails the Attempt.
  */
 fun interface ToolConfigWriter {
     fun write(
         target: Path,
         projectId: ProjectId,
         workflow: WorkflowFile,
+        tracker: TrackerEntry,
         definedStates: List<String>,
     )
 
+    /** The snapshot of an Attempt on an issue of the primary tracker. */
+    fun write(
+        target: Path,
+        projectId: ProjectId,
+        workflow: WorkflowFile,
+        definedStates: List<String>,
+    ) = write(target, projectId, workflow, workflow.trackers.primary, definedStates)
+
     companion object {
         /** Writes nothing, for orchestrator tests that do not look at the snapshot. */
-        val NONE: ToolConfigWriter = ToolConfigWriter { _, _, _, _ -> }
+        val NONE: ToolConfigWriter = ToolConfigWriter { _, _, _, _, _ -> }
     }
 }
 
