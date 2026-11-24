@@ -28,6 +28,22 @@ dependencies {
 
 tasks.withType<Test>().configureEach {
     useJUnitPlatform()
+    // Run test classes and methods concurrently inside one worker JVM so large test classes do not serialize the suite.
+    // Factor 0.5 avoids oversubscription when Gradle runs several subprojects' test tasks in parallel.
+    systemProperty("junit.jupiter.execution.parallel.enabled", "true")
+    systemProperty("junit.jupiter.execution.parallel.mode.default", "concurrent")
+    systemProperty("junit.jupiter.execution.parallel.mode.classes.default", "concurrent")
+    systemProperty("junit.jupiter.execution.parallel.config.strategy", "dynamic")
+    systemProperty("junit.jupiter.execution.parallel.config.dynamic.factor", "0.5")
+    // Keep sqlite-jdbc's native library extraction out of the host's TMPDIR, which can hold hundreds of thousands of files.
+    val sqliteTmpDir = layout.buildDirectory.dir("tmp/sqlite")
+    jvmArgumentProviders.add(
+        CommandLineArgumentProvider {
+            val dir = sqliteTmpDir.get().asFile
+            dir.mkdirs()
+            listOf("-Dorg.sqlite.tmpdir=${dir.absolutePath}")
+        },
+    )
     testLogging {
         events("passed", "skipped", "failed")
     }

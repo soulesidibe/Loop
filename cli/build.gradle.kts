@@ -189,8 +189,10 @@ tasks.test {
     setEnvironment(environment.filterKeys { !it.startsWith("GIT_") })
     // The cli tests spawn the installed launcher end to end.
     dependsOn(tasks.installDist)
-    // Half the cores, at least 1 (m4-00): one fork took 22 minutes. Each test makes its own LOOP_HOME and temp dirs.
-    maxParallelForks = (Runtime.getRuntime().availableProcessors() / 2).coerceAtLeast(1)
+    // JUnit runs test classes and methods concurrently in one worker JVM, capped so spawned launcher JVMs do not oversubscribe.
+    val cliParallelism = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(2, 6)
+    systemProperty("junit.jupiter.execution.parallel.config.strategy", "fixed")
+    systemProperty("junit.jupiter.execution.parallel.config.fixed.parallelism", cliParallelism.toString())
     // Without build-info.properties: a new commit alone does not rerun the cli tests.
     inputs
         .files(fileTree(launcherInstallDir) { exclude("build-info.properties") })
