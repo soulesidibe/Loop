@@ -28,6 +28,17 @@ dependencies {
 
 tasks.withType<Test>().configureEach {
     useJUnitPlatform()
+    // Run test classes across worker JVMs so each fork keeps its own ForkJoinPool.commonPool() and modules do not oversubscribe.
+    maxParallelForks = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 4)
+    // Keep sqlite-jdbc's native library extraction out of the host's TMPDIR, which can hold hundreds of thousands of files.
+    val sqliteTmpDir = layout.buildDirectory.dir("tmp/sqlite")
+    jvmArgumentProviders.add(
+        CommandLineArgumentProvider {
+            val dir = sqliteTmpDir.get().asFile
+            dir.mkdirs()
+            listOf("-Dorg.sqlite.tmpdir=${dir.absolutePath}")
+        },
+    )
     testLogging {
         events("passed", "skipped", "failed")
     }
