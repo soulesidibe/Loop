@@ -3,10 +3,11 @@ package loop.core.trackers
 import loop.api.Issue
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 
 /**
  * m4-17, bl-10: the area lock of the dispatch. A candidate whose area overlaps the area of a claimed issue, or of an
- * earlier candidate of the same tick, is skipped with `area_busy`, keeping its place.
+ * earlier candidate of the same tick given a slot, is skipped with `area_busy`, keeping its place.
  */
 class AreaLockTest {
     private fun issue(
@@ -56,15 +57,22 @@ class AreaLockTest {
     }
 
     @Test
-    fun `an earlier candidate of the tick holds its area against the later ones, which keep their place`() {
+    fun `fresh candidates of one area are all admitted, a later one is held only by an earlier one given a slot`() {
         val first = issue("c-1", "spec-core")
         val second = issue("c-2", "spec-core/src")
         val third = issue("c-3", "cli")
+        val lock = AreaLock()
 
-        val admitted = AreaLock().admit(listOf(first, second, third), emptySet(), emptyList(), skips)
+        // The admit leaves the choice to the slot plan, so a candidate given no slot holds nothing.
+        assertEquals(listOf(first, second, third), lock.admit(listOf(first, second, third), emptySet(), emptyList(), skips))
+        assertEquals(emptyMap(), skipped())
 
-        assertEquals(listOf(first, third), admitted)
-        assertEquals(mapOf("c-2" to "area_busy c-1 (spec-core)"), skipped())
+        // In the plan, a candidate is held by a launch planned before it, never by one left without a slot.
+        assertEquals("area_busy c-1 (spec-core)", lock.heldBy(second, listOf(first)))
+        assertNull(lock.heldBy(second, emptyList()))
+        assertNull(lock.heldBy(third, listOf(first, second)))
+        assertNull(lock.heldBy(issue("c-4"), listOf(first)), "an issue with no area is never held")
+        assertNull(lock.heldBy(issue("c-5", "spec-core"), listOf(issue("c-6"))), "nor held by one with no area")
     }
 
     @Test

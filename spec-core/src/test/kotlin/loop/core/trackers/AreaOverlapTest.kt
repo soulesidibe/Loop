@@ -31,8 +31,11 @@ class AreaOverlapTest {
             // Siblings and strangers.
             Case("spec-core/src/main", "spec-core/src/test", false),
             Case("docs", "cli", false),
-            // Paths are case sensitive, like git's.
-            Case("Docs", "docs", false),
+            // Compared case folded and in NFC, so the lock never fails open on a case insensitive file system.
+            Case("Docs", "docs", true),
+            Case("Spec-Core/SRC", "spec-core", true),
+            Case("caf\u00e9", "cafe\u0301/menu", true),
+            Case("spec-core / src", "spec-core/src/main", true),
             // A malformed entry overlaps nothing.
             Case("spec-core/*", "spec-core", false),
             Case("..", "spec-core", false),

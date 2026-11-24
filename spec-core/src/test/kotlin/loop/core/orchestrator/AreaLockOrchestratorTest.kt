@@ -36,6 +36,7 @@ import java.nio.file.Path
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * m4-17, story 117, bl-10: the area lock at the dispatch. A candidate whose area overlaps the area of a claimed issue,
@@ -71,7 +72,10 @@ class AreaLockOrchestratorTest {
             }
         }
 
-    private fun workflow(kinds: Boolean = false): WorkflowFile =
+    private fun workflow(
+        kinds: Boolean = false,
+        agent: AgentConfig = AgentConfig(maxConcurrentAgents = 10, maxTurns = 1),
+    ): WorkflowFile =
         WorkflowFile(
             path = root.resolve("WORKFLOW.md"),
             trackerKind = "files",
@@ -85,7 +89,7 @@ class AreaLockOrchestratorTest {
             promptTemplate = "Work on {{ issue.identifier }}",
             config =
                 WorkflowConfig(
-                    agent = AgentConfig(maxConcurrentAgents = 10, maxTurns = 1),
+                    agent = agent,
                     kinds =
                         if (kinds) {
                             KindsConfig(
@@ -303,6 +307,80 @@ class AreaLockOrchestratorTest {
             assertEquals(emptyList(), calls, "no agent runs while a verifies")
             assertEquals(listOf("area_busy a (cli)"), skips("b"))
             checks.release.complete(Unit)
+            first.join()
+        }
+
+    /**
+     * Runs [orchestrator] as the daemon does while [b]'s due retry is held back by [why], and checks that the retry is
+     * requeued for a poll interval, so the run polls at its interval instead of back to back, and stays queued.
+     */
+    private fun TestScope.retryHeldBack(
+        why: String,
+        hold: () -> Unit,
+    ) {
+        failFirst += "b"
+        tracker.issues += area("a", "docs", priority = 1)
+        tracker.issues += area("b", "cli", priority = 2)
+        val orchestrator = orchestrator()
+        val daemon = launch { orchestrator.runUntilCancelled() }
+        runCurrent()
+        assertEquals(listOf("a", "b"), calls, "b fails at once, its retry is due 10 s later")
+        hold()
+
+        advanceTimeBy(RetryQueue.BASE_BACKOFF_MS + POLL_MS)
+        runCurrent()
+        val polls = tracker.requestedStates.size
+        advanceTimeBy(15_000)
+        runCurrent()
+
+        assertEquals(listOf("a", "b"), calls, "b's retry waits")
+        assertTrue(tracker.requestedStates.size - polls <= 16, "the run polled ${tracker.requestedStates.size - polls} times in 15 s")
+        assertEquals(1, skips("b").size, "one candidate_skipped while the reason stays: ${skips("b")}")
+        assertTrue(skips("b").single()!!.startsWith(why), "${skips("b")}")
+        val scheduled = sink.events.filter { it.kind == "retry_scheduled" && it.issueIdentifier == "b" }
+        assertEquals(listOf(why), scheduled.drop(1).map { it.data["error"] }, "one requeue record, then quiet ones")
+        assertEquals("$POLL_MS", scheduled.last().data["delay_ms"])
+
+        // a ends in the tracker: reconciliation releases its claim, and b's retry, still queued, runs on the next tick.
+        tracker.issues[0] = tracker.issues[0].copy(state = "done")
+        tracker.issues[1] = tracker.issues[1].copy(description = null)
+        advanceTimeBy(POLL_MS)
+        runCurrent()
+        advanceTimeBy(POLL_MS)
+        runCurrent()
+        assertEquals(listOf("a", "b", "b"), calls, "b's retry ran once")
+        holds.values.forEach { it.complete(Unit) }
+        daemon.cancel()
+    }
+
+    @Test
+    fun `a due retry whose area is busy is requeued for a poll interval, the run does not spin, and it runs once the area frees`() =
+        runTest {
+            retryHeldBack("area_busy") { tracker.issues[1] = tracker.issues[1].copy(area = listOf("docs/agents")) }
+            assertEquals(listOf("area_busy a (docs)"), skips("b"))
+        }
+
+    @Test
+    fun `a due retry a cross tracker blocker holds is requeued the same way`() =
+        runTest {
+            retryHeldBack("blocked_cross_tracker") { tracker.issues[1] = tracker.issues[1].copy(description = "Blocked by nope:1") }
+        }
+
+    @Test
+    fun `a candidate given no slot holds no area, so a later overlapping candidate with a slot runs`() =
+        runTest {
+            val agent = AgentConfig(maxConcurrentAgents = 10, maxTurns = 1, maxConcurrentAgentsByState = mapOf("in_progress" to 0))
+            tracker.issues += area("a", "docs", priority = 1).copy(state = "in_progress")
+            tracker.issues += area("b", "docs/agents", priority = 2)
+            tracker.issues += area("c", "docs/agents/issue-tracker.md", priority = 3)
+            val orchestrator = orchestrator(workflow = workflow(agent = agent))
+            val first = launch { orchestrator.tick() }
+            runCurrent()
+
+            assertEquals(listOf("b"), calls)
+            assertEquals(listOf("no_available_slots"), skips("a"))
+            assertEquals(listOf("area_busy b (docs/agents)"), skips("c"))
+            holds.values.forEach { it.complete(Unit) }
             first.join()
         }
 

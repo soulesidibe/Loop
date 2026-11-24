@@ -336,4 +336,23 @@ class SlotPlanTest {
 
         assertEquals(true, SlotPlan.mergeCheckFits(agent, SlotUse(listOf("open"), mergeChecks = 0, attemptTrackers = listOf("gh"))))
     }
+
+    @Test
+    fun `m4-17 a candidate held by the area hook takes no slot, and only a launch planned before it can hold it`() {
+        val agent = AgentConfig(maxConcurrentAgents = 2, maxConcurrentAgentsByState = mapOf("in_progress" to 0))
+        val noSlot = issue("t-1", state = "in_progress", area = listOf("docs"))
+        val first = issue("t-2", area = listOf("spec-core"))
+        val overlapping = issue("t-3", area = listOf("spec-core/src"))
+        val freeArea = issue("t-4", area = listOf("docs/agents"))
+        val held = { candidate: Issue, launched: List<Issue> ->
+            launched.firstOrNull { it.area.any { a -> candidate.area.any { b -> b.startsWith(a) } } }?.let { "area_busy ${it.identifier}" }
+        }
+
+        val slots =
+            SlotPlan.attempts(agent, SlotUse(emptyList(), mergeChecks = 0), emptyList(), listOf(noSlot, first, overlapping, freeArea), held = held)
+
+        // t-1 has no slot and holds nothing, so t-4 launches; t-3 is held by t-2 and leaves its slot to t-4.
+        assertEquals(Triple(listOf("t-2", "t-4"), emptyList(), listOf("t-1")), slots.ids())
+        assertEquals(mapOf("t-3" to "area_busy t-2"), slots.held.mapKeys { it.key.identifier })
+    }
 }

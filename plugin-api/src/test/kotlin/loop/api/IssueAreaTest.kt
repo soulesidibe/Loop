@@ -16,7 +16,9 @@ class IssueAreaTest {
                 "spec-core//src/./main/" to "spec-core/src/main",
                 "docs/spec-decisions.md" to "docs/spec-decisions.md",
                 "Docs" to "Docs",
-                "a folder/with spaces" to "a folder/with spaces",
+                "spec-core / src" to "spec-core/src",
+                // NFC, so a decomposed accent reads like the composed one.
+                "cafe\u0301/menu" to "caf\u00e9/menu",
             )
         cases.forEach { (entry, normalized) -> assertEquals(normalized, IssueArea.normalize(entry), entry) }
     }
@@ -39,6 +41,12 @@ class IssueAreaTest {
             "spec-core\\src",
             "spec-core\tsrc",
             "`spec-core`",
+            // A space inside a segment: a prose line such as `Area: the orchestrator` is no path list.
+            "a folder/with spaces",
+            "the orchestrator",
+            "spec\u00a0core",
+            // An invisible format character, such as a zero width space.
+            "spec-core\u200b",
         ).forEach { assertNull(IssueArea.normalize(it), "\"$it\"") }
     }
 
@@ -47,6 +55,14 @@ class IssueAreaTest {
         assertEquals(listOf("spec-core", "docs"), IssueArea.parse(listOf("spec-core/", "docs", "./spec-core")))
         assertEquals(emptyList(), IssueArea.parse(emptyList()))
         assertNull(IssueArea.parse(listOf("spec-core", "/abs")))
+    }
+
+    @Test
+    fun `an area holds at most the capped number of entries`() {
+        val capped = List(IssueArea.MAX_ENTRIES) { "dir-$it" }
+
+        assertEquals(capped, IssueArea.parse(capped))
+        assertNull(IssueArea.parse(capped + "one-more"))
     }
 
     @Test

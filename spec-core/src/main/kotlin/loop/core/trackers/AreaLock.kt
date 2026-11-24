@@ -2,11 +2,14 @@ package loop.core.trackers
 
 import loop.api.Issue
 import loop.api.IssueArea
+import java.util.Locale
 
 /**
  * The overlap rule of the area lock (m4-17, bl-10): two area entries overlap when, normalized by [IssueArea], they are
  * equal or one is a parent folder of the other, on whole path segments, so `spec-core` is a parent of `spec-core/src`
- * and not of `spec-core-x`. Paths compare case sensitively, like git's. A malformed entry overlaps nothing.
+ * and not of `spec-core-x`. Paths compare case folded, after the NFC of [IssueArea], so the lock fails closed: on a
+ * case insensitive file system `Docs` and `docs` are one folder, and on a case sensitive one two issues are at worst
+ * kept apart for nothing. A malformed entry overlaps nothing.
  */
 object AreaOverlap {
     /** True when the entries [a] and [b] overlap. */
@@ -14,8 +17,8 @@ object AreaOverlap {
         a: String,
         b: String,
     ): Boolean {
-        val x = IssueArea.normalize(a) ?: return false
-        val y = IssueArea.normalize(b) ?: return false
+        val x = IssueArea.normalize(a)?.lowercase(Locale.ROOT) ?: return false
+        val y = IssueArea.normalize(b)?.lowercase(Locale.ROOT) ?: return false
         return x == y || y.startsWith("$x/") || x.startsWith("$y/")
     }
 
@@ -41,15 +44,15 @@ class AreaLock {
     private val known = mutableMapOf<String, Issue>()
 
     /**
-     * [candidates], in the slot order they come in, without those whose area is busy. Each one left out gets [REASON]
-     * in [skips], naming its holder and the holder's overlapping entry, such as `area_busy m4-03 (spec-core)`; it keeps
-     * its place, so it is dispatched on the first tick its area is free. There is no reordering.
+     * [candidates], in the slot order they come in, without those whose area a holder keeps busy. Each one left out
+     * gets [REASON] in [skips], naming its holder and the holder's overlapping entry, such as `area_busy m4-03
+     * (spec-core)`; it keeps its place, so it is dispatched on the first tick its area is free. There is no reordering.
      *
      * [holders] are the ids of the claimed issues, and [seen] the issues read this tick, later ones winning, from which
      * each holder's area is taken; a holder not in [seen] keeps the area of its last read, and one never read holds
-     * nothing. A candidate is blocked by a holder that is not a candidate, by a candidate that is a holder, such as a
-     * due retry, unless both are holders and the other comes later, and by a candidate admitted before it, so two
-     * candidates of one area are never launched by one tick and two due retries of one area never block each other.
+     * nothing. A candidate is blocked by a holder that is not a candidate, and by a candidate that is a holder, such as a
+     * due retry, unless both are holders and the other comes later, so two due retries of one area never block each
+     * other. A fresh candidate blocks nothing here: the slot plan asks [heldBy], so only one given a slot holds its area.
      */
     fun admit(
         candidates: List<Issue>,
@@ -63,25 +66,35 @@ class AreaLock {
         val held = known.values.filter { it.id !in candidateIds && it.area.isNotEmpty() }
         val admitted = mutableListOf<Issue>()
         for ((index, candidate) in candidates.withIndex()) {
-            if (candidate.area.isEmpty()) {
-                admitted += candidate
-                continue
-            }
             val holding =
                 candidates.filterIndexed { other, issue ->
                     other != index && issue.id in holders && (candidate.id !in holders || other < index)
                 }
-            val blocker =
-                (held + holding + admitted).firstNotNullOfOrNull { holder ->
-                    AreaOverlap.first(holder.area, candidate.area)?.let { holder to it.first }
-                }
-            if (blocker == null) {
-                admitted += candidate
-            } else {
-                skips[candidate] = "$REASON ${blocker.first.identifier} (${blocker.second})"
-            }
+            val reason = blockedBy(candidate, held + holding)
+            if (reason == null) admitted += candidate else skips[candidate] = reason
         }
         return admitted
+    }
+
+    /**
+     * The [REASON] that holds [candidate] in the slot plan, naming the first of [launched], the launches the plan gave
+     * a slot before it this tick, whose area overlaps its own; null when none does.
+     */
+    fun heldBy(
+        candidate: Issue,
+        launched: List<Issue>,
+    ): String? = blockedBy(candidate, launched)
+
+    private fun blockedBy(
+        candidate: Issue,
+        holders: List<Issue>,
+    ): String? {
+        if (candidate.area.isEmpty()) return null
+        val blocker =
+            holders.firstNotNullOfOrNull { holder ->
+                AreaOverlap.first(holder.area, candidate.area)?.let { holder to it.first }
+            } ?: return null
+        return "$REASON ${blocker.first.identifier} (${blocker.second})"
     }
 
     companion object {

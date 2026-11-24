@@ -675,7 +675,7 @@ class Orchestrator(
         for (issue in dispatchable.filter { it.id in notReady }) {
             skips[issue] = "$NOT_READY (missing ${notReady.getValue(issue.id).joinToString(", ")})"
         }
-        // m4-17: a candidate whose area overlaps a claimed issue's, or an earlier candidate's, is skipped in its place.
+        // m4-17: a candidate whose area overlaps a claimed issue's is skipped in its place.
         val eligible =
             areas.admit(
                 dispatchable.filter { it.id !in notReady },
@@ -683,6 +683,10 @@ class Orchestrator(
                 seen = executions.values.map { it.issue } + issues,
                 skips = skips,
             )
+        // m4-17: a due retry held by its area or a cross tracker blocker waits a poll interval, like one with no slot.
+        for ((issue, reason) in skips.filterKeys { it.id in retryAttempts }) {
+            retries.requeueNoSlot(issue, effective, reason.substringBefore(' '))
+        }
         if (eligible.isEmpty()) {
             bounceNotReady(dispatchable.filter { it.id in notReady }, notReady)
             recordSkips(skips)
@@ -710,6 +714,7 @@ class Orchestrator(
                 due = fire.dispatch.filter { it.issue.id in eligibleIds },
                 candidates = eligible.filter { it.id !in retryAttempts },
                 trackerOf = { effective.trackers.trackerOf(it)?.id },
+                held = areas::heldBy,
             )
         val attempts = mutableListOf<Deferred<AttemptSummary?>>()
         // Due retries with no slot, each with the error its `retry_scheduled` gives, null for the orchestrator's own.
@@ -721,9 +726,12 @@ class Orchestrator(
         // m3-16: a crossed machine day budget holds every new dispatch of this tick, a due retry included.
         val launches =
             if (machineGate.budgetHolds(liveSpend.toMap(), pollContext)) {
-                (slots.launches + slots.requeues + slots.skips).forEach { skip(it, MachineGate.MACHINE_BUDGET, MachineGate.MACHINE_BUDGET) }
+                (slots.launches + slots.requeues + slots.skips + slots.held.keys).forEach {
+                    skip(it, MachineGate.MACHINE_BUDGET, MachineGate.MACHINE_BUDGET)
+                }
                 emptyList()
             } else {
+                slots.held.forEach { (issue, reason) -> skip(issue, reason, AreaLock.REASON) }
                 slots.skips.forEach { skips[it] = NO_AVAILABLE_SLOTS }
                 slots.requeues.forEach { noSlotRetries += it to null }
                 slots.launches
