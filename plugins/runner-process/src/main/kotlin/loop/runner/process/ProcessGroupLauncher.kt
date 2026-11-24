@@ -99,11 +99,11 @@ sealed interface ProcessEvent {
 class ProcessGroupLauncher(
     private val gracePeriod: Duration = 2.seconds,
     private val drainTimeout: Duration = 500.milliseconds,
-    private val maxLineBytes: Int = MAX_LINE_BYTES,
     private val signaller: GroupSignaller = ShellGroupSignaller,
     private val warn: (String) -> Unit = { line -> System.err.println(line) },
     /** Starts the built process; a seam for tests. */
     private val start: (ProcessBuilder) -> Process = { it.start() },
+    private val maxLineBytes: Int = MAX_LINE_BYTES,
 ) {
     /** A cold flow: collecting it starts the process, cancelling the collection kills its group. */
     fun launch(spec: LaunchSpec): Flow<ProcessEvent> =
