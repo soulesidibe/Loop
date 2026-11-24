@@ -1,15 +1,16 @@
-package loop.runner.codex
+package loop.runner.process
 
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
 import java.util.Locale
+import kotlin.io.path.exists
 
 /**
- * The commands a Codex agent may not run (story 40, m2-24, m3-20): `git push`, `gh`, the history rewrites, and the
- * operator commands `loop approve` and `loop resume`. The list is the claude-code runner's (`ClaudeSettingsFile` in
- * `plugins/runner-claude-code`), and `DeniedCommandsTest` fails when the two differ (bl-135).
+ * The commands an agent may not run (story 40, m2-24, m3-20): `git push`, `gh`, the history rewrites, and the
+ * operator commands `loop approve` and `loop resume`. Shared by every runner (`claude-code`, `codex-app-server`, `acp`)
+ * so the list never drifts across plugins.
  *
  * A command is matched on its whole text, as Claude Code matches its deny rules: it is split into words at blanks,
  * quotes and the shell's operators, and a denied command matches as a run of whole words at any place, so `cd x &&
@@ -26,8 +27,8 @@ import java.util.Locale
  * Matching more only declines a request. This is a guardrail, not a sandbox: a command can still dodge the words, as
  * a script file written first and run next does.
  */
-internal object DeniedCommands {
-    private const val LOOP = "loop"
+object DeniedCommands {
+    const val LOOP: String = "loop"
 
     private const val GIT = "git"
 
@@ -35,9 +36,12 @@ internal object DeniedCommands {
     private const val MAX_DEPTH = 3
 
     /** The `loop` subcommands only the operator may run (m2-24). */
-    private val OPERATOR_SUBCOMMANDS = listOf("approve", "resume")
+    val OPERATOR_SUBCOMMANDS: List<String> = listOf("approve", "resume")
 
-    /** The denied command prefixes, the claude-code runner's list. */
+    /** The operator commands for the launcher [loop], a bare name or a path. */
+    fun operatorCommands(loop: String): List<String> = OPERATOR_SUBCOMMANDS.map { "$loop $it" }
+
+    /** The canonical denied command prefixes shared across all runners. */
     val commands: List<String> =
         listOf(
             "git push",
@@ -53,18 +57,26 @@ internal object DeniedCommands {
             "git reflog expire",
             "git update-ref",
             "git replace",
-        ) + OPERATOR_SUBCOMMANDS.map { "$LOOP $it" }
+        ) + operatorCommands(LOOP)
 
     /** [commands], each as its words. */
     val words: List<List<String>> = commands.map { it.split(" ") }
 
-    /** True when [command] holds a denied command anywhere in its text, see [DeniedCommands]. */
-    fun isDenied(command: String): Boolean {
+    /**
+     * True when [command] holds a denied command anywhere in its text, see [DeniedCommands]. When [launcher] is set,
+     * running an operator subcommand through that exact launcher path is also denied, even if its file name is not
+     * `loop`.
+     */
+    fun isDenied(
+        command: String,
+        launcher: String? = null,
+    ): Boolean {
+        val launcherPath = launcher?.takeIf { it.isNotBlank() && it != LOOP }
         // A backslash a shell drops is dropped, and a backtick is read as the `$` of a substitution.
         val text = withoutCommitMessages(command, depth = 0).replace("\\", "").replace("`", " $ ")
         return WORD_BREAKS.any { breaks ->
-            val words = text.split(breaks).filter { it.isNotEmpty() }
-            words.indices.any { start -> words.holdsDeniedAt(start) }
+            val tokens = text.split(breaks).filter { it.isNotEmpty() }
+            tokens.indices.any { start -> tokens.holdsDeniedAt(start, launcherPath) }
         }
     }
 
@@ -84,9 +96,15 @@ internal object DeniedCommands {
         return i
     }
 
-    /** True when these words, from [start], hold a denied command. */
-    private fun List<String>.holdsDeniedAt(start: Int): Boolean =
-        words.any { prefix ->
+    /** True when these words, from [start], hold a denied command or an operator command via [launcherPath]. */
+    private fun List<String>.holdsDeniedAt(
+        start: Int,
+        launcherPath: String?,
+    ): Boolean {
+        if (launcherPath != null && this[start] == launcherPath && start + 1 < size && this[start + 1] in OPERATOR_SUBCOMMANDS) {
+            return true
+        }
+        return words.any { prefix ->
             if (!runs(this[start], prefix[0])) return@any false
             var i = start + 1
             if (prefix[0] == GIT) {
@@ -96,6 +114,7 @@ internal object DeniedCommands {
             }
             prefix.drop(1).all { word -> (i < size && this[i] == word).also { i++ } }
         }
+    }
 
     /**
      * [command] as words, without the message of each `git commit` it runs; each quoted word that holds a blank may be
@@ -229,15 +248,15 @@ internal object ShellTokens {
 }
 
 /**
- * Loop's holdout folder (m2-14) as the approval rules of the Codex runner see it (m3-20): a path or a command
- * touches it when it names the folder.
+ * Loop's holdout folder (m2-14) as runner approval rules see it (m3-20): a path or a command touches it when it names
+ * the folder.
  *
  * A path is resolved before it is compared: a relative one against the `cwd` of its request, `~` against [home],
  * symlinks by real path, and the comparison ignores case, since macOS paths do. A command names the folder when its
  * text holds the folder's path, also spelled from `~` or `$HOME`, or when one of its words resolves under it. Matching
  * more only declines a request that did not need it; matching less would let a read or an edit through.
  */
-internal class HoldoutFolder(
+class HoldoutFolder(
     dir: Path,
     private val home: Path?,
 ) {
@@ -291,7 +310,7 @@ internal class HoldoutFolder(
             null
         }
 
-    private companion object {
+    internal companion object {
         /** What splits a shell command into words: blanks, quotes and the shell's operators. */
         val WORD_BREAK = Regex("""[\s'"`;|&<>()=]+""")
 
@@ -301,16 +320,115 @@ internal class HoldoutFolder(
             return listOf(absolute, real(absolute)).map { it.toString().lowercase(Locale.ROOT).trimEnd('/') }.distinct()
         }
 
-        /** The real path of [path], or of its nearest existing parent with the rest appended when it does not exist. */
-        fun real(path: Path): Path {
+        /**
+         * The real path of [path], or of its nearest existing parent with the rest appended when it does not exist.
+         * Also follows a dangling symlink whose target does not exist yet, so a symlink to a non-existent protected
+         * root still resolves to its target.
+         */
+        fun real(
+            path: Path,
+            depth: Int = 0,
+        ): Path {
+            if (depth > 8) return path
             var existing: Path? = path
-            while (existing != null && !Files.exists(existing)) existing = existing.parent
+            while (existing != null && !Files.exists(existing) && !Files.isSymbolicLink(existing)) existing = existing.parent
             existing ?: return path
+            if (!Files.exists(existing) && Files.isSymbolicLink(existing)) {
+                return try {
+                    val target = Files.readSymbolicLink(existing)
+                    val resolvedTarget = (if (target.isAbsolute) target else existing.parent.resolve(target)).normalize()
+                    val tail = existing.relativize(path)
+                    real(if (tail.toString().isEmpty()) resolvedTarget else resolvedTarget.resolve(tail).normalize(), depth + 1)
+                } catch (e: IOException) {
+                    path
+                }
+            }
             return try {
                 existing.toRealPath().resolve(existing.relativize(path)).normalize()
             } catch (e: IOException) {
                 path
             }
+        }
+    }
+}
+
+/**
+ * Workspace customization roots that `agy` loads with highest priority (`.agents/`, `.agent/`, `_agents/`, `_agent/`)
+ * in the workspace and in every ancestor directory up to the repository root (the first folder containing `.git`).
+ *
+ * Runners use this matcher to block writes, edits and shell commands targeting those roots, and to detect added or
+ * modified customization files (`hooks.json`, `mcp_config.json`, `skills.json`, plugins, rules) against the attempt's
+ * base commit before every session and every turn. This is a guardrail, not a sandbox.
+ */
+class ProtectedWorkspaceRoots(
+    workspace: Path,
+    private val home: Path?,
+) {
+    /** Every protected root folder from [workspace] up to the repository root. */
+    val roots: List<Path> = rootsOf(workspace)
+
+    private val matchers: List<HoldoutFolder> = roots.map { HoldoutFolder(it, home) }
+
+    /** True when [path] is one of the protected roots or lies under one; a relative path is read from [cwd]. */
+    fun covers(
+        path: String,
+        cwd: Path,
+    ): Boolean = matchers.any { it.covers(path, cwd) }
+
+    /** True when the shell [command] targets one of the protected roots; a relative word is read from [cwd]. */
+    fun names(
+        command: String,
+        cwd: Path,
+    ): Boolean = matchers.any { it.names(command, cwd) }
+
+    companion object {
+        /** The workspace customization directory names loaded by `agy`. */
+        val ROOT_NAMES: List<String> = listOf(".agents", ".agent", "_agents", "_agent")
+
+        private val ROOT_NAMES_LOWER: Set<String> = ROOT_NAMES.map { it.lowercase(Locale.ROOT) }.toSet()
+
+        private val DANGEROUS_FILES: Set<String> =
+            setOf("hooks.json", "mcp_config.json", "skills.json", "rules.json", "plugins.json")
+
+        private val DANGEROUS_SUBDIRS: Set<String> = setOf("plugins", "rules", "hooks")
+
+        /**
+         * The protected root folders from [workspace] up to the repository root (the first directory holding `.git`,
+         * or [workspace] alone when no ancestor holds `.git`).
+         */
+        fun rootsOf(workspace: Path): List<Path> {
+            val start = workspace.toAbsolutePath().normalize()
+            val dirs = mutableListOf<Path>()
+            var dir: Path? = start
+            var foundGit = false
+            while (dir != null) {
+                dirs.add(dir)
+                if (dir.resolve(".git").exists()) {
+                    foundGit = true
+                    break
+                }
+                dir = dir.parent
+            }
+            val scoped = if (foundGit) dirs else listOf(start)
+            return scoped.flatMap { parent -> ROOT_NAMES.map { name -> parent.resolve(name) } }.distinct()
+        }
+
+        /**
+         * True when [relativePath] (slash-separated path relative to the workspace or repository root) is a workspace
+         * customization file that `agy` can execute or load: `hooks.json`, `mcp_config.json`, `skills.json`,
+         * `rules.json`, `plugins.json`, or any file under `plugins/`, `rules/` or `hooks/` inside a protected root.
+         */
+        fun isCustomizationPath(relativePath: String): Boolean {
+            val segments =
+                relativePath
+                    .replace('\\', '/')
+                    .split('/')
+                    .filter { it.isNotEmpty() && it != "." }
+                    .map { it.lowercase(Locale.ROOT) }
+            val rootIndex = segments.indexOfFirst { it in ROOT_NAMES_LOWER }
+            if (rootIndex < 0 || rootIndex + 1 >= segments.size) return false
+            val entry = segments[rootIndex + 1]
+            return entry in DANGEROUS_FILES || entry in DANGEROUS_SUBDIRS
         }
     }
 }

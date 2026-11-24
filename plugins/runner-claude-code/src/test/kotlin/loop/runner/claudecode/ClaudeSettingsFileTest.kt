@@ -4,6 +4,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import loop.runner.process.DeniedCommands
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
@@ -80,6 +81,11 @@ class ClaudeSettingsFileTest {
     @Test
     fun `without a holdout folder only the Bash rules are written`() {
         assertFalse(denyRules(ClaudeSettingsFile.json()).any { !it.startsWith("Bash(") })
+    }
+
+    @Test
+    fun `denied commands come directly from shared DeniedCommands`() {
+        assertEquals(DeniedCommands.commands, ClaudeSettingsFile.deniedCommands)
     }
 
     private fun denyRules(json: String): List<String> =
