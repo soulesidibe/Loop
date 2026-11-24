@@ -54,6 +54,27 @@ class SlotPlanTest {
         for (row in rows) assertEquals(row.fits, SlotPlan.mergeCheckFits(row.agent, row.use), row.name)
     }
 
+    @Test
+    fun `bl-92, a merge wait in phase ci holds no slot, so two attempts fill both slots and the plan is full when CI turns green`() {
+        val agent = AgentConfig(maxConcurrentAgents = 2)
+
+        // The tick of the merge check: step one gives it a slot, step two gives the other one to t-2.
+        val atCheck = SlotUse(emptyList(), mergeChecks = 0)
+        assertEquals(true, SlotPlan.mergeCheckFits(agent, atCheck))
+        val withCheck = atCheck.copy(mergeChecks = 1)
+        val first = SlotPlan.attempts(agent, withCheck, due = emptyList(), candidates = listOf(issue("t-2"), issue("t-3")))
+        assertEquals(Triple(listOf("t-2"), emptyList(), listOf("t-3")), first.ids())
+
+        // The check ended, the wait polls CI in phase ci and counts nowhere, so t-3 takes the slot of the check.
+        val inCi = SlotUse(listOf("todo"), mergeChecks = 0)
+        val second = SlotPlan.attempts(agent, inCi, due = emptyList(), candidates = listOf(issue("t-3")))
+        assertEquals(Triple(listOf("t-3"), emptyList(), emptyList()), second.ids())
+
+        // CI is green while t-2 and t-3 run: the plan has no slot left, so the merge phase must not ask it.
+        val green = SlotUse(listOf("todo", "todo"), mergeChecks = 0)
+        assertEquals(false, SlotPlan.mergeCheckFits(agent, green))
+    }
+
     // Step two: the attempt slots.
 
     @Test

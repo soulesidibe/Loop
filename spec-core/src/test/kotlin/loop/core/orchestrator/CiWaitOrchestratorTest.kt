@@ -869,6 +869,48 @@ class CiWaitOrchestratorTest {
         }
 
     @Test
+    fun `bl-92, two slots taken by attempts dispatched during the CI wait, the green wait merges at the next tick`() =
+        runTest {
+            val setup = Setup(workflow(maxConcurrentAgents = 2), identifiers = listOf("t-1", "t-2", "t-3"))
+            setup.remote.answers += green
+            val release = CompletableDeferred<Unit>()
+            val runner =
+                FakeRunner { _, _ ->
+                    flow {
+                        emit(RunnerEvent.SessionStarted(SESSION, threadId = "th1", turnId = TURN))
+                        release.await()
+                        emit(RunnerEvent.TurnCompleted(SESSION, TURN, exitCode = 0))
+                    }
+                }
+            val orchestrator = orchestrator(setup.tracker, setup.remote, setup.waiting, setup.sink, setup.workflow, runner)
+            val attempts = mutableListOf(async { orchestrator.tick() })
+            runCurrent()
+            assertEquals("ci", setup.wait?.data?.get(WaitKeys.PHASE), "the merge check ran in one slot, the wait polls CI with none")
+            assertEquals(listOf("t-2"), runner.calls.map { it.first.issue.identifier }, "t-2 took the other slot")
+
+            advanceTimeBy(1_000)
+            attempts += async { orchestrator.tick() }
+            runCurrent()
+            assertEquals(
+                listOf("t-2", "t-3"),
+                runner.calls.map { it.first.issue.identifier },
+                "the CI phase holds no slot, so dispatch gives the slot of the merge check to t-3",
+            )
+            assertEquals("ci", setup.wait?.data?.get(WaitKeys.PHASE))
+            assertEquals(emptyList(), setup.remote.merges)
+
+            tick(orchestrator, after = 30_000)
+
+            assertEquals(mapOf("outcome" to "green", "runs" to "11,12"), setup.all(CiFinished.name).single())
+            assertEquals(listOf(setup.verified), setup.remote.merges, "the merge phase starts in the tick CI turns green")
+            assertEquals(listOf("id-t-1" to "done"), setup.tracker.moves)
+            assertNull(setup.wait)
+            assertTrue(attempts.none { it.isCompleted }, "t-2 and t-3 still hold both slots")
+            release.complete(Unit)
+            attempts.forEach { it.await() }
+        }
+
+    @Test
     fun `a moved base at the merge starts a new round of the check and of the CI wait`() =
         runTest {
             val setup = Setup()
