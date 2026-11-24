@@ -29,6 +29,7 @@ import loop.runner.codex.protocol.CodexJson
 import loop.runner.codex.protocol.ServerNotification
 import loop.runner.codex.protocol.v2.AccountUpdatedNotification
 import loop.runner.codex.protocol.v2.AuthMode
+import loop.runner.codex.protocol.v2.CodexErrorInfo
 import loop.runner.codex.protocol.v2.TurnStatus
 import loop.runner.codex.schema.PinnedSchema
 import loop.runner.process.LaunchSpec
@@ -605,6 +606,49 @@ class CodexAppServerRunnerTest {
             assertEquals(reason, failed.reason)
             assertNull(failed.exitCode)
             assertNull(failed.category)
+        }
+    }
+
+    @Test
+    fun `m4-08 a failed turn whose error is a transport failure with no HTTP answer is runner_unavailable`() {
+        listOf(
+            CodexErrorInfo.HttpConnectionFailed(),
+            CodexErrorInfo.ResponseStreamConnectionFailed(),
+            CodexErrorInfo.ResponseStreamDisconnected(),
+            CodexErrorInfo.ResponseTooManyFailedAttempts(),
+        ).forEachIndexed { index, info ->
+            val server =
+                FakeAppServer.write(dir.resolve("transport-$index").createDirectories()) {
+                    handshake()
+                    turnCompleted(status = TurnStatus.FAILED, error = "stream disconnected before completion", errorInfo = info)
+                }
+
+            val failed = assertIs<RunnerEvent.TurnFailed>(runAll(runner(server.command)).last(), "$info")
+
+            assertEquals(RunnerEvent.TurnFailed.Category.RunnerUnavailable, failed.category, "$info")
+            assertEquals("turn_failed: stream disconnected before completion", failed.reason)
+            assertNull(failed.retryAfter)
+        }
+    }
+
+    @Test
+    fun `m4-08 a transport failure the server answered, another typed error or an interrupted turn keeps a null category`() {
+        listOf(
+            TurnStatus.FAILED to CodexErrorInfo.HttpConnectionFailed(httpStatusCode = 400),
+            TurnStatus.FAILED to CodexErrorInfo.ResponseStreamDisconnected(httpStatusCode = 500),
+            TurnStatus.FAILED to CodexErrorInfo.ModelNotFound,
+            TurnStatus.FAILED to CodexErrorInfo.Other,
+            TurnStatus.INTERRUPTED to CodexErrorInfo.ResponseStreamDisconnected(),
+        ).forEachIndexed { index, (status, info) ->
+            val server =
+                FakeAppServer.write(dir.resolve("other-$index").createDirectories()) {
+                    handshake()
+                    turnCompleted(status = status, error = "the turn failed", errorInfo = info)
+                }
+
+            val failed = assertIs<RunnerEvent.TurnFailed>(runAll(runner(server.command)).last(), "$status $info")
+
+            assertNull(failed.category, "$status $info")
         }
     }
 
