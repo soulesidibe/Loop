@@ -30,6 +30,7 @@ include(
     ":plugins:runner-command",
     ":plugins:runner-claude-code",
     ":plugins:runner-codex-app-server",
+    ":plugins:runner-acp",
     ":plugins:resource-ios",
     ":plugins:resource-android",
     ":plugins:export-otel",

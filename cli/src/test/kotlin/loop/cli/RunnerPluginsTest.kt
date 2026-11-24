@@ -64,8 +64,8 @@ class RunnerPluginsTest {
     fun `command and claude-code are found on the classpath with the service loader`() {
         val plugins = RunnerPlugins.discover(root.resolve("no-plugins")).getOrThrow()
 
-        // m3-17: codex-app-server registers after them, from its own module.
-        assertEquals(listOf("command", "claude-code", "codex-app-server"), plugins.kinds)
+        // m3-17: codex-app-server registers after them, from its own module, followed by acp.
+        assertEquals(listOf("command", "claude-code", "codex-app-server", "acp"), plugins.kinds)
     }
 
     @Test
@@ -133,6 +133,32 @@ class RunnerPluginsTest {
     }
 
     @Test
+    fun `runner kind acp builds the acp runner from runners acp through plugin loading`() {
+        useRunner(
+            "acp",
+            "    command: agy acp\n    preset: agy\n    model: gemini-4-neon-high\n",
+            key = "acp",
+        )
+        val host = host()
+        val workflow = host.workflowLoader().load(fixture.workflow).getOrThrow()
+
+        val runner =
+            runnerFor(
+                workflow,
+                host.runnerPlugins.getOrThrow(),
+                host.rawEnv,
+                agentEnvRemovedNames(workflow),
+                holdoutDir = root.resolve("holdout"),
+            )
+
+        assertEquals("loop.runner.acp.AcpRunner", runner.javaClass.name)
+        assertEquals("gemini-4-neon-high", runner.model)
+        val provider = host.runnerPlugins.getOrThrow().provider("acp")!!
+        assertEquals("loop.runner.acp.AcpRunnerProvider", provider.javaClass.name)
+        assertEquals("acp", provider.section)
+    }
+
+    @Test
     fun `a provider in a JAR under the plugins folder of LOOP_HOME is found and selected by its kind`() {
         val jar =
             PluginJars.build(
@@ -148,7 +174,7 @@ class RunnerPluginsTest {
         val workflow = host.workflowLoader().load(fixture.workflow).getOrThrow()
         val runner = runnerFor(workflow, plugins, host.rawEnv, agentEnvRemovedNames(workflow))
 
-        assertEquals(listOf("command", "claude-code", "codex-app-server", "jar-runner"), plugins.kinds)
+        assertEquals(listOf("command", "claude-code", "codex-app-server", "acp", "jar-runner"), plugins.kinds)
         val provider = plugins.provider("jar-runner")!!
         assertEquals("loop.testplugin.JarRunnerProvider", provider.javaClass.name)
         val loader = assertIs<URLClassLoader>(provider.javaClass.classLoader)
@@ -198,7 +224,7 @@ class RunnerPluginsTest {
 
         val failed = assertIs<PreflightResult.Failed>(result)
         assertEquals("invalid_config", failed.code)
-        assertEquals("runner.kind \"nope\" is not supported, use command, claude-code or codex-app-server", failed.message)
+        assertEquals("runner.kind \"nope\" is not supported, use command, claude-code, codex-app-server or acp", failed.message)
     }
 
     @Test

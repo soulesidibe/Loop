@@ -24,7 +24,7 @@ class PluginProfileDocsTest {
     @Test
     fun `every built in runner has a doc whose profile table matches its profile`() {
         val runners = RunnerPlugins.classpath
-        assertEquals(listOf("claude-code", "codex-app-server", "command"), runners.kinds.sorted())
+        assertEquals(listOf("acp", "claude-code", "codex-app-server", "command"), runners.kinds.sorted())
         for (kind in runners.kinds) {
             val provider = runners.provider(kind)!!
             assertMatches(docs.resolve("runner-$kind.md"), "runners.${provider.section}", provider.profile)

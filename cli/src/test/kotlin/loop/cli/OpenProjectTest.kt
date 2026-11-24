@@ -126,7 +126,7 @@ class OpenProjectTest {
         assertEquals(1, result.statusCode, result.output)
         assertFalse(secret in result.output, result.output)
         assertEquals(
-            "loop status: runner.kind \"[redacted:LOOP_TEST_SECRET]\" is not supported, use command, claude-code or codex-app-server.\n",
+            "loop status: runner.kind \"[redacted:LOOP_TEST_SECRET]\" is not supported, use command, claude-code, codex-app-server or acp.\n",
             result.stderr,
         )
     }
