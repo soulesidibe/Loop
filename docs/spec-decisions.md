@@ -2686,6 +2686,19 @@ Story 113, first half. `loop run` polls every tracker of the registry (m4-11), n
 
 Tests: `spec-core/src/test/kotlin/loop/core/trackers/TrackerPollTest.kt` (each tracker polled and read with its own states, a failing or throwing tracker reported by its id, by id reads and writes reaching each issue's tracker, each issue judged by its own tracker's states and labels), `spec-core/src/test/kotlin/loop/core/orchestrator/MultiTrackerOrchestratorTest.kt` (the merged order and the own labels, a failing tracker logged while the other's candidates dispatch and reconcile, reconciliation and the startup cleanup by each tracker's terminal states), `spec-core/src/test/kotlin/loop/core/orchestrator/OrchestratorLedgerTest.kt` (the tracker id in the setup), `cli/src/test/kotlin/loop/cli/MultiTrackerRunCommandTest.kt` (a `files` tracker and a GitHub tracker on recorded answers: dispatch in the spec's order, each filtered by its own labels, a handoff removing the GitHub tracker's label only, the `tracker` field of ledger rows and lines, a failing GitHub poll) and `cli/src/test/kotlin/loop/cli/ExtraTrackersRunTest.kt`.
 
+### Event exporters (extension, m4-42)
+
+Story 139. An exporter plugin sends the events Loop records to another system. The first one, `otel`, sends them to an OpenTelemetry backend as traces over OTLP. Its config, mapping and failure handling are in [`plugins/export-otel.md`](plugins/export-otel.md).
+
+- **The plugin interface.** `EventExporterProvider` in `plugin-api`, found by `ServiceLoader` through `ExporterPlugins` in `cli`, like the runner and tracker plugins. Its exporter is an `EventSink`. `EventExporterContract` in the `plugin-api` test fixtures is the behavior every exporter must show.
+- **Opt in.** Each section of `exporters:` in `WORKFLOW.md` turns on the plugin of its key, and nothing is exported without one. The preflight of startup and of every tick checks each section against its plugin's profile and the plugin's own check. The exporters are built once, at startup.
+- **Redaction.** The store redacts inside its own `record`, so the host wraps each exporter in the run's redactor (`RedactingEventSink`), which redacts the issue identifier, the phase and every data value as the store does.
+- **Never in the way.** `loop run` records each event in the store first, whose result is the only one the orchestrator sees, then hands it to each exporter through a bounded queue of its own. A failing exporter is logged at most once a minute, `event=export outcome=failed`, and the run goes on.
+- **The ledger setup on `attempt_started`.** `attempt_started` carries `tracker`, `kind`, `runner`, `model` and `template_version`, the setup its ledger row names, so an exporter puts it on every span of the attempt. Attempts recorded before m4-42 have none.
+- **The plugin list.** `loop run` logs `event=plugins` at startup, with the runners, trackers and exporters found and the exporters the workflow turns on.
+
+Tests: `plugins/export-otel/src/test/kotlin/loop/export/otel/` (`OtelEventExporterTest`, the span tree, ids and attributes; `OtelRedactionTest`; `OtelSettingsTest`; `OtelEventExporterContractTest`), `plugin-api/src/test/kotlin/loop/api/RedactingEventSinkTest.kt`, `cli/src/test/kotlin/loop/cli/ExporterPluginsTest.kt` (the loader, the preflight, the fan out and `loop run`), `spec-core/src/test/kotlin/loop/core/orchestrator/OrchestratorRetryTest.kt` (`m4-42 attempt_started carries the ledger setup of the attempt`).
+
 ### Antigravity CLI (`agy`) ACP and print mode spike (2026-11-24)
 
 Spike 0 of `.loop/specs/gemini-support.md`, run on 2026-11-24 against `agy 1.5.16` (`/Users/soulesidibe/.local/bin/agy`, Google AI Pro login in the OS keyring) with `gemini-4-neon-high` and `gemini-3.8-flash-low`.
