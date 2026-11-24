@@ -10,8 +10,9 @@ import com.charleskorn.kaml.YamlTaggedNode
 import loop.api.MergeMethod
 import loop.api.PluginProfile
 import loop.api.ProfileProblem
-import loop.api.TrackerConfigException
-import loop.api.TrackerProvider
+import loop.core.trackers.TrackerEntry
+import loop.core.trackers.TrackerParser
+import loop.core.trackers.TrackersConfig
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.NoSuchFileException
@@ -59,7 +60,29 @@ data class WorkflowFile(
      * empty for a loader that requires secrets, which fails on the first one instead.
      */
     val deferredSecrets: List<DeferredSecret> = emptyList(),
-)
+    /** m4-11: the primary tracker's id, `tracker.id` or [TrackersConfig.DEFAULT_ID]. */
+    val trackerId: String = TrackersConfig.DEFAULT_ID,
+    /** m4-11: the extra trackers of `trackers:`, in the order written, none when it is absent. Not polled before m4-13. */
+    val extraTrackers: List<TrackerEntry> = emptyList(),
+) {
+    /** m4-11: every tracker of the workflow, the primary one built from the `tracker*` fields above. */
+    val trackers: TrackersConfig
+        get() =
+            TrackersConfig(
+                primary =
+                    TrackerEntry(
+                        id = trackerId,
+                        kind = trackerKind,
+                        dir = trackerDir,
+                        settings = trackerSettings,
+                        activeStates = activeStates,
+                        terminalStates = terminalStates,
+                        requiredLabels = requiredLabels,
+                        provider = config.trackerProvider,
+                    ),
+                extras = extraTrackers,
+            )
+}
 
 /**
  * bl-70: a secret, the `$NAME` value at [keyPath], whose variable is unset or, when [empty], blank, which a load with
@@ -94,6 +117,7 @@ fun workflowHash(text: String): String =
  * Relative paths resolve against the folder of the file. A path value that is
  * exactly `$NAME` reads `NAME` from [env] first (spec 6.1, plan D3).
  * `tracker.kind` selects a tracker plugin through [trackerCheck], which reads its own `tracker.provider` (bl-23, m3-05).
+ * `trackers:` lists extra trackers, each read the same way by [TrackerParser] (m4-11).
  * `runner.kind` is required, and [runnerCheck] tells whether a runner plugin of that kind accepts its section (m3-04).
  * Each selected plugin's section is first checked against the plugin's profile (m3-05), see [checkProfile].
  * With [deferSecrets] (bl-70), an unset secret is named in [WorkflowFile.deferredSecrets] instead of failing the load.
@@ -144,20 +168,19 @@ class WorkflowLoader(
      * preflight that may fail (m1-11). Never throws: an unreadable file, front matter that is not
      * yaml or a `tracker.provider` that is not a map gives an empty map.
      */
-    fun trackerProvider(path: Path): Map<String, ConfigValue> =
+    fun trackerProvider(path: Path): Map<String, ConfigValue> = trackerProviders(path).first()
+
+    /**
+     * m4-11: like [trackerProvider], the `tracker.provider` map first, then the `provider` map of each entry of
+     * `trackers:` that has one, as written. Never throws and never empty: a file that cannot be read gives one empty map.
+     */
+    fun trackerProviders(path: Path): List<Map<String, ConfigValue>> =
         try {
             val (_, text) = readFile(path)
-            parseFrontMatter(split(text).first)
-                .node("tracker")
-                .let { it as? YamlMap }
-                .node("provider")
-                .let { it as? YamlMap }
-                ?.entries
-                ?.entries
-                ?.associate { it.key.content to it.value.toConfigValue() }
-                .orEmpty()
+            val front = parseFrontMatter(split(text).first)
+            TrackerParser.providersOf(front.node("tracker")?.toPlain(), front.node("trackers")?.toPlain())
         } catch (e: Exception) {
-            emptyMap()
+            listOf(emptyMap())
         }
 
     private fun read(
@@ -170,52 +193,14 @@ class WorkflowLoader(
         val envRefs = mutableListOf<EnvRef>()
         val deferred = mutableListOf<DeferredSecret>()
 
-        val tracker = config.child("tracker")
-        val trackerKind =
-            tracker?.string("tracker.kind", "kind")?.takeIf { it.isNotBlank() }
-                ?: throw WorkflowError.InvalidConfig("tracker.kind is required")
-        val registered: TrackerProvider? =
-            if (trackerCheck != null) {
-                trackerCheck.select(trackerKind).getOrElse { throw WorkflowError.InvalidConfig(it.message ?: "tracker.kind is invalid") }
-            } else if (trackerKind == FILES_TRACKER) {
-                null
-            } else {
-                throw WorkflowError.InvalidConfig(TrackerCheck.unsupported(trackerKind, listOf(FILES_TRACKER)))
-            }
-        val provider = tracker.child("provider", "tracker.provider")
         val configWarnings = mutableListOf<String>()
-        val trackerSettings =
-            registered?.let { kind ->
-                val plain =
-                    provider
-                        ?.entries
-                        ?.entries
-                        ?.associate { it.key.content to it.value.toPlain() }
-                        .orEmpty()
-                val trackerEnv = secretEnv(kind.profile, "tracker.provider", plain, deferred)
-                configWarnings +=
-                    checkProfile(kind.profile, "tracker.provider", plain, "the ${kind.kind} tracker", trackerEnv) { problem ->
-                        // bl-104: a secret out of its limits is there and resolved, so it is invalid, not missing.
-                        val missing = problem.secret && problem !is ProfileProblem.OutOfLimits
-                        WorkflowError.TrackerConfig(if (missing) MISSING_TRACKER_SECRET else INVALID_TRACKER_CONFIG, problem.message)
-                    }
-                try {
-                    // bl-70: the plugin checks the rest of its section with a stand in, whose settings are dropped.
-                    kind.parse(plain, trackerEnv).takeIf { trackerEnv === env }
-                } catch (e: TrackerConfigException) {
-                    throw WorkflowError.TrackerConfig(e.category, e.message.orEmpty())
-                } catch (e: WorkflowError) {
-                    throw e
-                } catch (e: Exception) {
-                    throw WorkflowError.InvalidConfig(e.message ?: "tracker.provider is invalid")
-                }
+        // m4-11: the primary tracker, then the extra trackers of trackers:, each read by its own tracker plugin.
+        val parser =
+            TrackerParser(env, trackerCheck, deferSecrets, configWarnings, deferred) { keyPath, value ->
+                resolve(folder, value?.let { expandEnv(keyPath, it, envRefs) } ?: DEFAULT_TRACKER_DIR)
             }
-        val trackerDir =
-            resolve(
-                folder,
-                provider?.string("tracker.provider.dir", "dir")?.let { expandEnv("tracker.provider.dir", it, envRefs) }
-                    ?: DEFAULT_TRACKER_DIR,
-            )
+        val tracker = parser.primary(config.child("tracker")?.toPlainMap())
+        val extraTrackers = parser.extras(config.node("trackers")?.toPlain(), tracker.id)
 
         val runnerKind =
             config.child("runner")?.string("runner.kind", "kind")
@@ -238,7 +223,7 @@ class WorkflowLoader(
                 (written as? Map<*, *>)?.entries?.associate { (k, v) -> k.toString() to v }
                     ?: throw WorkflowError.InvalidConfig("$key must be a map")
             configWarnings +=
-                checkProfile(profile, key, map, "the ${runner.kind} runner", secretEnv(profile, key, map, deferred)) { problem ->
+                checkPluginProfile(profile, key, map, "the ${runner.kind} runner", secretEnv(profile, key, map, deferred)) { problem ->
                     if (problem is ProfileProblem.UnresolvedSecret) {
                         WorkflowError.MissingEnvVar(problem.envName, problem.key, problem.empty)
                     } else {
@@ -256,7 +241,7 @@ class WorkflowLoader(
         val budgets = parseBudgets(config.child("budgets"))
         val context = parseContext(config.child("context"))
         val observability = parseObservability(config.child("observability"))
-        val kinds = parseKinds(config, trackerKind, deferred)
+        val kinds = parseKinds(config, tracker.kind, deferred)
 
         val workspaceRoot =
             config
@@ -265,10 +250,7 @@ class WorkflowLoader(
                 ?.let { resolve(folder, expandEnv("workspace.root", it, envRefs)) }
                 ?: systemTemp.resolve(DEFAULT_WORKSPACES_DIR).toAbsolutePath().normalize()
 
-        val terminalStates =
-            tracker.strings("tracker.terminal_states", "terminal_states")
-                ?: registered?.defaultTerminalStates
-                ?: DEFAULT_TERMINAL_STATES
+        val terminalStates = tracker.terminalStates
         kinds?.code?.delivery?.onDeliveredMoveTo?.let { moveTo ->
             // m2-26: a merged pull request is done, so its issue leaves the tracker's work for good.
             if (terminalStates.none { it.trim().equals(moveTo, ignoreCase = true) }) {
@@ -280,14 +262,11 @@ class WorkflowLoader(
         }
         return WorkflowFile(
             path = file,
-            trackerKind = trackerKind,
-            trackerDir = trackerDir,
-            activeStates =
-                tracker.strings("tracker.active_states", "active_states")
-                    ?: registered?.defaultActiveStates
-                    ?: DEFAULT_ACTIVE_STATES,
+            trackerKind = tracker.kind,
+            trackerDir = tracker.dir,
+            activeStates = tracker.activeStates,
             terminalStates = terminalStates,
-            requiredLabels = tracker.strings("tracker.required_labels", "required_labels") ?: emptyList(),
+            requiredLabels = tracker.requiredLabels,
             workspaceRoot = workspaceRoot,
             runner = runner,
             pollingIntervalMs = polling.intervalMs,
@@ -303,68 +282,27 @@ class WorkflowLoader(
                     context = context,
                     observability = observability,
                     kinds = kinds,
-                    trackerProvider =
-                        provider
-                            ?.entries
-                            ?.entries
-                            ?.associate { it.key.content to it.value.toConfigValue() }
-                            .orEmpty(),
+                    trackerProvider = tracker.provider,
                     envRefs = envRefs.toList(),
                     referencedEnvNames = config?.referencedEnvNames().orEmpty(),
                 ),
             sourceHash = workflowHash(text),
             sourceText = text,
-            trackerSettings = trackerSettings,
+            trackerSettings = tracker.settings,
             configWarnings = configWarnings.toList(),
             deferredSecrets = deferred.toList(),
+            trackerId = tracker.id,
+            extraTrackers = extraTrackers,
         )
     }
 
-    /**
-     * bl-70: the env to check [section], the plugin section at [key], with. It is [env] itself unless [deferSecrets]
-     * is set and a secret of [profile] written `$NAME` has its variable unset or blank: each such secret is added to
-     * [deferred], and the returned copy of [env] maps its variable to [DEFERRED_SECRET], a stand in that is never a
-     * credential, so the rest of the section is still checked.
-     */
+    /** bl-70: the env to check a plugin [section] at [key] with, see [secretCheckEnv]. */
     private fun secretEnv(
         profile: PluginProfile,
         key: String,
         section: Map<String, Any?>,
         deferred: MutableList<DeferredSecret>,
-    ): Map<String, String> {
-        if (!deferSecrets) return env
-        val missing =
-            profile.secrets.sorted().mapNotNull { secret ->
-                val name =
-                    (section[secret] as? String)
-                        ?.trim()
-                        ?.let { ENV_REF.matchEntire(it) }
-                        ?.groupValues
-                        ?.get(1)
-                val value = name?.let { env[it] }
-                if (name == null || !value.isNullOrBlank()) null else DeferredSecret("$key.$secret", name, empty = value != null)
-            }
-        if (missing.isEmpty()) return env
-        deferred += missing
-        return env + missing.associate { it.name to DEFERRED_SECRET }
-    }
-
-    /**
-     * m3-05: checks [section], the plugin section at [key] as written, against [profile], throwing the error [failure]
-     * makes of the first problem. Returns one warning per key the profile does not list, naming [plugin].
-     */
-    private fun checkProfile(
-        profile: PluginProfile,
-        key: String,
-        section: Map<String, Any?>,
-        plugin: String,
-        checkEnv: Map<String, String>,
-        failure: (ProfileProblem) -> WorkflowError,
-    ): List<String> {
-        val report = profile.check(key, section, checkEnv)
-        report.problem?.let { throw failure(it) }
-        return report.unknownKeys.map { "$it is not a key of $plugin, Loop ignores it" }
-    }
+    ): Map<String, String> = secretCheckEnv(env, deferSecrets, profile, key, section, deferred)
 
     /**
      * Plan D3: only a whole `$NAME` value is a reference; anything else is kept
@@ -1186,6 +1124,8 @@ class WorkflowLoader(
             is YamlTaggedNode -> innerNode.toPlain()
         }
 
+    private fun YamlMap.toPlainMap(): Map<String, Any?> = entries.entries.associate { it.key.content to it.value.toPlain() }
+
     /** Every scalar value under this node, at any depth, that is exactly `$NAME` (the [expandEnv] syntax), by name. */
     private fun YamlNode.referencedEnvNames(): Set<String> =
         when (this) {
@@ -1288,17 +1228,10 @@ class WorkflowLoader(
     private companion object {
         const val FENCE = "---"
         const val FILES_TRACKER = "files"
-
-        /** The spec 11.4 categories of a `tracker.provider` that does not follow its tracker's profile (m3-05). */
-        const val INVALID_TRACKER_CONFIG = "invalid_tracker_config"
-        const val MISSING_TRACKER_SECRET = "missing_tracker_secret"
         const val DEFAULT_TRACKER_DIR = ".loop/issues"
         const val DEFAULT_WORKSPACES_DIR = "loop_workspaces"
         const val ACCEPTANCE_COMMANDS = "acceptance_commands"
         const val CHANGED_LINE_COVERAGE = "changed_line_coverage"
-
-        /** bl-70: what an unset secret reads as while a load with deferred secrets checks the rest of its section. */
-        const val DEFERRED_SECRET = "loop-deferred-secret"
         val ENV_REF = Regex("""^\$([A-Za-z_][A-Za-z0-9_]*)$""")
 
         /** A GitHub repository as `owner/name` (m2-25). */
@@ -1331,8 +1264,6 @@ class WorkflowLoader(
         const val DOLLARS = "a positive number of dollars"
         val DECIMAL = Regex("""^[+-]?(\d+(\.\d*)?|\.\d+)$""")
         val WINDOW_KEY = Regex("""^[^/\s]+/\S+$""")
-        val DEFAULT_ACTIVE_STATES = listOf("todo", "in_progress")
-        val DEFAULT_TERMINAL_STATES = listOf("done", "canceled")
     }
 }
 
