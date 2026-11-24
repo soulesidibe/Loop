@@ -119,6 +119,9 @@ internal class RetryCoordinator(
         return true
     }
 
+    /** The issues with a queued retry, by id, each with its identifier (m4-10). */
+    fun queued(): Map<String, String> = queue.queued()
+
     /** The earliest due time among issues not in [busy] (claimed or running), whose entries do not fire. */
     fun nextDueAt(busy: Set<String> = emptySet()): Instant? = queue.nextDueAt(busy)
 

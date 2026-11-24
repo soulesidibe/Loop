@@ -400,6 +400,8 @@ class Orchestrator(
      * first tick, which records the resume by the restart; null when none, or when this host cannot read it.
      */
     private val queuePausedBefore: suspend () -> RecordedEvent? = { null },
+    /** m4-10: true once `loop drain` asked this run to drain, read at each dispatch. */
+    private val drainRequested: () -> Boolean = { false },
 ) {
     /** The HEAD and working tree reads for the progress between rotations (bl-136), bounded and cancellable (bl-149). */
     private val workspaceFacts = WorkspaceFacts(workspaceGit)
@@ -512,6 +514,9 @@ class Orchestrator(
     /** bl-175: the pause of the delivery queue after the head's CI timed out; it stops every merge check from starting. */
     private val queuePause = DeliveryQueuePause()
 
+    /** m4-10: the drain of the run, once `loop drain` asked for it: nothing new starts, the run stops once nothing runs. */
+    private val drain = RunDrain(drainRequested, this.sink, sinkName, log, clock, runId, projectId)
+
     /** The spec attempt of each issue dispatched by a retry, for the `attempt` template variable. */
     private val dispatchAttempts = mutableMapOf<String, Int>()
 
@@ -588,6 +593,8 @@ class Orchestrator(
         retriesFired = false
         // Spec 8.1 and 16.2: before the preflight, so a broken WORKFLOW.md still stops what the tracker ended.
         reconcile()
+        // m4-10: from the first dispatch after `loop drain`, no candidate and no retry of another issue starts.
+        drain.notice(drainFacts())
         if (!passesPreflight()) return Dispatched(candidates = 0, attempts = emptyList())
         machineGate.retryReleases(pollContext)
         val fetched = tracker.fetchIssuesByStates(effective.activeStates)
@@ -610,7 +617,8 @@ class Orchestrator(
         // bl-39: while the runner hold waits for its probe, no attempt or retry is dispatched; at the probe, only one.
         val gate = hold.gate()
         if (gate == RunnerHold.Gate.Closed) return Dispatched(candidates = issues.size, attempts = emptyList(), verifications)
-        val fire = retries.fireDue(issues, effective, busy = claimed + running.keys + waits.busy, parked = parkedIds)
+        val held = drain.heldBack(retries.queued().keys)
+        val fire = retries.fireDue(issues, effective, busy = claimed + running.keys + waits.busy + held, parked = parkedIds)
         retriesFired = true
         val now = clock.now()
         val retryAttempts = fire.dispatch.associate { it.issue.id to it.attempt }
@@ -618,14 +626,16 @@ class Orchestrator(
         val retryDueAt = fire.dispatch.associate { it.issue.id to it.firstDueAt }
         // Due retries go through their by-id refresh instead of the candidate list.
         val candidates =
-            issues.filter {
-                it.id !in parkedIds &&
-                    it.id !in fire.handled &&
-                    !waits.isBusy(it.id) &&
-                    it.id !in delivered &&
-                    it.id !in settledEarly &&
-                    !retries.isWaiting(it.id, now)
-            }
+            drain.candidates(
+                issues.filter {
+                    it.id !in parkedIds &&
+                        it.id !in fire.handled &&
+                        !waits.isBusy(it.id) &&
+                        it.id !in delivered &&
+                        it.id !in settledEarly &&
+                        !retries.isWaiting(it.id, now)
+                },
+            )
         val routable =
             (candidates + fire.dispatch.map { it.issue })
                 .filter(::isEligible)
@@ -728,6 +738,16 @@ class Orchestrator(
         recordSkips(skips)
         return Dispatched(candidates = issues.size, attempts = attempts, verifications)
     }
+
+    /** What the [drain] reads to know what still runs (m4-10). */
+    private fun drainFacts(): DrainFacts =
+        DrainFacts(
+            running = executions.values.map { it.issue },
+            waits = waits.current(),
+            queued = retries.queued(),
+            queuePaused = queuePause.paused != null,
+            mergeJobs = waits.busy.filter(waits::isChecking).toSet(),
+        )
 
     /** What holds an agent slot now, for the [SlotPlan]: the running attempts by state and the running merge checks. */
     private fun slotUse(): SlotUse = SlotUse(running.values.toList(), waits.checks)
@@ -958,6 +978,8 @@ class Orchestrator(
                 } catch (e: Exception) {
                     log.log(LogLevel.ERROR, "tick", LogOutcome.FAILED, pollContext, reason = e.describe())
                 }
+                // m4-10: a drained run stops by itself.
+                if (drain.drained(drainFacts())) return@supervisorScope
                 sleepUntilNextPoll()
             }
         }
@@ -971,15 +993,18 @@ class Orchestrator(
         while (true) {
             val untilPoll = (pollAt - clock.now()).inWholeMilliseconds
             if (untilPoll <= 0) return
-            // A running issue's entry does not fire, so it must not shorten the sleep either. bl-39: while the runner
-            // hold waits, its probe time is the next due time; an overdue probe that found nothing to run waits a poll.
+            // A running issue's entry does not fire, so it must not shorten the sleep either, nor one a drain holds back
+            // (m4-10). bl-39: while the runner hold waits, its probe time is the next due time; an overdue probe that
+            // found nothing to run waits a poll.
             val now = clock.now()
             val probeAt = hold.probeAt
             val nextDue =
                 if (probeAt != null) {
                     probeAt.takeIf { it > now }
                 } else {
-                    retries.nextDueAt(busy = claimed + running.keys + waits.busy)?.takeIf { retriesFired }
+                    retries
+                        .nextDueAt(busy = claimed + running.keys + waits.busy + drain.heldBack(retries.queued().keys))
+                        ?.takeIf { retriesFired }
                 }
             val sleep =
                 if (nextDue == null) {

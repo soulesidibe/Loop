@@ -90,6 +90,8 @@ object EventDefinitions {
             ConfigReloaded,
             ConfigReloadFailed,
             RunStopped,
+            RunDraining,
+            RunDrained,
             RunnerHoldStarted,
             RunnerHoldLifted,
             ClaimReleased,

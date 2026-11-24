@@ -13,10 +13,12 @@ import loop.core.events.DeliveryQueuePaused
 import loop.core.events.IssueParked
 import loop.core.events.RetryDropped
 import loop.core.events.RetryScheduled
+import loop.core.events.RunDraining
 import loop.core.events.RunnerHoldLifted
 import loop.core.events.RunnerHoldStarted
 import loop.core.events.TurnStarted
 import loop.core.events.Usage
+import loop.core.orchestrator.holdsDrain
 import loop.core.waiting.MergeQueue
 import loop.core.waiting.Wait
 import loop.store.StoredEvent
@@ -35,6 +37,19 @@ internal data class RuntimeSnapshot(
     val hold: HoldRow? = null,
     /** The pause of the delivery queue by the live run (bl-175), null when the queue runs. */
     val queuePause: QueuePauseRow? = null,
+    /** The drain of the live run (m4-10), null while it dispatches. */
+    val drain: DrainRow? = null,
+)
+
+/**
+ * The drain of the live run (m4-10): asked by `loop drain`, begun at the run's latest `run_draining`. What still runs is
+ * every running attempt, every queued retry of an issue whose attempt ran when the drain began, and every wait that
+ * needs no human, by identifier in name order.
+ */
+internal data class DrainRow(
+    /** When the run noticed the drain, null while it has not yet: it does at its next poll. */
+    val since: Instant?,
+    val still: List<String>,
 )
 
 /** The latest `delivery_queue_paused` of the live run with no `delivery_queue_resumed` after it (bl-175). */
@@ -125,6 +140,7 @@ internal val SNAPSHOT_KINDS: Set<String> =
         IssueParked.name,
         RunnerHoldStarted.name,
         RunnerHoldLifted.name,
+        RunDraining.name,
     ) + DeliveryQueuePaused.QUEUE_KINDS
 
 /**
@@ -137,13 +153,15 @@ internal val SNAPSHOT_KINDS: Set<String> =
  * events: the attempt whose checks run is still open, and the wait outlives the run that started it. The runner hold
  * (bl-39) is the live run's latest `runner_hold_started` when no `runner_hold_lifted` follows it. Each merge wait has its
  * place in the delivery queue (bl-172), the order of [MergeQueue]. The queue is paused (bl-175) while the live run's
- * latest `delivery_queue_paused` has no `delivery_queue_resumed` after it.
+ * latest `delivery_queue_paused` has no `delivery_queue_resumed` after it. The live run drains (m4-10) once it recorded
+ * `run_draining`, or while [drainAsked] says `loop drain` asked for it and the run has not noticed yet.
  */
 internal fun runtimeSnapshot(
     events: List<StoredEvent>,
     liveRun: RunId?,
     parked: List<ParkedIssue>,
     waiting: List<Wait> = emptyList(),
+    drainAsked: Boolean = false,
 ): RuntimeSnapshot {
     val ordered = events.sortedBy { it.seq }.map { it.event }
     val numbers = attemptNumbers(ordered)
@@ -205,14 +223,45 @@ internal fun runtimeSnapshot(
                 val attempt = (parkedBy?.attemptId ?: latest?.attemptId)?.let(numbers::get)
                 ParkedRow(record.identifier, attempt, record.reason.wire, record.state, record.parkedAt)
             }
+    val queuePause = liveRun?.let { queuePauseOf(ordered, it) }
     return RuntimeSnapshot(
         running.sortedBy { it.startedAt },
         retrying.sortedBy { it.dueAt.orEmpty() },
         parkedRows,
         waitingRows,
         liveRun?.let { holdOf(ordered, it) },
-        liveRun?.let { queuePauseOf(ordered, it) },
+        queuePause,
+        liveRun?.let { drainOf(ordered, it, drainAsked, running, retrying, waiting, queuePause != null) },
     )
+}
+
+/**
+ * The drain of [liveRun] (m4-10), null when it has not begun and [drainAsked] is false. Before the run notices it, the
+ * issues it would drain are those running now.
+ */
+private fun drainOf(
+    ordered: List<RecordedEvent>,
+    liveRun: RunId,
+    drainAsked: Boolean,
+    running: List<RunningRow>,
+    retrying: List<RetryingRow>,
+    waiting: List<Wait>,
+    queuePaused: Boolean,
+): DrainRow? {
+    val began = ordered.lastOrNull { it.runId == liveRun && it.kind == RunDraining.name }
+    if (began == null && !drainAsked) return null
+    val drained =
+        began
+            ?.data
+            ?.get(RunDraining.ATTEMPTS)
+            ?.split(",")
+            ?.toSet()
+            ?: running.map { it.identifier }.toSet()
+    val still =
+        running.map { it.identifier } +
+            retrying.map { it.identifier }.filter { it in drained } +
+            waiting.filter { holdsDrain(it, queuePaused) }.map { it.identifier }
+    return DrainRow(began?.ts, still.distinct().sorted())
 }
 
 /** The pause of the delivery queue by [liveRun]: its latest pause with no resume after it, else null (bl-175). */

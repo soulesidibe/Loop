@@ -958,12 +958,14 @@ class HumanLogTest {
         log.runEnded(reason = "stop_requested", attemptsCanceled = 1)
         log.runEnded(reason = "signal", attemptsCanceled = 2)
         log.runEnded(reason = "internal_error", attemptsCanceled = 0)
+        log.runEnded(reason = "drained", attemptsCanceled = 0)
 
         assertEquals(
             listOf(
                 "17:02:11  run stopped by loop stop, 1 attempt canceled",
                 "17:02:11  run stopped by a signal, 2 attempts canceled",
                 "17:02:11  run stopped by an internal error",
+                "17:02:11  run ended after loop drain",
             ),
             lines,
         )

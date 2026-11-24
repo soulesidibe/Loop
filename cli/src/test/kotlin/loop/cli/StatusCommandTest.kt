@@ -259,6 +259,65 @@ class StatusCommandTest {
     }
 
     @Test
+    fun `m4-10 a draining run says so and prints what still runs, without a retry of another issue or an approval to give`() {
+        seedThreeIssues()
+        // t-7 waits for a human's approval, which does not hold the drain.
+        fixture.seed(event("attempt_started", "t-7", G1, "2026-11-11T10:05:30Z"))
+        wait("t-7", G1, "2026-11-11T10:06:30Z", reason = WaitReason.Approval)
+        fixture.seed(
+            RecordedEvent(
+                ts = Instant.parse("2026-11-11T10:07:00Z"),
+                projectId = project,
+                kind = "run_draining",
+                runId = RunId(LoopFixture.RUN_ID),
+                data = mapOf("attempts" to "t-1", "waits" to "t-6"),
+            ),
+        )
+        val lock = holdRunFile()
+        try {
+            val result = fixture.loop("status", fixture.workflow.toString())
+
+            assertEquals(0, result.exitCode, result.toString())
+            val lines = result.stdout.trimEnd().lines()
+            assertEquals("Run ${LoopFixture.RUN_ID.take(8)}  pid ${ProcessHandle.current().pid()}  draining", lines[1], result.toString())
+            assertEquals(
+                listOf(
+                    "draining  run  since=2026-11-11T10:07:00Z still=t-1,t-6  stops once these end, loop stop stops it at once",
+                    "running   t-1  attempt 2  a2000000  started=10:02:03 turns=1 tokens=1200",
+                    "retrying  t-2  attempt 1  b1000000  kind=error retry=1 due=10:05:00 error=\"agent exited with code 1\"",
+                ),
+                lines.drop(3).take(3),
+            )
+        } finally {
+            lock.release()
+        }
+    }
+
+    @Test
+    fun `m4-10 a drain loop drain asked for and the run has not noticed yet begins at the next poll`() {
+        fixture.seed(event("attempt_started", "t-1", A2, "2026-11-11T10:02:03Z"))
+        val lock = holdRunFile()
+        try {
+            RunFiles(fixture.loopHome, project).requestDrain(LoopFixture.RUN_ID)
+
+            val result = fixture.loop("status", fixture.workflow.toString())
+
+            assertEquals(0, result.exitCode, result.toString())
+            val lines = result.stdout.trimEnd().lines()
+            assertContains(lines[1], "  draining")
+            assertEquals(
+                listOf(
+                    "draining  run  still=t-1  begins at the next poll, loop stop stops it at once",
+                    "running   t-1  attempt 1  a2000000  started=10:02:03 turns=0",
+                ),
+                lines.drop(3),
+            )
+        } finally {
+            lock.release()
+        }
+    }
+
+    @Test
     fun `bl-175 a delivery queue the live run paused prints one paused line, above the issues`() {
         fixture.seed(
             event(
@@ -755,6 +814,7 @@ class StatusCommandTest {
         const val C1 = "c1000000-0000-4000-8000-000000000000"
         const val E1 = "e1000000-0000-4000-8000-000000000000"
         const val F1 = "f1000000-0000-4000-8000-000000000000"
+        const val G1 = "71000000-0000-4000-8000-000000000000"
         const val WAIT_NANOS = 90_000_000_000L
         const val POLL_MS = 300L
         const val NO_OCCUPANCY =

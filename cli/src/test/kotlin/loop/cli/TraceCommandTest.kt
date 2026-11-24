@@ -619,6 +619,28 @@ class TraceCommandTest {
     }
 
     @Test
+    fun `m4-10 the drain of a run the issue took part in prints as its own lines, the drain of another run does not`() {
+        val project = ProjectId(fixture.projectId())
+        val runLevel = { kind: String, time: String, run: String, data: Map<String, String> ->
+            RecordedEvent(ts = Instant.parse("2026-11-07T${time}Z"), projectId = project, kind = kind, runId = RunId(run), data = data)
+        }
+        val other = "0be00000-0000-4000-8000-000000000000"
+        val lines =
+            trace(
+                runLevel("run_draining", "13:40:00", other, mapOf("attempts" to "t-9")),
+                event("attempt_started", "13:48:40", "a1"),
+                runLevel("run_draining", "13:48:45", LoopFixture.RUN_ID, mapOf("attempts" to "t-1")),
+                event("attempt_finished", "13:48:50", "a1", data = mapOf("outcome" to "succeeded")),
+                runLevel("run_drained", "13:52:57", LoopFixture.RUN_ID, mapOf("drained_ms" to "252000")),
+            )
+
+        val draining = lines.indexOfFirst { it.trim() == "13:48:45  ${"run_draining".padEnd(NAME_WIDTH)}attempts=t-1" }
+        val drained = lines.indexOfFirst { it.trim().startsWith("13:52:57  ${"run_drained".padEnd(NAME_WIDTH)}drained=") }
+        assertTrue(draining > 0 && drained > draining, lines.joinToString("\n"))
+        assertTrue(lines.none { "t-9" in it }, lines.joinToString("\n"))
+    }
+
+    @Test
     fun `retry dropped shows its reason`() {
         val lines =
             trace(
