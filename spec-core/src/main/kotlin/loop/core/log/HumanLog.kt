@@ -50,6 +50,11 @@ class HumanLog(
     private val redactor: Redactor,
     private val zone: ZoneId = ZoneId.systemDefault(),
     private val base: Path? = null,
+    /**
+     * How an issue is named at the start of its lines, from its core id and its identifier (m4-47): the identifier
+     * as is by default, `IssueIdDisplay.name` in `loop run`, so a project with extra trackers names each issue's tracker.
+     */
+    private val names: (issueId: String?, identifier: String) -> String = { _, identifier -> identifier },
 ) : RunObserver {
     private val time = DateTimeFormatter.ofPattern("HH:mm:ss").withZone(zone)
 
@@ -150,7 +155,7 @@ class HumanLog(
             AttemptStarted -> {
                 val id = event.attemptId?.value ?: return
                 val name = event.issueId?.let(nextAttempt::remove) ?: "attempt"
-                attempts[id] = AttemptLines(event.issueIdentifier ?: event.issueId ?: "", name)
+                attempts[id] = AttemptLines(nameOf(event) ?: event.issueId.orEmpty(), name)
             }
             Phase -> onPhase(event)
             Usage -> {
@@ -216,8 +221,11 @@ class HumanLog(
             attempt.flushStart(event.ts)
             attempt.flushReads()
         }
-        write(event.ts, event.issueIdentifier, text)
+        write(event.ts, nameOf(event), text)
     }
+
+    /** The name of [event]'s issue, its identifier by [names], null when it has none. */
+    private fun nameOf(event: RecordedEvent): String? = event.issueIdentifier?.let { names(event.issueId, it) }
 
     private fun write(
         ts: Instant,

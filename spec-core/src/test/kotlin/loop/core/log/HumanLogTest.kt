@@ -8,6 +8,7 @@ import loop.api.RecordedEvent
 import loop.api.Redactor
 import loop.api.RunId
 import loop.api.SecretRedactor
+import loop.core.trackers.IssueIdDisplay
 import java.nio.file.Path
 import java.time.ZoneOffset
 import kotlin.test.Test
@@ -980,5 +981,25 @@ class HumanLogTest {
         assertEquals("1.5B", HumanLog.size(1_500_000_000))
         assertEquals("\$3.38", HumanLog.money(3.3812))
         assertEquals("\$0.01", HumanLog.money(0.01))
+    }
+
+    @Test
+    fun `m4-47 an issue line names the issue by the display rule given`() {
+        val several = IssueIdDisplay("gh", listOf("gh", "local"), namespaced = true)
+        val log =
+            HumanLog(
+                out = { lines += it },
+                clock = clock,
+                redactor = Redactor.NONE,
+                zone = ZoneOffset.UTC,
+                base = Path.of("/project"),
+                names = several::name,
+            )
+
+        log.recorded(event("attempt_started", mapOf("loop_version" to "abc")).copy(issueId = "local:m1-13"))
+        log.recorded(event("issue_moved", mapOf("from" to "todo", "to" to "review", "by" to "host")).copy(issueId = "local:m1-13"))
+
+        assertTrue(lines.isNotEmpty(), lines.toString())
+        assertTrue(lines.all { it.startsWith("17:02:11  local:m1-13  ") }, lines.toString())
     }
 }
