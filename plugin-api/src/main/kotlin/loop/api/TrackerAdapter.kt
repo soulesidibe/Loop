@@ -7,6 +7,10 @@ import kotlin.time.Instant
  * failure is a [TrackerError]; implementations do not throw for expected failures.
  * [updateLabels] is optional: a tracker without labels keeps its default, which fails
  * with [TrackerError.Unsupported]. [completeIssue] is optional too: its default returns the issue unchanged.
+ *
+ * The core writes through the versions of [moveIssue] and [addComment] that take the current [Issue] (m4-14, spec 11
+ * and 17.5): a tracker whose writes need a provider id beyond [Issue.id], such as a project item id, reads it from
+ * [Issue.nativeRef]. Their defaults call the id versions, so a tracker that writes by id overrides only those.
  */
 public interface TrackerAdapter {
     /** Every state this tracker defines, in the tracker's own spelling. */
@@ -34,6 +38,24 @@ public interface TrackerAdapter {
         issueId: String,
         comment: IssueComment,
     ): Result<Unit>
+
+    /**
+     * Moves the current [issue] to [toState], like the id version, which the default calls with [Issue.id]. The
+     * [issue] is the one the core holds, its [Issue.nativeRef] included, with the tracker's own id (m4-14).
+     */
+    public suspend fun moveIssue(
+        issue: Issue,
+        toState: String,
+    ): Result<Unit> = moveIssue(issue.id, toState)
+
+    /**
+     * Appends [comment] to the current [issue], like the id version, which the default calls with [Issue.id]. The
+     * [issue] is the one the core holds, its [Issue.nativeRef] included, with the tracker's own id (m4-14).
+     */
+    public suspend fun addComment(
+        issue: Issue,
+        comment: IssueComment,
+    ): Result<Unit> = addComment(issue.id, comment)
 
     /**
      * Completes [issue] just before a prompt is rendered (bl-06): a tracker that keeps what the agent must see

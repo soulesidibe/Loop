@@ -93,6 +93,14 @@ class Host(
     }
 
     /**
+     * The event exporter plugins of this host (m4-42), found like [runnerPlugins]: `otel` on the classpath, then the
+     * JARs'. Only `loop run` uses them, when `WORKFLOW.md` has an `exporters:` section.
+     */
+    val exporterPlugins: Result<ExporterPlugins> by lazy {
+        pluginFolder.fold(onSuccess = { ExporterPlugins.discover(it) }, onFailure = { Result.failure(it) })
+    }
+
+    /**
      * The [WorkflowLoader] every command uses: this env and home, [trackerPlugins] and [runnerPlugins]. Plugins that
      * could not be found fail every load with the reason. With [deferSecrets] (bl-70), an unset secret is named in
      * the loaded workflow instead of failing the load, see [WorkflowLoader].

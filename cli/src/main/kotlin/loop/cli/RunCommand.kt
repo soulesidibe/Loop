@@ -11,6 +11,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import loop.api.EventSink
 import loop.api.Redactor
 import loop.api.RunId
 import loop.api.SecretRedactor
@@ -102,6 +103,7 @@ class RunCommand(
                 preflight =
                     Preflight(loader, path, templates, promptModel = { promptModel(it, host) }) {
                         trackerProblem(it, trackers) ?: Holdouts.problem(it, holdoutDir) ?: deliveryProblem(it, host.rawEnv)
+                            ?: exporterProblem(it)
                     }
                 when (val checked = runBlocking { preflight.check() }) {
                     // m3-16: a malformed machine config fails the startup preflight too, naming the key.
@@ -263,6 +265,7 @@ class RunCommand(
         runBlocking { closeAbandonedAttempts(projectId, runId, store, log, clock) }
         // m2-02: and every stored claim was left by a dead process; it is released and recorded.
         runBlocking { releaseAbandonedClaims(projectId, runId, store, log, clock) }
+        val sink = exportingSink(workflow, store, log, context, runnerPlugins, redactor)
         val runner = runnerOf(workflow)
         // m3-09: a runner that declares no occupancy gets only the prompt limit and the turn cap (plan 8.3), said once
         // at startup; `loop status` says it again for each of its running attempts, whatever runner a reload picks.
@@ -283,7 +286,7 @@ class RunCommand(
                 workflow = workflow,
                 tracker = tracker,
                 runner = runner,
-                sink = store,
+                sink = sink,
                 log = log,
                 clock = clock,
                 workspaces = workspacesOf(workflow),
@@ -371,42 +374,105 @@ class RunCommand(
         // The store closes inside untilSignal, so the shutdown hook waits for it.
         untilSignal(log, context, redactor, onEnd, keepAwake::close) {
             store.use {
-                try {
-                    // m1-16, spec 8.6: the workspaces of terminal issues go before the first tick, in both modes.
-                    orchestrator.removeTerminalWorkspaces()
-                    if (once) {
-                        broken = printSummary(orchestrator.tick(), redactor)
-                    } else {
-                        orchestrator.runUntilCancelled()
-                        // m4-10: the daemon returns only once it drained after `loop drain`.
-                        stopReason = DRAINED
-                    }
-                } catch (e: CancellationException) {
-                    // The attempts have unwound (each recorded canceled with this reason); the store is still open.
-                    val reason = cancelReason(runFiles)
-                    stopReason = reason
-                    withContext(NonCancellable) {
-                        val event =
-                            RunStopped.event(
-                                ts = clock.now(),
-                                projectId = projectId,
-                                data =
-                                    mapOf(
-                                        RunStopped.REASON to reason,
-                                        RunStopped.ATTEMPTS_CANCELED to orchestrator.attemptsCanceled.toString(),
-                                    ),
-                                runId = runId,
-                            )
-                        store.record(event).onFailure { error ->
-                            log.log(LogLevel.WARN, "store", LogOutcome.FAILED, context, reason = error.sentence())
+                // m4-42: the exporters take what their queues hold before the store closes, within about 2.5 s
+                // (ExportingSink.DRAIN_TIMEOUT and CLOSE_TIMEOUT), so a hanging collector never outlasts the stop grace.
+                sink.use {
+                    try {
+                        // m1-16, spec 8.6: the workspaces of terminal issues go before the first tick, in both modes.
+                        orchestrator.removeTerminalWorkspaces()
+                        if (once) {
+                            broken = printSummary(orchestrator.tick(), redactor)
+                        } else {
+                            orchestrator.runUntilCancelled()
+                            // m4-10: the daemon returns only once it drained after `loop drain`.
+                            stopReason = DRAINED
                         }
+                    } catch (e: CancellationException) {
+                        // The attempts have unwound (each recorded canceled with this reason); the store is still open.
+                        val reason = cancelReason(runFiles)
+                        stopReason = reason
+                        withContext(NonCancellable) {
+                            val event =
+                                RunStopped.event(
+                                    ts = clock.now(),
+                                    projectId = projectId,
+                                    data =
+                                        mapOf(
+                                            RunStopped.REASON to reason,
+                                            RunStopped.ATTEMPTS_CANCELED to orchestrator.attemptsCanceled.toString(),
+                                        ),
+                                    runId = runId,
+                                )
+                            store.record(event).onFailure { error ->
+                                log.log(LogLevel.WARN, "store", LogOutcome.FAILED, context, reason = error.sentence())
+                            }
+                        }
+                        throw e
                     }
-                    throw e
                 }
             }
         }
         // An attempt that broke on an internal error is a failure of Loop, not an attempt outcome.
         if (broken > 0) throw ProgramResult(EXIT_INTERNAL_ERROR)
+    }
+
+    /**
+     * m4-42: the preflight problem of [workflow]'s `exporters:` sections, null when it has none or they are valid. A
+     * failed discovery of the exporter plugins matters only to a workflow that turns one on.
+     */
+    private fun exporterProblem(workflow: WorkflowFile): String? {
+        if (workflow.exporters.isEmpty()) return null
+        return host.exporterPlugins.fold({ it.problem(workflow.exporters, host.rawEnv) }, { it.sentence() })
+    }
+
+    /**
+     * m4-42: the sink the orchestrator records into: the store, then each exporter [workflow] turns on, wrapped in the
+     * run's redactor, which first learns the secrets the exporters send. Logs the plugins found, `event=plugins`, and
+     * an exporter's failures, `event=export outcome=failed` at most once a minute and once more at the end of the run with
+     * the events dropped then, which never stop the run. The exporters are built
+     * once: a reload that changes `exporters:` is checked by the preflight and takes effect at the next run.
+     */
+    private fun exportingSink(
+        workflow: WorkflowFile,
+        store: EventSink,
+        log: KeyValueLog,
+        context: LogContext,
+        runners: RunnerPlugins,
+        redactor: SecretRedactor,
+    ): ExportingSink {
+        // The startup preflight checked the sections, so the plugins were found when the workflow turns one on.
+        val exporters = host.exporterPlugins.getOrElse { ExporterPlugins.classpath }
+        exporters.warnings(workflow.exporters, host.rawEnv).forEach { warn(redactor.redact(it)) }
+        redactor.learn(
+            exporters
+                .secretEnvNames(workflow.exporters)
+                .mapNotNull { name -> host.rawEnv[name]?.let { name to it } }
+                .toMap()
+                .filterValues { it.length >= SecretRedactor.MIN_SECRET_LENGTH },
+        )
+        val enabled = exporters.create(workflow.exporters, host.rawEnv, redactor)
+        val trackers = host.trackerPlugins.getOrElse { TrackerPlugins.classpath }
+        log.log(
+            LogLevel.INFO,
+            "plugins",
+            LogOutcome.FOUND,
+            context,
+            fields =
+                mapOf(
+                    "runners" to runners.kinds.sorted().joinToString(","),
+                    "trackers" to trackers.kinds.sorted().joinToString(","),
+                    "exporters" to
+                        exporters.keys
+                            .sorted()
+                            .joinToString(",")
+                            .ifEmpty { "none" },
+                    "enabled_exporters" to enabled.joinToString(",") { it.key }.ifEmpty { "none" },
+                ),
+        )
+        return ExportingSink(store, enabled, onFailure = { key, error, failures ->
+            val fields = mapOf("exporter" to key, "failures" to failures)
+            log.log(LogLevel.WARN, "export", LogOutcome.FAILED, context, fields = fields, reason = error.sentence())
+        })
     }
 
     /**

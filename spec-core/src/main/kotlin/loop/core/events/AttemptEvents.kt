@@ -22,7 +22,28 @@ object AttemptStarted : EventDefinition("attempt_started") {
      */
     const val OCCUPANCY = "occupancy"
 
-    override val sample = mapOf(LOOP_VERSION to "abc123", CONFIG_VERSION to "0123456789abcdef", OCCUPANCY to "true")
+    /**
+     * m4-42: the attempt's ledger setup, as its ledger row names it: the tracker id, the issue kind, the runner kind,
+     * the runner's model and the prompt template version. `kind` and `model` are absent when the setup has none. An
+     * exporter puts them on every span of the attempt.
+     */
+    const val TRACKER = "tracker"
+    const val KIND = "kind"
+    const val RUNNER = "runner"
+    const val MODEL = "model"
+    const val TEMPLATE_VERSION = "template_version"
+
+    override val sample =
+        mapOf(
+            LOOP_VERSION to "abc123",
+            CONFIG_VERSION to "0123456789abcdef",
+            OCCUPANCY to "true",
+            TRACKER to "default",
+            KIND to "code",
+            RUNNER to "claude-code",
+            MODEL to "claude-opus-5-5",
+            TEMPLATE_VERSION to "fedcba9876543210",
+        )
 }
 
 /** The end of an attempt; an attempt a later run found left open by a dead process shows in the timeline (m1-36). */

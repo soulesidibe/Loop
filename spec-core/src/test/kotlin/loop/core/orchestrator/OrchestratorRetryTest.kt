@@ -212,6 +212,22 @@ class OrchestratorRetryTest {
         }
 
     @Test
+    fun `m4-42 attempt_started carries the ledger setup of the attempt`() =
+        runTest {
+            val sink = FakeSink()
+
+            orchestrator(FakeTracker(listOf(issue("m1-02"))), sink = sink).tick()
+
+            val data = sink.ofKind("attempt_started").single().data
+            val setup = LedgerMeter.setupOf(workflow(), issueId = "m1-02")
+            assertEquals(setup.tracker, data["tracker"])
+            assertEquals(setup.runner, data["runner"])
+            assertEquals(setup.templateVersion, data["template_version"])
+            assertEquals(setup.kind, data["kind"])
+            assertEquals(null, data["model"])
+        }
+
+    @Test
     fun `failure after continuation gets attempt 2 after 20 s`() =
         runTest {
             var turns = 0

@@ -14,6 +14,19 @@ Issues for this repo live in Loop's own `files` tracker, which Loop reads to dis
 - Agent comment: `2026-11-08 16:00Z agent 7f3a1c2e: <text>` (UTC, short Attempt id), continuation lines indented by 2 spaces, entries separated by one blank line. Human answer, written by hand: `2026-11-08 soule: <text>`, time optional. Details in [`plugins/tracker-files.md`](../plugins/tracker-files.md#comments).
 - Specs live in `.loop/specs/<slug>.md`, never in `.loop/issues/`, so Loop never dispatches them.
 
+## Blockers across trackers
+
+`blocked_by` names issues of the same tracker. To wait for an issue of another tracker, write a line in the body (m4-16):
+
+```markdown
+Blocked by gh:12
+Blocked by gh:12, local:m4-03
+```
+
+- The line starts at column 0 with `Blocked by `, followed only by `<tracker>:<id>` items separated by commas. Any other `Blocked by` line is prose and blocks nothing, such as `Blocked by bl-54 so the two never run side by side`. Lines in fenced code blocks are ignored.
+- The issue waits while any blocker is not in a terminal state of its own tracker, and the dispatch records `candidate_skipped` with `blocked_cross_tracker` naming the blocker.
+- Fail closed: a tracker id that is not in the workflow, such as `lin` in `Blocked by lin:MKT-12` with no `lin` tracker, keeps the issue blocked with the reason naming the unknown tracker. So does a blocker its tracker cannot read or does not find.
+
 ## Runnable criteria
 
 Loop runs the command of a criterion as a check when the kind declares `{ type: acceptance_commands }` (m2-09), with the `files` tracker only. A criterion is runnable when its line opens with one backticked command followed by the word `passes`:

@@ -40,6 +40,15 @@ class PluginProfileDocsTest {
         }
     }
 
+    @Test
+    fun `m4-42 every built in exporter has a doc whose profile table matches its profile`() {
+        val exporters = ExporterPlugins.classpath
+        assertEquals(listOf("otel"), exporters.keys.sorted())
+        for (key in exporters.keys) {
+            assertMatches(docs.resolve("export-$key.md"), "exporters.$key", exporters.provider(key)!!.profile)
+        }
+    }
+
     private fun assertMatches(
         doc: Path,
         section: String,

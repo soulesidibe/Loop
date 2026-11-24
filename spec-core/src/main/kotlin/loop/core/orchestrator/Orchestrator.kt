@@ -137,6 +137,7 @@ import loop.core.template.Template
 import loop.core.template.TemplateEngine
 import loop.core.trackers.NamespacedId
 import loop.core.trackers.TrackerPoll
+import loop.core.trackers.TrackerSlots
 import loop.core.verify.AcceptanceCriteria
 import loop.core.verify.AcceptanceCriterion
 import loop.core.verify.CheckResult
@@ -653,6 +654,7 @@ class Orchestrator(
             (candidates + fire.dispatch.map { it.issue })
                 .filter(::isEligible)
                 .distinctBy { it.id }
+                .let { trackers.withCrossTrackerBlockers(it, effective.trackers) }
                 // The plan's order, so the skips below are recorded in the order the slots fill.
                 .sortedWith(SlotPlan.slotOrder(retryDueAt))
         val skips = mutableMapOf<Issue, String>()
@@ -695,6 +697,7 @@ class Orchestrator(
                 slotUse(),
                 due = fire.dispatch.filter { it.issue.id in eligibleIds },
                 candidates = eligible.filter { it.id !in retryAttempts },
+                trackerOf = { effective.trackers.trackerOf(it)?.id },
             )
         val attempts = mutableListOf<Deferred<AttemptSummary?>>()
         // Due retries with no slot, each with the error its `retry_scheduled` gives, null for the orchestrator's own.
@@ -762,8 +765,12 @@ class Orchestrator(
             mergeJobs = waits.busy.filter(waits::isChecking).toSet(),
         )
 
-    /** What holds an agent slot now, for the [SlotPlan]: the running attempts by state and the running merge checks. */
-    private fun slotUse(): SlotUse = SlotUse(running.values.toList(), waits.checks)
+    /**
+     * What holds an agent slot now, for the [SlotPlan]: the running attempts by state and by tracker (m4-15), and the
+     * running merge checks.
+     */
+    private fun slotUse(): SlotUse =
+        SlotUse(running.values.toList(), waits.checks, TrackerSlots.runningTrackers(running.keys, effective.trackers))
 
     /**
      * The sections the kind's readiness check finds missing in [issue] (m2-11); empty when it is ready, in
@@ -792,7 +799,7 @@ class Orchestrator(
             if (issue.labels.any { it.normalized() == NEEDS_INFO_LABEL } || !bounced.add(issue.id)) continue
             val context = pollContext.copy(issueId = issue.id, issueIdentifier = issue.identifier)
             val text = notReadyComment(missing.getValue(issue.id))
-            withContext(io) { tracker.addComment(issue.id, IssueComment(LOOP_AUTHOR, clock.now(), text)) }.fold(
+            withContext(io) { tracker.addComment(issue, IssueComment(LOOP_AUTHOR, clock.now(), text)) }.fold(
                 onSuccess = {
                     recordIssueEvent(
                         issue,
@@ -1338,7 +1345,7 @@ class Orchestrator(
                     AttemptStarted.OCCUPANCY to
                         attempt.runner.capabilities.occupancy
                             .toString(),
-                ),
+                ) + attempt.setupData(),
         )
         log.log(LogLevel.INFO, "attempt", LogOutcome.STARTED, attempt.logContext())
         attempt.writeClaim()
@@ -1671,6 +1678,16 @@ class Orchestrator(
         private val ledger = LedgerMeter()
         private val ledgerSetup = LedgerMeter.setupOf(workflow, runner.model, issue.id)
 
+        /** m4-42: the ledger setup `attempt_started` carries, so an exporter names it on every span of the attempt. */
+        fun setupData(): Map<String, String> =
+            mapOfNotNull(
+                AttemptStarted.TRACKER to ledgerSetup.tracker,
+                AttemptStarted.KIND to ledgerSetup.kind,
+                AttemptStarted.RUNNER to ledgerSetup.runner,
+                AttemptStarted.MODEL to ledgerSetup.model,
+                AttemptStarted.TEMPLATE_VERSION to ledgerSetup.templateVersion,
+            )
+
         /** The latest turn line of this attempt, which a `stop` line copies (m4-04). */
         private var lastTurnLine: LedgerTurn? = null
 
@@ -1852,14 +1869,14 @@ class Orchestrator(
          * snapshot from the attempt's workflow. A failure gives its reason, null when all is in place.
          */
         private suspend fun createDirectory(): String? {
-            val states = tracker.definedStates
+            val states = trackers.definedStatesOf(issue.id)
             return try {
                 withContext(io) {
                     Files.createDirectories(directory.parent)
                     Files.createDirectory(directory, ownerOnly())
                     directoryCreated = true
                     Files.createDirectory(directory.resolve(REQUESTS_DIR), ownerOnly())
-                    toolConfigWriter.write(toolConfig, projectId, workflow, states)
+                    toolConfigWriter.write(toolConfig, projectId, workflow, workflow.trackers.entryOf(issue.id), states)
                 }
                 null
             } catch (e: CancellationException) {
@@ -1990,13 +2007,13 @@ class Orchestrator(
 
         /** Moves the issue and records `issue_moved` by host; the failure's reason, null when it moved. */
         private suspend fun applyMove(request: ToolRequest.Move): String? {
-            val from =
+            val current =
                 withContext(io) { tracker.fetchIssuesByIds(listOf(issue.id)) }
                     .getOrElse { return it.describe() }
                     .firstOrNull()
-                    ?.state
                     ?: return "no issue ${issue.identifier} in the tracker"
-            withContext(io) { tracker.moveIssue(issue.id, request.to) }.getOrElse { return it.describe() }
+            val from = current.state
+            withContext(io) { tracker.moveIssue(current, request.to) }.getOrElse { return it.describe() }
             record(IssueMoved, data = mapOf(Tracker.FROM to from, Tracker.TO to request.to, Tracker.BY to BY_HOST))
             return null
         }
@@ -2257,7 +2274,7 @@ class Orchestrator(
         private suspend fun applyComment(request: ToolRequest.Comment): String? {
             val text = redactor.redact(request.text).trim()
             val comment = IssueComment("agent ${attemptId.value.take(SHORT_ID)}", clock.now(), text)
-            withContext(io) { tracker.addComment(issue.id, comment) }.getOrElse { return it.describe() }
+            withContext(io) { tracker.addComment(issue, comment) }.getOrElse { return it.describe() }
             record(IssueCommented, data = mapOf(Tracker.CHARS to text.length.toString(), Tracker.BY to BY_HOST))
             return null
         }
@@ -4202,10 +4219,8 @@ class Orchestrator(
             }
             val facts =
                 DeliveryFacts(
-                    issueId = issueId,
+                    issue = current,
                     identifier = identifier,
-                    title = current.title,
-                    nativeRef = current.nativeRef.orEmpty(),
                     attemptId = attemptId?.value,
                     fingerprint = verifiedFingerprint,
                     checks = EvidenceSummary.lines(passed.toList()),
@@ -4251,7 +4266,7 @@ class Orchestrator(
                 if (!ownMove(from)) record(HumanTouched, mapOf(HumanTouched.TOUCH to HumanTouch.MOVE, HumanTouched.TO_STATE to from))
                 return "the issue is no longer active, it is in $from"
             }
-            postSummary(to)
+            postSummary(current, to)
             startApprovalWait(to, approvedBy = null, pullRequest = pullRequest)
             record(
                 ApprovalRequested,
@@ -4299,14 +4314,17 @@ class Orchestrator(
             storeWaiting(wait) { waits.save(wait) }
         }
 
-        /** Posts the evidence summary of the last [verify] on the issue, redacted; a failure is logged at warn. */
-        private suspend fun postSummary(to: String) {
+        /** Posts the evidence summary of the last [verify] on [issue], redacted; a failure is logged at warn. */
+        private suspend fun postSummary(
+            issue: Issue,
+            to: String,
+        ) {
             val attempt = attemptId?.value ?: return
             val text = redactor.redact(EvidenceSummary.text(identifier, attempt, to, verifiedFingerprint, passed.toList())).trim()
             val comment = IssueComment(LOOP_AUTHOR, clock.now(), text)
             val failure =
                 try {
-                    withContext(io) { tracker.addComment(issueId, comment) }.exceptionOrNull()
+                    withContext(io) { tracker.addComment(issue, comment) }.exceptionOrNull()
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -4345,7 +4363,7 @@ class Orchestrator(
                 if (!ownMove(from)) record(HumanTouched, mapOf(HumanTouched.TOUCH to HumanTouch.MOVE, HumanTouched.TO_STATE to from))
                 return "the issue is no longer active, it is in $from"
             }
-            withContext(io) { tracker.moveIssue(issueId, to) }.getOrElse { return it.describe() }
+            withContext(io) { tracker.moveIssue(current, to) }.getOrElse { return it.describe() }
             record(IssueMoved, mapOf(Tracker.FROM to from, Tracker.TO to to, Tracker.BY to BY_HOST, Tracker.VERIFIED to "true"))
             return null
         }
@@ -4823,7 +4841,7 @@ class Orchestrator(
         }
         val failure =
             try {
-                withContext(io) { tracker.moveIssue(wait.issueId, to) }.exceptionOrNull()
+                withContext(io) { tracker.moveIssue(issue, to) }.exceptionOrNull()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -4864,10 +4882,8 @@ class Orchestrator(
         val context = waitContext(wait)
         val facts =
             DeliveryFacts(
-                issueId = wait.issueId,
+                issue = issue,
                 identifier = wait.identifier,
-                title = issue.title,
-                nativeRef = issue.nativeRef.orEmpty(),
                 attemptId = wait.attemptId?.value,
                 fingerprint = wait.fingerprint.orEmpty(),
                 checks = wait.checks,

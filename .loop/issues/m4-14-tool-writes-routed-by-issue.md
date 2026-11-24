@@ -1,7 +1,7 @@
 ---
 id: m4-14
 title: "Tool writes routed to the issue's own tracker, with native_ref"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-48]
@@ -48,3 +48,17 @@ Out of this issue: `file_followup` (m4-33), label writes of the `files` tracker 
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-24 20:51Z agent 0c1633af: m4-14 done, ready for review. TrackerAdapter has moveIssue and addComment overloads taking the current Issue, whose defaults call the id versions. loop.core.trackers.WriteRouting sends every write to the tracker of the issue's namespaced id. A write for a tracker the registry does not have fails with UnroutedWrite, which names the tracker id, and nothing is written. The tool config snapshot now holds the kind, states and provider of the issue's own tracker, so each agent's move is checked against its own tracker. The Orchestrator.kt diff only touches write call sites and the snapshot call. New tests: WriteRoutingTest, WriteRoutingOrchestratorTest, two tracker cases in ClaudeCodeTrackerToolsTest and CodexClientToolsRunTest (files plus GitHub on recorded answers, with a new RecordedGitHubIssue helper). The 17.5 item 16 tools 3 row is Covered. One known gap, recorded in docs/spec-decisions.md: the merge outcome comments in loop.core.merge.Merges still use the id version, because about 30 call sites hold the wait and not the issue. The router sends them to the right tracker, but they carry no native_ref. Worth a backlog item if a tracker ever needs native_ref there.
+
+2026-11-24 20:55Z loop: Loop opened pull request #46 for this issue: https://github.com/soulesidibe/Loop/pull/46
+
+2026-11-24 20:59Z loop: Loop did not merge pull request #46 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.27.
+  - alignment: aligned, The diff adds the Issue overloads with default bodies, a WriteRouting in loop.core.trackers, a per-tracker tool snapshot and the new tests the issue asks for, and the Orchestrator.kt changes appear to touch only write call sites.
+  - impact: medium, Every tracker write now goes through the new router, and the ToolConfigWriter signature and the DeliveryFacts shape changed, so the core write path and the tool snapshot are affected.
+  - verification: strong, New unit, orchestrator and CLI tests cover the defaults, native_ref, routing to each tracker on recorded GitHub answers, the unrouted tracker failure and the Codex path, and the one known gap in the merge comments is documented.
+  - rollback_cost: two_way, The change is code, tests and docs only, with no schema or data migration, and the new overloads are additive with defaults, so a revert undoes it.
+  - error_detection: loud, A write for a tracker missing from the registry fails with UnroutedWrite naming the tracker id and writes nothing, and pull request delivery treats it as permanent.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 11 of 21 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.

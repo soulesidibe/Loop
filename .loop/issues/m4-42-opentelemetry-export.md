@@ -1,7 +1,7 @@
 ---
 id: m4-42
 title: "OpenTelemetry export plugin"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-01, m4-13]
@@ -63,3 +63,17 @@ Out of this issue: metrics and logs signals, a collector setup, and exporting th
   - **Shutdown must fit the stop grace.** With an exporter configured and a collector that hangs (no answer, not a refused connection), `ExportingSink.close()` waits up to 10 s for the drain (`ExporterPlugins.kt`, around lines 177 and 231), then `OtelEventExporter.close()` waits up to 2 x `timeout_ms` for export and shutdown (`OtelEventExporter.kt`, around lines 63 and 64). The shutdown hook waits only `SHUTDOWN_WAIT_SECONDS = 10` (`RunCommand.kt`, around line 614), and the sink closes inside that window, before the store closes and before `onEnd`. So `loop stop`, SIGINT or SIGTERM exits 143 instead of 0, with no `run completed` line, no run lock release and no store close, which breaks the clean stop of m1-34. Bound the drain plus the exporter close to about 2 to 3 s in total, whatever `timeout_ms` says, dropping what is left and counting it in the `event=export outcome=failed` line.
   - **Tests.** Add a test with an exporter that hangs (a collector that accepts the connection and never answers, or a fake exporter that blocks in export and close), proving that `loop stop` still exits 0 with `run completed`, and a test that a full queue drops events without blocking `record`.
   - **Docs.** `docs/plugins/export-otel.md` must not say the exporter never slows the run for this case; state the shutdown budget, and that a secret the redactor does not know leaves the machine with the export.
+
+2026-11-24 20:51Z loop: Loop updated pull request #44 for this issue: https://github.com/soulesidibe/Loop/pull/44
+
+2026-11-24 20:54Z loop: Loop did not merge pull request #44 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Failed conditions:
+  - diff_size: the diff changes 1325 lines outside tests and docs, over the limit of 1000, 2588 lines in all
+  Merge risk: band medium, score 1.53.
+  - alignment: partial, The diff covers the provider interface, loader, plugin, config, redaction, docs and the requested shutdown budget, but it also edits spec-core (AttemptEvents, Orchestrator, WorkflowFile, KeyValueLog) and rewires RunCommand's sink path, which the issue did not name.
+  - impact: medium (floor medium: the diff changes 1325 lines outside tests and docs, over half the limit of 1000), About 1325 non-test lines are new and the run's sink path and shutdown sequence in RunCommand change, though exporters are opt in so default behavior is unchanged.
+  - verification: strong, Tests cover the span tree, ids, redaction, preflight refusals, the exporter contract, a hanging collector with exit 0 on stop, queue overflow and the close budget, though I did not run them.
+  - rollback_cost: two_way, A revert removes the code and the exporter keeps no state, leaving only additive setup fields on stored attempt_started rows.
+  - error_detection: partial, Export failures and events dropped at close are logged as event=export outcome=failed, rate limited to once a minute, but a full queue drops events and a closer thread left behind is easy to miss.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 22 of 28 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.

@@ -84,6 +84,7 @@ class RetryQueueTest {
                 dueAt = at + 1_000.milliseconds,
                 error = "no available orchestrator slots",
                 firstDueAt = first.dueAt,
+                waitingFor = "no available orchestrator slots",
             ),
             entry,
         )
@@ -92,6 +93,26 @@ class RetryQueueTest {
         assertEquals(first.dueAt, again?.firstDueAt)
         assertEquals(1, again?.attempt)
         assertNull(queue.requeue("9", at, delayMs = 1_000L, error = "x"))
+    }
+
+    @Test
+    fun `a requeue keeps the reason it waits for and the last refresh, a new schedule forgets both (m4-15)`() {
+        retry(fail(error = "exit_code=1"))
+        assertNull(queue.entry("1")?.waitingFor)
+        assertNull(queue.entry("1")?.refreshedAt)
+
+        val refreshedAt = now + 10_000.milliseconds
+        queue.refreshed("1", refreshedAt)
+        queue.requeue("1", now + 10_000.milliseconds, delayMs = 1_000L, error = "no available orchestrator slots")
+        val again = queue.requeue("1", now + 11_000.milliseconds, delayMs = 1_000L, error = "no available machine slots")
+
+        assertEquals("no available machine slots", again?.waitingFor)
+        assertEquals(refreshedAt, again?.refreshedAt)
+        val next = retry(fail(error = "exit_code=1", at = now + 20_000.milliseconds)).entry
+        assertNull(next.waitingFor)
+        assertNull(next.refreshedAt)
+        queue.refreshed("9", refreshedAt)
+        assertNull(queue.entry("9"))
     }
 
     @Test
