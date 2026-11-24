@@ -268,6 +268,58 @@ class ToolMoveCommandTest {
         assertEquals(0, fixture.query("SELECT count(*) AS n FROM events WHERE kind = 'issue_move_requested'").single()["n"]!!.toInt())
     }
 
+    @Test
+    fun `m4-47 a snapshot written before m4-47 still queues a move of its own issue`() {
+        fixture.issue("t-1")
+        fixture.seed(fixture.attemptStarted(ATTEMPT, "t-1"))
+        val env = fixture.toolEnv(ATTEMPT, "t-1")
+        stripTrackerKeys()
+
+        val result = fixture.inProcess("tool", "move", "review", cwd = root, env = env)
+
+        assertEquals(0, result.exitCode, result.toString())
+        assertEquals(listOf(ToolRequest.Move("review")), fixture.queuedRequests(ATTEMPT).map { assertIs<QueuedRequest.Valid>(it).request })
+    }
+
+    @Test
+    fun `m4-47 a snapshot written before m4-47 still queues a move of a namespaced issue with LOOP_TRACKER_ID`() {
+        fixture.issue("t-1")
+        fixture.seed(fixture.attemptStarted(ATTEMPT, "default:t-1").copy(issueIdentifier = "t-1"))
+        val env = fixture.toolEnv(ATTEMPT, "t-1") + ("LOOP_TRACKER_ID" to "default")
+        stripTrackerKeys()
+
+        val result = fixture.inProcess("tool", "move", "review", cwd = root, env = env)
+
+        assertEquals(0, result.exitCode, result.toString())
+        assertEquals(listOf(ToolRequest.Move("review")), fixture.queuedRequests(ATTEMPT).map { assertIs<QueuedRequest.Valid>(it).request })
+    }
+
+    @Test
+    fun `m4-47 a snapshot written before m4-47 still refuses an attempt of another issue`() {
+        fixture.issue("t-1")
+        fixture.issue("t-3")
+        fixture.seed(fixture.attemptStarted(ATTEMPT, "t-3"))
+        val env = fixture.toolEnv(ATTEMPT, "t-1")
+        stripTrackerKeys()
+
+        val result = fixture.inProcess("tool", "move", "review", cwd = root, env = env)
+
+        assertEquals(5, result.exitCode, result.toString())
+        assertEquals(
+            "loop tool move: attempt ${ATTEMPT.take(8)} belongs to issue t-3, not t-1. Nothing queued.",
+            result.stderr.trim(),
+        )
+        assertEquals(emptyList(), fixture.queuedRequests(ATTEMPT))
+    }
+
+    /** Rewrites the attempt's snapshot as a Loop before m4-47 wrote it, without `tracker_id` and `tracker_ids`. */
+    private fun stripTrackerKeys() {
+        val config = fixture.attemptDir(ATTEMPT).resolve("tool-config.json")
+        val json = Json.parseToJsonElement(config.readText()).jsonObject
+        assertTrue("tracker_id" in json && "tracker_ids" in json, "the current writer sets both keys: $json")
+        config.writeText(JsonObject(json - "tracker_id" - "tracker_ids").toString())
+    }
+
     private fun movedEvents(): Int =
         if (!fixture.storeFile.exists()) {
             0
