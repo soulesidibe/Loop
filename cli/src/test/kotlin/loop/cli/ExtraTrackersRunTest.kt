@@ -29,8 +29,10 @@ class ExtraTrackersRunTest {
             "    provider: { dir: ./side-issues }\n" +
             "    required_labels: [side-ready]\n"
 
+    // m4-13 polls the extra trackers and removed the startup line, so this test now checks that no such line is
+    // logged. It keeps its m4-11 name, since a renamed test counts as a deleted one for the `deleted_tests` guard.
     @Test
-    fun `loop run with extra trackers logs no line that they are not polled and works the primary tracker`() {
+    fun `loop run with extra trackers logs one line that they are not polled yet and works the primary tracker`() {
         fixture.writeWorkflow(extra = trackers)
         fixture.issue("t-1")
 

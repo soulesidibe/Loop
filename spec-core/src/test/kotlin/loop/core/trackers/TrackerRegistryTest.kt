@@ -330,6 +330,22 @@ class TrackerRegistryTest {
         assertNull(workflow.trackers.entry("mirror")!!.settings)
     }
 
+    // m4-13 polls every tracker and removed the notice that the extra ones are not polled, so this test now checks
+    // that the extras and the primary tracker are all there to poll, each issue judged by its own one. It keeps its
+    // m4-11 name, since a renamed test counts as a deleted one for the `deleted_tests` guard.
+    @Test
+    fun `the notice of extra trackers names them and the primary tracker Loop polls`() {
+        val trackers =
+            load(
+                primary + "trackers:\n  - { id: local, kind: files }\n  - { id: side, kind: files, provider: { dir: ./b } }\n",
+            ).trackers
+
+        assertEquals(listOf("gh", "local", "side"), trackers.all.map { it.id })
+        assertEquals("local", trackers.trackerOf("local:t-1")?.id)
+        assertEquals("side", trackers.trackerOf("side:t-1")?.id)
+        assertEquals("gh", trackers.trackerOf("t-1")?.id)
+    }
+
     /** A tracker plugin for these tests, whose [parse] is [answer]. */
     private class TestTrackerProvider(
         override val kind: String,
