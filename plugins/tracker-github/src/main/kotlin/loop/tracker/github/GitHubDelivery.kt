@@ -31,7 +31,9 @@ class GitHubDelivery(
     /**
      * Delivery to [owner]/[repo] with [token]: pushes commits of the project repository [projectDir] to
      * [GitPush.pushUrl] of the API at [apiUrl], and opens pull requests against [base] through that API. Git processes
-     * get only [GitPush.minimalEnv] of [env]; the token is added to the push alone.
+     * get only [GitPush.minimalEnv] of [env]; the token is added to the push alone. The pull request steps and the CI
+     * wait's polls send through the client of [clients] for [apiUrl] and [token] (m4-48), so they share its rate limit
+     * hold with the run's GitHub trackers; their own clients over [transport] and [clock] by default.
      */
     constructor(
         owner: String,
@@ -43,10 +45,11 @@ class GitHubDelivery(
         env: Map<String, String> = System.getenv(),
         transport: GitHubTransport = JdkGitHubTransport(),
         clock: Clock = Clock.System,
+        clients: GitHubClients = GitHubClients(transport, clock),
     ) : this(
         repository = "$owner/$repo",
         git = GitPush(projectDir, GitPush.pushUrl(apiUrl, owner, repo), token, env),
-        pullRequests = GitHubPullRequests(GitHubClient(apiUrl, token, transport, clock), owner, repo, base),
+        pullRequests = GitHubPullRequests(clients.client(apiUrl, token), owner, repo, base),
         base = base,
     )
 
