@@ -3,7 +3,7 @@ id: bl-162
 title: "Install docs: Homebrew, the release archive and building from source"
 state: todo
 priority: 3
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [bl-161]
 ---
 

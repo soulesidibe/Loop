@@ -1,7 +1,7 @@
 ---
 id: bl-135
 title: "Low findings of the m3-20 merge risk review, Codex Loop mode guards"
-state: todo
+state: done
 priority: 3
 labels: [ready-for-agent]
 blocked_by: [bl-128]
@@ -43,3 +43,16 @@ Every `thread/start` now carries `config.allow_login_shell=false`, a real key of
 ## Comments
 
 2026-11-18 soule: triaged ready-for-agent in m3-29. Blocked by bl-128, the last of the chain bl-141, bl-128, bl-135 after m4-08. The m3-20 blocker is done and removed.
+
+2026-11-24 04:03Z agent f886fcc7: bl-135 done. Exec policy rules: codex 0.167.0 can skip rules files only in `codex exec` (`--ignore-rules`), not the app server, so the runner now reads every `*.rules` file of `$CODEX_HOME/rules`, `/etc/codex/rules` and the `.codex/rules` folders from the workspace up to its project root before each session. A rule that allows a denied command, or one Loop cannot read as literals, fails the first turn with `exec_policy_rule: <file> ...`, and nothing starts. Guards: a program run by its path, git's own options (`-c x=y`, `-C .`), backslashes and a substitution as the git subcommand are denied, and a `git commit -m` message is ignored when matching. DeniedCommandsTest compares the list with ClaudeSettingsFile by reflection. `FOO=bar codex app-server` fails preflight. The PATH note is in the runner doc. The other findings are closed in docs/spec-decisions.md (bl-135 section). The checks that need a real turn go to the next Codex exit run.
+
+2026-11-24 04:22Z loop: Loop opened pull request #36 for this issue: https://github.com/soulesidibe/Loop/pull/36
+
+2026-11-24 04:36Z loop: Loop did not merge pull request #36 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.53.
+  - alignment: aligned, The diff covers each acceptance criterion (rules check, guard matching, parity test, env assignment refusal) and closes the other findings with reasons in the docs.
+  - impact: medium (floor medium: the diff changes 908 lines, over half the limit of 1000), 908 changed lines, a new Starlark-subset parser, and a hard session refusal that can block every Codex attempt when an operator rule or an unreadable rules file exists.
+  - verification: partial, Unit tests cover the rule forms, guard matching and parity, but no real Codex turn checks rule loading, the parser is a hand-rolled approximation of Starlark, and the parity test reads source text.
+  - rollback_cost: two_way, The change is code, tests and docs only, and it adds no persisted state or data format, so a revert undoes it.
+  - error_detection: loud, A rule that allows a denied command, or one that cannot be read, fails the turn with an explicit exec_policy_rule reason, and an env assignment fails at preflight.
+  Once approved, Loop runs the merge check again and merges.

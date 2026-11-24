@@ -1,7 +1,7 @@
 ---
 id: bl-141
 title: "Codex runner turns fail when the operator's codex config names a model the login refuses"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-agent]
 blocked_by: [m4-08]
@@ -33,3 +33,5 @@ None. Backlog, not scheduled in a milestone. Found while recording the m3-03 fix
 2026-11-24 01:42Z loop: Loop opened pull request #33 for this issue: https://github.com/soulesidibe/Loop/pull/33
 
 2026-11-24 01:42Z loop: Loop could not merge pull request #33: merging main at 36875764624795ea0f128b1ba01782669bdd825e into loop/bl-141 conflicts (conflict in docs/spec-decisions.md). The merge was aborted and the branch is unchanged. The next attempt merges refs/loop/base/main into its branch, resolves the conflict and submits the result again.
+
+2026-11-24 02:53Z loop: Loop updated pull request #33 for this issue: https://github.com/soulesidibe/Loop/pull/33

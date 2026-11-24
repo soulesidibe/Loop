@@ -1,7 +1,7 @@
 ---
 id: bl-128
 title: "Low findings of the m3-17 merge risk review, the Codex runner launch"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-agent]
 blocked_by: [bl-141]
@@ -30,3 +30,13 @@ None. Backlog, not scheduled in a milestone. Found by the merge risk review of p
 ## Comments
 
 2026-11-18 soule: triaged ready-for-agent in m3-29. Blocked by bl-141, the first of the chain bl-141, bl-128, bl-135 after m4-08, since all three edit the Codex runner.
+
+2026-11-24 03:18Z agent 5ec5259b: bl-128 done on loop/bl-128 (d0c1631..ced2be5). Each finding:
+  1. Login shell: already fixed by m3-20. The runner runs the command by argv with no shell. The test `m3-20 a name the env policy removed stays out even when the login profile exports it` writes `.bash_profile` and `.profile` that export the removed name GH_TOKEN, and it still passes. No code change needed.
+  2. Pinned version: now enforced in StartupHandshake. The version is read from the `userAgent` of the initialize answer, which has the form `<originator>/<version> (...)`. If the major version differs from CodexCliVersion.PINNED, the start fails with `response_error: codex <v> is not of the pinned major version <m> (codex-cli <pinned>)`. If the userAgent has no readable version, it fails with `response_error: the initialize response names no codex version in its userAgent`. Either way the process group is killed before `initialized` is written. Another minor or patch version of the same major still starts, as m3-02 decided.
+  3. 10 MB line: ProcessGroupLauncher now reads lines with BoundedLineReader, which keeps the same line breaks as readLine and keeps at most 10 MB of a line. A longer line is dropped and never held whole in memory. A `loop:` line on stderr takes its place, giving the stream and the size. This is the launcher's default for every runner. ProtocolFraming.decode also refuses a line over 10 MB as Malformed `line longer than 10 MB`. Tests cover a line at the limit, one byte over, and the size counted in bytes.
+  4. Frames discarded and stall timeout 0: closed. Frames have been read by the handshake and the turn since m3-18 and m3-19. A silent server is bounded by the runner's own read_timeout_ms and turn_timeout_ms, and both refuse 0 (m3-19).
+  5. Every run ending in TurnFailed: closed as obsolete. The handshake landed in m3-18 and turns run since m3-19.
+  Docs: spec-decisions.md (the m3-18 section, the m3-02 pinned CLI line, the 17.5 item 8 row) and docs/plugins/runner-codex-app-server.md. Focused tests (the codex, runner-process, runner-command and runner-claude-code modules) and ktlintCheck pass.
+
+2026-11-24 03:34Z loop: Loop opened pull request #35 for this issue: https://github.com/soulesidibe/Loop/pull/35
