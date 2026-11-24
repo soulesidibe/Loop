@@ -2,8 +2,8 @@ package loop.tracker.github
 
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
-import kotlinx.coroutines.yield
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.yield
 import loop.api.DeliveryError
 import loop.api.IssueComment
 import loop.api.TrackerError
@@ -287,7 +287,11 @@ class SharedRateLimitHoldTest {
                     tracker.toString(),
                     delivery.toString(),
                     delivery.findPullRequest("loop/m4-48").exceptionOrNull().toString(),
-                    delivery.actionsRuns(sha).exceptionOrNull()?.message.orEmpty(),
+                    delivery
+                        .actionsRuns(sha)
+                        .exceptionOrNull()
+                        ?.message
+                        .orEmpty(),
                     tracker.fetchIssuesByIds(listOf("26")).exceptionOrNull().toString(),
                 )
             for (text in texts) assertTrue(token !in text && "m448SharedHold" !in text, text)

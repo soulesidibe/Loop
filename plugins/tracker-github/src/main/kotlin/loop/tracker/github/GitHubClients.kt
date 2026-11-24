@@ -84,7 +84,12 @@ class GitHubClients(
         /** `scheme://host:port` of [url], lowercased, with the scheme's default port when none is written. */
         internal fun origin(url: URI): String {
             val scheme = url.scheme.orEmpty().lowercase()
-            val port = if (url.port != -1) url.port else if (scheme == "http") HTTP_PORT else HTTPS_PORT
+            val port =
+                when {
+                    url.port != -1 -> url.port
+                    scheme == "http" -> HTTP_PORT
+                    else -> HTTPS_PORT
+                }
             return "$scheme://${url.host.orEmpty().lowercase()}:$port"
         }
 

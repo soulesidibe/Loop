@@ -30,7 +30,6 @@ class GitHubClient(
     /** The rate limit hold of this client's origin and token, its own unless [GitHubClients] shares one (m4-48). */
     private val hold: RateLimitHold = RateLimitHold(clock),
 ) {
-
     private val headers =
         mapOf(
             "Authorization" to "Bearer $token",

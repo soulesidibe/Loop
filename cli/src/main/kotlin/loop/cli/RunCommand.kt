@@ -41,6 +41,7 @@ import loop.core.workspace.WorkspaceManager
 import loop.core.workspace.Workspaces
 import loop.runner.process.agentEnvironment
 import loop.store.GzipAttemptRecords
+import loop.tracker.github.GitHubClients
 import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
@@ -184,11 +185,15 @@ class RunCommand(
         // workflow, which follows reloads, so the issue leaves the active set the next poll checks. m4-13: each tracker
         // polled on its own, a handoff removing the labels of the issue's own tracker; one a reload removed keeps its own.
         val trackersAt = AtomicReference(workflow.trackers)
+        // m4-48 (bl-50): one GitHub client per API origin and token for the life of the run, shared by the trackers and
+        // pull request delivery, the CI wait's polls included, so a request one of them spends holds the others.
+        val gitHub = GitHubClients()
         val tracker =
             project.trackerPoll(
                 onWarning = { warning -> log.log(LogLevel.WARN, "tracker", LogOutcome.FAILED, context, reason = warning.trimEnd('.')) },
                 onMalformed = { malformed -> log.log(LogLevel.WARN, "tracker", LogOutcome.FAILED, context, reason = malformed.sentence()) },
                 requiredLabels = { id -> (trackersAt.get().entry(id) ?: workflow.trackers.entry(id))?.requiredLabels.orEmpty() },
+                gitHub = gitHub,
             )
         val runnerCheck = host.runnerPreflight(workflow)
         runnerCheck.warnings.forEach { warn(redactor.redact(it)) }
@@ -325,7 +330,8 @@ class RunCommand(
                 // m2-09: the acceptance command list of each issue, frozen at its first dispatch.
                 frozenCommands = store,
                 // m3-15: one executor per delivery settings for the life of the run, so a rate limit hold lasts across ticks.
-                deliveryFor = DeliveryExecutors(host.rawEnv)::of,
+                // m4-48: over the trackers' GitHub clients, so the hold is theirs too.
+                deliveryFor = DeliveryExecutors(host.rawEnv, gitHub = gitHub)::of,
                 // m2-28: the auto merge gate reads the delivered attempt's events, and its reviewer is read only.
                 attemptEvents = { attempt -> store.eventsForAttempt(attempt).map { events -> events.map { it.event } } },
                 riskReviewerFor = { wf -> riskReviewerFor(wf, host.rawEnv, agentEnvRemovedNames(wf), holdoutDir) },
