@@ -155,6 +155,20 @@ class CodexAppServerRunnerProviderTest {
     }
 
     @Test
+    fun `bl-135 a command that starts with an env assignment is refused when the config is read, never run as a program`() {
+        listOf("FOO=bar codex app-server", "OPENAI_BASE_URL=http://x CODEX_HOME=/tmp/c codex app-server", "'FOO=bar' codex").forEach { command ->
+            val failure = assertFailsWith<RunnerConfigException>(command) { provider.validate(mapOf("command" to command)) }
+
+            assertTrue(failure.message!!.startsWith("runners.codex.command "), "$command: ${failure.message}")
+            assertTrue("agent.env" in failure.message!!, "$command: ${failure.message}")
+            assertFalse("bar" in failure.message!! || "http" in failure.message!!, "the value is never written: ${failure.message}")
+        }
+        // An `=` in a later word, or a program word that is not a name, is a plain word.
+        assertEquals(listOf("codex", "app-server", "FOO=bar"), CodexAppServerSettings.of(mapOf("command" to "codex app-server FOO=bar")).argv)
+        assertEquals(listOf("./=codex", "app-server"), CodexAppServerSettings.of(mapOf("command" to "./=codex app-server")).argv)
+    }
+
+    @Test
     fun `a command that is not a string is refused naming the key`() {
         val failure = assertFailsWith<RunnerConfigException> { provider.validate(mapOf("command" to listOf("codex"))) }
 
