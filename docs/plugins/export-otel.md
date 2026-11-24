@@ -63,7 +63,7 @@ Loop checks each section of `exporters:` in the preflight of startup and of ever
 | a key of `exporters:` no plugin provides | `exporters.<key> has no exporter plugin, use otel` |
 | a key the profile does not list | a startup warning, `exporters.otel.<key> is not a key of the otel exporter, Loop ignores it` |
 
-`loop run` logs the plugins it found at startup, `event=plugins` with `runners`, `trackers`, `exporters` and `enabled_exporters`, the last `none` when the workflow turns no exporter on.
+`loop run` logs the plugins it found at startup, `event=plugins outcome=found` with `runners`, `trackers`, `exporters` and `enabled_exporters`, the last `none` when the workflow turns no exporter on.
 
 ## Mapping
 

@@ -447,7 +447,7 @@ class RunCommand(
         log.log(
             LogLevel.INFO,
             "plugins",
-            LogOutcome.COMPLETED,
+            LogOutcome.FOUND,
             context,
             fields =
                 mapOf(
