@@ -637,7 +637,8 @@ class TraceCommandTest {
         val draining = lines.indexOfFirst { it.trim() == "13:48:45  ${"run_draining".padEnd(NAME_WIDTH)}attempts=t-1" }
         val drained = lines.indexOfFirst { it.trim().startsWith("13:52:57  ${"run_drained".padEnd(NAME_WIDTH)}drained=") }
         assertTrue(draining > 0 && drained > draining, lines.joinToString("\n"))
-        assertTrue(lines.none { "t-9" in it }, lines.joinToString("\n"))
+        // Skip the Project header line, whose @TempDir path on Linux (/tmp/junit-9...) can contain "t-9".
+        assertTrue(lines.filterNot { it.startsWith("Project ") }.none { "t-9" in it || "13:40:00" in it }, lines.joinToString("\n"))
     }
 
     @Test

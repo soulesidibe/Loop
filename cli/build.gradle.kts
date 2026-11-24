@@ -190,7 +190,11 @@ tasks.test {
     // The cli tests spawn the installed launcher end to end.
     dependsOn(tasks.installDist)
     // JUnit runs test classes and methods concurrently in one worker JVM, capped so spawned launcher JVMs do not oversubscribe.
+    maxParallelForks = 1
     val cliParallelism = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(2, 6)
+    systemProperty("junit.jupiter.execution.parallel.enabled", "true")
+    systemProperty("junit.jupiter.execution.parallel.mode.default", "concurrent")
+    systemProperty("junit.jupiter.execution.parallel.mode.classes.default", "concurrent")
     systemProperty("junit.jupiter.execution.parallel.config.strategy", "fixed")
     systemProperty("junit.jupiter.execution.parallel.config.fixed.parallelism", cliParallelism.toString())
     // Without build-info.properties: a new commit alone does not rerun the cli tests.
