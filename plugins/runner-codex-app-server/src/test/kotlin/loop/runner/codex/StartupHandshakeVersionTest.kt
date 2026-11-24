@@ -33,7 +33,8 @@ class StartupHandshakeVersionTest {
                 real.forEach { (key, value) -> put(key, value) }
                 if (userAgent != null) put("userAgent", userAgent)
             }
-        return ProtocolFraming.decode(CodexJson.format.encodeToString(JSONRPCResponse.serializer(), JSONRPCResponse(JsonPrimitive(1), result)))
+        val line = CodexJson.format.encodeToString(JSONRPCResponse.serializer(), JSONRPCResponse(JsonPrimitive(1), result))
+        return ProtocolFraming.decode(line)
     }
 
     private fun methods(step: StartupHandshake.Step): List<String?> =

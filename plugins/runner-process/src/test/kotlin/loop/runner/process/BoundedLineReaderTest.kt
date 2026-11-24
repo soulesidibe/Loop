@@ -79,7 +79,11 @@ class BoundedLineReaderTest {
         val read = readAll(ByteArrayInputStream(text.toByteArray()), ProcessGroupLauncher.MAX_LINE_BYTES)
 
         assertEquals(
-            listOf(BoundedLineReader.Read.Line("a".repeat(max)), BoundedLineReader.Read.TooLong(max + 1L), BoundedLineReader.Read.Line("end")),
+            listOf(
+                BoundedLineReader.Read.Line("a".repeat(max)),
+                BoundedLineReader.Read.TooLong(max + 1L),
+                BoundedLineReader.Read.Line("end"),
+            ),
             read,
         )
     }
