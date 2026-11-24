@@ -31,7 +31,9 @@ import loop.api.RunnerEvent.Output.Stream
 import loop.api.SessionId
 import loop.api.TurnId
 import loop.runner.codex.protocol.CodexJson
+import loop.runner.codex.protocol.v2.CodexErrorInfo
 import loop.runner.codex.protocol.v2.TurnCompletedNotification
+import loop.runner.codex.protocol.v2.TurnError
 import loop.runner.codex.protocol.v2.TurnStatus
 import loop.runner.process.LaunchSpec
 import loop.runner.process.ProcessEvent
@@ -592,7 +594,7 @@ class CodexAppServerRunner internal constructor(
                         ?.let { ": $it" } ?: ""
                 when (completed.turn.status) {
                     TurnStatus.COMPLETED -> end(RunnerEvent.TurnCompleted(sessionId, turnId, exitCode = 0))
-                    TurnStatus.FAILED -> fail(null, "turn_failed$detail")
+                    TurnStatus.FAILED -> fail(null, "turn_failed$detail", category = categoryOf(completed.turn.error))
                     TurnStatus.INTERRUPTED -> fail(null, "turn_cancelled$detail")
                     TurnStatus.IN_PROGRESS ->
                         killAndFail(process, "response_error: the $TURN_COMPLETED notification says the turn is still in progress")
@@ -627,7 +629,8 @@ class CodexAppServerRunner internal constructor(
             private suspend fun fail(
                 exitCode: Int?,
                 reason: String,
-            ) = end(RunnerEvent.TurnFailed(sessionId, turnId, exitCode, reason))
+                category: RunnerEvent.TurnFailed.Category? = null,
+            ) = end(RunnerEvent.TurnFailed(sessionId, turnId, exitCode, reason, category = category))
 
             /** Kills the group, keeps the lines read before the kill, and fails the turn with [reason]. */
             private suspend fun killAndFail(
@@ -648,6 +651,23 @@ class CodexAppServerRunner internal constructor(
                 end(event)
             }
         }
+    }
+
+    /**
+     * The category of a turn that failed with [error]: `runner_unavailable` when its `codexErrorInfo` is a transport
+     * failure with no HTTP answer at all, a lost network or a machine waking from sleep (m4-08, bl-123, bl-156), null
+     * otherwise. A transport failure with an `httpStatusCode` reached the server, so it is an ordinary failure.
+     */
+    private fun categoryOf(error: TurnError?): RunnerEvent.TurnFailed.Category? {
+        val unanswered =
+            when (val info = error?.codexErrorInfo) {
+                is CodexErrorInfo.HttpConnectionFailed -> info.httpStatusCode == null
+                is CodexErrorInfo.ResponseStreamConnectionFailed -> info.httpStatusCode == null
+                is CodexErrorInfo.ResponseStreamDisconnected -> info.httpStatusCode == null
+                is CodexErrorInfo.ResponseTooManyFailedAttempts -> info.httpStatusCode == null
+                else -> false
+            }
+        return if (unanswered) RunnerEvent.TurnFailed.Category.RunnerUnavailable else null
     }
 
     /** The params of a `turn/completed` notification, null when they are not its type in the pinned schema. */

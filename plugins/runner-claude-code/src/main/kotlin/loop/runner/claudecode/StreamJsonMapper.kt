@@ -23,7 +23,8 @@ internal sealed interface StreamLine {
     /**
      * The final `result` event of the turn; [text] is its `result` field. [wake] is true for the result of a wake,
      * a run Claude Code started on its own for a background task's notification: its `origin.kind` is
-     * `task-notification` (m4-03).
+     * `task-notification` (m4-03). [apiError] is the result's `api_error`, such as `connection_failed` for a lost
+     * network (m4-08).
      */
     data class Result(
         val subtype: String?,
@@ -33,6 +34,7 @@ internal sealed interface StreamLine {
         val text: String? = null,
         val sessionId: String? = null,
         val wake: Boolean = false,
+        val apiError: String? = null,
     ) : StreamLine
 
     /** A background task run (a subagent, a background command) started: the `system` `task_started` line (m4-03). */
@@ -105,9 +107,12 @@ internal sealed interface StreamLine {
 
 /**
  * Recognizes a runner access failure in the text of an error result (bl-39): an authentication or access refusal
- * (401, 403, a Cloudflare block), an invalid key or an expired login, a rate limit (429, a usage limit) or an
- * overload (529). Claude Code gives no typed error, so the text is all there is; the caller reads it only on a
- * `result` line with `is_error` set, never on the agent's own text or a tool output.
+ * (401, 403, a Cloudflare block), an invalid key or an expired login, a rate limit (429, a usage limit), an
+ * overload (529), or a lost network (m4-08, bl-123): the API server out of reach, a DNS lookup that failed
+ * (`ENOTFOUND`, `EAI_AGAIN`), a refused, timed out or reset connection. A failure after an idle sleep surfaces as
+ * one of these network errors (bl-156). Claude Code types only the lost network, as `api_error` `connection_failed`,
+ * so the text is read too, and only on a `result` line with `is_error` set, never on the agent's own text or a tool
+ * output.
  */
 internal object RunnerAccess {
     private val unavailable =
@@ -121,12 +126,22 @@ internal object RunnerAccess {
             """rate_limit_error|\brate limit""",
             """usage limit reached""",
             """overloaded""",
+            """\b(ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT)\b""",
+            """can.t reach the api server""",
+            """\bAPI Error:?\s*Connection error\b""",
         ).map { Regex(it, RegexOption.IGNORE_CASE) }
 
     private val retryAfter = Regex("""\bretry[- ]after:?\s*(\d{1,6})""", RegexOption.IGNORE_CASE)
 
+    /** The `api_error` of a result that could not reach the API server at all (m4-08). */
+    private const val CONNECTION_FAILED = "connection_failed"
+
     /** True when [text] says the runner cannot use its model right now. */
-    fun isUnavailable(text: String?): Boolean = text != null && unavailable.any { it.containsMatchIn(text) }
+    private fun isUnavailable(text: String?): Boolean = text != null && unavailable.any { it.containsMatchIn(text) }
+
+    /** True when the error [result] says the runner cannot use its model right now, by its `api_error` or its text. */
+    fun isUnavailable(result: StreamLine.Result): Boolean =
+        result.isError && (result.apiError == CONNECTION_FAILED || isUnavailable(result.text))
 
     /** The wait the error asked for, from a `retry-after: <seconds>` in [text], null when it gives none. */
     fun retryAfter(text: String?): Duration? =
@@ -165,6 +180,7 @@ internal object StreamJsonMapper {
                     text = event.string("result"),
                     sessionId = event.string("session_id"),
                     wake = (event["origin"] as? JsonObject)?.string("kind") == WAKE_ORIGIN,
+                    apiError = event.string("api_error"),
                 )
             type == "system" && subtype == "task_started" -> StreamLine.TaskStarted(taskRun(event))
             type == "system" && subtype == "task_notification" -> StreamLine.TaskNotification(taskRun(event))
@@ -201,7 +217,7 @@ internal object StreamJsonMapper {
                 needingInput != null -> RunnerEvent.TurnInputRequired(sessionId, turnId, reason = needingInput.toolName)
                 failed -> {
                     // bl-39: only Claude Code's own error result can say the runner cannot reach its model.
-                    val unavailable = result.isError && RunnerAccess.isUnavailable(result.text)
+                    val unavailable = RunnerAccess.isUnavailable(result)
                     RunnerEvent.TurnFailed(
                         sessionId,
                         turnId,

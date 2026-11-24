@@ -10,6 +10,7 @@ import loop.runner.codex.protocol.JSONRPCErrorError
 import loop.runner.codex.protocol.JSONRPCResponse
 import loop.runner.codex.protocol.ServerNotification
 import loop.runner.codex.protocol.ServerRequest
+import loop.runner.codex.protocol.v2.CodexErrorInfo
 import loop.runner.codex.protocol.v2.ThreadStartResponse
 import loop.runner.codex.protocol.v2.Turn
 import loop.runner.codex.protocol.v2.TurnCompletedNotification
@@ -124,13 +125,17 @@ class FakeAppServer private constructor(
             response(id, turnStartResult(turnId))
         }
 
-        /** Writes the `turn/completed` notification of the turn [turnId] on the thread [threadId], ending with [status]. */
+        /**
+         * Writes the `turn/completed` notification of the turn [turnId] on the thread [threadId], ending with [status],
+         * its [error] typed by [errorInfo] when both are set.
+         */
         fun turnCompleted(
             turnId: String = TURN_ID,
             status: TurnStatus = TurnStatus.COMPLETED,
             error: String? = null,
             threadId: String = THREAD_ID,
-        ) = notification(turnCompletedNotification(turnId, status, error, threadId))
+            errorInfo: CodexErrorInfo? = null,
+        ) = notification(turnCompletedNotification(turnId, status, error, threadId, errorInfo))
 
         /** Writes the response to the client's request [id] with [result], the method's response type as JSON. */
         fun response(
@@ -298,18 +303,28 @@ class FakeAppServer private constructor(
                 TurnStartResponse(Turn(id = turnId, items = emptyList(), status = TurnStatus.IN_PROGRESS)),
             )
 
-        /** The `turn/completed` notification of the turn [turnId] on [threadId], with [status] and the error [error]. */
+        /**
+         * The `turn/completed` notification of the turn [turnId] on [threadId], with [status] and the error [error],
+         * typed by [errorInfo].
+         */
         fun turnCompletedNotification(
             turnId: String = TURN_ID,
             status: TurnStatus = TurnStatus.COMPLETED,
             error: String? = null,
             threadId: String = THREAD_ID,
+            errorInfo: CodexErrorInfo? = null,
         ): ServerNotification =
             ServerNotification.TurnCompleted(
                 params =
                     TurnCompletedNotification(
                         threadId = threadId,
-                        turn = Turn(id = turnId, items = emptyList(), status = status, error = error?.let { TurnError(message = it) }),
+                        turn =
+                            Turn(
+                                id = turnId,
+                                items = emptyList(),
+                                status = status,
+                                error = error?.let { TurnError(message = it, codexErrorInfo = errorInfo) },
+                            ),
                     ),
             )
 

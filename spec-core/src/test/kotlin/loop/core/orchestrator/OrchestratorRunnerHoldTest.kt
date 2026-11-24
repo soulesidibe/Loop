@@ -40,6 +40,7 @@ class OrchestratorRunnerHoldTest {
     private fun workflow(
         maxAttempts: Int = 5,
         maxContinuations: Int = 3,
+        prompt: String = PROMPT,
     ): WorkflowFile =
         WorkflowFile(
             path = root.resolve("WORKFLOW.md"),
@@ -51,7 +52,7 @@ class OrchestratorRunnerHoldTest {
             workspaceRoot = root.resolve("workspaces"),
             runner = commandRunner("./agent.sh"),
             pollingIntervalMs = 1000,
-            promptTemplate = PROMPT,
+            promptTemplate = prompt,
             config =
                 WorkflowConfig(
                     agent = AgentConfig(maxConcurrentAgents = 2),
@@ -239,6 +240,58 @@ class OrchestratorRunnerHoldTest {
             assertEquals(2, sink.ofKind("runner_hold_lifted").size)
         }
 
+    @Test
+    fun `m4-08 a lost network holds the run, takes no slot, and the next attempt starts a fresh session with the brief`() =
+        runTest {
+            val sink = FakeSink()
+            val parked = FakeParkedIssues()
+            val runner = FakeRunner()
+            // Session 1 loses the network, as bl-123 did; session 2, the probe after the hold, completes.
+            runner.sessionScript = { turn, _ -> if (runner.sessionsOpened == 1) networkTurn() else sessionTurn(turn) }
+            val tracker = FakeTracker(listOf(issue("m1-02")))
+            val workflow = workflow(maxAttempts = 1, prompt = BRIEF_PROMPT)
+            val orchestrator = orchestrator(tracker, runner, sink, workflow, parked)
+
+            orchestrator.tick()
+
+            assertEquals("runner_unavailable", sink.ofKind("turn_failed").single().data["category"])
+            val started = sink.ofKind("runner_hold_started").single()
+            assertEquals(NETWORK_REASON, started.data["reason"])
+            assertEquals("1", started.data["hold"])
+            val retry = sink.ofKind("retry_scheduled").single()
+            assertEquals("0", retry.data["failures"], "the network failure takes no max_attempts slot")
+            assertEquals(emptyList(), sink.ofKind("issue_parked"), "max_attempts 1 would park an ordinary failure at once")
+            assertTrue(parked.list(PROJECT).getOrThrow().isEmpty())
+
+            advanceTimeBy(1.minutes - 1.milliseconds)
+            orchestrator.tick()
+            assertEquals(1, runner.sessionsOpened, "nothing is dispatched while the hold lasts")
+            advanceTimeBy(1.milliseconds)
+            orchestrator.tick()
+
+            assertEquals(2, runner.sessionsOpened, "the probe opens a fresh session, it resumes nothing")
+            val (first, probe) = runner.turnInputs.map { it.second }
+            assertEquals("m1-02 attempt=[]", first)
+            assertTrue(probe.startsWith("m1-02 attempt=[1]\n# Brief\n### Goal and acceptance criteria"), probe)
+            assertEquals(1, sink.ofKind("runner_hold_lifted").size)
+            assertEquals(emptyList(), sink.ofKind("issue_parked"))
+        }
+
+    /** The turn a lost network ends, as the Claude Code runner maps the recorded result line of bl-123. */
+    private fun networkTurn(): Flow<RunnerEvent> =
+        flow {
+            emit(RunnerEvent.SessionStarted(SESSION, threadId = "th1", turnId = TURN))
+            emit(
+                RunnerEvent.TurnFailed(
+                    SESSION,
+                    TURN,
+                    exitCode = null,
+                    reason = NETWORK_REASON,
+                    category = RunnerEvent.TurnFailed.Category.RunnerUnavailable,
+                ),
+            )
+        }
+
     private fun unavailableTurn(retryAfter: Duration? = null): Flow<RunnerEvent> =
         flow {
             emit(RunnerEvent.SessionStarted(SESSION, threadId = "th1", turnId = TURN))
@@ -265,5 +318,8 @@ class OrchestratorRunnerHoldTest {
         val PROJECT = ProjectId("p1")
         const val PROMPT = "{{ issue.identifier }} {% if attempt %}retry {{ attempt }}{% else %}first{% endif %}"
         const val REASON = "turn_failed: Failed to authenticate. API Error: 403 Attention Required! | Cloudflare"
+        const val NETWORK_REASON = "turn_failed: API Error: Can't reach the API server, check your internet or DNS (ENOTFOUND)"
+        const val BRIEF_PROMPT =
+            "{{ issue.identifier }} attempt=[{{ attempt }}]{% if loop.session_brief %}\n# Brief\n{{ loop.session_brief }}{% endif %}"
     }
 }
