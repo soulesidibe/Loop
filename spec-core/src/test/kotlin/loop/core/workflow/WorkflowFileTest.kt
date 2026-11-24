@@ -66,6 +66,23 @@ class WorkflowFileTest {
     }
 
     @Test
+    fun `m4-42 exporters are kept as written, none when the key is absent`() {
+        assertEquals(emptyMap(), load(bare).exporters)
+        val workflow =
+            load(
+                bare.replace(
+                    "runner:",
+                    "exporters:\n  otel:\n    endpoint: http://localhost:4318\n    headers:\n      authorization: \$OTEL_TOKEN\nrunner:",
+                ),
+            )
+
+        assertEquals(
+            mapOf("otel" to mapOf("endpoint" to "http://localhost:4318", "headers" to mapOf("authorization" to "\$OTEL_TOKEN"))),
+            workflow.exporters,
+        )
+    }
+
+    @Test
     fun `the minimal workflow gives its runner command`() {
         assertEquals(commandRunner("./agent.sh"), load(minimal).runner)
     }
