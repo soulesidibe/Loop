@@ -100,6 +100,33 @@ class ToolMoveCommandTest {
     }
 
     @Test
+    fun `m4-12 the attempt of a namespaced issue takes its native LOOP_ISSUE_ID with LOOP_TRACKER_ID`() {
+        fixture.issue("t-1")
+        fixture.seed(fixture.attemptStarted(ATTEMPT, "default:t-1").copy(issueIdentifier = "t-1"))
+        val env = fixture.toolEnv(ATTEMPT, "t-1") + ("LOOP_TRACKER_ID" to "default")
+
+        val result = fixture.loop("tool", "move", "review", cwd = root, env = env)
+
+        assertEquals(0, result.exitCode, result.toString())
+        assertEquals(listOf(ToolRequest.Move("review")), fixture.queuedRequests(ATTEMPT).map { assertIs<QueuedRequest.Valid>(it).request })
+        val requested = fixture.query("SELECT issue_id, issue_identifier FROM events WHERE kind = 'issue_move_requested'").single()
+        assertEquals("default:t-1", requested["issue_id"])
+        assertEquals("t-1", requested["issue_identifier"])
+    }
+
+    @Test
+    fun `m4-12 the same native id of another tracker moves nothing and the exit is 5`() {
+        fixture.issue("t-1")
+        fixture.seed(fixture.attemptStarted(ATTEMPT, "default:t-1").copy(issueIdentifier = "t-1"))
+        val env = fixture.toolEnv(ATTEMPT, "t-1") + ("LOOP_TRACKER_ID" to "local")
+
+        val result = fixture.loop("tool", "move", "review", cwd = root, env = env)
+
+        assertEquals(5, result.exitCode, result.toString())
+        assertEquals(emptyList(), fixture.queuedRequests(ATTEMPT))
+    }
+
+    @Test
     fun `17_5 an unsupported tool name fails at once with a usage error and queues nothing`() {
         fixture.issue("t-1")
         fixture.seed(fixture.attemptStarted(ATTEMPT, "t-1"))

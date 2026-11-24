@@ -17,13 +17,17 @@ internal object ClaudeMcpConfig {
     /** The server name, `LoopMcpServer.NAME` in the mcp module. */
     const val SERVER = "loop"
 
-    /** The env names the server reads: the snapshot, the attempt and its issue, the store's folder and the turn's ids. */
+    /**
+     * The env names the server reads: the snapshot, the attempt and its issue with its tracker id (m4-12), the store's
+     * folder and the turn's ids.
+     */
     val PASSED: List<String> =
         listOf(
             "LOOP_TOOL_CONFIG",
             "LOOP_ATTEMPT_ID",
             "LOOP_ISSUE_ID",
             "LOOP_ISSUE_IDENTIFIER",
+            "LOOP_TRACKER_ID",
             "LOOP_HOME",
             "LOOP_SESSION_ID",
             "LOOP_TURN_ID",

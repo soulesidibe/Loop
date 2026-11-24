@@ -135,6 +135,7 @@ import loop.core.merge.RecheckOutcome
 import loop.core.merge.WorkspaceMergeGit
 import loop.core.template.Template
 import loop.core.template.TemplateEngine
+import loop.core.trackers.NamespacedId
 import loop.core.verify.AcceptanceCriteria
 import loop.core.verify.AcceptanceCriterion
 import loop.core.verify.CheckResult
@@ -1023,7 +1024,7 @@ class Orchestrator(
      * (m1-07), reconciliation and the startup cleanup (m1-16).
      */
     suspend fun removeWorkspace(issue: Issue): Result<Unit> {
-        val key = WorkspaceKey.of(issue.identifier)
+        val key = NamespacedId.workspaceKey(issue.id, issue.identifier, effective.trackerId)
         val context = pollContext.copy(issueId = issue.id, issueIdentifier = issue.identifier)
         val env =
             hookEnv(effective.path, issue.id, issue.identifier, key) +
@@ -2446,7 +2447,7 @@ class Orchestrator(
         /** Runs the attempt up to its terminal phase: its turns, then the outcome and why it ended. */
         suspend fun execute(): Executed {
             freezeAtDispatch()
-            val key = WorkspaceKey.of(issue.identifier)
+            val key = NamespacedId.workspaceKey(issue.id, issue.identifier, workflow.trackerId)
             // Before env and every hook, so hooks and the agent see a valid LOOP_TOOL_CONFIG (m1-23).
             createDirectory()?.let { reason ->
                 recordPhase(AttemptPhase.PreparingWorkspace, mapOf(Phase.WORKSPACE_KEY to key.value))
@@ -4189,7 +4190,7 @@ class Orchestrator(
                     fingerprint = verifiedFingerprint,
                     checks = EvidenceSummary.lines(passed.toList()),
                     judgmentCalls = judgmentCallCount,
-                    workspaceKey = WorkspaceKey.of(identifier).value,
+                    workspaceKey = NamespacedId.workspaceKey(issueId, identifier, workflow.trackerId).value,
                     commented = null,
                 )
             val handoff = PullRequestDelivery.Handoff(from, to)
@@ -4492,9 +4493,10 @@ class Orchestrator(
          */
         private fun checkEnv(): Map<String, String> =
             mapOfNotNull(
-                "LOOP_ISSUE_ID" to issueId,
+                "LOOP_ISSUE_ID" to NamespacedId.nativeOf(issueId),
                 "LOOP_ISSUE_IDENTIFIER" to identifier,
-                "LOOP_WORKSPACE_KEY" to WorkspaceKey.of(identifier).value,
+                "LOOP_TRACKER_ID" to NamespacedId.trackerOf(issueId),
+                "LOOP_WORKSPACE_KEY" to NamespacedId.workspaceKey(issueId, identifier, workflow.trackerId).value,
                 "LOOP_PROJECT_ID" to projectId.value,
                 "LOOP_RUN_ID" to runId.value,
                 "LOOP_ATTEMPT_ID" to attemptId?.value,
@@ -4849,7 +4851,7 @@ class Orchestrator(
                 fingerprint = wait.fingerprint.orEmpty(),
                 checks = wait.checks,
                 judgmentCalls = wait.judgmentCalls,
-                workspaceKey = WorkspaceKey.of(wait.identifier).value,
+                workspaceKey = NamespacedId.workspaceKey(wait.issueId, wait.identifier, effective.trackerId).value,
                 commented = wait.pullRequest,
             )
         // m2-26: with `merge`, the delivery stops after the comment and the merge wait takes over, the issue unmoved.
@@ -5121,7 +5123,7 @@ class Orchestrator(
         val to = wait.to
         val workflow = effective
         val target = candidate?.let { RetryTarget.of(it, workflow) }
-        val located = workspacesFor(workflow).locate(WorkspaceKey.of(wait.identifier))
+        val located = workspacesFor(workflow).locate(NamespacedId.workspaceKey(wait.issueId, wait.identifier, workflow.trackerId))
         val dropped =
             when {
                 target == null || target == RetryTarget.Terminal || target == RetryTarget.NotActive -> "the issue is no longer active"
