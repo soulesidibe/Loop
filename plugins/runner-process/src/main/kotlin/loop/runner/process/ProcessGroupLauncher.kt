@@ -88,12 +88,18 @@ sealed interface ProcessEvent {
  * A caller applies its own timeouts by cancelling the collection: the group is killed the
  * same way.
  *
+ * Lines (bl-128): a line of stdout or stderr longer than [maxLineBytes] bytes, [MAX_LINE_BYTES]
+ * by default, the protocol limit of the Codex app server, is dropped, never held whole in
+ * memory: a `loop:` line on stderr names its stream and its size in its place, and reading
+ * goes on with the next line.
+ *
  * Containers: Loop needs an init that reaps orphans (`docker run --init`, tini), otherwise
  * zombie members keep the group probe true until [gracePeriod] ends.
  */
 class ProcessGroupLauncher(
     private val gracePeriod: Duration = 2.seconds,
     private val drainTimeout: Duration = 500.milliseconds,
+    private val maxLineBytes: Int = MAX_LINE_BYTES,
     private val signaller: GroupSignaller = ShellGroupSignaller,
     private val warn: (String) -> Unit = { line -> System.err.println(line) },
     /** Starts the built process; a seam for tests. */
@@ -190,7 +196,10 @@ class ProcessGroupLauncher(
         }
     }
 
-    /** Reads [input] to its end; lines read after [lines] is closed are counted in [dropped]. */
+    /**
+     * Reads [input] to its end; lines read after [lines] is closed are counted in [dropped]. A line longer than
+     * [maxLineBytes] is replaced by a `loop:` line on stderr.
+     */
     private fun drain(
         input: InputStream,
         stream: Stream,
@@ -198,10 +207,15 @@ class ProcessGroupLauncher(
         dropped: AtomicInteger,
     ) {
         try {
-            input.bufferedReader(Charsets.UTF_8).use { reader ->
+            input.use {
+                val reader = BoundedLineReader(it, maxLineBytes)
                 while (true) {
-                    val line = reader.readLine() ?: break
-                    if (lines.trySend(ProcessEvent.Line(stream, line)).isClosed) dropped.incrementAndGet()
+                    val line =
+                        when (val read = reader.next() ?: break) {
+                            is BoundedLineReader.Read.Line -> ProcessEvent.Line(stream, read.text)
+                            is BoundedLineReader.Read.TooLong -> ProcessEvent.Line(Stream.Stderr, tooLong(stream, read.bytes))
+                        }
+                    if (lines.trySend(line).isClosed) dropped.incrementAndGet()
                 }
             }
         } catch (ignored: IOException) {
@@ -296,26 +310,37 @@ class ProcessGroupLauncher(
         signal: String,
     ): GroupSignalResult = withContext(Dispatchers.IO) { signaller.signal(pgid, signal) }
 
+    private fun tooLong(
+        stream: Stream,
+        bytes: Long,
+    ): String {
+        val name = if (stream == Stream.Stdout) "stdout" else "stderr"
+        return "loop: a $name line of $bytes bytes was dropped, longer than the maximum of $maxLineBytes bytes"
+    }
+
     private fun cannotSignal(
         pgid: Long,
         failed: GroupSignalResult.Failed,
     ): String = "loop: could not signal process group $pgid: ${failed.message}"
 
-    private companion object {
-        const val POLL_MS = 100L
-        const val SNAPSHOT_MS = 200L
-        const val KILL_SETTLE_MS = 500L
-        const val KILL_ATTEMPTS = 2
-        const val SIGTERM = "TERM"
-        const val SIGKILL = "KILL"
-        const val SIGNAL_PROBE = "0"
+    companion object {
+        /** The longest line kept by default, 10 MB, the max line size of spec 10.1 for the Codex app server. */
+        const val MAX_LINE_BYTES: Int = 10 * 1024 * 1024
+
+        private const val POLL_MS = 100L
+        private const val SNAPSHOT_MS = 200L
+        private const val KILL_SETTLE_MS = 500L
+        private const val KILL_ATTEMPTS = 2
+        private const val SIGTERM = "TERM"
+        private const val SIGKILL = "KILL"
+        private const val SIGNAL_PROBE = "0"
 
         /**
          * Perl script that makes the process a session and process group leader, then execs
          * its arguments in place, so the pid, the session id and the group id are the same.
          * Exits 127 with a `loop:` line on stderr if setsid or exec fails.
          */
-        const val LAUNCHER =
+        private const val LAUNCHER =
             "defined(setsid()) or do { print STDERR \"loop: setsid failed: \$!\\n\"; POSIX::_exit(127) }; " +
                 "exec { \$ARGV[0] } @ARGV; " +
                 "print STDERR \"loop: exec failed: \$!\\n\"; POSIX::_exit(127)"
