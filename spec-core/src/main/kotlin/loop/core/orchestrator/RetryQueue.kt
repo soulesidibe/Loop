@@ -17,6 +17,10 @@ enum class RetryKind(
  * due: a slot requeue moves [dueAt] and keeps it, so the retry stays due and keeps its place among
  * due retries, and [dueAt] then only says when to wake the daemon (bl-34). It lives in memory only,
  * a restart takes the stored [dueAt].
+ *
+ * Two more facts of a retry that waits for a slot (m4-15, bl-77) live in memory only, kept by a requeue and gone with
+ * any other schedule: [waitingFor], the error of the last requeue recorded, so a requeue for the same reason records
+ * nothing, and [refreshedAt], when its last by id refresh read its issue, so it is refreshed at most once per poll.
  */
 data class RetryEntry(
     val issueId: String,
@@ -25,6 +29,8 @@ data class RetryEntry(
     val dueAt: Instant,
     val error: String?,
     val firstDueAt: Instant = dueAt,
+    val waitingFor: String? = null,
+    val refreshedAt: Instant? = null,
 ) {
     val kind: RetryKind get() = if (error == null) RetryKind.Continuation else RetryKind.Error
 }
@@ -247,7 +253,8 @@ class RetryQueue {
 
     /**
      * A due retry found no free slot (bl-34): moves the entry of [issueId] to [delayMs] from [now] with [error],
-     * keeping its spec attempt, its first due time and the failure counter. Null without an entry.
+     * keeping its spec attempt, its first due time, its last refresh and the failure counter, and waiting for [error]
+     * (m4-15). Null without an entry.
      */
     fun requeue(
         issueId: String,
@@ -256,9 +263,17 @@ class RetryQueue {
         error: String,
     ): RetryEntry? {
         val current = entries[issueId] ?: return null
-        val entry = current.copy(dueAt = now + delayMs.milliseconds, error = error)
+        val entry = current.copy(dueAt = now + delayMs.milliseconds, error = error, waitingFor = error)
         entries[issueId] = entry
         return entry
+    }
+
+    /** m4-15: the by id refresh of the due retry of [issueId] read its issue at [at]. Nothing without an entry. */
+    fun refreshed(
+        issueId: String,
+        at: Instant,
+    ) {
+        entries[issueId]?.let { entries[issueId] = it.copy(refreshedAt = at) }
     }
 
     /**

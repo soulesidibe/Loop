@@ -88,6 +88,9 @@ internal class RetryCoordinator(
     /** Parks whose store write failed, by issue id: parked for this process, written again every tick. */
     private val pendingParks = mutableMapOf<String, ParkedIssue>()
 
+    /** m4-15: the issue each queued retry's last by id refresh read, used in its place until the next poll interval. */
+    private val lastRead = mutableMapOf<String, Issue>()
+
     private val pollContext = LogContext(runId = runId, projectId = projectId)
 
     fun isWaiting(
@@ -212,6 +215,9 @@ internal class RetryCoordinator(
      * Entries of [busy] issues (claimed or running) wait: a terminal refresh would
      * otherwise remove the workspace of a running attempt. A [parked] issue keeps nothing: a park drops
      * its entry and counters, so whatever the queue holds for it (a stored row whose delete failed) goes.
+     * Since m4-15 (bl-77) a retry refreshed less than one poll interval ago, one that waits for a slot, is not read by id
+     * again: it is judged on this tick's polled copy of its issue, else on the copy its last refresh read. Only the
+     * entries this changes are written to the store.
      */
     suspend fun fireDue(
         candidates: List<Issue>,
@@ -236,13 +242,18 @@ internal class RetryCoordinator(
             return RetryFire(emptyList(), emptySet())
         }
         val handled = due.map { it.issueId }.toSet()
-        unsaved += handled
-        val refreshed = fetchByIds(due.map { it.issueId })
-        val issues = refreshed.issues.associateBy { it.id }
+        lastRead.keys.retainAll(queue.queued().keys)
+        val known = recentlyRead(due, candidates, now, workflow.pollingIntervalMs.coerceAtLeast(1))
+        val refreshed = fetchByIds(due.map { it.issueId }.filter { it !in known })
+        for (issue in refreshed.issues) {
+            queue.refreshed(issue.id, now)
+            lastRead[issue.id] = issue
+        }
+        val issues = refreshed.issues.associateBy { it.id } + known
         val dispatch = mutableListOf<DueRetry>()
         for (entry in due) {
             // m4-13: the retries of a tracker whose refresh failed are rescheduled, the others go on.
-            if (!refreshed.answered(entry.issueId)) {
+            if (entry.issueId !in known && !refreshed.answered(entry.issueId)) {
                 val counts = rescheduleCounts(entry, workflow)
                 val next = queue.onRefreshFailed(entry.issueId, now, workflow.config.agent.maxRetryBackoffMs) ?: continue
                 scheduled(next, (next.dueAt - now).inWholeMilliseconds, queue.failures(entry.issueId), attemptId = null, counts)
@@ -271,8 +282,27 @@ internal class RetryCoordinator(
                 RetryTarget.Eligible -> dispatch += DueRetry(issue, entry.attempt, entry.firstDueAt, retryKindOf(entry))
             }
         }
+        // A retry to dispatch is unchanged in the queue; every other one was dropped or rescheduled.
+        unsaved += handled - dispatch.map { it.issue.id }.toSet()
         save()
         return RetryFire(dispatch, handled)
+    }
+
+    /**
+     * m4-15: the issues of the [due] retries whose last by id refresh is less than [pollMs] old, by id, so they are not
+     * read again: this tick's polled copy among [candidates] when the poll has one, else the copy of that refresh.
+     */
+    private fun recentlyRead(
+        due: List<RetryEntry>,
+        candidates: List<Issue>,
+        now: Instant,
+        pollMs: Long,
+    ): Map<String, Issue> {
+        val polled = candidates.associateBy { it.id }
+        return due
+            .filter { entry -> entry.refreshedAt?.let { (now - it).inWholeMilliseconds < pollMs } == true }
+            .mapNotNull { entry -> (polled[entry.issueId] ?: lastRead[entry.issueId])?.let { entry.issueId to it } }
+            .toMap()
     }
 
     /**
@@ -293,6 +323,10 @@ internal class RetryCoordinator(
      * time moves one poll interval ahead, which only says when the daemon wakes. A due retry that waits for the probe
      * of the runner hold (bl-39) is requeued the same way, with [error] `runner_unavailable`. Since m3-16 [error] may
      * also say it found no machine slot or the machine day budget held it.
+     *
+     * Since m4-15 (bl-77) a requeue for the reason the retry already waits for records no `retry_scheduled`, no WARN
+     * line and no store write: only the moved due time changes, in memory. The stored due time stays the earlier one,
+     * which is just as due after a restart.
      */
     suspend fun requeueNoSlot(
         issue: Issue,
@@ -300,8 +334,10 @@ internal class RetryCoordinator(
         error: String = NO_SLOTS,
     ) {
         val now = clock.now()
-        val counts = queue.entry(issue.id)?.let { rescheduleCounts(it, workflow) } ?: emptyMap()
+        val current = queue.entry(issue.id) ?: return
+        val counts = rescheduleCounts(current, workflow)
         val next = queue.requeue(issue.id, now, workflow.pollingIntervalMs.coerceAtLeast(1), error) ?: return
+        if (current.waitingFor == error) return
         unsaved += issue.id
         save()
         scheduled(next, (next.dueAt - now).inWholeMilliseconds, queue.failures(issue.id), attemptId = null, counts)
