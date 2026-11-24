@@ -36,6 +36,11 @@ class GitHubTracker(
     private val pageSize: Int = MAX_PAGE_SIZE,
     /** `tracker.required_labels` of the effective workflow, read at each move to a handoff state (m2-23). */
     private val requiredLabels: () -> List<String> = { emptyList() },
+    /**
+     * The run's GitHub clients (m4-48): the tracker sends through the one of its API URL and token, so it shares its
+     * rate limit hold with pull request delivery and every other tracker of that origin and token. Its own by default.
+     */
+    clients: GitHubClients = GitHubClients(transport, clock),
 ) : TrackerAdapter {
     init {
         require(pageSize in 1..MAX_PAGE_SIZE) { "pageSize must be 1 to $MAX_PAGE_SIZE, got $pageSize" }
@@ -43,8 +48,8 @@ class GitHubTracker(
 
     override val definedStates: List<String> = DEFINED_STATES
 
-    /** The requests, their headers and the rate limit hold, shared with pull request delivery (m2-25). */
-    private val client = GitHubClient(settings.apiUrl, settings.token, transport, clock)
+    /** The requests, their headers and the rate limit hold, shared with pull request delivery (m2-25, m4-48). */
+    private val client = clients.client(settings.apiUrl, settings.token)
 
     private val blockers = GitHubBlockers(client, settings.owner, settings.repo)
 
