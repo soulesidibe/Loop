@@ -69,16 +69,20 @@ class StatusCommand(
                     val events = store.eventsOfKinds(projectId, SNAPSHOT_KINDS)
                     val parked = store.list(projectId)
                     val waiting = Waits(store, projectId).read()
+                    // m4-10: `loop drain` names the live run in its marker until the run notices it.
+                    val drainAsked = live?.let { files.drainRequested(it.runId) } ?: false
                     runtimeSnapshot(
                         events.getOrElse { fail("cannot read the store at $storeFile: ${it.sentence()}", EXIT_STORE) },
                         live?.let { RunId(it.runId) },
                         parked.getOrElse { fail("cannot read the store at $storeFile: ${it.sentence()}", EXIT_STORE) },
                         waiting.getOrElse { fail("cannot read the store at $storeFile: ${it.sentence()}", EXIT_STORE) },
+                        drainAsked,
                     )
                 }
             }
         echo("Project ${projectId.value}   ${workflow.path}")
-        echo(live?.let { "Run ${id(it.runId)}  pid ${it.pid}" } ?: "No run in progress.")
+        val draining = if (snapshot.drain != null) "  draining" else ""
+        echo(live?.let { "Run ${id(it.runId)}  pid ${it.pid}$draining" } ?: "No run in progress.")
         machine.forEach { echo(redact(it)) }
         echo("")
         // bl-39: one line while the runner hold of the live run stops every dispatch.
@@ -91,9 +95,23 @@ class StatusCommand(
             val details = details("issue" to pause.issue, "reason" to pause.reason, "since" to seconds(pause.since))
             echo("${PAUSED.padEnd(STATE_WIDTH)}delivery queue  $details  resume with loop approve or a restart".trimEnd())
         }
+        // m4-10: one line while the live run drains, with what still runs.
+        snapshot.drain?.let { drain ->
+            val details = details("since" to drain.since?.let(::seconds), "still" to drain.still.joinToString(",").ifEmpty { null })
+            val next =
+                when {
+                    drain.since == null -> "begins at the next poll"
+                    drain.still.isEmpty() -> "stops at the next poll"
+                    else -> "stops once these end"
+                }
+            val line = listOf("run", details, "$next, loop stop stops it at once").filter { it.isNotEmpty() }.joinToString("  ")
+            echo("${DRAINING.padEnd(STATE_WIDTH)}$line")
+        }
         val rows = rows(snapshot)
         if (rows.isEmpty()) {
-            if (snapshot.hold == null && snapshot.queuePause == null) echo("Nothing running, retrying, waiting or parked.")
+            if (snapshot.hold == null && snapshot.queuePause == null && snapshot.drain == null) {
+                echo("Nothing running, retrying, waiting or parked.")
+            }
             return
         }
         val identifierWidth = rows.maxOf { it.identifier.length }
@@ -236,6 +254,7 @@ class StatusCommand(
         const val PARKED = "parked"
         const val HELD = "held"
         const val PAUSED = "paused"
+        const val DRAINING = "draining"
         const val NO_OCCUPANCY =
             "the runner reports no context occupancy, so only the prompt limit and the turn cap (agent.max_turns) hold for this attempt"
         const val NO_WINDOW = "none"

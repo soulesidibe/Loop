@@ -98,17 +98,8 @@ internal class RunDrain(
 
     /** What still runs, by the rules of the class comment. */
     fun remaining(facts: DrainFacts): DrainWork {
-        val waits =
-            facts.waits.filter { wait ->
-                when (wait) {
-                    is Wait.Verify -> true
-                    // bl-175: a merge check waits behind a paused queue until `loop approve` or a restart.
-                    is Wait.Merge -> wait.issueId in facts.mergeJobs || !(facts.queuePaused && wait.phase == MergePhase.Check)
-                    // An approval given, by a human or by the auto policy, is delivered at the next tick.
-                    is Wait.Approval -> wait.approved
-                    is Wait.Other -> false
-                }
-            }
+        // A merge job that already runs holds the drain, even behind a paused queue.
+        val waits = facts.waits.filter { it.issueId in facts.mergeJobs || holdsDrain(it, facts.queuePaused) }
         return DrainWork(
             attempts = facts.running.map { it.identifier }.sorted(),
             waits = waits.map { it.identifier }.sorted(),
@@ -151,3 +142,20 @@ internal class RunDrain(
         const val DRAIN = "drain"
     }
 }
+
+/**
+ * Whether [wait] holds a drain (m4-10): a wait that needs no human does, one that needs a human does not and stays in
+ * the store for the next `loop run`. A check wait holds. A merge wait holds unless it is a merge check behind a paused
+ * delivery queue ([queuePaused], bl-175), which waits for `loop approve` or a restart. An approval holds once given, by
+ * a human or by the auto policy, since the run delivers it at its next tick. Shared with `loop status`.
+ */
+fun holdsDrain(
+    wait: Wait,
+    queuePaused: Boolean,
+): Boolean =
+    when (wait) {
+        is Wait.Verify -> true
+        is Wait.Merge -> !(queuePaused && wait.phase == MergePhase.Check)
+        is Wait.Approval -> wait.approved
+        is Wait.Other -> false
+    }

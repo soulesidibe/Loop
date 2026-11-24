@@ -71,7 +71,10 @@ class HumanLog(
     @Synchronized
     fun runStarted(workflow: Path) = guard { write(clock.now(), null, "run started for ${workflow.normalize()}") }
 
-    /** [reason] is null when the run ended on its own, else `stop_requested`, `signal` or `internal_error`. */
+    /**
+     * [reason] is null when the run ended on its own, `drained` when it ended after `loop drain` (m4-10), else
+     * `stop_requested`, `signal` or `internal_error`.
+     */
     @Synchronized
     fun runEnded(
         reason: String?,
@@ -83,6 +86,7 @@ class HumanLog(
                 STOP_REQUESTED -> "run stopped by loop stop"
                 SIGNAL -> "run stopped by a signal"
                 INTERNAL_ERROR -> "run stopped by an internal error"
+                DRAINED -> "run ended after loop drain"
                 else -> "run stopped, $reason"
             }
         val canceled = if (attemptsCanceled > 0) ", ${count(attemptsCanceled, "attempt")} canceled" else ""
@@ -354,6 +358,7 @@ class HumanLog(
         private const val STOP_REQUESTED = "stop_requested"
         private const val SIGNAL = "signal"
         private const val INTERNAL_ERROR = "internal_error"
+        private const val DRAINED = "drained"
         private const val NAMES_MAX = 10
         private const val TEXT_MAX = 200
         private const val COMMAND_MAX = 120

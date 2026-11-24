@@ -60,8 +60,9 @@ internal data class RunRecord(
 
 /**
  * The files of one project's run under `<loopHome>/runs/` (m1-09, ADR 0001 one process per
- * project): the run file, locked by the live run for its whole life, and the stop marker
- * `loop stop` creates before its SIGTERM, so the run can say its attempts ended on a stop request.
+ * project): the run file, locked by the live run for its whole life, the stop marker
+ * `loop stop` creates before its SIGTERM, so the run can say its attempts ended on a stop request,
+ * and the drain marker `loop drain` creates (m4-10), holding the id of the run it drains.
  */
 internal class RunFiles(
     loopHome: Path,
@@ -70,9 +71,29 @@ internal class RunFiles(
     val dir: Path = dirOf(loopHome)
     val runFile: Path = dir.resolve("${projectId.value}.json")
     val stopMarker: Path = dir.resolve("${projectId.value}.stop")
+    val drainMarker: Path = dir.resolve("${projectId.value}.drain")
 
     /** True while a `loop stop` asked this run to stop. */
     fun stopRequested(): Boolean = Files.exists(stopMarker)
+
+    /**
+     * True once `loop drain` asked the run [runId] to drain (m4-10): the drain marker names it. A marker that cannot be
+     * read, or names another run, asks nothing.
+     */
+    fun drainRequested(runId: String): Boolean =
+        try {
+            Files.readString(drainMarker).trim() == runId
+        } catch (e: IOException) {
+            false
+        }
+
+    /** Asks the run [runId] to drain (m4-10); false when the drain marker already names it. */
+    fun requestDrain(runId: String): Boolean {
+        if (drainRequested(runId)) return false
+        Files.createDirectories(dir)
+        Files.writeString(drainMarker, runId)
+        return true
+    }
 
     fun readRecord(): Result<RunRecord> = runCatching { JSON.decodeFromString(RunRecord.serializer(), Files.readString(runFile)) }
 
@@ -91,7 +112,7 @@ internal class RunFiles(
     /**
      * Takes the run file for [record]: a failed `tryLock` means another live run of this project.
      * The file is only truncated once the lock is held, so a refused run never wipes the live one's
-     * record. A stop marker left by an earlier run is removed, so it cannot name this run's end.
+     * record. A stop or drain marker left by an earlier run is removed, so it cannot name this run's end.
      */
     fun acquire(record: RunRecord): Acquired {
         Files.createDirectories(dir)
@@ -121,6 +142,7 @@ internal class RunFiles(
                 return null
             }
             Files.deleteIfExists(stopMarker)
+            Files.deleteIfExists(drainMarker)
             channel.truncate(0)
             channel.write(ByteBuffer.wrap(JSON.encodeToString(RunRecord.serializer(), record).toByteArray()), 0)
             channel.force(true)
@@ -160,7 +182,7 @@ internal class RunFiles(
     /**
      * Looks at the run file without disturbing a live run: when its own `tryLock` succeeds no
      * process holds the file (the OS drops the lock of a crashed run), so the file is stale and
-     * is removed with any stop marker.
+     * is removed with any stop or drain marker.
      */
     fun probe(): Probe {
         val channel =
@@ -175,6 +197,7 @@ internal class RunFiles(
                 val record = readRecord()
                 Files.deleteIfExists(runFile)
                 Files.deleteIfExists(stopMarker)
+                Files.deleteIfExists(drainMarker)
                 return Probe.Stale(record.getOrNull())
             }
             // A live run truncates then writes its record: an empty file may be that window, so read once more.
@@ -275,7 +298,10 @@ internal const val STOP_REQUESTED = "stop_requested"
 internal const val SIGNAL = "signal"
 internal const val INTERNAL_ERROR = "internal_error"
 
-/** The run file held by the live run; [release] deletes it and the stop marker, then drops the lock. */
+/** Why a run ended by itself: it drained after `loop drain` (m4-10). */
+internal const val DRAINED = "drained"
+
+/** The run file held by the live run; [release] deletes it and the stop and drain markers, then drops the lock. */
 internal class RunLock(
     private val files: RunFiles,
     private val channel: FileChannel,
@@ -288,6 +314,7 @@ internal class RunLock(
         try {
             Files.deleteIfExists(files.runFile)
             Files.deleteIfExists(files.stopMarker)
+            Files.deleteIfExists(files.drainMarker)
         } finally {
             // Closing the channel releases the lock.
             channel.close()

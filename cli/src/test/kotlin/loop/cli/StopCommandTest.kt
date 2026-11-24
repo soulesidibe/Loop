@@ -133,6 +133,37 @@ class StopCommandTest {
     }
 
     @Test
+    fun `m4-10 loop stop during a drain stops the run at once`() {
+        fixture.issue("t-1")
+        val running = startRunning("t-1")
+        try {
+            val drain = fixture.loop("drain", fixture.workflow.toString())
+            assertEquals(0, drain.exitCode, drain.toString())
+            // The run notices the drain at its next poll, then waits for the agent, which sleeps 30 seconds.
+            val deadline = System.nanoTime() + WAIT_NANOS
+            while (System.nanoTime() < deadline && "draining  run  since=" !in fixture.loop("status", fixture.workflow.toString()).stdout) {
+                Thread.sleep(POLL_MS)
+            }
+
+            val started = System.nanoTime()
+            val stop = fixture.loop("stop", fixture.workflow.toString())
+            val run = running.await(30)
+            val tookSeconds = (System.nanoTime() - started) / 1_000_000_000
+
+            assertEquals(0, stop.exitCode, stop.toString())
+            assertEquals(0, run.exitCode, run.toString())
+            assertTrue(tookSeconds < 20, "the stop waited for the drain, ${tookSeconds}s\n$run")
+            assertFalse(ProcessHandle.of(agentPid("t-1")).map { it.isAlive }.orElse(false), "the agent outlived the stop\n$run")
+            assertEquals(1, fixture.query("SELECT 1 FROM events WHERE kind = 'run_draining'").size, run.toString())
+            assertEquals(0, fixture.query("SELECT 1 FROM events WHERE kind = 'run_drained'").size, run.toString())
+            assertContains(fixture.query("SELECT data FROM events WHERE kind = 'run_stopped'").single()["data"].orEmpty(), "stop_requested")
+            assertFalse(fixture.loopHome.resolve("runs/${fixture.projectId()}.drain").exists(), "drain marker left\n$run")
+        } finally {
+            stopForcibly(running)
+        }
+    }
+
+    @Test
     fun `loop stop with nothing running says so`() {
         fixture.issue("t-1")
 

@@ -121,6 +121,7 @@ The agent works in `../my-project-workspaces/demo-1/`, so that is where `hello.t
 |---|---|
 | `loop run [WORKFLOW.md]` | Poll the tracker and start an attempt for each eligible issue. `--once` runs one tick. |
 | `loop stop` | Stop the project's run, keeping its workspaces. |
+| `loop drain` | Let the project's running attempts finish, start nothing new, then stop the run. |
 | `loop status` | Show what the run is doing: running, retrying, waiting and parked issues. |
 | `loop trace <issue>` | Print the recorded attempts of an issue. |
 | `loop show <attempt>` | Print one attempt in depth, with `--cost` for its token and dollar spend. |

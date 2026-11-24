@@ -54,7 +54,8 @@ import kotlin.time.Clock
  * SIGTERM, which cancel the running attempt and kill its process tree. `--once`
  * runs one tick, waits for its attempts and prints the summary of plan U3.
  * Exits nonzero only when startup fails, never for an attempt's outcome. A daemon
- * stopped by a signal or `loop stop` exits 0 once it unwound in time (m1-34).
+ * stopped by a signal or `loop stop` exits 0 once it unwound in time (m1-34), and one
+ * that drained after `loop drain` ends by itself with 0 (m4-10).
  */
 class RunCommand(
     private val host: Host,
@@ -291,6 +292,8 @@ class RunCommand(
                 redactor = redactor,
                 secretsOf = { secretValues(it, host.rawEnv) },
                 cancelReason = { cancelReason(runFiles) },
+                // m4-10: `loop drain` names this run in its marker.
+                drainRequested = { runFiles.drainRequested(runId.value) },
                 toolConfigWriter = ToolConfigSnapshotWriter,
                 io = Dispatchers.IO,
                 loopVersion = host.loopVersion,
@@ -363,7 +366,13 @@ class RunCommand(
                 try {
                     // m1-16, spec 8.6: the workspaces of terminal issues go before the first tick, in both modes.
                     orchestrator.removeTerminalWorkspaces()
-                    if (once) broken = printSummary(orchestrator.tick(), redactor) else orchestrator.runUntilCancelled()
+                    if (once) {
+                        broken = printSummary(orchestrator.tick(), redactor)
+                    } else {
+                        orchestrator.runUntilCancelled()
+                        // m4-10: the daemon returns only once it drained after `loop drain`.
+                        stopReason = DRAINED
+                    }
                 } catch (e: CancellationException) {
                     // The attempts have unwound (each recorded canceled with this reason); the store is still open.
                     val reason = cancelReason(runFiles)

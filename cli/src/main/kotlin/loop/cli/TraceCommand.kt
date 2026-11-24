@@ -11,6 +11,8 @@ import loop.api.AttemptId
 import loop.api.Issue
 import loop.api.ProjectId
 import loop.api.RecordedEvent
+import loop.core.events.RunDrained
+import loop.core.events.RunDraining
 import loop.core.events.TraceText
 import loop.store.StoredEvent
 import java.nio.file.Path
@@ -45,10 +47,21 @@ class TraceCommand(
         val projectId = project.projectId
         val storeFile = project.storeFile
         val store = project.store().getOrElse { fail(it.sentence(), EXIT_STORE) }
+        val unreadable = { error: Throwable -> fail("cannot read the store at $storeFile: ${error.sentence()}", EXIT_STORE) }
         val events =
-            store
-                .use { runBlocking { store.eventsForIssue(projectId, found?.id ?: issue) } }
-                .getOrElse { fail("cannot read the store at $storeFile: ${it.sentence()}", EXIT_STORE) }
+            store.use {
+                runBlocking {
+                    val ofIssue = store.eventsForIssue(projectId, found?.id ?: issue).getOrElse(unreadable)
+                    // m4-10: the drain of a run the issue took part in is run level, it prints among the issue's lines.
+                    val runs = ofIssue.mapNotNull { it.event.runId }.toSet()
+                    val drains =
+                        store
+                            .eventsOfKinds(projectId, DRAIN_KINDS)
+                            .getOrElse(unreadable)
+                            .filter { it.event.issueId == null && it.event.runId in runs }
+                    (ofIssue + drains).sortedBy { it.seq }
+                }
+            }
         val blocks = blocksOf(events)
         // m1-09: a blocked issue has no attempt but its candidate_skipped lines say why, so it still prints.
         if (blocks.isEmpty()) {
@@ -132,6 +145,9 @@ class TraceCommand(
     private companion object {
         const val EXIT_ISSUE = 2
         const val EXIT_STORE = 3
+
+        /** The run level events `loop trace` prints for each run of the issue (m4-10). */
+        val DRAIN_KINDS = setOf(RunDraining.name, RunDrained.name)
     }
 }
 
