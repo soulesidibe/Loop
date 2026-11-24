@@ -12,6 +12,7 @@ import loop.core.events.Delivery
 import loop.core.events.HumanTouched
 import loop.core.waiting.Wait
 import loop.core.waiting.Waits
+import loop.core.workflow.WorkflowFile
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Clock
 
@@ -19,7 +20,8 @@ import kotlin.time.Clock
  * `loop approve <issue> [--workflow WORKFLOW.md]`: approves the delivery of a verified result that waits as
  * `Waiting(approval)` under the `human` delivery policy (m2-24, story 78). It marks the wait approved in the store
  * and records `approval_given` with the approver, then a `human_touch`; the running Loop, or the next one to start,
- * delivers it on its next tick, so the approval survives a restart. The project and the issue are resolved like
+ * delivers it on its next tick, so the approval survives a restart. Under `delivery.pull_request.merge` the messages and
+ * `approval_given` name `on_delivered.move_to`, where the merged issue ends (bl-69). The project and the issue are resolved like
  * `loop resume`. It refuses to run inside an attempt, see [insideAttempt]. Exit codes: 1 startup, 2 unknown issue,
  * 3 store, 4 not waiting for approval, 5 inside an attempt.
  */
@@ -40,8 +42,8 @@ class ApproveCommand(
         val ids = project.ids
         // m4-47: a bare id is the primary tracker's, a namespaced one names a tracker of the project.
         val typed = ids.typed(issue).getOrElse { fail("${it.message}. Nothing changed", EXIT_ISSUE) }
+        val workflow = project.workflow
         val tracker = project.tracker()
-        val trackerDir = project.workflow.trackerDir
         val lookup =
             try {
                 runBlocking { tracker.fetchIssuesByIds(listOf(typed.value)) }
@@ -54,7 +56,7 @@ class ApproveCommand(
         lookup.exceptionOrNull()?.let { error ->
             echo(
                 redact(
-                    "loop approve: cannot read \"$issue\" in the tracker at $trackerDir: ${error.sentence()}. " +
+                    "loop approve: cannot read \"$issue\" in ${trackerLocation(workflow)}: ${error.sentence()}. " +
                         "Looking for it among the waiting issues.",
                 ),
                 err = true,
@@ -74,15 +76,15 @@ class ApproveCommand(
                     records.firstOrNull { it.issueId == found.id }
                 } else {
                     records.firstOrNull { ids.matches(typed, it.issueId, it.identifier) }
-                        ?: fail("no issue \"$issue\" in the tracker at $trackerDir", EXIT_ISSUE)
+                        ?: fail("no issue \"$issue\" in ${trackerLocation(workflow)}", EXIT_ISSUE)
                 }
             val identifier = found?.let { ids.name(it.id, it.identifier) } ?: issue
             val waiting = record ?: fail("$identifier is not waiting for approval. Nothing changed", EXIT_NOT_WAITING)
             val current = checkApproval(identifier, waiting)
+            // bl-69: under `merge` the issue never stops at the wait's handoff state, it ends in `on_delivered.move_to`.
+            val mergeTo = mergeMoveTo(workflow)
             if (current.approved) {
-                echo(
-                    "$identifier is already approved, Loop moves it to ${current.to} on its next tick. Nothing changed.",
-                )
+                echo("$identifier is already approved, ${outcome(current.to.orEmpty(), mergeTo)}. Nothing changed.")
                 return
             }
             val by = approver()
@@ -93,7 +95,7 @@ class ApproveCommand(
                     .getOrElse { fail("cannot write the store at $storeFile: ${it.sentence()}", EXIT_STORE) }
                     ?.let { checkApproval(identifier, it) }
                     ?: fail("$identifier is not waiting for approval. Nothing changed", EXIT_NOT_WAITING)
-            val to = approved.to.orEmpty()
+            val to = mergeTo ?: approved.to.orEmpty()
             val event =
                 ApprovalGiven.event(
                     ts = now,
@@ -118,11 +120,32 @@ class ApproveCommand(
                 echo(redact("loop approve: the approval was not recorded in the store at $storeFile: ${error.sentence()}."), err = true)
             }
             val since = approved.since.toString().take(SECONDS_PREFIX) + "Z"
-            echo(
-                "Approved ${ids.name(approved.issueId, approved.identifier)}, waiting since $since. Loop moves it to $to on its next tick.",
-            )
+            echo("Approved ${ids.name(approved.issueId, approved.identifier)}, waiting since $since. ${outcome(to, mergeTo)}.")
         }
     }
+
+    /**
+     * The state an approved issue ends in under `delivery.pull_request.merge` (bl-69): `delivery.on_delivered.move_to`,
+     * which the loader requires with `merge`. Null without `merge`, where the delivery moves it to the wait's own state.
+     */
+    private fun mergeMoveTo(workflow: WorkflowFile): String? {
+        val delivery =
+            workflow.config.kinds
+                ?.code
+                ?.delivery ?: return null
+        return delivery.onDeliveredMoveTo.takeIf { delivery.pullRequest?.merge != null }
+    }
+
+    /** What Loop does with the approved issue: the move to [to], or with [mergeTo] the pull request, merged, then that move. */
+    private fun outcome(
+        to: String,
+        mergeTo: String?,
+    ): String =
+        if (mergeTo == null) {
+            "Loop moves it to $to on its next tick"
+        } else {
+            "Loop delivers its pull request on its next tick, runs the merge check and merges it, then moves it to $mergeTo"
+        }
 
     /** Who approves: the OS user of the environment, or [UNKNOWN_HUMAN] when it names none. */
     private fun approver(): String =
