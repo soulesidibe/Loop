@@ -61,3 +61,9 @@ Out of this issue: `loop stop --drain` as an alias, a drain of one tracker only.
   - diff_size: the diff changes 1192 lines, over the limit of 1000
   Merge risk: not assessed, a condition failed.
   Once approved, Loop runs the merge check again and merges.
+
+2026-11-24 05:05Z loop: Loop could not merge pull request #34: merging main at bc5746b57f67428194803d82a20bf5ee8279f388 into loop/m4-10 conflicts (conflict in docs/spec-decisions.md). The merge was aborted and the branch is unchanged. The next attempt merges refs/loop/base/main into its branch, resolves the conflict and submits the result again.
+
+2026-11-24 05:31Z loop: Loop updated pull request #34 for this issue: https://github.com/soulesidibe/Loop/pull/34
+
+2026-11-24 05:33Z loop: Loop could not merge pull request #34: merging main at 028da0b22b3fca69a89877769e88b6842b46c94f into loop/m4-10 conflicts (conflict in docs/spec-decisions.md). The merge was aborted and the branch is unchanged. The next attempt merges refs/loop/base/main into its branch, resolves the conflict and submits the result again.
