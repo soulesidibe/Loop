@@ -182,9 +182,14 @@ class AcceptanceCommandsCommandTest {
         }
     }
 
-    /** The frozen list row of t-1: its digest and its changed digest. */
+    /**
+     * The frozen list row of t-1: its digest and its changed digest. [freeze] writes the bare id a run before m4-12
+     * wrote, and the store keeps it, so the row holds either form.
+     */
     private fun frozenRow(): Map<String, String?> =
-        fixture.query("SELECT digest, changed_digest FROM acceptance_commands WHERE issue_id = 'default:t-1'").single()
+        fixture
+            .query("SELECT digest, changed_digest FROM acceptance_commands WHERE issue_id IN ('t-1', 'default:t-1')")
+            .single()
 
     @Test
     fun `restored criteria that match the frozen list forget the changed list, a later resume accepts nothing`() {
