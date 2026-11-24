@@ -28,10 +28,13 @@ import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import kotlin.io.path.createDirectories
+import kotlin.io.path.deleteExisting
+import kotlin.io.path.exists
 import kotlin.io.path.readLines
 import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
@@ -482,6 +485,30 @@ class CodexServerRequestsTest {
         val (_, _, thread, turn) = received(server)
         assertEquals("untrusted", thread.obj("params").string("approvalPolicy"))
         assertEquals("untrusted", turn.obj("params").string("approvalPolicy"))
+    }
+
+    @Test
+    fun `bl-135 a workspace or operator exec policy rule that allows git push fails the session before the app server starts`() {
+        val rules = listOf(workspace.resolve(".codex/rules/agent.rules"), home.resolve(".codex/rules/default.rules"))
+
+        rules.forEachIndexed { i, file ->
+            file.parent.createDirectories()
+            file.writeText("prefix_rule(pattern=[\"git\", \"push\"], decision=\"allow\")\n")
+            val server =
+                FakeAppServer.write(dir.resolve("rules-$i")) {
+                    handshake()
+                    turnCompleted()
+                }
+
+            val events = runAll(runner(server.command))
+
+            val failed = assertIs<RunnerEvent.TurnFailed>(events.last(), "$events")
+            assertTrue(failed.reason.startsWith("exec_policy_rule: $file allows the denied command git push"), failed.reason)
+            assertEquals(null, failed.exitCode)
+            assertTrue(events.first() is RunnerEvent.SessionStarted, "$events")
+            assertFalse(server.received.exists(), "the app server never started")
+            file.deleteExisting()
+        }
     }
 
     // Helpers.
