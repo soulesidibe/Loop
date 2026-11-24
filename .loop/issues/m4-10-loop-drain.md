@@ -1,7 +1,7 @@
 ---
 id: m4-10
 title: "loop drain: finish the running attempts, start nothing new, stop"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-46, m4-09]
@@ -67,3 +67,11 @@ Out of this issue: `loop stop --drain` as an alias, a drain of one tracker only.
 2026-11-24 05:31Z loop: Loop updated pull request #34 for this issue: https://github.com/soulesidibe/Loop/pull/34
 
 2026-11-24 05:33Z loop: Loop could not merge pull request #34: merging main at 028da0b22b3fca69a89877769e88b6842b46c94f into loop/m4-10 conflicts (conflict in docs/spec-decisions.md). The merge was aborted and the branch is unchanged. The next attempt merges refs/loop/base/main into its branch, resolves the conflict and submits the result again.
+
+2026-11-24 05:59Z loop: Loop updated pull request #34 for this issue: https://github.com/soulesidibe/Loop/pull/34
+
+2026-11-24 06:13Z loop: Loop did not merge pull request #34 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Failed conditions:
+  - diff_size: the diff changes 1192 lines, over the limit of 1000
+  Merge risk: not assessed, a condition failed.
+  Once approved, Loop runs the merge check again and merges.
