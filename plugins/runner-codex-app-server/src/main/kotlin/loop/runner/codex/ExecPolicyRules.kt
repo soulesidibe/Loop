@@ -36,6 +36,9 @@ internal object ExecPolicyRules {
 
     private const val ALLOW = "allow"
 
+    /** The names of the positional arguments of a `prefix_rule`, in order. */
+    private val POSITIONAL = listOf("pattern", "decision")
+
     /** The `rules` folders a session in [workspace] reads, with [env] the agent env, see [ExecPolicyRules]. */
     fun folders(
         workspace: Path,
@@ -229,24 +232,18 @@ internal object ExecPolicyRules {
                 val keyword = (peek() as? Token.Name)?.takeIf { tokens.getOrNull(i + 1) == Token.Punct('=') }?.value
                 if (keyword != null) i += 2
                 val value = value()
-                when (keyword ?: if (positional++ == 0) "pattern" else if (positional == 2) "decision" else "") {
-                    "pattern" -> pattern = value
-                    "decision" -> decision = value
-                }
+                // The signature is prefix_rule(pattern, decision, ...), so the first two may be positional.
+                val name = keyword ?: POSITIONAL.getOrNull(positional++)
+                if (name == "pattern") pattern = value
+                if (name == "decision") decision = value
                 when (val next = tokens.getOrNull(i++)) {
                     Token.Punct(',') -> continue
                     Token.Punct(')') -> break
                     else -> throw Unreadable("$RULE has ${describe(next)} where a , or ) belongs")
                 }
             }
-            val words =
-                (pattern as? Value.ListOf)?.items?.map { word ->
-                    when (word) {
-                        is Value.Text -> listOf(word.value)
-                        is Value.ListOf -> word.items.map { (it as? Value.Text)?.value ?: throw Unreadable("$RULE has a pattern that is not literal") }
-                        Value.Other -> throw Unreadable("$RULE has a pattern that is not literal")
-                    }
-                } ?: throw Unreadable("$RULE has no literal pattern")
+            val items = (pattern as? Value.ListOf)?.items ?: throw Unreadable("$RULE has no literal pattern")
+            val words = items.map { word -> if (word is Value.ListOf) word.items.map(::literal) else listOf(literal(word)) }
             val verdict =
                 when (decision) {
                     null -> ALLOW
@@ -255,6 +252,10 @@ internal object ExecPolicyRules {
                 }
             return Rule(words, verdict)
         }
+
+        /** The string of a pattern word, which must be a literal. */
+        private fun literal(value: Value): String =
+            (value as? Value.Text)?.value ?: throw Unreadable("$RULE has a pattern that is not literal")
 
         /** One argument value: a string, a list of values, or anything else, skipped up to its end. */
         private fun value(): Value {
