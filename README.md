@@ -139,6 +139,7 @@ The agent works in `../my-project-workspaces/demo-1/`, so that is where `hello.t
 - [`docs/plugins/`](docs/plugins/): the configuration of each tracker and runner.
 - [`docs/workspaces.md`](docs/workspaces.md): workspaces and hooks.
 - [`docs/self-hosting.md`](docs/self-hosting.md): installing Loop and running it on its own issues.
+- [`docs/gemini-skills.md`](docs/gemini-skills.md): sharing skills and project instructions with Gemini CLI.
 - [`docs/adr/`](docs/adr/): architecture decisions.
 
 ## Contributing
