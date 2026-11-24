@@ -1,5 +1,7 @@
 package loop.runner.codex
 
+import kotlin.io.path.Path
+import kotlin.io.path.readText
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -98,18 +100,36 @@ class DeniedCommandsTest {
     }
 
     /**
-     * The claude-code runner's list is read by reflection: `ClaudeSettingsFile` is internal to its module, so its
-     * getter has a name mangled with the module's.
+     * The claude-code runner's list is read from its source, `ClaudeSettingsFile.kt` in the sibling module, found from
+     * this module's schema folder: the object is internal to its module, and this module does not depend on it. The
+     * string literals of its `deniedCommands` list and of its `OPERATOR_SUBCOMMANDS` are compared with this runner's.
      */
     @Test
     fun `bl-135 the denied commands are the claude-code runner's list`() {
-        val settings = Class.forName("loop.runner.claudecode.ClaudeSettingsFile")
-        val instance = settings.getField("INSTANCE").get(null)
-        val getter = settings.methods.single { it.name.startsWith("getDeniedCommands") }
+        val module = Path(System.getProperty("loop.codexSchema")).parent.parent
+        val source =
+            module
+                .resolve("../runner-claude-code/src/main/kotlin/loop/runner/claudecode/ClaudeSettingsFile.kt")
+                .normalize()
+                .readText()
 
-        @Suppress("UNCHECKED_CAST")
-        val claudeCode = getter.invoke(instance) as List<String>
+        val commands = literals(source, "val deniedCommands: List<String> =")
+        val operator = literals(source, "private val OPERATOR_SUBCOMMANDS =")
 
-        assertEquals(claudeCode, DeniedCommands.commands)
+        assertTrue(commands.isNotEmpty() && operator.isNotEmpty(), "the lists were not found in ClaudeSettingsFile.kt")
+        assertTrue("+ operatorCommands(LOOP)" in source && "LOOP = \"loop\"" in source, "the operator commands are built another way")
+        assertEquals(commands + operator.map { "loop $it" }, DeniedCommands.commands)
+    }
+
+    /** The string literals of the first `listOf(...)` after [declaration] in [source]. */
+    private fun literals(
+        source: String,
+        declaration: String,
+    ): List<String> {
+        val start = source.indexOf(declaration)
+        if (start < 0) return emptyList()
+        val open = source.indexOf("listOf(", start)
+        val close = source.indexOf(")", open)
+        return Regex("\"([^\"]*)\"").findAll(source.substring(open, close)).map { it.groupValues[1] }.toList()
     }
 }

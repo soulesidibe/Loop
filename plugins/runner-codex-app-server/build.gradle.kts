@@ -16,8 +16,6 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(testFixtures(project(":plugin-api")))
-    // bl-135: DeniedCommandsTest compares the deny list with the claude-code runner's, so both runners refuse the same commands.
-    testImplementation(project(":plugins:runner-claude-code"))
     "generatorImplementation"(libs.kotlinx.serialization.json)
     testImplementation(generator.output)
 }
