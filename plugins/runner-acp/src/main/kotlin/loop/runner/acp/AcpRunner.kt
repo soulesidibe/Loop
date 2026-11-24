@@ -19,7 +19,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.put
 import loop.api.AgentRunner
 import loop.api.AgentSession
 import loop.api.AttemptContext
@@ -141,6 +143,7 @@ class AcpRunner internal constructor(
                 strictMcp = settings.strictMcp,
                 launcher = ctx.env["LOOP_LAUNCHER"],
             )
+        private val telemetry = AcpTelemetry(isAgyPreset = settings.isAgyPreset)
 
         @Volatile private var live: LiveProcess? = null
 
@@ -148,10 +151,16 @@ class AcpRunner internal constructor(
 
         @Volatile private var latest: TurnIds? = null
 
+        @Volatile private var running: Turn? = null
+
         override fun runTurn(
             input: String,
             turn: Int,
         ): Flow<RunnerEvent> = flow { Turn(this, turn).run(input) }
+
+        override fun interrupt() {
+            running?.interrupt()
+        }
 
         override suspend fun stop() = stop {}
 
@@ -165,7 +174,14 @@ class AcpRunner internal constructor(
                         process.stdin.close()
                         val drained =
                             withTimeoutOrNull(stopGrace) {
-                                while (!process.events.receiveCatching().isClosed) continue
+                                while (true) {
+                                    val next = process.events.receiveCatching()
+                                    if (next.isClosed) break
+                                    val event = next.getOrNull()
+                                    if (event is ProcessEvent.Line && event.stream == Stream.Stdout) {
+                                        drainStoppedUsage(event.text)?.let { reports += it }
+                                    }
+                                }
                             }
                         process.job.cancelAndJoin()
                         if (drained == null) {
@@ -187,6 +203,14 @@ class AcpRunner internal constructor(
                 }
             }
             reports.forEach { report(it) }
+        }
+
+        private fun drainStoppedUsage(line: String): RunnerEvent.Usage? {
+            val ids = latest ?: return null
+            val frame = AcpFraming.decode(line)
+            if (frame !is AcpFrame.Response) return null
+            val result = frame.result as? JsonObject ?: return null
+            return telemetry.readPromptUsage(result, ids.sessionId, ids.turnId)
         }
 
         private fun spawn(): LiveProcess {
@@ -276,7 +300,45 @@ class AcpRunner internal constructor(
             private var runtimeSessionId: String? = resumeFrom
             private val held = mutableListOf<RunnerEvent>()
 
+            private val interruptLock = Any()
+            private var interruptAsked = false
+            private var interruptible: LiveProcess? = null
+            private var cancelSessionId: String? = null
+
+            fun interrupt() {
+                synchronized(interruptLock) {
+                    if (interruptAsked) return
+                    interruptAsked = true
+                    val process = interruptible
+                    val sid = cancelSessionId
+                    if (process != null && sid != null) {
+                        sendCancel(process, sid)
+                    }
+                }
+            }
+
+            private fun allowInterrupt(
+                process: LiveProcess,
+                sid: String,
+            ) {
+                synchronized(interruptLock) {
+                    interruptible = process
+                    cancelSessionId = sid
+                    if (interruptAsked) sendCancel(process, sid)
+                }
+            }
+
+            private fun isInterrupted(): Boolean = synchronized(interruptLock) { interruptAsked }
+
+            private fun sendCancel(
+                process: LiveProcess,
+                sid: String,
+            ) {
+                process.stdin.trySend(handshake.cancel(sid))
+            }
+
             suspend fun run(input: String) {
+                running = this
                 latest = TurnIds(sessionId, turnId)
                 try {
                     if (turn == 1) {
@@ -301,10 +363,12 @@ class AcpRunner internal constructor(
                             ProtectedRootsCheck.refusal(ctx.workspace, agentEnv())?.let { return killAndFail(process, it) }
                         }
                         process.stdin.send(handshake.continuePrompt(input))
+                        allowInterrupt(process, checkNotNull(handshake.acpSessionId))
                         start()
                         read(process)
                     }
                 } finally {
+                    if (running === this) running = null
                     if (!ended) live?.let { kill(it) }
                 }
             }
@@ -360,14 +424,25 @@ class AcpRunner internal constructor(
                                 continue
                             }
                             if (handshake.pendingHandshakeMethod == null) since = timeSource.markNow()
+                            if (frame is AcpFrame.Notification) {
+                                handshake.observeNotification(frame)
+                                telemetry
+                                    .readNotification(frame, sessionId, turnId, handshake.activeModelId)
+                                    ?.let { out(it) }
+                            }
                             if (frame is AcpFrame.Request) {
-                                when (val answer = permissionPolicy.answer(frame)) {
-                                    is AcpPermissionPolicy.Answer.Write -> {
-                                        process.stdin.send(answer.line)
-                                        out(loopNote(answer.note))
+                                if (isInterrupted() && frame.method == AcpHandshake.METHOD_REQUEST_PERMISSION) {
+                                    process.stdin.send(cancelledPermissionResponse(frame.id))
+                                    out(loopNote("cancelled permission request ${frame.id} after interrupt"))
+                                } else {
+                                    when (val answer = permissionPolicy.answer(frame)) {
+                                        is AcpPermissionPolicy.Answer.Write -> {
+                                            process.stdin.send(answer.line)
+                                            out(loopNote(answer.note))
+                                        }
+                                        is AcpPermissionPolicy.Answer.InputRequired ->
+                                            return killAndEnd(process, RunnerEvent.TurnInputRequired(sessionId, turnId, answer.reason))
                                     }
-                                    is AcpPermissionPolicy.Answer.InputRequired ->
-                                        return killAndEnd(process, RunnerEvent.TurnInputRequired(sessionId, turnId, answer.reason))
                                 }
                             }
                             if (handshake.pendingHandshakeMethod != null) {
@@ -388,10 +463,27 @@ class AcpRunner internal constructor(
                                             }
                                         }
                                         process.stdin.send(step.promptLine)
+                                        allowInterrupt(process, step.acpSessionId)
                                         start()
                                         since = timeSource.markNow()
                                     }
-                                    is AcpHandshake.Step.Failed -> return killAndFail(process, step.failure.reason)
+                                    is AcpHandshake.Step.Failed -> {
+                                        val classified =
+                                            (step.failure as? AcpHandshakeFailure.ErrorAnswer)?.let { err ->
+                                                AcpErrors.classify(err.method, err.code, err.message, err.data)
+                                            }
+                                        return killAndEnd(
+                                            process,
+                                            RunnerEvent.TurnFailed(
+                                                sessionId = sessionId,
+                                                turnId = turnId,
+                                                exitCode = null,
+                                                reason = step.failure.reason,
+                                                category = classified?.category,
+                                                retryAfter = classified?.retryAfter,
+                                            ),
+                                        )
+                                    }
                                 }
                                 continue
                             }
@@ -416,11 +508,17 @@ class AcpRunner internal constructor(
                             return true
                         }
                         handshake.completePrompt()
+                        telemetry.readPromptUsage(obj, sessionId, turnId)?.let { out(it) }
                         val stopReason = (obj["stopReason"] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
                         when (stopReason) {
                             null, "end_turn", "max_tokens", "max_turn_requests" ->
                                 end(RunnerEvent.TurnCompleted(sessionId, turnId, exitCode = 0))
-                            "cancelled" -> fail(null, "turn_cancelled")
+                            "cancelled" ->
+                                if (isInterrupted()) {
+                                    end(RunnerEvent.TurnCompleted(sessionId, turnId, exitCode = 0))
+                                } else {
+                                    fail(null, "turn_cancelled")
+                                }
                             else -> fail(null, "turn_failed: $stopReason")
                         }
                         return true
@@ -429,7 +527,19 @@ class AcpRunner internal constructor(
                         val id = frame.id ?: return false
                         if (!AcpHandshake.matchesId(id, promptId)) return false
                         handshake.completePrompt()
-                        fail(null, "turn_failed: ${frame.message} (code ${frame.code})")
+                        val classified =
+                            AcpErrors.classify(
+                                AcpHandshake.METHOD_SESSION_PROMPT,
+                                frame.code,
+                                frame.message,
+                                frame.data,
+                            )
+                        fail(
+                            exitCode = null,
+                            reason = "turn_failed: ${frame.message} (code ${frame.code})",
+                            category = classified.category,
+                            retryAfter = classified.retryAfter,
+                        )
                         return true
                     }
                     else -> return false
@@ -462,7 +572,23 @@ class AcpRunner internal constructor(
             private suspend fun fail(
                 exitCode: Int?,
                 reason: String,
-            ) = end(RunnerEvent.TurnFailed(sessionId, turnId, exitCode, reason))
+                category: RunnerEvent.TurnFailed.Category? = null,
+                retryAfter: Duration? = null,
+            ) = end(RunnerEvent.TurnFailed(sessionId, turnId, exitCode, reason, category = category, retryAfter = retryAfter))
+
+            private fun cancelledPermissionResponse(id: kotlinx.serialization.json.JsonElement): String =
+                AcpFraming.response(
+                    id = id,
+                    result =
+                        buildJsonObject {
+                            put(
+                                "outcome",
+                                buildJsonObject {
+                                    put("outcome", "cancelled")
+                                },
+                            )
+                        },
+                )
 
             private suspend fun killAndFail(
                 process: LiveProcess,

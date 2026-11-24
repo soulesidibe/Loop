@@ -22,6 +22,7 @@ internal sealed interface AcpHandshakeFailure {
         val method: String,
         val code: Long,
         val message: String,
+        val data: JsonElement? = null,
     ) : AcpHandshakeFailure {
         override val reason: String get() = "response_error: $method failed with code $code: $message"
     }
@@ -117,6 +118,10 @@ internal class AcpHandshake(
     var acpSessionId: String? = null
         private set
 
+    /** The active model id reported by `session/new`, `config_option_update`, or configured in settings. */
+    var activeModelId: String? = configuredModel
+        private set
+
     /** The active `session/prompt` request id while a turn is running, else null. */
     var activePromptId: Long? = null
         private set
@@ -189,6 +194,18 @@ internal class AcpHandshake(
         }
     }
 
+    /** Encodes an ACP `session/cancel` notification for [sessionId]. */
+    fun cancel(sessionId: String): String =
+        AcpFraming.notification(
+            method = METHOD_SESSION_CANCEL,
+            params = buildJsonObject { put("sessionId", sessionId) },
+        )
+
+    /** Observes model changes reported via `config_option_update` notifications during a turn. */
+    fun observeNotification(frame: AcpFrame.Notification) {
+        extractModelFromSessionUpdate(frame)?.let { activeModelId = it }
+    }
+
     /** Consumes one [frame] during startup phases; ignores notifications except `config_option_update`. */
     fun readStartup(frame: AcpFrame): Step {
         if (phase == Phase.WaitingPrompt || phase == Phase.Ready || phase == Phase.Idle) {
@@ -216,7 +233,7 @@ internal class AcpHandshake(
             return Step.Failed(AcpHandshakeFailure.OutOfOrder(method, responseId ?: JsonPrimitive("null")))
         }
         if (frame is AcpFrame.Error) {
-            return Step.Failed(AcpHandshakeFailure.ErrorAnswer(method, frame.code, frame.message))
+            return Step.Failed(AcpHandshakeFailure.ErrorAnswer(method, frame.code, frame.message, frame.data))
         }
 
         val result = (frame as AcpFrame.Response).result
@@ -321,6 +338,9 @@ internal class AcpHandshake(
                     ?: return Step.Failed(AcpHandshakeFailure.InvalidAnswer(method, "is missing sessionId"))
             }
         acpSessionId = sid
+        if (activeModelId == null) {
+            activeModelId = extractModelFromSetModelResult(result)
+        }
 
         if (preset == AcpSettings.PRESET_AGY) {
             val modelId =
@@ -414,6 +434,7 @@ internal class AcpHandshake(
         const val METHOD_SESSION_LOAD: String = "session/load"
         const val METHOD_SESSION_SET_MODEL: String = "session/set_model"
         const val METHOD_SESSION_PROMPT: String = "session/prompt"
+        const val METHOD_SESSION_CANCEL: String = "session/cancel"
         const val METHOD_SESSION_UPDATE: String = "session/update"
         const val METHOD_REQUEST_PERMISSION: String = "session/request_permission"
 
@@ -444,13 +465,28 @@ internal class AcpHandshake(
             return options?.let(::modelFromConfigOptions)
         }
 
-        private fun modelFromConfigOptions(options: JsonArray): String? =
-            options
-                .mapNotNull { it as? JsonObject }
-                .firstOrNull { (it["id"] as? JsonPrimitive)?.contentOrNull == "model" }
-                ?.get("currentValue")
-                ?.let { it as? JsonPrimitive }
-                ?.takeIf { it.isString }
-                ?.contentOrNull
+        private fun modelFromConfigOptions(options: JsonArray): String? {
+            val objs = options.mapNotNull { it as? JsonObject }
+            val model =
+                objs
+                    .firstOrNull { (it["id"] as? JsonPrimitive)?.contentOrNull == "model" }
+                    ?.get("currentValue")
+                    ?.let { it as? JsonPrimitive }
+                    ?.takeIf { it.isString }
+                    ?.contentOrNull
+                    ?: return null
+            val thoughtLevel =
+                objs
+                    .firstOrNull { (it["id"] as? JsonPrimitive)?.contentOrNull == "thought_level" }
+                    ?.get("currentValue")
+                    ?.let { it as? JsonPrimitive }
+                    ?.takeIf { it.isString }
+                    ?.contentOrNull
+            return if (thoughtLevel != null && !model.endsWith("-$thoughtLevel")) {
+                "$model-$thoughtLevel"
+            } else {
+                model
+            }
+        }
     }
 }

@@ -93,7 +93,13 @@ Every `session/request_permission` request is evaluated fail-closed in Kotlin us
 
 ## Context limits and rotation
 
-Loop ships default context windows of `1048576` tokens in `ContextConfig.DEFAULT_WINDOWS` for `google/gemini-4-neon-high`, `google/gemini-4-neon-medium`, `google/gemini-4-neon-low`, `google/gemini-4-neon-xhigh`, `google/gemini-3.8-flash-high`, `google/gemini-3.8-flash-medium`, and `google/gemini-3.8-flash-low`. Soft and hard context limits are enforced by Loop's orchestrator using `context_usage` events reported from ACP `usage_update` notifications and session rotation on `stop()` / `openSession()`.
+Loop ships default context windows of `1048576` tokens in `ContextConfig.DEFAULT_WINDOWS` for `google/gemini-4-neon-high`, `google/gemini-4-neon-medium`, `google/gemini-4-neon-low`, `google/gemini-4-neon-xhigh`, `google/gemini-3.8-flash-high`, `google/gemini-3.8-flash-medium`, and `google/gemini-3.8-flash-low`.
+
+- **Occupancy:** every `usage_update` notification with `used > 0` emits `context_usage` with `google/<model>`, deduplicated when occupancy and model are unchanged.
+- **Usage:** every `session/prompt` response carrying `usage` adds its turn counts into the session's running absolute totals with `totalCostUsd = null`.
+- **Hard-limit interrupt:** `AgentSession.interrupt()` sends a `session/cancel` notification, answers any pending `session/request_permission` with `cancelled`, preserves `result.usage` on `stopReason: "cancelled"`, and ends the turn cleanly so Loop rotates onto a fresh session.
+- **Error mapping:** structured JSON-RPC errors reporting authentication or eligibility failure (401, 403, expired login, `IneligibleTierError`), rate limit or overload (429, 503, 529), model refusal (`-32602 Unknown model ID` or `modelNotFound`), or runtime-reported network transport failure with no HTTP status map to `runner_unavailable`. All other errors, exits, and malformed lines are ordinary failures.
+- **Startup preflight (`preset: agy`):** verifies the `agy` binary is reachable and on pinned major version `1` (errors stop startup), and runs `agy models` to warn on login problems, offline failures, or a configured model not listed.
 
 ## Capabilities
 
