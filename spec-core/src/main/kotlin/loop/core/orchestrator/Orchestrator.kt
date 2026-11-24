@@ -605,8 +605,9 @@ class Orchestrator(
         reconcile()
         // m4-10: from the first dispatch after `loop drain`, no candidate and no retry of another issue starts.
         drain.notice(drainFacts())
-        if (!passesPreflight()) return Dispatched(candidates = 0, attempts = emptyList())
+        // bl-101: before the preflight, so a slot whose release failed is not held while config.yaml stays malformed.
         machineGate.retryReleases(pollContext)
+        if (!passesPreflight()) return Dispatched(candidates = 0, attempts = emptyList())
         // m4-13: each tracker polled with its own active states; one that fails is skipped this tick, the others go on.
         val polled = trackers.poll(effective.trackers)
         polled.failures.forEach { (id, error) ->
@@ -626,7 +627,7 @@ class Orchestrator(
         val parkedIds =
             retries.stillParked(issues) ?: return Dispatched(candidates = issues.size, attempts = emptyList(), verifications)
         // bl-39: while the runner hold waits for its probe, no attempt or retry is dispatched; at the probe, only one.
-        val gate = hold.gate()
+        var gate = hold.gate()
         if (gate == RunnerHold.Gate.Closed) return Dispatched(candidates = issues.size, attempts = emptyList(), verifications)
         val held = drain.heldBack(retries.queued().keys)
         val fire =
@@ -734,19 +735,25 @@ class Orchestrator(
             // A launch is a proposal: an issue claimed or running since the plan read its inputs is left out.
             if (issue.id in claimed || issue.id in running) continue
             // bl-39: the probe of the runner hold is the first launch in slot order, the next due retry; the rest wait for it.
-            if (probing) {
+            if (probing || gate == RunnerHold.Gate.Closed) {
                 skip(issue, RUNNER_UNAVAILABLE, RUNNER_UNAVAILABLE)
                 continue
             }
+            val context = pollContext.copy(issueId = issue.id, issueIdentifier = issue.identifier)
             // m3-16: the plan's launch then claims a machine slot in the shared store; none free turns it into a skip.
-            when (val slot = machineGate.claim(pollContext.copy(issueId = issue.id, issueIdentifier = issue.identifier))) {
-                SlotClaim.Refused -> {
-                    skip(issue, MachineGate.NO_MACHINE_SLOT, MachineGate.NO_MACHINE_SLOTS)
-                    continue
-                }
-                is SlotClaim.Held -> machineSlots[issue.id] = slot.holder
-                SlotClaim.NoCap -> Unit
+            val slot = machineGate.claim(context)
+            if (slot == SlotClaim.Refused) {
+                skip(issue, MachineGate.NO_MACHINE_SLOT, MachineGate.NO_MACHINE_SLOTS)
+                continue
             }
+            // bl-101: an attempt that ended during the claim may have started the runner hold, so the gate is read again.
+            gate = hold.gate()
+            if (gate == RunnerHold.Gate.Closed) {
+                if (slot is SlotClaim.Held) machineGate.release(slot.holder, context)
+                skip(issue, RUNNER_UNAVAILABLE, RUNNER_UNAVAILABLE)
+                continue
+            }
+            if (slot is SlotClaim.Held) machineSlots[issue.id] = slot.holder
             claimed += issue.id
             running[issue.id] = issue.state.normalized()
             executions[issue.id] = Execution(issue)
@@ -756,13 +763,19 @@ class Orchestrator(
                 hold.probeStarted(issue.id)
                 probing = true
             }
-            attempts += scope.async { attemptAndRelease(issue) }
+            // bl-101: started atomically, like a merge check's job (bl-180), so a scope cancelled since the claim still
+            // runs its finally, which releases the machine slot and the claim; it runs nothing else.
+            @OptIn(DelicateCoroutinesApi::class)
+            val attempt = scope.async(start = CoroutineStart.ATOMIC) { attemptAndRelease(issue) }
+            attempts += attempt
         }
         noSlotRetries.forEach { (issue, error) ->
             if (error == null) retries.requeueNoSlot(issue, effective) else retries.requeueNoSlot(issue, effective, error)
         }
         bounceNotReady(dispatchable.filter { it.id in notReady }, notReady)
-        recordSkips(skips)
+        // bl-101: a skip of the launch loop was added after the slot plan's own, so they are recorded in slot order.
+        val slotOrder = routable.withIndex().associate { (index, issue) -> issue.id to index }
+        recordSkips(skips.entries.sortedBy { slotOrder[it.key.id] }.associate { it.toPair() })
         return Dispatched(candidates = issues.size, attempts = attempts, verifications)
     }
 
@@ -880,6 +893,8 @@ class Orchestrator(
     private suspend fun attemptAndRelease(issue: Issue): AttemptSummary? {
         var unavailable = false
         try {
+            // bl-101: a launch on a scope cancelled since its claim runs nothing, only the releases of the finally.
+            currentCoroutineContext().ensureActive()
             val summary = runAttempt(issue)
             val reconciled = summary.reconciled
             if (reconciled == null) {

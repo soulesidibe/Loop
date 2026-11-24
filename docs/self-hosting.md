@@ -73,6 +73,7 @@ The version shows in three places:
 - The check sees only runs under the same `LOOP_HOME`. A run started with another `LOOP_HOME` is invisible to it.
 - The run file lock is a POSIX file lock. On NFS and other network file systems it may not hold, so a live run can go unseen.
 - There is no automatic reinstall. Merged slices reach the installed build only when you run `installLoop` again.
+- A build with a new store schema version migrates the shared store at its first command, `loop status` included, and an older build then refuses to open it. Reinstall and restart every `loop run` of the machine together. To roll back, set the version back by hand, for example `sqlite3 ~/.loop/store.db 'PRAGMA user_version = 6'` for a build before m3-16; every migration so far only adds tables and indexes, which an older build ignores.
 
 ## Running Loop on its own issues
 
