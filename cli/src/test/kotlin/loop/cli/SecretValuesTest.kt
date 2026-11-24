@@ -17,6 +17,7 @@ class SecretValuesTest {
         env: Map<String, String>,
         provider: String = "",
         kinds: String = "",
+        trackers: String = "",
     ): WorkflowFile {
         val file = root.resolve("WORKFLOW.md")
         file.writeText(
@@ -26,6 +27,7 @@ class SecretValuesTest {
                 "  provider:\n" +
                 "    dir: \$LOOP_TEST_ISSUES\n" +
                 provider +
+                trackers +
                 "workspace:\n" +
                 "  root: \$LOOP_TEST_ROOT\n" +
                 "runner:\n" +
@@ -94,5 +96,35 @@ class SecretValuesTest {
 
         assertEquals(emptyMap(), secretValues(workflow, env))
         assertEquals(listOf("LOOP_SHORT_TOKEN"), shortSecretNames(workflow, env))
+    }
+
+    @Test
+    fun `m4-11 a credential ref of an extra tracker is a secret like the primary's, and a short one is named`() {
+        val env = paths + mapOf("LOOP_SIDE_TOKEN" to "side-tracker-token-value", "LOOP_SIDE_SHORT" to "abc")
+        val trackers =
+            "trackers:\n" +
+                "  - id: side\n" +
+                "    kind: files\n" +
+                "    provider:\n" +
+                "      dir: \$LOOP_TEST_ISSUES\n" +
+                "      token: \$LOOP_SIDE_TOKEN\n" +
+                "      short: \$LOOP_SIDE_SHORT\n"
+
+        val workflow = workflow(env, trackers = trackers)
+
+        assertEquals(mapOf("LOOP_SIDE_TOKEN" to "side-tracker-token-value"), secretValues(workflow, env))
+        assertEquals(listOf("LOOP_SIDE_SHORT"), shortSecretNames(workflow, env))
+    }
+
+    @Test
+    fun `m4-11 the startup redactor learns an extra tracker's secret before any load`() {
+        val env = paths + ("LOOP_SIDE_TOKEN" to "side-tracker-token-value")
+        val trackers = "trackers:\n  - id: side\n    kind: files\n    provider: { token: \$LOOP_SIDE_TOKEN }\n"
+        workflow(env, trackers = trackers)
+        val loader = WorkflowLoader(env = env, home = root)
+
+        val redacted = startupRedactor(root.resolve("WORKFLOW.md"), loader, env).redact("token side-tracker-token-value")
+
+        assertEquals(false, "side-tracker-token-value" in redacted, redacted)
     }
 }

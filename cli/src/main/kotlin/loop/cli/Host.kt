@@ -10,6 +10,8 @@ import loop.api.SecretRedactor
 import loop.api.TrackerAdapter
 import loop.api.TrackerContext
 import loop.api.TrackerError
+import loop.core.trackers.TrackerEntry
+import loop.core.trackers.TrackerRegistry
 import loop.core.verify.Holdouts
 import loop.core.workflow.ConfigValue
 import loop.core.workflow.DeliveryPolicy
@@ -167,10 +169,37 @@ fun trackerFor(
     onMalformed: (TrackerError.Malformed) -> Unit = {},
     requiredLabels: () -> List<String> = { workflow.requiredLabels },
     plugins: TrackerPlugins = TrackerPlugins.classpath,
+): TrackerAdapter = adapterFor(workflow.trackers.primary, loopHome, onWarning, onMalformed, requiredLabels, plugins)
+
+/**
+ * m4-11: the [TrackerRegistry] of [workflow], each tracker built by its plugin like [trackerFor] builds the primary
+ * one, which gets [requiredLabels]. An extra tracker's move to a handoff state removes its own `required_labels`.
+ * Nothing polls the extra trackers before m4-13, so `loop run` still builds the primary tracker alone.
+ */
+fun trackerRegistryFor(
+    workflow: WorkflowFile,
+    loopHome: Path,
+    onWarning: (String) -> Unit = {},
+    onMalformed: (TrackerError.Malformed) -> Unit = {},
+    requiredLabels: () -> List<String> = { workflow.requiredLabels },
+    plugins: TrackerPlugins = TrackerPlugins.classpath,
+): TrackerRegistry =
+    TrackerRegistry.build(workflow.trackers) { entry ->
+        val labels = if (entry.id == workflow.trackerId) requiredLabels else ({ entry.requiredLabels })
+        adapterFor(entry, loopHome, onWarning, onMalformed, labels, plugins)
+    }
+
+private fun adapterFor(
+    entry: TrackerEntry,
+    loopHome: Path,
+    onWarning: (String) -> Unit,
+    onMalformed: (TrackerError.Malformed) -> Unit,
+    requiredLabels: () -> List<String>,
+    plugins: TrackerPlugins,
 ): TrackerAdapter =
-    (plugins.provider(workflow.trackerKind) ?: throw IllegalStateException(plugins.unsupported(workflow.trackerKind))).create(
-        workflow.trackerSettings,
-        TrackerContext(workflow.trackerDir, loopHome.resolve("locks"), onMalformed, onWarning, requiredLabels),
+    (plugins.provider(entry.kind) ?: throw IllegalStateException(plugins.unsupported(entry.kind))).create(
+        entry.settings,
+        TrackerContext(entry.dir, loopHome.resolve("locks"), onMalformed, onWarning, requiredLabels),
     )
 
 /**
@@ -450,8 +479,8 @@ private val KEPT_ENV_NAMES = setOf("HOME", "PATH", "USER", "LOGNAME", "SHELL", "
 private const val KEPT_ENV_PREFIX = "LC_"
 
 /**
- * The secrets Loop redacts (m1-11), env name to host env value: every `tracker.provider`
- * value that is exactly `$NAME`, except the path keys ([PATH_KEYS]), the variable of
+ * The secrets Loop redacts (m1-11), env name to host env value: every `tracker.provider` value, and since m4-11 every
+ * `provider` value of an extra tracker of `trackers:`, that is exactly `$NAME`, except the path keys ([PATH_KEYS]), the variable of
  * `kinds.code.delivery.pull_request.token` (m2-25), plus `ANTHROPIC_API_KEY`
  * and `ANTHROPIC_AUTH_TOKEN`. A `workspace.root` or `tracker.provider.dir` path stays visible.
  * Unset and blank values are skipped, and so are values under
@@ -461,8 +490,11 @@ fun secretValues(
     workflow: WorkflowFile,
     env: Map<String, String>,
 ): Map<String, String> =
-    secretValues(workflow.config.trackerProvider, env) +
+    secretValues(trackerProviders(workflow), env) +
         envValues(deliveryTokenNames(workflow), env).filterValues { it.length >= SecretRedactor.MIN_SECRET_LENGTH }
+
+/** m4-11: the `provider` map of every tracker of [workflow], the primary one first. */
+private fun trackerProviders(workflow: WorkflowFile): List<Map<String, ConfigValue>> = workflow.trackers.all.map { it.provider }
 
 /** The variable of `kinds.code.delivery.pull_request.token` (m2-25), a secret like the tracker's token; empty when unset. */
 private fun deliveryTokenNames(workflow: WorkflowFile): List<String> =
@@ -474,15 +506,21 @@ private fun deliveryTokenNames(workflow: WorkflowFile): List<String> =
             ?.tokenEnvName,
     )
 
-/** [secretValues] from a `tracker.provider` map, as [WorkflowLoader.trackerProvider] reads it before a load. */
+/** [secretValues] from one `tracker.provider` map. */
 fun secretValues(
     trackerProvider: Map<String, ConfigValue>,
     env: Map<String, String>,
-): Map<String, String> = secretRefs(trackerProvider, env).filterValues { it.length >= SecretRedactor.MIN_SECRET_LENGTH }
+): Map<String, String> = secretValues(listOf(trackerProvider), env)
+
+/** [secretValues] from the `provider` maps of several trackers (m4-11), as [WorkflowLoader.trackerProviders] reads them. */
+fun secretValues(
+    trackerProviders: List<Map<String, ConfigValue>>,
+    env: Map<String, String>,
+): Map<String, String> = secretRefs(trackerProviders, env).filterValues { it.length >= SecretRedactor.MIN_SECRET_LENGTH }
 
 /**
  * A [SecretRedactor] for a command about to load the `WORKFLOW.md` at [path]. It learns the
- * [secretValues] of a best effort read of its `tracker.provider` map, so a load or preflight
+ * [secretValues] of a best effort read of its `tracker.provider` map and of each extra tracker's `provider` (m4-11), so a load or preflight
  * failure message is covered even when validation fails. When the front matter does not parse,
  * only the Anthropic keys and the token patterns apply.
  */
@@ -490,14 +528,14 @@ fun startupRedactor(
     path: Path,
     loader: WorkflowLoader,
     env: Map<String, String>,
-): SecretRedactor = SecretRedactor().apply { learn(secretValues(loader.trackerProvider(path), env)) }
+): SecretRedactor = SecretRedactor().apply { learn(secretValues(loader.trackerProviders(path), env)) }
 
 /** The secret names whose value is under [SecretRedactor.MIN_SECRET_LENGTH] characters, so not redacted, sorted. */
 fun shortSecretNames(
     workflow: WorkflowFile,
     env: Map<String, String>,
 ): List<String> =
-    (secretRefs(workflow.config.trackerProvider, env) + envValues(deliveryTokenNames(workflow), env))
+    (secretRefs(trackerProviders(workflow), env) + envValues(deliveryTokenNames(workflow), env))
         .filterValues { it.length < SecretRedactor.MIN_SECRET_LENGTH }
         .keys
         .sorted()
@@ -542,15 +580,16 @@ fun reloadWarnings(
 }
 
 private fun secretRefs(
-    trackerProvider: Map<String, ConfigValue>,
+    trackerProviders: List<Map<String, ConfigValue>>,
     env: Map<String, String>,
 ): Map<String, String> {
     val names =
-        trackerProvider
-            .filterKeys { it !in PATH_KEYS }
-            .values
-            .flatMap { it.credentialRefs() } +
-            ANTHROPIC_KEYS
+        trackerProviders.flatMap { provider ->
+            provider
+                .filterKeys { it !in PATH_KEYS }
+                .values
+                .flatMap { it.credentialRefs() }
+        } + ANTHROPIC_KEYS
     return envValues(names.distinct(), env)
 }
 

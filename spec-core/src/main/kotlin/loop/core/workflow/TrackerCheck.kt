@@ -22,15 +22,16 @@ fun interface TrackerCheck {
                     ?: Result.failure(IllegalArgumentException(unsupported(kind, providers.map { it.kind })))
             }
 
-        /** The sentence for a `tracker.kind` none of [kinds] answers to. */
+        /** The sentence for a `tracker.kind`, or the kind at [key] (m4-11), none of [kinds] answers to. */
         fun unsupported(
             kind: String,
             kinds: List<String>,
+            key: String = "tracker.kind",
         ): String {
             val sorted = kinds.sorted()
-            if (sorted.isEmpty()) return "tracker.kind \"$kind\" is not supported, no tracker plugin was found"
+            if (sorted.isEmpty()) return "$key \"$kind\" is not supported, no tracker plugin was found"
             val names = if (sorted.size == 1) sorted.single() else sorted.dropLast(1).joinToString(", ") + " or " + sorted.last()
-            return "tracker.kind \"$kind\" is not supported, use $names"
+            return "$key \"$kind\" is not supported, use $names"
         }
     }
 }
