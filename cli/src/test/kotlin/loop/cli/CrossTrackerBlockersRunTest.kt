@@ -177,6 +177,9 @@ class CrossTrackerBlockersRunTest {
             .query("SELECT issue_id, data FROM events WHERE kind = 'candidate_skipped' ORDER BY seq")
             .groupBy({ it["issue_id"] }, { it["data"] })
 
+    /** The data of the one `candidate_skipped` event of [issueId], which holds its reason. */
+    private fun Map<String?, List<String?>>.reason(issueId: String): String = getValue(issueId).single().orEmpty()
+
     @Test
     fun `a files issue blocked by an open GitHub issue is skipped, and dispatched once the blocker reads closed`() {
         writeAgent()
@@ -191,14 +194,8 @@ class CrossTrackerBlockersRunTest {
         assertEquals(listOf("l-3"), fixture.agentCallsFile.readLines(), blocked.toString())
         val skipped = skips()
         assertEquals(setOf("local:l-1", "local:l-2"), skipped.keys, "$skipped")
-        assertTrue(
-            skipped.getValue("local:l-1").single().orEmpty().contains("blocked_cross_tracker gh:26 (open)"),
-            "$skipped",
-        )
-        assertTrue(
-            skipped.getValue("local:l-2").single().orEmpty().contains("blocked_cross_tracker gh:26 (open), gh:28 (open)"),
-            "$skipped",
-        )
+        assertTrue("blocked_cross_tracker gh:26 (open)" in skipped.reason("local:l-1"), "$skipped")
+        assertTrue("blocked_cross_tracker gh:26 (open), gh:28 (open)" in skipped.reason("local:l-2"), "$skipped")
         // One tick: issue 26, named by two issues, is read once, and 28 once.
         assertEquals(listOf("$repo/issues/26", "$repo/issues/28"), issueReads.sorted(), "${issueReads.toList()}")
         assertEquals("todo", fixture.stateOf("l-1"))
@@ -225,10 +222,7 @@ class CrossTrackerBlockersRunTest {
         assertEquals(0, result.exitCode, result.toString())
         assertTrue(!Files.exists(fixture.agentCallsFile) || fixture.agentCallsFile.readLines().isEmpty(), result.toString())
         val skipped = skips()
-        assertTrue(
-            skipped.getValue("local:l-1").single().orEmpty().contains("blocked_cross_tracker lin:MKT-12 (unknown tracker lin)"),
-            "$skipped",
-        )
+        assertTrue("blocked_cross_tracker lin:MKT-12 (unknown tracker lin)" in skipped.reason("local:l-1"), "$skipped")
         assertEquals(emptyList(), issueReads.toList(), "an unknown tracker is never read")
     }
 
@@ -243,7 +237,7 @@ class CrossTrackerBlockersRunTest {
 
         assertEquals(0, result.exitCode, result.toString())
         assertTrue(!Files.exists(fixture.agentCallsFile) || fixture.agentCallsFile.readLines().isEmpty(), result.toString())
-        val reason = skips().getValue("local:l-1").single().orEmpty()
+        val reason = skips().reason("local:l-1")
         assertTrue("blocked_cross_tracker gh:26 (unreadable: " in reason && "500" in reason, reason)
         assertEquals("todo", fixture.stateOf("l-1"))
     }

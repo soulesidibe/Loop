@@ -17,8 +17,7 @@ import kotlin.test.assertTrue
  * an unreadable blocker, each blocker read once per check.
  */
 class CrossTrackerBlockersTest {
-    private fun refs(vararg texts: String): List<BlockerRef> =
-        texts.map { BlockerRef(it.substringBefore(':'), it.substringAfter(':')) }
+    private fun refs(vararg texts: String): List<BlockerRef> = texts.map { BlockerRef(it.substringBefore(':'), it.substringAfter(':')) }
 
     @Test
     fun `the parser reads blocker lines and ignores prose and fenced lines`() {
@@ -126,11 +125,12 @@ class CrossTrackerBlockersTest {
         runTest {
             github.issues["12"] = issue("12", state = "closed")
             val checked =
-                CrossTrackerBlockers.check(
-                    listOf(issue("local:l-1", "Blocked by lin:MKT-12"), issue("local:l-2", "Blocked by gh:12, Gh:12")),
-                    config,
-                    poll,
-                ).associateBy { it.id }
+                CrossTrackerBlockers
+                    .check(
+                        listOf(issue("local:l-1", "Blocked by lin:MKT-12"), issue("local:l-2", "Blocked by gh:12, Gh:12")),
+                        config,
+                        poll,
+                    ).associateBy { it.id }
 
             assertEquals("blocked_cross_tracker lin:MKT-12 (unknown tracker lin)", checked.getValue("local:l-1").blockedReason)
             assertEquals("blocked_cross_tracker Gh:12 (unknown tracker Gh)", checked.getValue("local:l-2").blockedReason)
@@ -164,11 +164,12 @@ class CrossTrackerBlockersTest {
             github.failure = TrackerError.Status(502, "Bad gateway")
             local.issues["m4-03"] = issue("m4-03", state = "done")
             val checked =
-                CrossTrackerBlockers.check(
-                    listOf(issue("local:l-1", "Blocked by gh:12"), issue("local:l-2", "Blocked by local:m4-03")),
-                    config,
-                    poll,
-                ).associateBy { it.id }
+                CrossTrackerBlockers
+                    .check(
+                        listOf(issue("local:l-1", "Blocked by gh:12"), issue("local:l-2", "Blocked by local:m4-03")),
+                        config,
+                        poll,
+                    ).associateBy { it.id }
 
             assertEquals(
                 "blocked_cross_tracker gh:12 (unreadable: The tracker answered 502: Bad gateway)",

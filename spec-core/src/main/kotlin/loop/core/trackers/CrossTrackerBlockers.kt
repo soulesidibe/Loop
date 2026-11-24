@@ -42,14 +42,21 @@ object BlockerLines {
                 }
             }
             if (fence != null) {
-                if (marker != null && marker.groupValues[1][0] == fence[0] &&
-                    marker.groupValues[1].length >= fence.length && marker.groupValues[2].isBlank()
+                if (marker != null &&
+                    marker.groupValues[1][0] == fence[0] &&
+                    marker.groupValues[1].length >= fence.length &&
+                    marker.groupValues[2].isBlank()
                 ) {
                     fence = null
                 }
                 continue
             }
-            val items = LINE.matchEntire(line)?.groupValues?.get(1)?.removeSuffix(".") ?: continue
+            val items =
+                LINE
+                    .matchEntire(line)
+                    ?.groupValues
+                    ?.get(1)
+                    ?.removeSuffix(".") ?: continue
             ITEM.findAll(items).forEach { refs += BlockerRef(it.groupValues[1], it.groupValues[2]) }
         }
         return refs.toList()
