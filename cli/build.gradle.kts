@@ -264,7 +264,8 @@ tasks.test {
             .asFile.absolutePath,
     )
     // Optional deterministic sharding for CI (`-PcliTestShard=1/4`): assigns each test source file to one shard
-    // by greedy size-balanced packing (LPT), so all shards cover 100% of test classes with balanced runtime.
+    // by greedy LPT packing weighted by subprocess spawns (`fixture.loop`/`fixture.start`) and `@Test` count,
+    // so non-test helpers add zero weight and heavy launcher-spawning suites spread evenly across shards.
     providers.gradleProperty("cliTestShard").orNull?.let { spec ->
         val parts = spec.split("/")
         require(parts.size == 2) { "cliTestShard must be <index>/<total> (1-based), got: $spec" }
@@ -273,19 +274,30 @@ tasks.test {
         require(shardTotal >= 1 && shardIndex in 1..shardTotal) {
             "cliTestShard out of range: $spec"
         }
+        val spawnRegex = Regex("""\b(?:fixture\.loop|fixture\.start)\(""")
+        val testRegex = Regex("""@Test\b""")
         val testSrcRoot = layout.projectDirectory.dir("src/test/kotlin").asFile
         val testFiles =
             testSrcRoot
                 .walkTopDown()
                 .filter { it.isFile && it.extension == "kt" }
-                .map { file -> file.relativeTo(testSrcRoot).invariantSeparatorsPath to file.length() }
-                .sortedWith(compareByDescending<Pair<String, Long>> { it.second }.thenBy { it.first })
+                .map { file ->
+                    val text = file.readText()
+                    val tests = testRegex.findAll(text).count()
+                    val weight =
+                        if (tests > 0) {
+                            spawnRegex.findAll(text).count() * 10L + tests
+                        } else {
+                            0L
+                        }
+                    file.relativeTo(testSrcRoot).invariantSeparatorsPath to weight
+                }.sortedWith(compareByDescending<Pair<String, Long>> { it.second }.thenBy { it.first })
                 .toList()
-        val shardSizes = LongArray(shardTotal)
+        val shardWeights = LongArray(shardTotal)
         val assigned = mutableListOf<String>()
-        for ((relPath, size) in testFiles) {
-            val target = shardSizes.indices.minBy { shardSizes[it] }
-            shardSizes[target] += size
+        for ((relPath, weight) in testFiles) {
+            val target = shardWeights.indices.minBy { shardWeights[it] }
+            shardWeights[target] += weight
             if (target == shardIndex - 1) {
                 val base = relPath.removeSuffix(".kt")
                 assigned.add("$base.class")
