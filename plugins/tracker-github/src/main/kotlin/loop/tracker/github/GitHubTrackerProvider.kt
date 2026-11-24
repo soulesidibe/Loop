@@ -11,7 +11,8 @@ import loop.api.TrackerProvider
 /**
  * The `github` tracker plugin (m3-05), registered in `META-INF/services/loop.api.TrackerProvider`. Its section,
  * `tracker.provider`, is read by [GitHubTrackerSettings.parse], whose errors keep their spec 11.4 category; the
- * tracker uses the JDK transport. See `docs/plugins/tracker-github.md`.
+ * tracker uses the JDK transport. The host builds it with the run's [GitHubClients] (m4-48). See
+ * `docs/plugins/tracker-github.md`.
  */
 class GitHubTrackerProvider : TrackerProvider {
     override val kind: String = "github"
@@ -52,11 +53,22 @@ class GitHubTrackerProvider : TrackerProvider {
             throw if (error is GitHubConfigError) TrackerConfigException(error.category, error.message.orEmpty()) else error
         }
 
+    /** The tracker of [settings], over its own GitHub clients, so its rate limit hold is its own. */
     override fun create(
         settings: Any?,
         context: TrackerContext,
+    ): TrackerAdapter = create(settings, context, GitHubClients())
+
+    /**
+     * The tracker of [settings], sending through the client of [clients] for its API URL and token (m4-48): `loop run`
+     * passes the clients it shares with pull request delivery, so one rate limit hold covers both (bl-50).
+     */
+    fun create(
+        settings: Any?,
+        context: TrackerContext,
+        clients: GitHubClients,
     ): TrackerAdapter {
         require(settings is GitHubTrackerSettings) { "the github tracker is built from the settings its parse read" }
-        return GitHubTracker(settings, onMalformed = context.onMalformed, requiredLabels = context.requiredLabels)
+        return GitHubTracker(settings, onMalformed = context.onMalformed, requiredLabels = context.requiredLabels, clients = clients)
     }
 }

@@ -1,7 +1,7 @@
 ---
 id: m4-29
 title: "loop approve messages match the outcome"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-00, m4-01, m4-47]
@@ -50,3 +50,7 @@ Out of this issue: the namespaced ids of m4-12 (this issue keeps the identifier 
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-24 19:09Z agent 593e833c: Done in 9c7cbe6. Under pull_request.merge, loop approve and its already approved message now say Loop delivers the pull request, runs the merge check and merges it, then moves the issue to on_delivered.move_to, and approval_given records that state. Both tracker messages use trackerLocation. The GitHub tests build their own workflow. m4-47 had already fixed two parts: the fallback matches by id or identifier, and the dead "not supported" branch is gone. Note on the identifier test: the GitHub tracker only asks GitHub for issue numbers, so approving by identifier sends no request. That test therefore runs with the GitHub API answering 500 to every request and checks that the approval goes through. Only the id test sees a real read failure and its message.
+
+2026-11-24 19:12Z loop: Loop opened pull request #43 for this issue: https://github.com/soulesidibe/Loop/pull/43

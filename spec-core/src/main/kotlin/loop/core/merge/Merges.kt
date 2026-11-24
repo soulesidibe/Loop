@@ -1037,8 +1037,8 @@ internal class Merges(
                 return null
             }
         val issue = issues.firstOrNull { it.id == wait.issueId }
-        val active = workflow().activeStates.map { it.normalized() }
-        if (issue != null && issue.state.normalized() in active) return issue
+        // m4-13: the active states of the issue's own tracker.
+        if (issue != null && workflow().trackers.entryOf(wait.issueId).isActive(issue.state)) return issue
         settleInactiveMerge(wait, issue)
         return null
     }

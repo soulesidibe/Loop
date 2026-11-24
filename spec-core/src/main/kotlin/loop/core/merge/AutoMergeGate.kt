@@ -383,7 +383,12 @@ internal class AutoMergeGate(
                 issueId = wait.issueId,
                 identifier = wait.identifier,
                 attemptId = AttemptId(newId()),
-                setup = setupOf(workflow).copy(runner = REVIEWER_RUNNER, model = model),
+                setup =
+                    setupOf(workflow).copy(
+                        tracker = workflow.trackers.entryOf(wait.issueId).id,
+                        runner = REVIEWER_RUNNER,
+                        model = model,
+                    ),
                 startedAt = started,
                 finishedAt = clock.now(),
                 outcome = if (review != null) "succeeded" else "failed",

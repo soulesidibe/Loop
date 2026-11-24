@@ -136,6 +136,7 @@ import loop.core.merge.WorkspaceMergeGit
 import loop.core.template.Template
 import loop.core.template.TemplateEngine
 import loop.core.trackers.NamespacedId
+import loop.core.trackers.TrackerPoll
 import loop.core.verify.AcceptanceCriteria
 import loop.core.verify.AcceptanceCriterion
 import loop.core.verify.CheckResult
@@ -503,8 +504,11 @@ class Orchestrator(
 
     private val pollContext = LogContext(runId = runId, projectId = projectId)
 
+    /** m4-13: every tracker of the run, each polled and reconciled on its own; [tracker] routes each write. */
+    private val trackers = TrackerPoll.of(tracker, workflow.trackerId)
+
     private val retries =
-        RetryCoordinator(tracker, parked, this.sink, sinkName, log, clock, runId, projectId, ::onTerminalRetryDropped, retryStates)
+        RetryCoordinator(trackers, parked, this.sink, sinkName, log, clock, runId, projectId, ::onTerminalRetryDropped, retryStates)
 
     /** bl-39: the run level hold of a runner that cannot reach its model; it gates every dispatch. */
     private val hold = RunnerHold(clock)
@@ -598,17 +602,18 @@ class Orchestrator(
         drain.notice(drainFacts())
         if (!passesPreflight()) return Dispatched(candidates = 0, attempts = emptyList())
         machineGate.retryReleases(pollContext)
-        val fetched = tracker.fetchIssuesByStates(effective.activeStates)
-        val issues =
-            fetched.getOrElse { error ->
-                log.log(LogLevel.ERROR, "poll", LogOutcome.FAILED, pollContext, reason = error.describe())
-                return Dispatched(candidates = 0, attempts = emptyList())
-            }
+        // m4-13: each tracker polled with its own active states; one that fails is skipped this tick, the others go on.
+        val polled = trackers.poll(effective.trackers)
+        polled.failures.forEach { (id, error) ->
+            log.log(LogLevel.ERROR, "poll", LogOutcome.FAILED, pollContext, fields = mapOf("tracker" to id), reason = error.describe())
+        }
+        if (polled.nothingAnswered) return Dispatched(candidates = 0, attempts = emptyList())
+        val issues = polled.issues
         // m2-02: a restart dispatches nothing before the stored retry queue is back.
         if (!retries.restore(effective)) return Dispatched(candidates = issues.size, attempts = emptyList())
         // m2-04: nor before the stored waits are back, so a waiting issue is never dispatched. One read per tick (bl-79).
         if (!readWaits()) return Dispatched(candidates = issues.size, attempts = emptyList())
-        val restored = restoreWaiting(scope, issues)
+        val restored = if (polled.failures.isEmpty()) restoreWaiting(scope, issues) else emptyList()
         // m2-24: approvals given from another terminal, and the approval waits a human ended by moving the issue.
         val delivered = syncApprovals(issues)
         // m2-26, bl-172: the merge waits, one delivery at a time, the head of the queue on a free agent slot.
@@ -619,7 +624,14 @@ class Orchestrator(
         val gate = hold.gate()
         if (gate == RunnerHold.Gate.Closed) return Dispatched(candidates = issues.size, attempts = emptyList(), verifications)
         val held = drain.heldBack(retries.queued().keys)
-        val fire = retries.fireDue(issues, effective, busy = claimed + running.keys + waits.busy + held, parked = parkedIds)
+        val fire =
+            retries.fireDue(
+                issues,
+                effective,
+                busy = claimed + running.keys + waits.busy + held,
+                parked = parkedIds,
+                polled = polled::answered,
+            )
         retriesFired = true
         val now = clock.now()
         val retryAttempts = fire.dispatch.associate { it.issue.id to it.attempt }
@@ -1070,12 +1082,19 @@ class Orchestrator(
      * Called once by `loop run`, before the first tick.
      */
     suspend fun removeTerminalWorkspaces() {
-        val issues =
-            fetch { tracker.fetchIssuesByStates(effective.terminalStates) }.getOrElse { error ->
-                log.log(LogLevel.WARN, STARTUP_CLEANUP, LogOutcome.FAILED, pollContext, reason = error.describe())
-                return
-            }
-        for (issue in issues) removeWorkspace(issue)
+        // m4-13: each tracker with its own terminal states; one that fails is logged and the others go on.
+        val read = trackers.terminal(effective.trackers)
+        read.failures.forEach { (id, error) ->
+            log.log(
+                LogLevel.WARN,
+                STARTUP_CLEANUP,
+                LogOutcome.FAILED,
+                pollContext,
+                fields = mapOf("tracker" to id),
+                reason = error.describe(),
+            )
+        }
+        for (issue in read.issues) removeWorkspace(issue)
     }
 
     /**
@@ -1088,13 +1107,13 @@ class Orchestrator(
     private suspend fun reconcile() {
         val ids = executions.values.filter { it.stop == null }.map { it.issue.id }
         if (ids.isEmpty()) return
-        val refreshed =
-            fetch { tracker.fetchIssuesByIds(ids) }.getOrElse { error ->
-                log.log(LogLevel.WARN, RECONCILE, LogOutcome.FAILED, pollContext, reason = error.describe())
-                return
-            }
-        val byId = refreshed.associateBy { it.id }
-        for (id in ids) {
+        // m4-13: each tracker read on its own; the attempts of a tracker whose read failed keep running this tick.
+        val refreshed = trackers.readByIds(ids)
+        refreshed.failures.forEach { (id, error) ->
+            log.log(LogLevel.WARN, RECONCILE, LogOutcome.FAILED, pollContext, fields = mapOf("tracker" to id), reason = error.describe())
+        }
+        val byId = refreshed.issues.associateBy { it.id }
+        for (id in ids.filter(refreshed::answered)) {
             // An attempt can end while the read is in flight.
             val execution = executions[id] ?: continue
             val issue = byId[id]
@@ -1296,14 +1315,11 @@ class Orchestrator(
     }
 
     private fun isEligible(issue: Issue): Boolean {
-        val state = issue.state.normalized()
-        val active = effective.activeStates.map { it.normalized() }
-        val terminal = effective.terminalStates.map { it.normalized() }
-        val labels = issue.labels.map { it.normalized() }.toSet()
-        val required = effective.requiredLabels.map { it.normalized() }
-        return state in active &&
-            state !in terminal &&
-            required.all { it.isNotEmpty() && it in labels } &&
+        // m4-13: the states and required labels of the issue's own tracker.
+        val own = effective.trackers.trackerOf(issue.id) ?: return false
+        return own.isActive(issue.state) &&
+            !own.isTerminal(issue.state) &&
+            own.hasRequiredLabels(issue.labels) &&
             issue.id !in claimed &&
             issue.id !in running &&
             !waits.isBusy(issue.id)
@@ -1653,7 +1669,7 @@ class Orchestrator(
          * runner's configured model. A line names its session's reported model instead, the row the attempt's (bl-147).
          */
         private val ledger = LedgerMeter()
-        private val ledgerSetup = LedgerMeter.setupOf(workflow, runner.model)
+        private val ledgerSetup = LedgerMeter.setupOf(workflow, runner.model, issue.id)
 
         /** The latest turn line of this attempt, which a `stop` line copies (m4-04). */
         private var lastTurnLine: LedgerTurn? = null
@@ -1699,7 +1715,8 @@ class Orchestrator(
          */
         fun handedOff(): Boolean {
             val to = movedTo?.normalized() ?: return false
-            return workflow.activeStates.none { it.normalized() == to } && workflow.terminalStates.none { it.normalized() == to }
+            val own = workflow.trackers.entryOf(issue.id)
+            return !own.isActive(to) && !own.isTerminal(to)
         }
 
         /**
@@ -1726,7 +1743,7 @@ class Orchestrator(
                     null
                 }
             val from = last?.attempt?.issueState ?: return
-            if (workflow.activeStates.any { it.normalized() == from.normalized() }) return
+            if (workflow.trackers.entryOf(issue.id).isActive(from)) return
             record(
                 HumanTouched,
                 data = mapOf(HumanTouched.TOUCH to HumanTouch.MOVE, HumanTouched.FROM_STATE to from, HumanTouched.TO_STATE to issue.state),
@@ -2029,7 +2046,7 @@ class Orchestrator(
         private fun intercepts(to: String): Boolean {
             if (kinds == null) return false
             val target = to.normalized()
-            return target != NEEDS_INFO && workflow.activeStates.none { it.normalized() == target }
+            return target != NEEDS_INFO && !workflow.trackers.entryOf(issue.id).isActive(target)
         }
 
         /**
@@ -2597,7 +2614,7 @@ class Orchestrator(
          * fails the attempt: its verification freezes the same dispatched list, or parks the issue when it cannot.
          */
         private suspend fun freezeAtDispatch() {
-            if (!declaresAcceptanceCommands(workflow) || workflow.trackerKind != FILES_TRACKER) return
+            if (!declaresAcceptanceCommands(workflow) || workflow.trackers.entryOf(issue.id).kind != FILES_TRACKER) return
             val commands = AcceptanceCriteria.of(issue.description).commands
             freezeAcceptanceCommands(issue.id, issue.identifier, commands) { definition, data -> record(definition, data = data) }
                 .onFailure { error ->
@@ -2802,8 +2819,10 @@ class Orchestrator(
          */
         private suspend fun issuePointer(issue: Issue): String {
             issue.nativeRef?.get(ISSUE_URL)?.let { return "at $it" }
-            if (workflow.trackerKind != FILES_TRACKER) return "in issue ${issue.identifier} of the ${workflow.trackerKind} tracker"
-            val folder = workflow.trackerDir
+            // m4-13: the issue's own tracker.
+            val own = workflow.trackers.entryOf(issue.id)
+            if (own.kind != FILES_TRACKER) return "in issue ${issue.identifier} of the ${own.kind} tracker"
+            val folder = own.dir
             val names = setOf(issue.id, issue.identifier)
             val file =
                 withContext(io) {
@@ -3798,8 +3817,9 @@ class Orchestrator(
             // bl-32: no command of the criteria runs, so their gate has nothing to refuse.
             if (diffPolicyOnly) return
             val commands = criteria?.commands ?: return
-            if (workflow.trackerKind != FILES_TRACKER) {
-                refusal = acceptanceCommandsNeedFiles(workflow.trackerKind)
+            val kind = workflow.trackers.entryOf(issueId).kind
+            if (kind != FILES_TRACKER) {
+                refusal = acceptanceCommandsNeedFiles(kind)
                 return
             }
             val digest = AcceptanceCriteria.digest(commands)
@@ -4145,7 +4165,7 @@ class Orchestrator(
                     ?: return "no issue $identifier in the tracker"
             val from = current.state
             if (from.normalized() == to.normalized()) return null
-            if (workflow.activeStates.none { it.normalized() == from.normalized() }) {
+            if (!workflow.trackers.entryOf(issueId).isActive(from)) {
                 if (!ownMove(from)) record(HumanTouched, mapOf(HumanTouched.TOUCH to HumanTouch.MOVE, HumanTouched.TO_STATE to from))
                 return "the issue is no longer active, it is in $from"
             }
@@ -4176,7 +4196,7 @@ class Orchestrator(
                     ?: return "no issue $identifier in the tracker"
             val from = current.state
             if (from.normalized() == to.normalized()) return null
-            if (workflow.activeStates.none { it.normalized() == from.normalized() }) {
+            if (!workflow.trackers.entryOf(issueId).isActive(from)) {
                 if (!ownMove(from)) record(HumanTouched, mapOf(HumanTouched.TOUCH to HumanTouch.MOVE, HumanTouched.TO_STATE to from))
                 return "the issue is no longer active, it is in $from"
             }
@@ -4226,7 +4246,7 @@ class Orchestrator(
                     ?: return "no issue $identifier in the tracker"
             val from = current.state
             if (from.normalized() == to.normalized()) return null
-            if (workflow.activeStates.none { it.normalized() == from.normalized() }) {
+            if (!workflow.trackers.entryOf(issueId).isActive(from)) {
                 // A human changed it during the checks, and the human's change wins, like for a move (m2-19).
                 if (!ownMove(from)) record(HumanTouched, mapOf(HumanTouched.TOUCH to HumanTouch.MOVE, HumanTouched.TO_STATE to from))
                 return "the issue is no longer active, it is in $from"
@@ -4320,7 +4340,7 @@ class Orchestrator(
                     ?: return "no issue $identifier in the tracker"
             val from = current.state
             if (from.normalized() == to.normalized()) return null
-            if (workflow.activeStates.none { it.normalized() == from.normalized() }) {
+            if (!workflow.trackers.entryOf(issueId).isActive(from)) {
                 // A human changed it during the checks, and the human's change wins (m2-03): a human touch (m2-19).
                 if (!ownMove(from)) record(HumanTouched, mapOf(HumanTouched.TOUCH to HumanTouch.MOVE, HumanTouched.TO_STATE to from))
                 return "the issue is no longer active, it is in $from"
@@ -4701,12 +4721,13 @@ class Orchestrator(
     ): (String) -> Standing {
         val byId = candidates.associateBy { it.id }
         val missing = records.map { it.issueId }.filter { it !in byId && !skip(it) }
-        val read = if (missing.isEmpty()) Result.success(emptyList()) else fetch { withContext(io) { tracker.fetchIssuesByIds(missing) } }
-        // Null when the by-id read failed: it fails closed on a malformed file, so no wait can end on it this tick.
-        val refreshed: Map<String, Issue>? = read.getOrNull()?.associateBy { it.id }
-        read.exceptionOrNull()?.let { error ->
+        // m4-13: each tracker read on its own; a failed read fails closed on a malformed file, so no wait of that
+        // tracker can end on it this tick.
+        val read = withContext(io) { trackers.readByIds(missing) }
+        val refreshed = read.issues.associateBy { it.id }
+        for ((tracker, error) in read.failures) {
             val reason = "cannot read the issue, it keeps waiting: ${error.describe()}"
-            records.filter { it.issueId in missing }.forEach {
+            records.filter { it.issueId in missing && trackers.trackerOf(it.issueId) == tracker }.forEach {
                 log.log(
                     LogLevel.WARN,
                     WAITING,
@@ -4716,15 +4737,15 @@ class Orchestrator(
                 )
             }
         }
-        val active = effective.activeStates.map { it.normalized() }
         return { issueId ->
             val candidate = byId[issueId]
             when {
                 candidate != null -> Standing.Active(candidate)
-                refreshed == null -> Standing.Unread
+                !read.answered(issueId) -> Standing.Unread
                 else -> {
                     val issue = refreshed[issueId]
-                    if (issue != null && issue.state.normalized() in active) Standing.Active(issue) else Standing.Gone(issue)
+                    val active = issue != null && effective.trackers.entryOf(issueId).isActive(issue.state)
+                    if (active) Standing.Active(issue) else Standing.Gone(issue)
                 }
             }
         }

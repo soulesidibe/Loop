@@ -293,13 +293,16 @@ class RetryQueue {
 
     /**
      * Zeroes every counter of every issue that has no entry and is not in [present],
-     * the ids fetched by the active states: such an issue left the active states.
-     * Returns the issues it forgot.
+     * the ids fetched by the active states: such an issue left the active states. An issue whose tracker was not
+     * [polled] this tick, its poll having failed (m4-13), keeps its counters. Returns the issues it forgot.
      */
-    fun forgetAbsent(present: Set<String>): Set<String> {
+    fun forgetAbsent(
+        present: Set<String>,
+        polled: (String) -> Boolean = { true },
+    ): Set<String> {
         val idle =
             (failureCounts.keys + noProgressCounts.keys + attempts.keys)
-                .filter { it !in present && it !in entries }
+                .filter { it !in present && it !in entries && polled(it) }
                 .toSet()
         failureCounts -= idle
         noProgressCounts -= idle

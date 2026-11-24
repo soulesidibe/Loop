@@ -41,6 +41,8 @@ class ApproveCommandTest {
 
     private val approver = mapOf("USER" to "soule")
 
+    private val githubToken = mapOf("GITHUB_TOKEN" to "ghp_m429Token0123456789abcdefghijklmnopq")
+
     /** The variable every attempt env holds and an operator shell never does (m2-24). */
     private val inAttempt = mapOf("LOOP_ATTEMPT_ID" to "attempt-1")
 
@@ -79,6 +81,117 @@ class ApproveCommandTest {
         assertEquals(0, trace.exitCode, trace.toString())
         return trace.stdout.lines()
     }
+
+    /**
+     * A GitHub API for octocat/Hello-World that serves its recorded issue 26 and answers 404 for any other issue, or,
+     * when not [readable], 500 for every request. [paths] holds the paths it was asked for.
+     */
+    private class GitHubApi(
+        issue: JsonObject,
+        readable: Boolean,
+    ) : AutoCloseable {
+        val paths = mutableListOf<String>()
+        private val server =
+            HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0).apply {
+                createContext("/api/") { exchange ->
+                    val path = exchange.requestURI.rawPath
+                    synchronized(paths) { paths += path }
+                    val (status, body) =
+                        when {
+                            !readable -> 500 to """{"message":"Server Error"}"""
+                            path == "/api/repos/octocat/Hello-World/issues/26" -> 200 to issue.toString()
+                            "/issues/" in path -> 404 to """{"message":"Not Found"}"""
+                            else -> 200 to "[]"
+                        }
+                    val bytes = body.toByteArray()
+                    exchange.responseHeaders.add("Content-Type", "application/json; charset=utf-8")
+                    exchange.sendResponseHeaders(status, bytes.size.toLong())
+                    exchange.responseBody.use { it.write(bytes) }
+                }
+                start()
+            }
+
+        val url: String get() = "http://${server.address.address.hostAddress}:${server.address.port}/api"
+
+        override fun close() = server.stop(0)
+    }
+
+    /** The GitHub API of [GitHubApi], with issue 26 read from the recorded fixtures. */
+    private fun github(readable: Boolean = true): GitHubApi {
+        val recorded = Path.of(System.getProperty("loop.githubRecorded") ?: fail("system property loop.githubRecorded is not set"))
+        val issue =
+            Json
+                .parseToJsonElement(recorded.resolve("open-issues-page-1.json").readText())
+                .jsonArray
+                .map { it as JsonObject }
+                .first { it["number"].toString() == "26" }
+        return GitHubApi(issue, readable)
+    }
+
+    /**
+     * A github workflow on octocat/Hello-World at [apiUrl], delivery under policy human, and with [merge] the merge of
+     * the pull request then the move to `closed`.
+     */
+    private fun githubWorkflow(
+        apiUrl: String,
+        merge: Boolean = false,
+    ) {
+        val pullRequest =
+            if (merge) {
+                "      pull_request:\n" +
+                    "        merge: { method: squash, ci: none }\n" +
+                    "      on_delivered: { move_to: closed }\n"
+            } else {
+                ""
+            }
+        fixture.workflow.writeText(
+            "---\n" +
+                "tracker:\n" +
+                "  kind: github\n" +
+                "  provider:\n" +
+                "    repo: octocat/Hello-World\n" +
+                "    token: \$GITHUB_TOKEN\n" +
+                "    api_url: \"$apiUrl\"\n" +
+                "workspace:\n" +
+                "  root: ./workspaces\n" +
+                "runner:\n" +
+                "  kind: command\n" +
+                "runners:\n" +
+                "  command:\n" +
+                "    command: \"${fixture.agentScript.toAbsolutePath()}\"\n" +
+                "kinds:\n" +
+                "  code:\n" +
+                "    delivery:\n" +
+                "      policy: human\n" +
+                pullRequest +
+                "    verify:\n" +
+                "      checks:\n" +
+                "        - { type: command, run: \"test -f hello.txt\" }\n" +
+                "---\n" +
+                "Work on {{ issue.identifier }}\n",
+        )
+    }
+
+    /** Issue 26 of the github tracker waits for approval to move to review, as the store holds it since m4-12. */
+    private fun waitOnGitHub() {
+        SqliteEventStore.open(fixture.loopHome, fixture.projectDir, Redactor.NONE).getOrThrow().use {
+            val wait =
+                WaitingIssue(
+                    ProjectId(fixture.projectId()),
+                    "default:26",
+                    "Hello-World-26",
+                    WaitReason.Approval,
+                    AttemptId("a-1"),
+                    null,
+                    Clock.System.now(),
+                    mapOf(WaitKeys.TO to "review"),
+                )
+            runBlocking { it.startWaiting(wait) }.getOrThrow()
+        }
+    }
+
+    private fun approveOnGitHub(issue: String): LoopResult =
+        fixture.inProcess("approve", issue, "--workflow", fixture.workflow.toString(), env = approver + githubToken)
 
     @Test
     fun `a verified result under policy human posts an evidence summary and waits for approval, never dispatched again`() {
@@ -237,56 +350,141 @@ class ApproveCommandTest {
 
     @Test
     fun `bl-65 approve loads a github workflow with the host's tracker kinds and reads the tracker`() {
-        val recorded = Path.of(System.getProperty("loop.githubRecorded") ?: fail("system property loop.githubRecorded is not set"))
-        val issue =
-            Json
-                .parseToJsonElement(recorded.resolve("open-issues-page-1.json").readText())
-                .jsonArray
-                .map { it as JsonObject }
-                .first { it["number"].toString() == "26" }
-        val paths = mutableListOf<String>()
-        val server =
-            HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0).apply {
-                createContext("/api/") { exchange ->
-                    paths += exchange.requestURI.rawPath
-                    val body =
-                        when (exchange.requestURI.rawPath) {
-                            "/api/repos/octocat/Hello-World/issues/26" -> issue.toString()
-                            else -> "[]"
-                        }.toByteArray()
-                    exchange.responseHeaders.add("Content-Type", "application/json; charset=utf-8")
-                    exchange.sendResponseHeaders(200, body.size.toLong())
-                    exchange.responseBody.use { it.write(body) }
-                }
-                start()
-            }
-        try {
-            val apiUrl = "http://${server.address.address.hostAddress}:${server.address.port}/api"
-            fixture.workflow.writeText(
-                fixture.workflow
-                    .readText()
-                    .replace(
-                        "kind: files",
-                        "kind: github\n  provider:\n    repo: octocat/Hello-World\n    token: \$GITHUB_TOKEN\n    api_url: $apiUrl",
-                    ).replace("  active_states: [todo]\n", ""),
-            )
+        github().use { api ->
+            githubWorkflow(api.url)
 
-            val result =
-                fixture.inProcess(
-                    "approve",
-                    "26",
-                    "--workflow",
-                    fixture.workflow.toString(),
-                    env =
-                        approver + ("GITHUB_TOKEN" to "ghp_bl65Token0123456789abcdefghijklmnop"),
-                )
+            val result = approveOnGitHub("26")
 
             assertFalse("not supported" in result.stderr, result.toString())
             assertEquals(4, result.exitCode, result.toString())
             assertContains(result.stderr, "is not waiting for approval. Nothing changed.")
-            assertNotNull(paths.firstOrNull { it.endsWith("/issues/26") }, "the tracker was never read: $paths")
-        } finally {
-            server.stop(0)
+            assertNotNull(api.paths.firstOrNull { it.endsWith("/issues/26") }, "the tracker was never read: ${api.paths}")
+        }
+    }
+
+    @Test
+    fun `m4-29 a github issue waiting for approval is approved through to approval_given`() {
+        github().use { api ->
+            githubWorkflow(api.url)
+            waitOnGitHub()
+
+            val approved = approveOnGitHub("26")
+
+            assertEquals(0, approved.exitCode, approved.toString())
+            assertTrue(
+                Regex("""^Approved Hello-World-26, waiting since \S+Z\. Loop moves it to review on its next tick\.$""")
+                    .matches(approved.stdout.trim()),
+                approved.toString(),
+            )
+            assertNotNull(api.paths.firstOrNull { it.endsWith("/issues/26") }, "the tracker was never read: ${api.paths}")
+            val given = events("approval_given").single()
+            assertEquals("a-1", given["attempt_id"])
+            assertContains(given["data"].orEmpty(), "\"by\":\"soule\"")
+            assertContains(given["data"].orEmpty(), "\"to\":\"review\"")
+            assertContains(events("human_touch").single()["data"].orEmpty(), "\"touch\":\"approve\"")
+            assertContains(waits().single()["data"].orEmpty(), "\"approved_by\":\"soule\"")
+        }
+    }
+
+    @Test
+    fun `m4-29 under merge loop approve names the merge check, the merge and on_delivered move_to`() {
+        github().use { api ->
+            githubWorkflow(api.url, merge = true)
+            waitOnGitHub()
+
+            val approved = approveOnGitHub("26")
+
+            assertEquals(0, approved.exitCode, approved.toString())
+            assertTrue(
+                Regex(
+                    """^Approved Hello-World-26, waiting since \S+Z\. Loop delivers its pull request on its next tick, """ +
+                        """runs the merge check and merges it, then moves it to closed\.$""",
+                ).matches(approved.stdout.trim()),
+                approved.toString(),
+            )
+            assertFalse("to review" in approved.stdout, approved.toString())
+        }
+    }
+
+    @Test
+    fun `m4-29 under merge the already approved message names the merge check, the merge and on_delivered move_to`() {
+        github().use { api ->
+            githubWorkflow(api.url, merge = true)
+            waitOnGitHub()
+            assertEquals(0, approveOnGitHub("26").exitCode)
+
+            val again = approveOnGitHub("26")
+
+            assertEquals(0, again.exitCode, again.toString())
+            assertEquals(
+                "Hello-World-26 is already approved, Loop delivers its pull request on its next tick, runs the merge check " +
+                    "and merges it, then moves it to closed. Nothing changed.",
+                again.stdout.trim(),
+            )
+            assertEquals(1, events("approval_given").size)
+        }
+    }
+
+    @Test
+    fun `m4-29 under merge approval_given records the state the issue ends in`() {
+        github().use { api ->
+            githubWorkflow(api.url, merge = true)
+            waitOnGitHub()
+
+            assertEquals(0, approveOnGitHub("26").exitCode)
+
+            val given = events("approval_given").single()["data"].orEmpty()
+            assertContains(given, "\"to\":\"closed\"")
+            assertFalse("\"to\":\"review\"" in given, given)
+            // The wait itself still names the handoff state, which the merge never uses.
+            assertContains(waits().single()["data"].orEmpty(), "\"to\":\"review\"")
+        }
+    }
+
+    @Test
+    fun `m4-29 a tracker read that fails names the github tracker, and approve finds the waiting issue by its id`() {
+        github(readable = false).use { api ->
+            githubWorkflow(api.url)
+            waitOnGitHub()
+
+            val approved = approveOnGitHub("26")
+
+            assertEquals(0, approved.exitCode, approved.toString())
+            assertContains(approved.stderr, "loop approve: cannot read \"26\" in the github tracker of octocat/Hello-World: ")
+            assertContains(approved.stderr, "Looking for it among the waiting issues.")
+            assertFalse("the tracker at" in approved.stderr, approved.toString())
+            assertTrue(approved.stdout.startsWith("Approved Hello-World-26, waiting since "), approved.toString())
+            assertEquals(1, events("approval_given").size)
+        }
+    }
+
+    @Test
+    fun `m4-29 with the github tracker failing approve finds the waiting issue by its identifier`() {
+        github(readable = false).use { api ->
+            githubWorkflow(api.url)
+            waitOnGitHub()
+
+            val approved = approveOnGitHub("Hello-World-26")
+
+            // The github tracker asks GitHub for issue numbers only, so the identifier finds nothing there.
+            assertEquals(0, approved.exitCode, approved.toString())
+            assertFalse("no issue" in approved.stderr, approved.toString())
+            assertTrue(approved.stdout.startsWith("Approved Hello-World-26, waiting since "), approved.toString())
+            assertEquals(1, events("approval_given").size)
+        }
+    }
+
+    @Test
+    fun `m4-29 an issue missing from the github tracker is named with the github tracker`() {
+        github().use { api ->
+            githubWorkflow(api.url)
+            waitOnGitHub()
+
+            val unknown = approveOnGitHub("99")
+
+            assertEquals(2, unknown.exitCode, unknown.toString())
+            assertEquals("loop approve: no issue \"99\" in the github tracker of octocat/Hello-World.", unknown.stderr.trim())
+            assertEquals(emptyList(), events("approval_given"))
         }
     }
 

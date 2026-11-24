@@ -28,7 +28,7 @@ import kotlin.test.assertSame
 /**
  * m4-11, story 111: `tracker:` stays the primary tracker, with the id of its `id` key or `default`, and `trackers:`
  * lists extra trackers, each read and checked by its own tracker plugin, into the [TrackersConfig] of the workflow and
- * the [TrackerRegistry] built from it. Nothing polls the extra trackers yet (m4-13).
+ * the [TrackerRegistry] built from it.
  */
 class TrackerRegistryTest {
     private val folder: Path = createTempDirectory("loop-trackers").toRealPath()
@@ -213,7 +213,7 @@ class TrackerRegistryTest {
         assertEquals(workflow.requiredLabels, primary.requiredLabels)
         assertEquals(workflow.config.trackerProvider, primary.provider)
         assertEquals(emptyList(), workflow.configWarnings)
-        assertNull(workflow.trackers.notPolledNotice())
+        assertEquals(emptyList(), workflow.trackers.extras)
         // An empty list is no extra tracker either.
         assertEquals(emptyList(), load(front + "trackers: []\n").extraTrackers)
     }
@@ -330,6 +330,9 @@ class TrackerRegistryTest {
         assertNull(workflow.trackers.entry("mirror")!!.settings)
     }
 
+    // m4-13 polls every tracker and removed the notice that the extra ones are not polled, so this test now checks
+    // that the extras and the primary tracker are all there to poll, each issue judged by its own one. It keeps its
+    // m4-11 name, since a renamed test counts as a deleted one for the `deleted_tests` guard.
     @Test
     fun `the notice of extra trackers names them and the primary tracker Loop polls`() {
         val trackers =
@@ -337,10 +340,10 @@ class TrackerRegistryTest {
                 primary + "trackers:\n  - { id: local, kind: files }\n  - { id: side, kind: files, provider: { dir: ./b } }\n",
             ).trackers
 
-        assertEquals(
-            "trackers lists local and side, which Loop does not poll yet (m4-13), it polls only the primary tracker gh",
-            trackers.notPolledNotice(),
-        )
+        assertEquals(listOf("gh", "local", "side"), trackers.all.map { it.id })
+        assertEquals("local", trackers.trackerOf("local:t-1")?.id)
+        assertEquals("side", trackers.trackerOf("side:t-1")?.id)
+        assertEquals("gh", trackers.trackerOf("t-1")?.id)
     }
 
     /** A tracker plugin for these tests, whose [parse] is [answer]. */
