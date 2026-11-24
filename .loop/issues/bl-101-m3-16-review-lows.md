@@ -1,7 +1,7 @@
 ---
 id: bl-101
 title: "Low findings from the merge risk reviews of m3-16 (PR #85)"
-state: todo
+state: done
 priority: 3
 labels: [ready-for-agent]
 blocked_by: [m4-10]
@@ -42,3 +42,16 @@ All low, from the Sonnet merge-risk skill and the Fable 5.2 recheck of pull requ
 Filed from the 2026-11-16 run review.
 
 2026-11-18 soule: triaged ready-for-agent in m3-29. Blocked by m4-10, which edits the same machine gate and slot code with `loop drain`.
+
+2026-11-24 22:57Z agent ebe89ebf: bl-101 done, each finding of PR #85:
+  1. retryReleases now runs before the preflight. Test: a failed release is retried at the next tick while config.yaml is malformed.
+  2. An unreadable run file: a claim logs `level=warn event=machine_slot outcome=failed project=<id>` once, and again only after a claim read it. Its slots still count.
+  3. Slot leak on cancel: the attempt is launched with CoroutineStart.ATOMIC, like the merge check job of bl-180, so its finally releases the slot and the claim. A claim cancelled midway releases its holder too. Tests in MachineLimitsOrchestratorTest and MachineGateTest.
+  4. Day budget: it holds every dispatch with machine_budget until a first read succeeds, so it fails closed like the slot claim. A later failed read keeps the sum read last, as before.
+  5. peek: slotLive reads the run file once with no 100 ms retry, since an unreadable file counts anyway.
+  6. Closed: no index on finished_at. attempts has one row per finished attempt, and an index needs a schema bump with the rollback cost of finding 8. Noted in spec-decisions, to go with the next schema change.
+  7. hold.gate() is read again after each claim. A hold started during the claim releases that slot and skips the launch with runner_unavailable.
+  8. Store v7 rollback: documented under known limits in docs/self-hosting.md.
+  9. The skips of a tick are recorded in slot order again. Test in OrchestratorRunnerHoldTest.
+
+2026-11-24 23:00Z loop: Loop opened pull request #51 for this issue: https://github.com/soulesidibe/Loop/pull/51
