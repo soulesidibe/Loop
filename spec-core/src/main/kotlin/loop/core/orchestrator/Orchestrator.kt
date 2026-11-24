@@ -625,7 +625,13 @@ class Orchestrator(
         if (gate == RunnerHold.Gate.Closed) return Dispatched(candidates = issues.size, attempts = emptyList(), verifications)
         val held = drain.heldBack(retries.queued().keys)
         val fire =
-            retries.fireDue(issues, effective, busy = claimed + running.keys + waits.busy + held, parked = parkedIds, polled = polled::answered)
+            retries.fireDue(
+                issues,
+                effective,
+                busy = claimed + running.keys + waits.busy + held,
+                parked = parkedIds,
+                polled = polled::answered,
+            )
         retriesFired = true
         val now = clock.now()
         val retryAttempts = fire.dispatch.associate { it.issue.id to it.attempt }
@@ -1079,7 +1085,14 @@ class Orchestrator(
         // m4-13: each tracker with its own terminal states; one that fails is logged and the others go on.
         val read = trackers.terminal(effective.trackers)
         read.failures.forEach { (id, error) ->
-            log.log(LogLevel.WARN, STARTUP_CLEANUP, LogOutcome.FAILED, pollContext, fields = mapOf("tracker" to id), reason = error.describe())
+            log.log(
+                LogLevel.WARN,
+                STARTUP_CLEANUP,
+                LogOutcome.FAILED,
+                pollContext,
+                fields = mapOf("tracker" to id),
+                reason = error.describe(),
+            )
         }
         for (issue in read.issues) removeWorkspace(issue)
     }
@@ -4731,7 +4744,8 @@ class Orchestrator(
                 !read.answered(issueId) -> Standing.Unread
                 else -> {
                     val issue = refreshed[issueId]
-                    if (issue != null && effective.trackers.entryOf(issueId).isActive(issue.state)) Standing.Active(issue) else Standing.Gone(issue)
+                    val active = issue != null && effective.trackers.entryOf(issueId).isActive(issue.state)
+                    if (active) Standing.Active(issue) else Standing.Gone(issue)
                 }
             }
         }

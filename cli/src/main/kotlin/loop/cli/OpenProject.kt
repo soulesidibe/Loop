@@ -113,7 +113,12 @@ class OpenedProject internal constructor(
     fun trackerPoll(
         onWarning: (String) -> Unit = {},
         onMalformed: (TrackerError.Malformed) -> Unit = {},
-        requiredLabels: (String) -> List<String> = { id -> workflow.trackers.entry(id)?.requiredLabels.orEmpty() },
+        requiredLabels: (String) -> List<String> = { id ->
+            workflow.trackers
+                .entry(id)
+                ?.requiredLabels
+                .orEmpty()
+        },
     ): TrackerPoll {
         trackerSecret?.let { throw StartupFailure(it.sentence) }
         if (trackers.provider(workflow.trackerKind) == null) throw StartupFailure(unsupportedTracker(workflow, trackers))

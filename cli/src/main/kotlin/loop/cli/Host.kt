@@ -183,7 +183,12 @@ fun trackerRegistryFor(
     loopHome: Path,
     onWarning: (String) -> Unit = {},
     onMalformed: (TrackerError.Malformed) -> Unit = {},
-    requiredLabels: (String) -> List<String> = { id -> workflow.trackers.entry(id)?.requiredLabels.orEmpty() },
+    requiredLabels: (String) -> List<String> = { id ->
+        workflow.trackers
+            .entry(id)
+            ?.requiredLabels
+            .orEmpty()
+    },
     plugins: TrackerPlugins = TrackerPlugins.classpath,
 ): TrackerRegistry =
     TrackerRegistry.build(workflow.trackers) { entry ->
