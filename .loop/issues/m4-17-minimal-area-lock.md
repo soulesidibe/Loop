@@ -48,3 +48,20 @@ Out of this issue: filling `area` on existing issues (the operator's call), area
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-24 22:47Z loop: Loop opened pull request #50 for this issue: https://github.com/soulesidibe/Loop/pull/50
+
+2026-11-24 22:51Z loop: Loop did not merge pull request #50, ci: Actions runs did not pass: build (failure). The pull request stays open and the result waits for a new approval.
+  Failed runs:
+  - build (failure): https://github.com/soulesidibe/Loop/actions/runs/45504270631
+  Rerun the runs on GitHub or fix the branch, then approve again with loop approve.
+
+2026-11-24 23:15Z soule: sent back before merge, after the merge risk reviews of pull request #50 (Sonnet 5.5 low 1.27, Fable 5.2 medium 1.67). Fix these on the same branch, then submit again:
+  - **Medium. A due retry skipped as `area_busy` makes the tick loop spin.** It stays in the queue with its due time in the past (`fireDue` keeps it "unchanged in the queue"), is filtered out at `Orchestrator.kt` around line 709 and never goes through `requeueNoSlot`, which moves the due time for no slot and budget skips. `sleepUntilNextPoll` then sleeps 1 ms (`Orchestrator.kt` around line 1044, `RetryQueue.nextDueAt` around line 333), so Loop polls the tracker back to back until the other holder ends, burning the GitHub rate limit shared with delivery. Requeue an area skipped due retry like a no slot one, and add an orchestrator test: two holders with overlapping areas, the due retry of one is skipped, the next poll waits the normal interval and the retry runs once the area frees. Check whether a due retry held by a cross tracker blocker (m4-16) has the same gap and fix it the same way if so.
+  - **Low. A candidate admitted but given no slot still blocks later overlapping candidates**, with `area_busy` naming an issue that is not running (`AreaLock.kt` around lines 66 to 86). Only issues that get a slot, or are already holders, should block.
+  - **Low. Area matching fails open on case and form.** `Spec-Core` and `spec-core`, a unicode variant, spaces inside a segment: normalize entries (case fold per the repository's case sensitivity at least for the comparison, NFC) and cap the number of entries per issue.
+  - **Low. `warnedAreas` grows with each body edit** (`GitHubTracker.kt` around line 388), and an untrusted body's malformed line is quoted in an operator warning. Bound the set and do not quote untrusted text.
+  - **Low. An `Area:` line inside an HTML comment counts.** Skip comments, like fences.
+  - **Low. Prose `Area:` lines.** Loop's own issue style has a column 0 `Area:` prose line (46 files in `.loop/issues`). On GitHub such a line is either malformed, which drops the whole area with a warning, or parsed into bogus entries with no warning. Document the expected form in `docs/spec-decisions.md` and make prose that is not a path list a malformed line with one warning.
+  - **Low. One malformed `Area:` line drops every `Area:` line of the body** (`GitHubArea.kt` around lines 44 and 45). Keep it if the spec requires it, but say so in the warning.
+  - **Low. Tests.** Add an orchestrator level test for "a skipped due retry stays queued" (only unit tested in `AreaLockTest`).
