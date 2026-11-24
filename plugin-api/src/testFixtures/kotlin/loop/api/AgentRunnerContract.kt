@@ -38,7 +38,9 @@ import kotlin.time.Duration.Companion.seconds
  * what the runner does (continuation, usage, cost, occupancy); that a
  * [RunnerEvent.TurnFailed] category is null or `runner_unavailable` (bl-39); and that a session's
  * [AgentSession.stop] with a report callback reports only usage absolute for the session and at most
- * one [RunnerEvent.StopGraceExpired], last (bl-152).
+ * one [RunnerEvent.StopGraceExpired], last (bl-152); and that [AgentRunner.resumeSession] returns a session only
+ * with continuation, whose turn 1 starts with [RunnerEvent.SessionStarted] and ends with one terminal event (m4-46).
+ * A runner that keeps its default, null, passes them.
  */
 public abstract class AgentRunnerContract {
     @TempDir
@@ -185,6 +187,57 @@ public abstract class AgentRunnerContract {
         } finally {
             session?.let { runBlocking { it.stop() } }
         }
+    }
+
+    @Test
+    public fun `resumeSession returns a session only with continuation`() {
+        val runner = succeedingRunner(report())
+        val session = runner.resumeSession(context(), RESUME_ID)
+        try {
+            if (!runner.capabilities.continuation) {
+                assertNull(session, "the runner declares no continuation, but resumeSession returned a session")
+            }
+        } finally {
+            session?.let { runBlocking { it.stop() } }
+        }
+    }
+
+    @Test
+    public fun `a resumed session starts with SessionStarted and ends with exactly one terminal event`() {
+        val runner = succeedingRunner(report())
+        assumeTrue(runner.capabilities.continuation, "the runner declares no continuation")
+        val first = assertNotNull(runner.openSession(context()), "the runner declares continuation")
+        val earlier =
+            CompletableFuture
+                .supplyAsync {
+                    runBlocking {
+                        try {
+                            first.runTurn("first", 1).toList()
+                        } finally {
+                            first.stop()
+                        }
+                    }
+                }.get(TIMEOUT.inWholeSeconds, TimeUnit.SECONDS)
+        val runtimeSessionId = (earlier.firstOrNull() as? RunnerEvent.SessionStarted)?.runtimeSessionId ?: RESUME_ID
+        val resumed = runner.resumeSession(context(), runtimeSessionId)
+        assumeTrue(resumed != null, "the runner does not resume a session across attempts")
+        val session = checkNotNull(resumed)
+        val events =
+            CompletableFuture
+                .supplyAsync {
+                    runBlocking {
+                        try {
+                            session.runTurn("resumed", 1).toList()
+                        } finally {
+                            session.stop()
+                        }
+                    }
+                }.get(TIMEOUT.inWholeSeconds, TimeUnit.SECONDS)
+
+        val started = assertIs<RunnerEvent.SessionStarted>(events.firstOrNull(), "turn 1 of a resumed session: $events")
+        assertEquals("${started.threadId}-${started.turnId.value}", started.sessionId.value)
+        assertEquals(1, events.count(::isTerminal), "terminal events in $events")
+        assertTrue(isTerminal(events.last()), "the last event of $events is not terminal")
     }
 
     @Test
@@ -465,6 +518,9 @@ public abstract class AgentRunnerContract {
     public companion object {
         /** The variable the contract puts in the context env for the succeeding agent to report. */
         public const val PROBE_ENV: String = "LOOP_CONTRACT_PROBE"
+
+        /** The runtime session id the resume cases pass when the runner's first session reported none. */
+        private const val RESUME_ID = "contract-runtime-session"
 
         private val TIMEOUT = 10.seconds
         private val CHILD_WAIT = 2.seconds

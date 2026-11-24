@@ -4,9 +4,12 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import org.opentest4j.TestAbortedException
 import java.nio.file.Path
 import kotlin.test.assertContains
+import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 
 /**
  * The capability cases of [AgentRunnerContract] catch a runner whose declared [RunnerCapabilities] do not match what
@@ -91,6 +94,48 @@ class AgentRunnerContractCapabilitiesTest {
 
         assertFailsContract("declares continuation, but openSession returned null") {
             contractFor(runner).`openSession matches the declared continuation`()
+        }
+    }
+
+    @Test
+    fun `a runner that does not override resumeSession keeps today's behavior and passes the contract`() {
+        val runner = ScriptedRunner(HONEST)
+        val contract = contractFor(runner)
+
+        val ctx = AttemptContext(RunId("run-1"), ProjectId("project-1"), ISSUE, AttemptId("attempt-1"), workspace, emptyMap())
+
+        assertNull(runner.resumeSession(ctx, "runtime-1"), "the default resumes nothing")
+        contract.`resumeSession returns a session only with continuation`()
+        assertFailsWith<TestAbortedException> {
+            contract.`a resumed session starts with SessionStarted and ends with exactly one terminal event`()
+        }
+    }
+
+    @Test
+    fun `a runner that resumes a session passes the contract`() {
+        val runner = ScriptedRunner(HONEST, resumes = true)
+        val contract = contractFor(runner)
+
+        contract.`resumeSession returns a session only with continuation`()
+        contract.`a resumed session starts with SessionStarted and ends with exactly one terminal event`()
+        assertEquals(listOf("contract-runtime-session", "contract-runtime-session"), runner.resumed)
+    }
+
+    @Test
+    fun `a runner that resumes a session but declares no continuation fails the contract`() {
+        val runner = ScriptedRunner(HONEST.copy(continuation = false), resumes = true)
+
+        assertFailsContract("declares no continuation, but resumeSession returned a session") {
+            contractFor(runner).`resumeSession returns a session only with continuation`()
+        }
+    }
+
+    @Test
+    fun `a runner whose resumed session starts with TurnStarted fails the contract`() {
+        val runner = ScriptedRunner(HONEST, resumes = true, resumedFirstTurn = 2)
+
+        assertFailsContract("turn 1 of a resumed session") {
+            contractFor(runner).`a resumed session starts with SessionStarted and ends with exactly one terminal event`()
         }
     }
 
@@ -209,29 +254,43 @@ class AgentRunnerContractCapabilitiesTest {
         private val stopReports: (
             SessionId,
         ) -> List<RunnerEvent> = { listOf(RunnerEvent.Usage(it, TurnId("turn-1"), 500, 500, 500, 500, cost)) },
+        private val resumes: Boolean = false,
+        private val resumedFirstTurn: Int = 1,
     ) : AgentRunner {
-        fun failing(): ScriptedRunner = ScriptedRunner(capabilities, sessions, usage, cost, occupancy, tokens, fails = true, stopReports)
+        fun failing(): ScriptedRunner =
+            ScriptedRunner(capabilities, sessions, usage, cost, occupancy, tokens, fails = true, stopReports, resumes, resumedFirstTurn)
+
+        /** The runtime session ids [resumeSession] was asked to continue. */
+        val resumed = mutableListOf<String>()
+
+        override fun resumeSession(
+            ctx: AttemptContext,
+            runtimeSessionId: String,
+        ): AgentSession? {
+            if (!resumes) return super.resumeSession(ctx, runtimeSessionId)
+            resumed += runtimeSessionId
+            return session(firstTurn = resumedFirstTurn)
+        }
 
         override fun run(
             ctx: AttemptContext,
             prompt: String,
         ): Flow<RunnerEvent> = turn(1)
 
-        override fun openSession(ctx: AttemptContext): AgentSession? =
-            if (!sessions) {
-                null
-            } else {
-                object : AgentSession {
-                    override fun runTurn(
-                        input: String,
-                        turn: Int,
-                    ): Flow<RunnerEvent> = turn(turn)
+        override fun openSession(ctx: AttemptContext): AgentSession? = if (!sessions) null else session(firstTurn = 1)
 
-                    override suspend fun stop() = Unit
+        /** A session whose turn `n` plays [turn] number `n + firstTurn - 1`, so a [firstTurn] of 2 starts with TurnStarted. */
+        private fun session(firstTurn: Int): AgentSession =
+            object : AgentSession {
+                override fun runTurn(
+                    input: String,
+                    turn: Int,
+                ): Flow<RunnerEvent> = turn(turn + firstTurn - 1)
 
-                    override suspend fun stop(report: suspend (RunnerEvent) -> Unit) {
-                        if (usage) stopReports(SessionId("thread-turn-1")).forEach { report(it) }
-                    }
+                override suspend fun stop() = Unit
+
+                override suspend fun stop(report: suspend (RunnerEvent) -> Unit) {
+                    if (usage) stopReports(SessionId("thread-turn-1")).forEach { report(it) }
                 }
             }
 
@@ -264,6 +323,8 @@ class AgentRunnerContractCapabilitiesTest {
     }
 
     private companion object {
+        val ISSUE = Issue("issue-1", "c-01", "Contract", "todo", null, emptyList(), emptyList(), null, null)
+
         val HONEST =
             RunnerCapabilities(
                 continuation = true,

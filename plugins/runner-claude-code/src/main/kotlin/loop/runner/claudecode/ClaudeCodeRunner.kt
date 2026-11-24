@@ -181,6 +181,10 @@ data class ClaudeCodeSettings(
  * stderr. The newest init session id wins and the `result` line's `session_id` is the fallback; a process that
  * reports no id drops the stored one, so a later respawn fails instead of resuming a stale session.
  *
+ * Across attempts (m4-46): [resumeSession] opens a session whose turn 1 spawns the process with `--resume` and the
+ * session id of an earlier attempt, after a `loop:` warning line, so the conversation goes on in a new attempt. Loop
+ * asks for it only after a network hold, and a rotation always opens a fresh session with [openSession].
+ *
  * Env: the shared [agentEnvironment] policy, [hostEnv] minus [removedEnvNames], plus [addedEnv] (`agent.env`, each
  * `{workspace}` replaced by the attempt's workspace), plus the context env and `LOOP_SESSION_ID` and `LOOP_TURN_ID`
  * (Loop's own names survive removal), always minus `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`. The env and the
@@ -244,6 +248,16 @@ class ClaudeCodeRunner internal constructor(
 
     override fun openSession(ctx: AttemptContext): AgentSession = ClaudeSession(ctx)
 
+    /**
+     * m4-46: a session of the attempt [ctx] on a new thread whose turn 1 spawns Claude Code with `--resume
+     * <runtimeSessionId>`, after a `loop:` warning line on stderr, so the agent continues the conversation of an earlier
+     * attempt. Later turns and respawns behave as in any session.
+     */
+    override fun resumeSession(
+        ctx: AttemptContext,
+        runtimeSessionId: String,
+    ): AgentSession = ClaudeSession(ctx, resumeFrom = runtimeSessionId)
+
     override val model: String? get() = settings.model
 
     /**
@@ -252,9 +266,11 @@ class ClaudeCodeRunner internal constructor(
      */
     private inner class ClaudeSession(
         private val ctx: AttemptContext,
+        /** The Claude Code session of an earlier attempt that turn 1 resumes (m4-46), null for a fresh session. */
+        private val resumeFrom: String? = null,
     ) : AgentSession {
         private val threadId = UUID.randomUUID().toString()
-        private val continuity = Continuity()
+        private val continuity = Continuity().apply { runtimeSessionId = resumeFrom }
 
         // The process collectors live here, not in a turn's flow, so the process outlives the turn that spawned it.
         private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -593,9 +609,12 @@ class ClaudeCodeRunner internal constructor(
                 return null
             }
 
-            /** Spawns the session's process, resuming the session after turn 1; null when the turn ended instead. */
+            /**
+             * Spawns the session's process, resuming the session after turn 1, and at turn 1 the earlier attempt's
+             * session of a resumed one (m4-46); null when the turn ended instead.
+             */
             private suspend fun spawn(): LiveProcess? {
-                val resume = if (ids.turn > 1) continuity.runtimeSessionId else null
+                val resume = if (ids.turn > 1 || resumeFrom != null) continuity.runtimeSessionId else null
                 if (ids.turn > 1 && resume == null) {
                     end(listOf(RunnerEvent.TurnFailed(sessionId, turnId, null, "missing_runtime_session_id: no session to resume")))
                     return null
@@ -605,13 +624,13 @@ class ClaudeCodeRunner internal constructor(
                     return null
                 }
                 if (resume != null) {
-                    emit(
-                        RunnerEvent.Output(
-                            Stream.Stderr,
-                            "${LOOP_PREFIX}warning: the claude-code process of this session is gone, " +
-                                "turn ${ids.turn} resumes session $resume in a new process",
-                        ),
-                    )
+                    val warning =
+                        if (ids.turn == 1) {
+                            "turn 1 resumes session $resume of an earlier attempt"
+                        } else {
+                            "the claude-code process of this session is gone, turn ${ids.turn} resumes session $resume in a new process"
+                        }
+                    emit(RunnerEvent.Output(Stream.Stderr, "${LOOP_PREFIX}warning: $warning"))
                 }
                 val stdin = Channel<String>(Channel.UNLIMITED)
                 val events = Channel<ProcessEvent>(Channel.UNLIMITED)

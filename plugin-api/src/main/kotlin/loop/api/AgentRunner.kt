@@ -25,6 +25,20 @@ public interface AgentRunner {
      */
     public fun openSession(ctx: AttemptContext): AgentSession? = null
 
+    /**
+     * Opens a session for the attempt [ctx] that continues [runtimeSessionId], the runtime's own session id an earlier
+     * attempt of the same issue reported in [RunnerEvent.SessionStarted] (m4-46), or returns null when the runner cannot
+     * continue a session across attempts. Loop then opens a fresh session with [openSession], with the same prompt, so
+     * the default, null, keeps the behavior of a runner that knows nothing of it. Turn 1 of a returned session starts
+     * with [RunnerEvent.SessionStarted] like any session's, under a new thread id. Only a runner that declares
+     * [RunnerCapabilities.continuation] may return a session. Loop asks for it only after a network hold, see
+     * `docs/spec-decisions.md`.
+     */
+    public fun resumeSession(
+        ctx: AttemptContext,
+        runtimeSessionId: String,
+    ): AgentSession? = null
+
     /** The model the runner is configured with, recorded in the ledger (m2-19); null when it has none. */
     public val model: String? get() = null
 }

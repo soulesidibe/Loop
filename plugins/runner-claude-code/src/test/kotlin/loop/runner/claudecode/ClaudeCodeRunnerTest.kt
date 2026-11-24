@@ -1304,6 +1304,79 @@ class ClaudeCodeRunnerTest {
     }
 
     @Test
+    fun `m4-46 a session resumed after a network hold spawns claude with --resume at turn 1, on a new thread`() {
+        val claude = FakeClaude(bin)
+        val runner = runner(claude)
+
+        val (first, second) =
+            runBlocking {
+                withTimeout(20.seconds) {
+                    val session = checkNotNull(runner.resumeSession(context(emptyMap()), "claude-session-1"))
+                    try {
+                        session.runTurn("m4-46 attempt 2 with the brief", 1).toList() to session.runTurn("Keep going", 2).toList()
+                    } finally {
+                        session.stop()
+                    }
+                }
+            }
+
+        assertEquals(1, claude.invocations, "turn 2 runs in the resumed process")
+        assertEquals(listOf("-p", "--resume", "claude-session-1", "--input-format"), claude.argvOf(0).take(4))
+        assertEquals(listOf("m4-46 attempt 2 with the brief", "Keep going"), claude.promptsOf(0))
+        val started = assertIs<RunnerEvent.SessionStarted>(first.first())
+        // The resumed process's init line names the session Claude Code continues.
+        assertEquals("claude-session-2", started.runtimeSessionId)
+        val warning = "loop: warning: turn 1 resumes session claude-session-1 of an earlier attempt"
+        assertEquals(RunnerEvent.Output(Stream.Stderr, warning), first[1])
+        assertIs<RunnerEvent.TurnCompleted>(first.last())
+        val next = assertIs<RunnerEvent.TurnStarted>(second.first())
+        assertEquals(started.threadId, next.threadId)
+        assertIs<RunnerEvent.TurnCompleted>(second.last())
+    }
+
+    @Test
+    fun `m4-46 a fresh session after a network hold spawns claude without --resume`() {
+        val claude = FakeClaude(bin)
+
+        val events =
+            runBlocking {
+                withTimeout(20.seconds) {
+                    val session = checkNotNull(runner(claude).openSession(context(emptyMap())))
+                    try {
+                        session.runTurn("m4-46 attempt 2 with the brief", 1).toList()
+                    } finally {
+                        session.stop()
+                    }
+                }
+            }
+
+        assertFalse("--resume" in claude.argvOf(0), "${claude.argvOf(0)}")
+        assertEquals(listOf("m4-46 attempt 2 with the brief"), claude.promptsOf(0))
+        assertEquals("claude-session-1", assertIs<RunnerEvent.SessionStarted>(events.first()).runtimeSessionId)
+    }
+
+    @Test
+    fun `m4-46 a resumed session whose process dies between turns resumes the newest session id`() {
+        val claude = FakeClaude(bin, after = "exit 0")
+
+        runBlocking {
+            withTimeout(20.seconds) {
+                val session = checkNotNull(runner(claude).resumeSession(context(emptyMap()), "claude-session-1"))
+                try {
+                    session.runTurn("Fix it", 1).toList()
+                    session.runTurn("Keep going", 2).toList()
+                } finally {
+                    session.stop()
+                }
+            }
+        }
+
+        assertEquals(2, claude.invocations)
+        assertEquals(listOf("-p", "--resume", "claude-session-1"), claude.argvOf(0).take(3))
+        assertEquals(listOf("-p", "--resume", "claude-session-2"), claude.argvOf(1).take(3))
+    }
+
+    @Test
     fun `continuation resumes the runtime session`() {
         // m3-07: a process that died between turns is respawned with resume and a warning, the turn is not a failure.
         val claude = FakeClaude(bin, after = "exit 0")
