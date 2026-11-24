@@ -34,11 +34,17 @@ class TraceCommand(
         // m1-26: only the messages go through the project's redactor; the store is read only and keeps Redactor.NONE.
         val project = host.openProject(workflowPath, Access.READ, scope)
         val workflow = project.workflow
+        val ids = project.ids
+        // m4-47: a bare id is the primary tracker's, a namespaced one names a tracker of the project.
+        val typed = ids.typed(issue).getOrElse { fail(it.message.orEmpty(), EXIT_ISSUE) }
         // bl-70: without the secret of its tracker, the issue is looked up by its id in the store, and has no title.
+        // m4-47: so is an extra tracker's issue, since a command reads only the primary tracker before m4-13.
         val secret = project.trackerSecret
         val found =
-            if (secret == null) {
-                fetch(project)
+            if (typed.tracker != workflow.trackerId) {
+                null
+            } else if (secret == null) {
+                fetch(project, typed.value)
             } else {
                 val why = "the tracker is not read, ${secret.sentence}. The issue is looked up by its id in the store"
                 echo(redact("loop trace: $why."), err = true)
@@ -51,7 +57,7 @@ class TraceCommand(
         val events =
             store.use {
                 runBlocking {
-                    val ofIssue = store.eventsForIssue(projectId, found?.id ?: issue).getOrElse(unreadable)
+                    val ofIssue = store.eventsForIssue(projectId, found?.id ?: typed.value).getOrElse(unreadable)
                     // m4-10: the drain of a run the issue took part in is run level, it prints among the issue's lines.
                     val runs = ofIssue.mapNotNull { it.event.runId }.toSet()
                     val drains =
@@ -68,16 +74,20 @@ class TraceCommand(
             echo("No attempt recorded for this issue in project ${projectId.value}.")
             return
         }
+        val named = events.lastOrNull { it.event.issueIdentifier != null }?.event
         val heading =
-            found?.let { "Issue ${it.identifier} \"${it.title}\"" }
-                ?: "Issue ${events.lastOrNull { it.event.issueIdentifier != null }?.event?.issueIdentifier ?: issue}"
+            found?.let { "Issue ${ids.name(it.id, it.identifier)} \"${it.title}\"" }
+                ?: "Issue ${named?.let { ids.name(it.issueId, it.issueIdentifier.orEmpty()) } ?: ids.id(typed.value)}"
         echo(render(heading, projectId, workflow.path, blocks))
     }
 
     /** The issue from the project's tracker; fails with [EXIT_ISSUE] when it cannot be read or is not there. */
-    private fun fetch(project: OpenedProject): Issue {
+    private fun fetch(
+        project: OpenedProject,
+        id: String,
+    ): Issue {
         val workflow = project.workflow
-        return runBlocking { project.tracker().fetchIssuesByIds(listOf(issue)) }
+        return runBlocking { project.tracker().fetchIssuesByIds(listOf(id)) }
             .getOrElse { fail("cannot read \"$issue\" in ${trackerLocation(workflow)}: ${it.sentence()}", EXIT_ISSUE) }
             .firstOrNull()
             ?: fail("no issue \"$issue\" in ${trackerLocation(workflow)}", EXIT_ISSUE)

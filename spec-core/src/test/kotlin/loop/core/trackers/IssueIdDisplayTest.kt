@@ -80,5 +80,24 @@ class IssueIdDisplayTest {
         assertFalse(several.matches(typed, "local:454", "454"))
     }
 
+    @Test
+    fun `an agent tool's issue is LOOP_TRACKER_ID and LOOP_ISSUE_ID, a missing tracker id meaning the primary`() {
+        assertEquals(NamespacedId("local", "t-1"), several.ofAgent("local", "t-1").getOrThrow())
+        assertEquals(NamespacedId("local", "a:b"), several.ofAgent("local", "a:b").getOrThrow())
+        assertEquals(NamespacedId("gh", "454"), several.ofAgent(null, "454").getOrThrow())
+        assertEquals(NamespacedId("local", "t-1"), several.ofAgent(null, "local:t-1").getOrThrow())
+        val refused = single.ofAgent("local", "t-1").exceptionOrNull()
+        assertIs<UnknownTrackerId>(refused)
+        assertEquals("local", refused.tracker)
+    }
+
+    @Test
+    fun `a core id is the issue when it reads as the same namespaced id, a bare id being the primary's`() {
+        assertTrue(several.isIssue("gh:454", NamespacedId("gh", "454")))
+        assertTrue(several.isIssue("454", NamespacedId("gh", "454")))
+        assertFalse(several.isIssue("local:454", NamespacedId("gh", "454")))
+        assertFalse(several.isIssue("454", NamespacedId("local", "454")))
+    }
+
     private fun entry(id: String) = TrackerEntry(id, "files", Path(".loop/issues"), null, listOf("todo"), listOf("done"), emptyList())
 }

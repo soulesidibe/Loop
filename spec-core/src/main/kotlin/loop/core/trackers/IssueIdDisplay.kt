@@ -26,6 +26,26 @@ class IssueIdDisplay(
         return Result.success(id)
     }
 
+    /**
+     * The issue of an agent tool, from `LOOP_TRACKER_ID` [trackerId] and `LOOP_ISSUE_ID` [issueId], the native id. With
+     * no tracker id, an attempt started before m4-12, [issueId] is read like a typed id, so a bare one is the
+     * [primary] tracker's. Fails with [UnknownTrackerId] when the tracker is not in [trackerIds].
+     */
+    fun ofAgent(
+        trackerId: String?,
+        issueId: String,
+    ): Result<NamespacedId> {
+        if (trackerId == null) return typed(issueId)
+        if (trackerId !in trackerIds) return Result.failure(UnknownTrackerId(trackerId, trackerIds))
+        return Result.success(NamespacedId(trackerId, issueId))
+    }
+
+    /** True when the core id [issueId], namespaced or a bare id of the [primary] tracker, is the issue [id]. */
+    fun isIssue(
+        issueId: String,
+        id: NamespacedId,
+    ): Boolean = NamespacedId.read(issueId, primary) == id
+
     /** The core id [issueId], namespaced or a bare id of a row written before m4-12, as it is shown. */
     fun id(issueId: String): String {
         val id = NamespacedId.read(issueId, primary)

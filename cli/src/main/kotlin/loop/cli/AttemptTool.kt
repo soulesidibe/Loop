@@ -11,6 +11,7 @@ import loop.core.events.AttemptStarted
 import loop.core.events.EventDefinition
 import loop.core.orchestrator.ToolRequest
 import loop.core.orchestrator.ToolRequestQueue
+import loop.core.trackers.NamespacedId
 import loop.store.SqliteEventStore
 import java.io.IOException
 import java.nio.file.NoSuchFileException
@@ -43,14 +44,24 @@ internal class AttemptTool(
         val config: ToolConfig,
         /** `LOOP_TRACKER_ID`, the tracker of the issue (m4-12), null when the attempt was started without it. */
         val trackerId: String? = null,
+        /**
+         * The issue as the core names it (m4-47), read from [trackerId] and [issueId] by the snapshot's trackers, null
+         * with a snapshot written before m4-47.
+         */
+        val issue: NamespacedId? = null,
     ) {
         val projectId: ProjectId get() = config.projectId
 
         /**
-         * True when the core id [issueId] of an `attempt_started` event is this issue: its namespaced id
+         * True when the core id [issueId] of an `attempt_started` event is this issue. Since m4-47 the core reads it
+         * with [issue], a bare id being the primary tracker's. With a snapshot written before m4-47: its namespaced id
          * `<LOOP_TRACKER_ID>:<LOOP_ISSUE_ID>` (m4-12), or the bare id an attempt started before m4-12 carries.
          */
-        fun owns(issueId: String): Boolean = issueId == this.issueId || (trackerId != null && issueId == "$trackerId:${this.issueId}")
+        fun owns(issueId: String): Boolean {
+            val ids = config.ids
+            if (ids != null && issue != null) return ids.isIssue(issueId, issue)
+            return issueId == this.issueId || (trackerId != null && issueId == "$trackerId:${this.issueId}")
+        }
 
         /** The attempt directory, the folder of the snapshot, which holds the request queue. */
         val attemptDir: Path get() = configPath.parent
@@ -88,7 +99,10 @@ internal class AttemptTool(
                         )
                 }
             }
-        return Env(AttemptId(attemptId), issueId, host.env(ENV_ISSUE_IDENTIFIER) ?: issueId, configPath, config, host.env(ENV_TRACKER_ID))
+        val trackerId = host.env(ENV_TRACKER_ID)
+        // m4-47: no LOOP_TRACKER_ID means the primary tracker, and a tracker the project does not have is refused.
+        val issue = config.ids?.ofAgent(trackerId, issueId)?.getOrElse { refuse("${it.message}. $NOTHING_QUEUED", EXIT_NOT_LIVE) }
+        return Env(AttemptId(attemptId), issueId, host.env(ENV_ISSUE_IDENTIFIER) ?: issueId, configPath, config, trackerId, issue)
     }
 
     fun openStore(env: Env): SqliteEventStore {

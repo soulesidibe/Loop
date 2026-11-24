@@ -80,7 +80,9 @@ class NamespacedIdRunTest {
             assertEquals("local:t-1", line.getValue("issue_id").jsonPrimitive.content, "$line")
             assertEquals("t-1", line.getValue("issue_identifier").jsonPrimitive.content, "$line")
         }
-        assertTrue(result.stderr.lines().any { "issue_id=local:t-1" in it && "issue_identifier=t-1" in it }, result.toString())
+        // m4-47: a project with no `trackers:` shows bare ids in its logs, the store keeps the namespaced id.
+        assertTrue(result.stderr.lines().any { "issue_id=t-1 " in it && "issue_identifier=t-1" in it }, result.toString())
+        assertTrue(result.stderr.lines().none { "local:t-1" in it }, result.toString())
         // The primary tracker's issue keeps the workspace key of its identifier.
         assertTrue(fixture.workspace("t-1").resolve("hello.txt").exists())
         val env = agentEnv.readLines().associate { it.substringBefore("=") to it.substringAfter("=") }
@@ -88,6 +90,26 @@ class NamespacedIdRunTest {
         assertEquals("t-1", env["LOOP_ISSUE_IDENTIFIER"])
         assertEquals("local", env["LOOP_TRACKER_ID"])
         assertEquals("t-1", env["LOOP_WORKSPACE_KEY"])
+    }
+
+    @Test
+    fun `m4-47 a project with trackers shows the namespaced id in its logs and its human log, the primary's included`() {
+        fixture.projectDir.resolve("other").createDirectories()
+        fixture.workflow.writeText(
+            fixture.workflow
+                .readText()
+                .replace("polling:\n", "trackers:\n  - id: other\n    kind: files\n    provider:\n      dir: ./other\npolling:\n"),
+        )
+        fixture.issue("t-1")
+
+        val result = fixture.loop("run", "--once")
+
+        assertEquals(0, result.exitCode, result.toString())
+        assertEquals("review", fixture.stateOf("t-1"))
+        assertTrue(result.stderr.lines().any { "issue_id=local:t-1 " in it && "issue_identifier=t-1" in it }, result.toString())
+        assertTrue(result.stderr.lines().none { "issue_id=t-1 " in it }, result.toString())
+        val human = fixture.humanLog.readLines().filter { it.isNotBlank() }
+        assertTrue(human.any { it.contains("  local:t-1  ") }, human.joinToString("\n"))
     }
 
     @Test

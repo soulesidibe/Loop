@@ -313,7 +313,7 @@ class RunCommandTest {
         }
         assertTrue(
             lines.any {
-                "issue_id=default:t-1" in it && "issue_identifier=t-1" in it && "session_id=$sessionId" in it
+                "issue_id=t-1 " in it && "issue_identifier=t-1" in it && "session_id=$sessionId" in it
             },
             "no line with issue_id, issue_identifier and session_id\n${result.stderr}",
         )

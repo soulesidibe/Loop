@@ -10,6 +10,7 @@ import kotlinx.coroutines.runBlocking
 import loop.api.RunId
 import loop.core.machine.MachineConfig
 import loop.core.machine.MachineLimits
+import loop.core.trackers.IssueIdDisplay
 import loop.core.waiting.Waits
 import loop.store.SqliteEventStore
 import java.io.IOException
@@ -107,7 +108,7 @@ class StatusCommand(
             val line = listOf("run", details, "$next, loop stop stops it at once").filter { it.isNotEmpty() }.joinToString("  ")
             echo("${DRAINING.padEnd(STATE_WIDTH)}$line")
         }
-        val rows = rows(snapshot)
+        val rows = rows(snapshot, project.ids)
         if (rows.isEmpty()) {
             if (snapshot.hold == null && snapshot.queuePause == null && snapshot.drain == null) {
                 echo("Nothing running, retrying, waiting or parked.")
@@ -173,12 +174,16 @@ class StatusCommand(
         val notes: List<String> = emptyList(),
     )
 
-    private fun rows(snapshot: RuntimeSnapshot): List<Line> =
+    /** The lines of [snapshot], each issue shown by [ids] (m4-47): bare with no `trackers:`, namespaced with it. */
+    private fun rows(
+        snapshot: RuntimeSnapshot,
+        ids: IssueIdDisplay,
+    ): List<Line> =
         snapshot.running.map { row ->
             val occupancy = row.occupancy
             Line(
                 RUNNING,
-                row.identifier,
+                ids.name(row.issueId, row.identifier),
                 attempt(row.attempt),
                 details(
                     "started" to clock(row.startedAt.toString()),
@@ -203,7 +208,7 @@ class StatusCommand(
             snapshot.retrying.map { row ->
                 Line(
                     RETRYING,
-                    row.identifier,
+                    ids.name(row.issueId, row.identifier),
                     attempt(row.attempt),
                     details("kind" to row.kind, "retry" to row.retry, "due" to row.dueAt?.let(::clock), "error" to row.error),
                 )
@@ -211,7 +216,7 @@ class StatusCommand(
             snapshot.waiting.map { row ->
                 Line(
                     WAITING,
-                    row.identifier,
+                    ids.name(row.issueId, row.identifier),
                     attempt(row.attempt),
                     details("reason" to row.reason, "since" to seconds(row.since), "queue" to row.queue?.toString()),
                 )
@@ -219,7 +224,7 @@ class StatusCommand(
             snapshot.parked.map { row ->
                 Line(
                     PARKED,
-                    row.identifier,
+                    ids.name(row.issueId, row.identifier),
                     attempt(row.attempt),
                     details("reason" to row.reason, "state" to row.state, "since" to seconds(row.parkedAt)),
                 )

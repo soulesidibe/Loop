@@ -49,11 +49,14 @@ class ResumeCommand(
             fail("refused inside a Loop attempt, only an operator resumes a parked issue. Nothing changed", EXIT_IN_ATTEMPT)
         }
         val project = host.openProject(workflowPath, Access.WRITE, scope)
+        val ids = project.ids
+        // m4-47: a bare id is the primary tracker's, a namespaced one names a tracker of the project.
+        val typed = ids.typed(issue).getOrElse { fail("${it.message}. Nothing changed", EXIT_ISSUE) }
         val workflow = project.workflow
         val tracker = project.tracker()
         val lookup =
             try {
-                runBlocking { tracker.fetchIssuesByIds(listOf(issue)) }
+                runBlocking { tracker.fetchIssuesByIds(listOf(typed.value)) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -81,10 +84,10 @@ class ResumeCommand(
                 if (found != null) {
                     parked.firstOrNull { it.issueId == found.id }
                 } else {
-                    parked.firstOrNull { it.identifier == issue }
+                    parked.firstOrNull { ids.matches(typed, it.issueId, it.identifier) }
                         ?: fail("no issue \"$issue\" in ${trackerLocation(workflow)}", EXIT_ISSUE)
                 }
-            val identifier = found?.identifier ?: issue
+            val identifier = found?.let { ids.name(it.id, it.identifier) } ?: issue
             if (record == null) fail("$identifier is not parked. Nothing changed", EXIT_NOT_PARKED)
             // m2-09: read before anything changes, so a store that cannot say why the issue parked changes nothing.
             val changedPark = parkedForChangedCommands(store, record, storeFile)
@@ -115,13 +118,14 @@ class ResumeCommand(
                 echo(redact("loop resume: the resume was not recorded in the store at $storeFile: ${error.sentence()}."), err = true)
             }
             val since = removed.parkedAt.toString().take(SECONDS_PREFIX) + "Z"
+            val shown = ids.name(removed.issueId, removed.identifier)
             echo(
-                "Resumed ${removed.identifier}, parked since $since (${removed.reason.wire}). " +
+                "Resumed $shown, parked since $since (${removed.reason.wire}). " +
                     "It can be dispatched again on the next tick.",
             )
             // m2-09: after the unpark, so a failure here only parks the issue again on its next verification.
             // A park written in between by another process is not the one read above: nothing is accepted.
-            if (changedPark && removed.parkedAt == record.parkedAt) acceptChangedCommands(store, removed, found, storeFile)
+            if (changedPark && removed.parkedAt == record.parkedAt) acceptChangedCommands(store, removed, shown, found, storeFile)
         }
     }
 
@@ -146,17 +150,19 @@ class ResumeCommand(
     /**
      * Accepts the changed acceptance command list of [removed] as its frozen list (m2-09), only when [found], the
      * issue as read now, holds that very list, and prints the commands accepted, redacted. Otherwise nothing is
-     * accepted: the next verification compares the criteria with the frozen list again.
+     * accepted: the next verification compares the criteria with the frozen list again. [shown] names the issue in the
+     * lines printed (m4-47).
      */
     private fun acceptChangedCommands(
         store: SqliteEventStore,
         removed: ParkedIssue,
+        shown: String,
         found: Issue?,
         storeFile: Path,
     ) {
         if (found == null) {
             echo(
-                "Cannot read the acceptance criteria of ${removed.identifier} in the tracker, nothing accepted. " +
+                "Cannot read the acceptance criteria of $shown in the tracker, nothing accepted. " +
                     "Its next verification compares them with the frozen list again.",
             )
             return
@@ -169,7 +175,7 @@ class ResumeCommand(
                 }
         if (accepted == null) {
             echo(
-                "The acceptance criteria of ${removed.identifier} no longer hold the changed list Loop found, nothing accepted. " +
+                "The acceptance criteria of $shown no longer hold the changed list Loop found, nothing accepted. " +
                     "Its next verification compares them with the frozen list again.",
             )
             return
@@ -190,9 +196,9 @@ class ResumeCommand(
         }
         val listed =
             if (commands.isEmpty()) {
-                "Accepted the changed acceptance commands of ${removed.identifier}: its acceptance criteria hold no command now."
+                "Accepted the changed acceptance commands of $shown: its acceptance criteria hold no command now."
             } else {
-                "Accepted the changed acceptance commands of ${removed.identifier}, checked from its next verification:\n" +
+                "Accepted the changed acceptance commands of $shown, checked from its next verification:\n" +
                     commands.withIndex().joinToString("\n") { (index, command) -> "  ${index + 1}. $command" }
             }
         echo(redact(listed))

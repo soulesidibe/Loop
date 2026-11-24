@@ -37,11 +37,14 @@ class ApproveCommand(
             fail("refused inside a Loop attempt, only an operator approves a delivery. Nothing changed", EXIT_IN_ATTEMPT)
         }
         val project = host.openProject(workflowPath, Access.WRITE, scope)
+        val ids = project.ids
+        // m4-47: a bare id is the primary tracker's, a namespaced one names a tracker of the project.
+        val typed = ids.typed(issue).getOrElse { fail("${it.message}. Nothing changed", EXIT_ISSUE) }
         val tracker = project.tracker()
         val trackerDir = project.workflow.trackerDir
         val lookup =
             try {
-                runBlocking { tracker.fetchIssuesByIds(listOf(issue)) }
+                runBlocking { tracker.fetchIssuesByIds(listOf(typed.value)) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -70,10 +73,10 @@ class ApproveCommand(
                 if (found != null) {
                     records.firstOrNull { it.issueId == found.id }
                 } else {
-                    records.firstOrNull { it.identifier == issue }
+                    records.firstOrNull { ids.matches(typed, it.issueId, it.identifier) }
                         ?: fail("no issue \"$issue\" in the tracker at $trackerDir", EXIT_ISSUE)
                 }
-            val identifier = found?.identifier ?: issue
+            val identifier = found?.let { ids.name(it.id, it.identifier) } ?: issue
             val waiting = record ?: fail("$identifier is not waiting for approval. Nothing changed", EXIT_NOT_WAITING)
             val current = checkApproval(identifier, waiting)
             if (current.approved) {
@@ -115,7 +118,9 @@ class ApproveCommand(
                 echo(redact("loop approve: the approval was not recorded in the store at $storeFile: ${error.sentence()}."), err = true)
             }
             val since = approved.since.toString().take(SECONDS_PREFIX) + "Z"
-            echo("Approved ${approved.identifier}, waiting since $since. Loop moves it to $to on its next tick.")
+            echo(
+                "Approved ${ids.name(approved.issueId, approved.identifier)}, waiting since $since. Loop moves it to $to on its next tick.",
+            )
         }
     }
 
