@@ -3,7 +3,7 @@ id: m4-14
 title: "Tool writes routed to the issue's own tracker, with native_ref"
 state: todo
 priority: 1
-labels: [deferred]
+labels: [ready-for-agent]
 blocked_by: [m4-48]
 ---
 

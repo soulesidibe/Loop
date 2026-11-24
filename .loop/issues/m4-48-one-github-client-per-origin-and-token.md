@@ -3,7 +3,7 @@ id: m4-48
 title: "One GitHub client per origin and token, with one rate limit hold per run"
 state: todo
 priority: 1
-labels: [deferred]
+labels: [ready-for-agent]
 blocked_by: [m4-13]
 ---
 

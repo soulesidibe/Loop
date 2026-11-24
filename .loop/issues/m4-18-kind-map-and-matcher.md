@@ -3,7 +3,7 @@ id: m4-18
 title: "Kind map and matcher, code unchanged, ledger rows hold the kind"
 state: todo
 priority: 1
-labels: [deferred]
+labels: [ready-for-agent]
 blocked_by: [m4-17]
 ---
 

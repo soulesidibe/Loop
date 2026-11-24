@@ -3,7 +3,7 @@ id: m4-36
 title: "The changes_requested reaction with escalate_after"
 state: todo
 priority: 1
-labels: [deferred]
+labels: [ready-for-agent]
 blocked_by: [m4-35]
 ---
 

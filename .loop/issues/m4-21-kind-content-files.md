@@ -3,7 +3,7 @@ id: m4-21
 title: "Kind content: files deliverable, command checks on a worktree"
 state: todo
 priority: 1
-labels: [deferred]
+labels: [ready-for-agent]
 blocked_by: [m4-20]
 ---
 

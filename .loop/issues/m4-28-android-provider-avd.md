@@ -3,7 +3,7 @@ id: m4-28
 title: "Android provider, boots a configured AVD"
 state: todo
 priority: 1
-labels: [deferred]
+labels: [ready-for-agent]
 blocked_by: [m4-01, m4-26]
 ---
 
