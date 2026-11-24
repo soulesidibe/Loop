@@ -116,7 +116,9 @@ class GitHubTrackerTest {
                 // HTML comments never carry it, on one line or several, and a comment after the paths is left out.
                 FakeGitHub.issue(
                     6,
-                    body = "<!--\nArea: spec-core\n-->\n<!-- Area: docs -->\nArea: cli <!-- the runner -->\n<!-- a --><!--\nArea: /etc\n-->",
+                    body =
+                        "<!--\nArea: spec-core\n-->\n<!-- Area: docs -->\nArea: cli <!-- the runner -->\n" +
+                            "<!-- a --><!--\nArea: /etc\n-->",
                 ),
             )
             val tracker = tracker()

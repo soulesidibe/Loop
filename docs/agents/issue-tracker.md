@@ -46,8 +46,9 @@ area: [spec-core/src/main/kotlin/loop/core/trackers, plugin-api/src/main/kotlin/
 - Two areas overlap when an entry equals another or is a parent folder of it, on whole path segments after normalizing: `spec-core` overlaps `spec-core/src`, not `spec-core-x`. `./docs/` is `docs`.
 - A candidate whose area overlaps the area of a claimed issue (running, verifying, or queued for a retry) waits in its place, and the dispatch records `candidate_skipped` with `area_busy <holder> (<entry>)`. It runs on the first tick its area is free.
 - An issue with no `area` never blocks and is never blocked. One path can be written alone, `area: cli`.
-- A malformed value, such as a glob (`spec-core/*`), an absolute path or a `..` segment, makes the issue malformed: Loop skips it and logs it.
-- On GitHub, write a column 0 line in the body, `Area: spec-core, docs`. A malformed line is ignored with a warning and the issue runs with no area.
+- Paths compare case folded and in Unicode NFC, so `Docs` overlaps `docs`. An entry holds no space, and an area holds at most 64 entries.
+- A malformed value, such as a glob (`spec-core/*`), an absolute path, a `..` segment or a space inside an entry, makes the issue malformed: Loop skips it and logs it.
+- On GitHub, write a column 0 line in the body with paths only, `Area: spec-core, docs`. A prose `Area:` line, such as ``Area: the `Issue` model``, is malformed. A malformed line is ignored with a warning, every `Area:` line of the body with it, and the issue runs with no area. Lines in code fences and HTML comments do not count.
 
 ## Runnable criteria
 

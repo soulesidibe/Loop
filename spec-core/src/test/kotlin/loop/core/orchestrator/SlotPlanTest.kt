@@ -349,7 +349,13 @@ class SlotPlanTest {
         }
 
         val slots =
-            SlotPlan.attempts(agent, SlotUse(emptyList(), mergeChecks = 0), emptyList(), listOf(noSlot, first, overlapping, freeArea), held = held)
+            SlotPlan.attempts(
+                agent,
+                SlotUse(emptyList(), mergeChecks = 0),
+                emptyList(),
+                listOf(noSlot, first, overlapping, freeArea),
+                held = held,
+            )
 
         // t-1 has no slot and holds nothing, so t-4 launches; t-3 is held by t-2 and leaves its slot to t-4.
         assertEquals(Triple(listOf("t-2", "t-4"), emptyList(), listOf("t-1")), slots.ids())
