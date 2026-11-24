@@ -1,7 +1,7 @@
 ---
 id: m4-47
 title: "Commands take bare or namespaced ids, and a single tracker project shows bare ids"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-12]
@@ -40,3 +40,15 @@ Out of this issue: the type and the store (m4-12), polling several trackers (m4-
 ## Comments
 
 2026-11-18 soule: written in m3-29, split from m4-12 after the Fable 5.2 review.
+
+2026-11-24 17:24Z loop: Loop opened pull request #41 for this issue: https://github.com/soulesidibe/Loop/pull/41
+
+2026-11-24 17:28Z loop: Loop did not merge pull request #41 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.27.
+  - alignment: aligned, Changes cover bare/namespaced parsing, refusal of unknown trackers, display rule and docs as the issue asks; the Orchestrator is untouched and the edits are call sites into loop.core.trackers.
+  - impact: medium, It changes how ids are read and shown in six commands, the logs and the tool snapshot format, but it adds no schema change or write path.
+  - verification: strong, New CLI tests cover bare and namespaced ids, an unknown tracker, with and without trackers display, and the agent tools. The spec-core display test and updated log tests are included. Two paths are not covered: show and status with extra tracker issues are only lightly exercised, and old snapshots a
+  - rollback_cost: two_way, The store still holds namespaced ids as before and the tool-config snapshot keys are optional, so a revert leaves no incompatible state.
+  - error_detection: loud, An unknown tracker is refused with a named message and exit code 2, and the tool refusals are loud too. Falling back to the old matching when the snapshot has no tracker ids is quiet but deliberate.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 7 of 23 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
