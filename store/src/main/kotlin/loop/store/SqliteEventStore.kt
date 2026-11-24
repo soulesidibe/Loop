@@ -69,6 +69,7 @@ import kotlin.time.Instant
 class SqliteEventStore private constructor(
     private val connection: Connection,
     private val redactor: Redactor,
+    private val ids: IssueIdForms,
 ) : EventSink,
     ParkedIssues,
     Claims,
@@ -111,9 +112,9 @@ class SqliteEventStore private constructor(
                 synchronized(connection) {
                     connection.prepareStatement(SELECT_BY_ISSUE).use { st ->
                         st.setString(1, projectId.value)
-                        st.setString(2, issueId)
+                        st.setIssue(2, issueId)
                         st.executeQuery().use { rs ->
-                            buildList { while (rs.next()) add(rs.toStoredEvent()) }
+                            buildList { while (rs.next()) add(rs.toStoredEvent(ids)) }
                         }
                     }
                 }
@@ -135,7 +136,7 @@ class SqliteEventStore private constructor(
                         st.setString(1, projectId.value)
                         st.setString(2, runId.value)
                         st.executeQuery().use { rs ->
-                            buildList { while (rs.next()) add(rs.toStoredEvent()) }
+                            buildList { while (rs.next()) add(rs.toStoredEvent(ids)) }
                         }
                     }
                 }
@@ -160,7 +161,7 @@ class SqliteEventStore private constructor(
                         st.setString(1, projectId.value)
                         ordered.forEachIndexed { index, kind -> st.setString(index + 2, kind) }
                         st.executeQuery().use { rs ->
-                            buildList { while (rs.next()) add(rs.toStoredEvent()) }
+                            buildList { while (rs.next()) add(rs.toStoredEvent(ids)) }
                         }
                     }
                 }
@@ -176,7 +177,7 @@ class SqliteEventStore private constructor(
                     connection.prepareStatement(SELECT_BY_ATTEMPT).use { st ->
                         st.setString(1, attemptId.value)
                         st.executeQuery().use { rs ->
-                            buildList { while (rs.next()) add(rs.toStoredEvent()) }
+                            buildList { while (rs.next()) add(rs.toStoredEvent(ids)) }
                         }
                     }
                 }
@@ -207,23 +208,13 @@ class SqliteEventStore private constructor(
         }
 
     override suspend fun park(issue: ParkedIssue): Result<Unit> =
-        withContext(Dispatchers.IO) {
-            sql {
-                synchronized(connection) {
-                    connection.prepareStatement(UPSERT_PARKED).use { st ->
-                        st.setString(1, issue.projectId.value)
-                        st.setString(2, issue.issueId)
-                        st.setString(3, redactor.redact(issue.identifier))
-                        st.setString(4, issue.reason.wire)
-                        st.setString(5, redactor.redact(issue.state))
-                        st.setString(6, encodeLabels(issue.labels.mapTo(mutableSetOf(), redactor::redact)))
-                        st.setString(7, issue.parkedAt.toString())
-                        st.setNullable(8, issue.runId?.value)
-                        st.executeUpdate()
-                    }
-                }
-                Unit
-            }
+        upsert(UPSERT_PARKED, PARKED_TABLE, issue.projectId, issue.issueId) { st ->
+            st.setString(3, redactor.redact(issue.identifier))
+            st.setString(4, issue.reason.wire)
+            st.setString(5, redactor.redact(issue.state))
+            st.setString(6, encodeLabels(issue.labels.mapTo(mutableSetOf(), redactor::redact)))
+            st.setString(7, issue.parkedAt.toString())
+            st.setNullable(8, issue.runId?.value)
         }
 
     override suspend fun list(projectId: ProjectId): Result<List<ParkedIssue>> =
@@ -233,7 +224,7 @@ class SqliteEventStore private constructor(
                     connection.prepareStatement(SELECT_PARKED).use { st ->
                         st.setString(1, projectId.value)
                         st.executeQuery().use { rs ->
-                            buildList { while (rs.next()) add(rs.toParkedIssue()) }
+                            buildList { while (rs.next()) add(rs.toParkedIssue(ids)) }
                         }
                     }
                 }
@@ -252,13 +243,13 @@ class SqliteEventStore private constructor(
             val found =
                 connection.prepareStatement(SELECT_PARKED_ONE).use { st ->
                     st.setString(1, projectId.value)
-                    st.setString(2, issueId)
-                    st.executeQuery().use { rs -> if (rs.next()) rs.toParkedIssue() else null }
+                    st.setIssue(2, issueId)
+                    st.executeQuery().use { rs -> if (rs.next()) rs.toParkedIssue(ids) else null }
                 }
             if (found != null) {
                 connection.prepareStatement(DELETE_PARKED).use { st ->
                     st.setString(1, projectId.value)
-                    st.setString(2, issueId)
+                    st.setIssue(2, issueId)
                     st.executeUpdate()
                 }
             }
@@ -266,9 +257,7 @@ class SqliteEventStore private constructor(
         }
 
     override suspend fun claim(claim: Claim): Result<Unit> =
-        update(UPSERT_CLAIM) { st ->
-            st.setString(1, claim.projectId.value)
-            st.setString(2, claim.issueId)
+        upsert(UPSERT_CLAIM, CLAIMS_TABLE, claim.projectId, claim.issueId) { st ->
             st.setString(3, redactor.redact(claim.identifier))
             st.setString(4, claim.attemptId.value)
             st.setNullable(5, claim.runId?.value)
@@ -277,7 +266,7 @@ class SqliteEventStore private constructor(
             st.setNullable(8, claim.runtimeSessionId?.let(redactor::redact))
         }
 
-    override suspend fun claims(projectId: ProjectId): Result<List<Claim>> = select(SELECT_CLAIMS, projectId) { it.toClaim() }
+    override suspend fun claims(projectId: ProjectId): Result<List<Claim>> = select(SELECT_CLAIMS, projectId) { it.toClaim(ids) }
 
     override suspend fun release(
         projectId: ProjectId,
@@ -285,13 +274,11 @@ class SqliteEventStore private constructor(
     ): Result<Unit> =
         update(DELETE_CLAIM) { st ->
             st.setString(1, projectId.value)
-            st.setString(2, issueId)
+            st.setIssue(2, issueId)
         }
 
     override suspend fun saveRetryState(state: RetryState): Result<Unit> =
-        update(UPSERT_RETRY_STATE) { st ->
-            st.setString(1, state.projectId.value)
-            st.setString(2, state.issueId)
+        upsert(UPSERT_RETRY_STATE, RETRY_TABLE, state.projectId, state.issueId) { st ->
             st.setString(3, redactor.redact(state.identifier))
             val retry = state.retry
             if (retry == null) st.setNull(4, Types.INTEGER) else st.setInt(4, retry.attempt)
@@ -307,16 +294,14 @@ class SqliteEventStore private constructor(
     ): Result<Unit> =
         update(DELETE_RETRY_STATE) { st ->
             st.setString(1, projectId.value)
-            st.setString(2, issueId)
+            st.setIssue(2, issueId)
         }
 
     override suspend fun retryStates(projectId: ProjectId): Result<List<RetryState>> =
-        select(SELECT_RETRY_STATES, projectId) { it.toRetryState() }
+        select(SELECT_RETRY_STATES, projectId) { it.toRetryState(ids) }
 
     override suspend fun startWaiting(issue: WaitingIssue): Result<Unit> =
-        update(UPSERT_WAITING) { st ->
-            st.setString(1, issue.projectId.value)
-            st.setString(2, issue.issueId)
+        upsert(UPSERT_WAITING, WAITING_TABLE, issue.projectId, issue.issueId) { st ->
             st.setString(3, redactor.redact(issue.identifier))
             st.setString(4, issue.reason.wire)
             st.setNullable(5, issue.attemptId?.value)
@@ -326,7 +311,7 @@ class SqliteEventStore private constructor(
         }
 
     override suspend fun waitingIssues(projectId: ProjectId): Result<List<WaitingIssue>> =
-        select(SELECT_WAITING, projectId) { it.toWaitingIssue() }
+        select(SELECT_WAITING, projectId) { it.toWaitingIssue(ids) }
 
     override suspend fun endWaiting(
         projectId: ProjectId,
@@ -334,7 +319,7 @@ class SqliteEventStore private constructor(
     ): Result<Unit> =
         update(DELETE_WAITING) { st ->
             st.setString(1, projectId.value)
-            st.setString(2, issueId)
+            st.setIssue(2, issueId)
         }
 
     /**
@@ -351,8 +336,8 @@ class SqliteEventStore private constructor(
             val found =
                 connection.prepareStatement(SELECT_WAITING_ONE).use { st ->
                     st.setString(1, projectId.value)
-                    st.setString(2, issueId)
-                    st.executeQuery().use { rs -> if (rs.next()) rs.toWaitingIssue() else null }
+                    st.setIssue(2, issueId)
+                    st.executeQuery().use { rs -> if (rs.next()) rs.toWaitingIssue(ids) else null }
                 }
             if (found == null || found.reason != WaitReason.Approval || found.approved) {
                 found
@@ -362,7 +347,7 @@ class SqliteEventStore private constructor(
                 connection.prepareStatement(UPDATE_WAITING_DATA).use { st ->
                     st.setNullable(1, encodeData(data))
                     st.setString(2, projectId.value)
-                    st.setString(3, issueId)
+                    st.setIssue(3, issueId)
                     st.executeUpdate()
                 }
                 found.copy(data = data)
@@ -384,7 +369,7 @@ class SqliteEventStore private constructor(
             fun next() = ++index
             st.setString(next(), attempt.attemptId.value)
             st.setString(next(), attempt.projectId.value)
-            st.setString(next(), attempt.issueId)
+            st.setString(next(), ids.read(attempt.issueId))
             st.setString(next(), redactor.redact(attempt.identifier))
             st.setNullable(next(), attempt.runId?.value)
             st.setString(next(), setup.tracker)
@@ -408,9 +393,11 @@ class SqliteEventStore private constructor(
             st.setNullableLong(next(), attempt.guards?.toLong())
             st.setNullable(next(), attempt.verdict)
             // The counted columns: the number, the touches and the last touch counted, each scoped to the issue.
+            // m4-12: both forms of the issue id, so a row written before m4-12 counts too.
             repeat(COUNT_SCOPES) {
                 st.setString(next(), attempt.projectId.value)
-                st.setString(next(), attempt.issueId)
+                st.setIssue(next(), attempt.issueId)
+                next()
             }
         }
 
@@ -423,8 +410,8 @@ class SqliteEventStore private constructor(
                 synchronized(connection) {
                     connection.prepareStatement(SELECT_ATTEMPTS).use { st ->
                         st.setString(1, projectId.value)
-                        st.setString(2, issueId)
-                        st.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toLedgerRow()) } }
+                        st.setIssue(2, issueId)
+                        st.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toLedgerRow(ids)) } }
                     }
                 }
             }
@@ -447,7 +434,7 @@ class SqliteEventStore private constructor(
                         connection.prepareStatement(SELECT_ATTEMPTS_SINCE).use { st ->
                             st.setString(1, projectId.value)
                             st.setString(2, from)
-                            st.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toLedgerRow()) } }
+                            st.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toLedgerRow(ids)) } }
                         }
                     }
                 rows.filter { it.attempt.finishedAt > since }
@@ -459,7 +446,7 @@ class SqliteEventStore private constructor(
             val written =
                 connection.prepareStatement(INSERT_FROZEN).use { st ->
                     st.setString(1, commands.projectId.value)
-                    st.setString(2, commands.issueId)
+                    st.setString(2, storedId(FROZEN_TABLE, commands.projectId, commands.issueId))
                     st.setString(3, redactor.redact(commands.identifier))
                     st.setString(4, commands.digest)
                     st.setInt(5, commands.count)
@@ -479,7 +466,7 @@ class SqliteEventStore private constructor(
             st.setString(1, digest)
             st.setInt(2, count)
             st.setString(3, projectId.value)
-            st.setString(4, issueId)
+            st.setIssue(4, issueId)
         }
 
     override suspend fun clearChanged(
@@ -488,7 +475,7 @@ class SqliteEventStore private constructor(
     ): Result<Unit> =
         update(CLEAR_FROZEN_CHANGED) { st ->
             st.setString(1, projectId.value)
-            st.setString(2, issueId)
+            st.setIssue(2, issueId)
         }
 
     override suspend fun acceptChanged(
@@ -500,8 +487,8 @@ class SqliteEventStore private constructor(
             val accepted =
                 connection.prepareStatement(ACCEPT_FROZEN_CHANGED).use { st ->
                     st.setString(1, projectId.value)
-                    st.setString(2, issueId)
-                    st.setString(3, digest)
+                    st.setIssue(2, issueId)
+                    st.setString(4, digest)
                     st.executeUpdate() == 1
                 }
             if (accepted) selectFrozen(projectId, issueId) else null
@@ -523,8 +510,8 @@ class SqliteEventStore private constructor(
     ): FrozenCommands? =
         connection.prepareStatement(SELECT_FROZEN).use { st ->
             st.setString(1, projectId.value)
-            st.setString(2, issueId)
-            st.executeQuery().use { rs -> if (rs.next()) rs.toFrozenCommands() else null }
+            st.setIssue(2, issueId)
+            st.executeQuery().use { rs -> if (rs.next()) rs.toFrozenCommands(ids) else null }
         }
 
     /**
@@ -580,7 +567,7 @@ class SqliteEventStore private constructor(
                     synchronized(connection) {
                         connection.prepareStatement(SELECT_MACHINE_ATTEMPTS_SINCE).use { st ->
                             st.setString(1, from)
-                            st.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toLedgerRow()) } }
+                            st.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toLedgerRow(ids)) } }
                         }
                     }
                 rows.filter { it.attempt.finishedAt > since }
@@ -618,6 +605,57 @@ class SqliteEventStore private constructor(
             st.executeUpdate()
         }
     }
+
+    /** Binds the two forms of [issueId] (m4-12) at [index] and the next index, for an `issue_id IN (?, ?)`. */
+    private fun PreparedStatement.setIssue(
+        index: Int,
+        issueId: String,
+    ) {
+        val (id, bare) = ids.of(issueId)
+        setString(index, id)
+        setString(index + 1, bare)
+    }
+
+    /**
+     * The id a write of [issueId] in [projectId] keys its row of [table] with (m4-12): the bare id a row written before
+     * m4-12 already holds, so that row is updated and never rewritten, else the id the core carries. Read on the
+     * caller's connection lock, inside its transaction.
+     */
+    private fun storedId(
+        table: String,
+        projectId: ProjectId,
+        issueId: String,
+    ): String {
+        val (id, bare) = ids.of(issueId)
+        if (bare == id) return id
+        val held =
+            connection.prepareStatement("SELECT 1 FROM $table WHERE project_id = ? AND issue_id = ?").use { st ->
+                st.setString(1, projectId.value)
+                st.setString(2, bare)
+                st.executeQuery().use { it.next() }
+            }
+        return if (held) bare else id
+    }
+
+    /**
+     * The upsert [sql] of one issue's row of [table] in one write transaction, its project and issue id bound first by
+     * [storedId] and its other parameters, from the third on, by [bind].
+     */
+    private suspend fun upsert(
+        sql: String,
+        table: String,
+        projectId: ProjectId,
+        issueId: String,
+        bind: (PreparedStatement) -> Unit,
+    ): Result<Unit> =
+        transaction {
+            connection.prepareStatement(sql).use { st ->
+                st.setString(1, projectId.value)
+                st.setString(2, storedId(table, projectId, issueId))
+                bind(st)
+                st.executeUpdate()
+            }
+        }.map { }
 
     /**
      * Runs [block] in one write transaction on the locked connection, committed when it returns and rolled back when
@@ -674,7 +712,7 @@ class SqliteEventStore private constructor(
             "ts, run_id, project_id, issue_id, issue_identifier, attempt_id, session_id, turn_id, kind, phase, data"
         private const val INSERT = "INSERT INTO events ($COLUMNS) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         private const val SELECT_BY_ISSUE =
-            "SELECT seq, $COLUMNS FROM events WHERE project_id = ? AND issue_id = ? ORDER BY seq"
+            "SELECT seq, $COLUMNS FROM events WHERE project_id = ? AND issue_id IN (?, ?) ORDER BY seq"
         private const val SELECT_BY_RUN =
             "SELECT seq, $COLUMNS FROM events WHERE project_id = ? AND run_id = ? ORDER BY seq"
         private const val SELECT_BY_PROJECT = "SELECT seq, $COLUMNS FROM events WHERE project_id = ?"
@@ -682,6 +720,12 @@ class SqliteEventStore private constructor(
         private const val SELECT_ATTEMPT_IDS_BY_PREFIX =
             "SELECT DISTINCT attempt_id FROM events WHERE project_id = ? AND attempt_id IS NOT NULL " +
                 "AND substr(attempt_id, 1, ?) = ? ORDER BY attempt_id"
+
+        private const val PARKED_TABLE = "parked_issues"
+        private const val CLAIMS_TABLE = "claims"
+        private const val RETRY_TABLE = "retry_states"
+        private const val WAITING_TABLE = "waiting_issues"
+        private const val FROZEN_TABLE = "acceptance_commands"
 
         private const val PARKED_COLUMNS = "project_id, issue_id, identifier, reason, state, labels, parked_at, run_id"
         private const val UPSERT_PARKED =
@@ -692,8 +736,8 @@ class SqliteEventStore private constructor(
         private const val SELECT_PARKED =
             "SELECT $PARKED_COLUMNS FROM parked_issues WHERE project_id = ? ORDER BY parked_at, issue_id"
         private const val SELECT_PARKED_ONE =
-            "SELECT $PARKED_COLUMNS FROM parked_issues WHERE project_id = ? AND issue_id = ?"
-        private const val DELETE_PARKED = "DELETE FROM parked_issues WHERE project_id = ? AND issue_id = ?"
+            "SELECT $PARKED_COLUMNS FROM parked_issues WHERE project_id = ? AND issue_id IN (?, ?)"
+        private const val DELETE_PARKED = "DELETE FROM parked_issues WHERE project_id = ? AND issue_id IN (?, ?)"
 
         private const val CLAIM_COLUMNS =
             "project_id, issue_id, identifier, attempt_id, run_id, claimed_at, session_id, runtime_session_id"
@@ -703,7 +747,7 @@ class SqliteEventStore private constructor(
                 "attempt_id = excluded.attempt_id, run_id = excluded.run_id, claimed_at = excluded.claimed_at, " +
                 "session_id = excluded.session_id, runtime_session_id = excluded.runtime_session_id"
         private const val SELECT_CLAIMS = "SELECT $CLAIM_COLUMNS FROM claims WHERE project_id = ? ORDER BY claimed_at, issue_id"
-        private const val DELETE_CLAIM = "DELETE FROM claims WHERE project_id = ? AND issue_id = ?"
+        private const val DELETE_CLAIM = "DELETE FROM claims WHERE project_id = ? AND issue_id IN (?, ?)"
 
         private const val RETRY_COLUMNS = "project_id, issue_id, identifier, attempt, due_at, error, failures, no_progress"
         private const val UPSERT_RETRY_STATE =
@@ -712,7 +756,7 @@ class SqliteEventStore private constructor(
                 "attempt = excluded.attempt, due_at = excluded.due_at, error = excluded.error, " +
                 "failures = excluded.failures, no_progress = excluded.no_progress"
         private const val SELECT_RETRY_STATES = "SELECT $RETRY_COLUMNS FROM retry_states WHERE project_id = ? ORDER BY issue_id"
-        private const val DELETE_RETRY_STATE = "DELETE FROM retry_states WHERE project_id = ? AND issue_id = ?"
+        private const val DELETE_RETRY_STATE = "DELETE FROM retry_states WHERE project_id = ? AND issue_id IN (?, ?)"
 
         private const val WAITING_COLUMNS = "project_id, issue_id, identifier, reason, attempt_id, run_id, since, data"
         private const val UPSERT_WAITING =
@@ -722,9 +766,9 @@ class SqliteEventStore private constructor(
                 "since = excluded.since, data = excluded.data"
         private const val SELECT_WAITING =
             "SELECT $WAITING_COLUMNS FROM waiting_issues WHERE project_id = ? ORDER BY since, issue_id"
-        private const val DELETE_WAITING = "DELETE FROM waiting_issues WHERE project_id = ? AND issue_id = ?"
-        private const val SELECT_WAITING_ONE = "SELECT $WAITING_COLUMNS FROM waiting_issues WHERE project_id = ? AND issue_id = ?"
-        private const val UPDATE_WAITING_DATA = "UPDATE waiting_issues SET data = ? WHERE project_id = ? AND issue_id = ?"
+        private const val DELETE_WAITING = "DELETE FROM waiting_issues WHERE project_id = ? AND issue_id IN (?, ?)"
+        private const val SELECT_WAITING_ONE = "SELECT $WAITING_COLUMNS FROM waiting_issues WHERE project_id = ? AND issue_id IN (?, ?)"
+        private const val UPDATE_WAITING_DATA = "UPDATE waiting_issues SET data = ? WHERE project_id = ? AND issue_id IN (?, ?)"
 
         private const val ATTEMPT_COLUMNS =
             "attempt_id, project_id, issue_id, identifier, run_id, tracker, kind, runner, model, template_version, " +
@@ -735,19 +779,19 @@ class SqliteEventStore private constructor(
         /** How many times [INSERT_ATTEMPT] binds the project and issue id pair after the row's own values. */
         private const val COUNT_SCOPES = 4
         private const val ISSUE_TOUCHES =
-            "FROM events WHERE project_id = ? AND issue_id = ? AND kind = '${HumanTouch.EVENT}'"
+            "FROM events WHERE project_id = ? AND issue_id IN (?, ?) AND kind = '${HumanTouch.EVENT}'"
         private const val INSERT_ATTEMPT =
             "INSERT INTO attempts ($ATTEMPT_COLUMNS, attempt_number, human_touches, touch_seq) " +
                 "SELECT $ATTEMPT_VALUES, " +
-                "(SELECT COUNT(*) FROM attempts WHERE project_id = ? AND issue_id = ?) + 1, " +
+                "(SELECT COUNT(*) FROM attempts WHERE project_id = ? AND issue_id IN (?, ?)) + 1, " +
                 "(SELECT COUNT(*) $ISSUE_TOUCHES AND seq > " +
-                "(SELECT COALESCE(MAX(touch_seq), 0) FROM attempts WHERE project_id = ? AND issue_id = ?)), " +
+                "(SELECT COALESCE(MAX(touch_seq), 0) FROM attempts WHERE project_id = ? AND issue_id IN (?, ?))), " +
                 "(SELECT COALESCE(MAX(seq), 0) $ISSUE_TOUCHES) " +
                 // The WHERE lets SQLite parse the upsert clause after a SELECT.
                 "WHERE true ON CONFLICT (attempt_id) DO NOTHING"
         private const val SELECT_ATTEMPTS =
             "SELECT $ATTEMPT_COLUMNS, attempt_number, human_touches FROM attempts " +
-                "WHERE project_id = ? AND issue_id = ? ORDER BY seq"
+                "WHERE project_id = ? AND issue_id IN (?, ?) ORDER BY seq"
         private const val SELECT_ATTEMPTS_SINCE =
             "SELECT $ATTEMPT_COLUMNS, attempt_number, human_touches FROM attempts " +
                 "WHERE project_id = ? AND finished_at >= ? ORDER BY seq"
@@ -761,14 +805,14 @@ class SqliteEventStore private constructor(
         private const val INSERT_FROZEN =
             "INSERT INTO acceptance_commands (project_id, issue_id, identifier, digest, count, frozen_at) " +
                 "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (project_id, issue_id) DO NOTHING"
-        private const val SELECT_FROZEN = "SELECT $FROZEN_COLUMNS FROM acceptance_commands WHERE project_id = ? AND issue_id = ?"
+        private const val SELECT_FROZEN = "SELECT $FROZEN_COLUMNS FROM acceptance_commands WHERE project_id = ? AND issue_id IN (?, ?)"
         private const val MARK_FROZEN_CHANGED =
-            "UPDATE acceptance_commands SET changed_digest = ?, changed_count = ? WHERE project_id = ? AND issue_id = ?"
+            "UPDATE acceptance_commands SET changed_digest = ?, changed_count = ? WHERE project_id = ? AND issue_id IN (?, ?)"
         private const val CLEAR_FROZEN_CHANGED =
-            "UPDATE acceptance_commands SET changed_digest = NULL, changed_count = NULL WHERE project_id = ? AND issue_id = ?"
+            "UPDATE acceptance_commands SET changed_digest = NULL, changed_count = NULL WHERE project_id = ? AND issue_id IN (?, ?)"
         private const val ACCEPT_FROZEN_CHANGED =
             "UPDATE acceptance_commands SET digest = changed_digest, count = changed_count, " +
-                "changed_digest = NULL, changed_count = NULL WHERE project_id = ? AND issue_id = ? AND changed_digest = ?"
+                "changed_digest = NULL, changed_count = NULL WHERE project_id = ? AND issue_id IN (?, ?) AND changed_digest = ?"
 
         private val SCHEMA =
             listOf(
@@ -922,6 +966,7 @@ class SqliteEventStore private constructor(
             loopHome: Path,
             projectRoot: Path,
             redactor: Redactor,
+            ids: IssueIdForms = IssueIdForms.AS_STORED,
         ): Result<SqliteEventStore> {
             val home = canonical(loopHome)
             if (home.startsWith(canonical(projectRoot))) {
@@ -933,7 +978,7 @@ class SqliteEventStore private constructor(
                 try {
                     configure(connection)
                     migrate(connection)
-                    Result.success(SqliteEventStore(connection, redactor))
+                    Result.success(SqliteEventStore(connection, redactor, ids))
                 } catch (e: Exception) {
                     connection.close()
                     throw e
@@ -1065,7 +1110,7 @@ class SqliteEventStore private constructor(
         /** The column [name] as a Long, null when SQL NULL. */
         private fun ResultSet.longOrNull(name: String): Long? = getLong(name).takeUnless { wasNull() }
 
-        private fun ResultSet.toLedgerRow(): LedgerRow {
+        private fun ResultSet.toLedgerRow(ids: IssueIdForms): LedgerRow {
             val input = longOrNull("input_tokens")
             val tokens =
                 input?.let {
@@ -1081,7 +1126,7 @@ class SqliteEventStore private constructor(
                 LedgerAttempt(
                     projectId = ProjectId(getString("project_id")),
                     runId = getString("run_id")?.let(::RunId),
-                    issueId = getString("issue_id"),
+                    issueId = ids.read(getString("issue_id")),
                     identifier = getString("identifier"),
                     attemptId = AttemptId(getString("attempt_id")),
                     setup =
@@ -1127,10 +1172,10 @@ class SqliteEventStore private constructor(
                 .map { it.jsonPrimitive.content }
                 .toSet()
 
-        private fun ResultSet.toParkedIssue(): ParkedIssue =
+        private fun ResultSet.toParkedIssue(ids: IssueIdForms): ParkedIssue =
             ParkedIssue(
                 projectId = ProjectId(getString("project_id")),
-                issueId = getString("issue_id"),
+                issueId = ids.read(getString("issue_id")),
                 identifier = getString("identifier"),
                 reason = ParkReason(getString("reason")),
                 state = getString("state"),
@@ -1139,10 +1184,10 @@ class SqliteEventStore private constructor(
                 runId = getString("run_id")?.let(::RunId),
             )
 
-        private fun ResultSet.toClaim(): Claim =
+        private fun ResultSet.toClaim(ids: IssueIdForms): Claim =
             Claim(
                 projectId = ProjectId(getString("project_id")),
-                issueId = getString("issue_id"),
+                issueId = ids.read(getString("issue_id")),
                 identifier = getString("identifier"),
                 attemptId = AttemptId(getString("attempt_id")),
                 runId = getString("run_id")?.let(::RunId),
@@ -1151,13 +1196,13 @@ class SqliteEventStore private constructor(
                 runtimeSessionId = getString("runtime_session_id"),
             )
 
-        private fun ResultSet.toRetryState(): RetryState {
+        private fun ResultSet.toRetryState(ids: IssueIdForms): RetryState {
             val dueAt = getString("due_at")
             val attempt = getInt("attempt")
             val retry = dueAt?.let { QueuedRetry(attempt, Instant.parse(it), getString("error")) }
             return RetryState(
                 projectId = ProjectId(getString("project_id")),
-                issueId = getString("issue_id"),
+                issueId = ids.read(getString("issue_id")),
                 identifier = getString("identifier"),
                 retry = retry,
                 failures = getInt("failures"),
@@ -1165,10 +1210,10 @@ class SqliteEventStore private constructor(
             )
         }
 
-        private fun ResultSet.toWaitingIssue(): WaitingIssue =
+        private fun ResultSet.toWaitingIssue(ids: IssueIdForms): WaitingIssue =
             WaitingIssue(
                 projectId = ProjectId(getString("project_id")),
-                issueId = getString("issue_id"),
+                issueId = ids.read(getString("issue_id")),
                 identifier = getString("identifier"),
                 reason = WaitReason(getString("reason")),
                 attemptId = getString("attempt_id")?.let(::AttemptId),
@@ -1177,12 +1222,12 @@ class SqliteEventStore private constructor(
                 data = decodeData(getString("data")),
             )
 
-        private fun ResultSet.toFrozenCommands(): FrozenCommands {
+        private fun ResultSet.toFrozenCommands(ids: IssueIdForms): FrozenCommands {
             val changedDigest = getString("changed_digest")
             val changedCount = getInt("changed_count")
             return FrozenCommands(
                 projectId = ProjectId(getString("project_id")),
-                issueId = getString("issue_id"),
+                issueId = ids.read(getString("issue_id")),
                 identifier = getString("identifier"),
                 digest = getString("digest"),
                 count = getInt("count"),
@@ -1192,7 +1237,7 @@ class SqliteEventStore private constructor(
             )
         }
 
-        private fun ResultSet.toStoredEvent(): StoredEvent =
+        private fun ResultSet.toStoredEvent(ids: IssueIdForms): StoredEvent =
             StoredEvent(
                 seq = getLong("seq"),
                 event =
@@ -1201,7 +1246,7 @@ class SqliteEventStore private constructor(
                         projectId = ProjectId(getString("project_id")),
                         kind = getString("kind"),
                         runId = getString("run_id")?.let(::RunId),
-                        issueId = getString("issue_id"),
+                        issueId = getString("issue_id")?.let(ids::read),
                         issueIdentifier = getString("issue_identifier"),
                         attemptId = getString("attempt_id")?.let(::AttemptId),
                         sessionId = getString("session_id")?.let(::SessionId),
