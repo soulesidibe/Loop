@@ -19,9 +19,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.put
 import loop.api.AgentRunner
 import loop.api.AgentSession
 import loop.api.AttemptContext
@@ -30,9 +28,11 @@ import loop.api.RunnerEvent
 import loop.api.RunnerEvent.Output.Stream
 import loop.api.SessionId
 import loop.api.TurnId
+import loop.runner.process.HoldoutFolder
 import loop.runner.process.LaunchSpec
 import loop.runner.process.ProcessEvent
 import loop.runner.process.ProcessGroupLauncher
+import loop.runner.process.ProtectedWorkspaceRoots
 import loop.runner.process.agentEnvironment
 import loop.runner.process.resolveAddedEnv
 import java.nio.file.Path
@@ -130,6 +130,16 @@ class AcpRunner internal constructor(
                 preset = settings.preset,
                 configuredModel = settings.model,
                 resumeFrom = resumeFrom,
+            )
+        private val homePath: Path? =
+            (ctx.env["HOME"] ?: hostEnv["HOME"])?.takeIf { it.isNotBlank() }?.let(Path::of)
+        private val permissionPolicy =
+            AcpPermissionPolicy(
+                workspace = ctx.workspace,
+                holdout = settings.holdoutDir?.let { HoldoutFolder(it, homePath) },
+                protectedRoots = ProtectedWorkspaceRoots(ctx.workspace, homePath),
+                strictMcp = settings.strictMcp,
+                launcher = ctx.env["LOOP_LAUNCHER"],
             )
 
         @Volatile private var live: LiveProcess? = null
@@ -271,6 +281,9 @@ class AcpRunner internal constructor(
                 try {
                     if (turn == 1) {
                         if (!ctx.workspace.isDirectory()) return fail(null, "invalid_workspace_cwd: ${ctx.workspace}")
+                        if (settings.isAgyPreset) {
+                            ProtectedRootsCheck.refusal(ctx.workspace, agentEnv())?.let { return fail(null, it) }
+                        }
                         val mcpEnv = ctx.env + mapOf(ENV_SESSION_ID to sessionId.value, ENV_TURN_ID to turnId.value)
                         val mcpServers = AcpMcpConfig.mcpServers(mcpEnv)
                         val process = spawn()
@@ -283,6 +296,9 @@ class AcpRunner internal constructor(
                                 null,
                                 "port_exit: the ACP server of this session is gone, turn $turn cannot start on thread $threadId",
                             )
+                        }
+                        if (settings.isAgyPreset) {
+                            ProtectedRootsCheck.refusal(ctx.workspace, agentEnv())?.let { return killAndFail(process, it) }
                         }
                         process.stdin.send(handshake.continuePrompt(input))
                         start()
@@ -345,7 +361,14 @@ class AcpRunner internal constructor(
                             }
                             if (handshake.pendingHandshakeMethod == null) since = timeSource.markNow()
                             if (frame is AcpFrame.Request) {
-                                handleServerRequest(process, frame)
+                                when (val answer = permissionPolicy.answer(frame)) {
+                                    is AcpPermissionPolicy.Answer.Write -> {
+                                        process.stdin.send(answer.line)
+                                        out(loopNote(answer.note))
+                                    }
+                                    is AcpPermissionPolicy.Answer.InputRequired ->
+                                        return killAndEnd(process, RunnerEvent.TurnInputRequired(sessionId, turnId, answer.reason))
+                                }
                             }
                             if (handshake.pendingHandshakeMethod != null) {
                                 when (val step = handshake.readStartup(frame)) {
@@ -359,6 +382,11 @@ class AcpRunner internal constructor(
                                     is AcpHandshake.Step.ReadyForPrompt -> {
                                         step.notes.forEach { out(loopNote(it)) }
                                         runtimeSessionId = step.acpSessionId
+                                        if (settings.isAgyPreset) {
+                                            ProtectedRootsCheck.refusal(ctx.workspace, agentEnv())?.let {
+                                                return killAndFail(process, it)
+                                            }
+                                        }
                                         process.stdin.send(step.promptLine)
                                         start()
                                         since = timeSource.markNow()
@@ -370,42 +398,6 @@ class AcpRunner internal constructor(
                             if (handlePromptCompletion(process, frame)) return
                         }
                     }
-                }
-            }
-
-            /**
-             * Answers agent-initiated JSON-RPC requests fail-closed so the session never stalls.
-             * Slice 5 replaces the permission branch with the full guardrail policy.
-             */
-            private suspend fun handleServerRequest(
-                process: LiveProcess,
-                request: AcpFrame.Request,
-            ) {
-                if (request.method == AcpHandshake.METHOD_REQUEST_PERMISSION) {
-                    val reply =
-                        AcpFraming.response(
-                            id = request.id,
-                            result =
-                                buildJsonObject {
-                                    put(
-                                        "outcome",
-                                        buildJsonObject {
-                                            put("outcome", "cancelled")
-                                        },
-                                    )
-                                },
-                        )
-                    process.stdin.send(reply)
-                    out(loopNote("cancelled permission request ${request.id}"))
-                } else {
-                    process.stdin.send(
-                        AcpFraming.errorResponse(
-                            id = request.id,
-                            code = METHOD_NOT_FOUND_CODE,
-                            message = "unsupported client method: ${request.method}",
-                        ),
-                    )
-                    out(loopNote("rejected unsupported server request ${request.method} (${request.id})"))
                 }
             }
 
@@ -475,13 +467,18 @@ class AcpRunner internal constructor(
             private suspend fun killAndFail(
                 process: LiveProcess,
                 reason: String,
+            ) = killAndEnd(process, RunnerEvent.TurnFailed(sessionId, turnId, null, reason))
+
+            private suspend fun killAndEnd(
+                process: LiveProcess,
+                event: RunnerEvent,
             ) {
                 kill(process)
                 while (true) {
                     val queued = process.events.tryReceive().getOrNull() ?: break
                     if (queued is ProcessEvent.Line) out(RunnerEvent.Output(queued.stream, queued.text))
                 }
-                fail(null, reason)
+                end(event)
             }
         }
     }
@@ -498,7 +495,6 @@ class AcpRunner internal constructor(
     companion object {
         private const val LOOP_PREFIX = "loop: "
         private const val EXIT_COMMAND_NOT_FOUND = 127
-        private const val METHOD_NOT_FOUND_CODE = -32601L
         private const val ENV_SESSION_ID = "LOOP_SESSION_ID"
         private const val ENV_TURN_ID = "LOOP_TURN_ID"
         private const val FLAG_DISABLE_TELEMETRY = "--disable-telemetry"

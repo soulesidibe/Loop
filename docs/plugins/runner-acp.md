@@ -74,10 +74,22 @@ Loop checks `runners.acp` against the profile and `AcpRunnerProvider.validate` o
 
 ## Session startup and turns
 
-1. `initialize` with `protocolVersion: 1`, `clientInfo` (`{"name": "loop", "version": "<Loop version>"}`), and `clientCapabilities` (`{"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false}`). Under `preset: agy`, `agentInfo.version` must be on major version `1` (pinned `1.5.16`).
-2. `session/new` (for a new session) or `session/load` (for `resumeSession`) with `cwd` and `mcpServers`.
-3. Under `preset: agy`, `session/set_model` with `runners.acp.model`, verified against any `config_option_update` or response model id.
-4. `session/prompt` with the prompt text (escaping a leading `/` under `preset: agy`). Turn 1 emits `session_started` with the ACP `sessionId` as `runtimeSessionId`; turns 2..n reuse the same process and `sessionId` and emit `turn_started`.
+1. Under `preset: agy`, verify protected workspace customization roots (`.agents/`, `.agent/`, `_agents/`, `_agent/`) against the attempt base commit before spawning the session.
+2. `initialize` with `protocolVersion: 1`, `clientInfo` (`{"name": "loop", "version": "<Loop version>"}`), and `clientCapabilities` (`{"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false}`). Under `preset: agy`, `agentInfo.version` must be on major version `1` (pinned `1.5.16`).
+3. `session/new` (for a new session) or `session/load` (for `resumeSession`) with `cwd` and `mcpServers`.
+4. Under `preset: agy`, `session/set_model` with `runners.acp.model`, verified against any `config_option_update` or response model id.
+5. `session/prompt` with the prompt text (escaping a leading `/` under `preset: agy`), preceded by the protected workspace roots check before every turn. Turn 1 emits `session_started` with the ACP `sessionId` as `runtimeSessionId`; turns 2..n reuse the same process and `sessionId` and emit `turn_started`.
+
+## Guards and holdout protection
+
+Every `session/request_permission` request is evaluated fail-closed in Kotlin using the shared matchers in `plugins/runner-process` (a guardrail, not an OS sandbox):
+
+- **Commands (`run_command`, `kind: execute`):** fails closed when command text is missing; declines any command matching `DeniedCommands` (including `<LOOP_LAUNCHER> approve` and `<LOOP_LAUNCHER> resume`), naming `holdoutDir`, or targeting `.agents/`, `.agent/`, `_agents/`, or `_agent/`.
+- **File reads and searches (`read_file`, `kind: read`/`search`):** fails closed when paths are missing; declines any path under `holdoutDir` (absolute and real paths).
+- **File writes and edits (`write_file`, `edit_file`, `replace`, `kind: edit`/`delete`/`move`):** fails closed when paths are missing; declines any path under `holdoutDir` or under `.agents/`, `.agent/`, `_agents/`, or `_agent/`.
+- **MCP tools:** allows Loop's own `mcp_loop_*` tools and declines any other MCP tool when `strict_mcp: true`.
+- **Human-input prompts:** unsupported human-input requests end the turn immediately with `turn_input_required` and stop the session.
+- **Protected workspace roots diff check (`preset: agy`):** before every session and before every `session/prompt`, compares `.agents/`, `.agent/`, `_agents/`, and `_agent/` against the attempt base commit (including untracked and gitignored files). Any added or modified `hooks.json`, `mcp_config.json`, `skills.json`, `rules.json`, `plugins.json`, or file under `plugins/`, `rules/`, or `hooks/` fails the turn naming the path and stops the session.
 
 ## Context limits and rotation
 
