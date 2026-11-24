@@ -231,13 +231,15 @@ internal class RunFiles(
     /**
      * Looks at the run file without locking or changing it (m1-14): the run is live when the process the
      * record names is alive and started when the record says. Unlike [probe], a stale file is left in place,
-     * and a `loop run` starting at the same moment never finds the file locked by this look.
+     * and a `loop run` starting at the same moment never finds the file locked by this look. Without [retry]
+     * (bl-101) a file that does not read is [Peek.Unreadable] at once, with no wait for a second read.
      */
-    fun peek(): Peek {
+    fun peek(retry: Boolean = true): Peek {
         if (!Files.exists(runFile)) return Peek.Nothing
         // A live run truncates then writes its record: an empty or half written file may be that window, so read once more.
         val record =
-            readRecord().recoverCatching {
+            readRecord().recoverCatching { error ->
+                if (!retry) throw error
                 Thread.sleep(EMPTY_RETRY_MS)
                 readRecord().getOrThrow()
             }

@@ -662,6 +662,11 @@ class FakeMachine(
 ) : Machine {
     var limitsFailure: Throwable? = null
     var claimFailure: Throwable? = null
+    var releaseFailure: Throwable? = null
+    var rowsFailure: Throwable? = null
+
+    /** Called before each claim with its holder (bl-101: a claim that suspends while an attempt ends). */
+    var beforeClaim: suspend (String) -> Unit = {}
 
     /** Called after each claim that took a slot, with its holder (bl-180: cancels the tick right after the claim). */
     var onClaimed: (String) -> Unit = {}
@@ -675,6 +680,7 @@ class FakeMachine(
         holder: String,
         cap: Int,
     ): Result<Boolean> {
+        beforeClaim(holder)
         claimFailure?.let { return Result.failure(it) }
         if (slots.size >= cap) {
             log += "refused $holder"
@@ -687,11 +693,12 @@ class FakeMachine(
     }
 
     override suspend fun releaseSlot(holder: String): Result<Unit> {
+        releaseFailure?.let { return Result.failure(it) }
         slots -= holder
         log += "released $holder"
         return Result.success(Unit)
     }
 
     override suspend fun attemptRowsSince(since: Instant): Result<List<LedgerRow>> =
-        Result.success(rows.filter { it.attempt.finishedAt > since })
+        rowsFailure?.let { Result.failure(it) } ?: Result.success(rows.filter { it.attempt.finishedAt > since })
 }
