@@ -1,5 +1,6 @@
 package loop.cli
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -17,7 +18,10 @@ import loop.api.RecordedEvent
 import loop.api.RedactingEventSink
 import loop.api.Redactor
 import java.nio.file.Path
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.concurrent.thread
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
@@ -164,17 +168,22 @@ class ExporterPlugins private constructor(
 /**
  * The event sink of a run with exporters (m4-42): each event goes to [store] first, whose result is the only one
  * [record] returns, then to each exporter of [exporters] through a bounded queue of its own, read by its own coroutine.
- * A slow, failing or throwing exporter never delays, fails or stops the run: a full queue drops the event, and
+ * A slow, failing or throwing exporter never delays, fails or stops [record]: a full queue drops the event, and
  * [onFailure] hears of an exporter's failures at most once per [reportEvery], with its key, the latest error and how
- * many failed since the last report, so a collector that is down does not flood the log. [close] lets each exporter
- * take what its queue holds for up to [drainTimeout], then closes it.
+ * many failed since the last report, so a collector that is down does not flood the log.
+ *
+ * [close] fits the stop grace of `loop run` whatever an exporter's own timeout says: each exporter takes what its queue
+ * holds for up to [drainTimeout], then gets up to [closeTimeout] to close, on a thread of its own that is left behind
+ * when it hangs. The events an exporter took but did not finish are dropped, and one last report gives every failure
+ * not yet reported, those dropped events included.
  */
 class ExportingSink(
     private val store: EventSink,
     exporters: List<ExporterPlugins.Enabled>,
     private val onFailure: (key: String, error: Throwable, failures: Int) -> Unit,
     capacity: Int = DEFAULT_CAPACITY,
-    private val drainTimeout: Duration = 10.seconds,
+    private val drainTimeout: Duration = DRAIN_TIMEOUT,
+    private val closeTimeout: Duration = CLOSE_TIMEOUT,
     private val reportEvery: Duration = 1.minutes,
     private val nanoTime: () -> Long = System::nanoTime,
 ) : EventSink,
@@ -186,7 +195,11 @@ class ExportingSink(
         capacity: Int,
     ) {
         val queue = Channel<RecordedEvent>(capacity)
+
+        /** The events queued or in flight: taken by [offer] and not yet through the exporter. */
+        val pending = AtomicInteger()
         private var unreported = 0
+        private var latest: Throwable? = null
         private var reportedAt: Long? = null
 
         val job: Job =
@@ -195,26 +208,54 @@ class ExportingSink(
                     val result =
                         try {
                             enabled.sink.record(event)
+                        } catch (e: CancellationException) {
+                            throw e
                         } catch (e: Exception) {
                             Result.failure(e)
                         }
+                    pending.decrementAndGet()
                     result.onFailure { failed(it) }
                 }
             }
 
         fun offer(event: RecordedEvent) {
-            if (queue.trySend(event).isFailure) failed(IllegalStateException("the export queue is full, an event was dropped"))
+            pending.incrementAndGet()
+            if (queue.trySend(event).isSuccess) return
+            pending.decrementAndGet()
+            failed(IllegalStateException("the export queue is full, an event was dropped"))
         }
 
         @Synchronized
         fun failed(error: Throwable) {
-            unreported++
+            note(error)
             val now = nanoTime()
             val last = reportedAt
             if (last != null && now - last < reportEvery.inWholeNanoseconds) return
+            report(now)
+        }
+
+        /** Counts [count] failures for the next report, without one now: [close] reports them all at once. */
+        @Synchronized
+        fun note(
+            error: Throwable,
+            count: Int = 1,
+        ) {
+            unreported += count
+            latest = error
+        }
+
+        /** The last report, at [close]: the failures not yet reported, whatever the time since the one before. */
+        @Synchronized
+        fun flush() {
+            if (unreported > 0) report(nanoTime())
+        }
+
+        private fun report(now: Long) {
             reportedAt = now
-            onFailure(enabled.key, error, unreported)
+            val error = checkNotNull(latest)
+            val count = unreported
             unreported = 0
+            onFailure(enabled.key, error, count)
         }
     }
 
@@ -230,17 +271,38 @@ class ExportingSink(
         lanes.forEach { it.queue.close() }
         runBlocking { withTimeoutOrNull(drainTimeout) { lanes.forEach { it.job.join() } } }
         scope.cancel()
-        lanes.forEach { lane ->
-            try {
-                lane.enabled.close()
-            } catch (e: Exception) {
-                lane.failed(e)
+        val closing =
+            lanes.map { lane ->
+                lane to
+                    thread(isDaemon = true, name = "loop-export-close-${lane.enabled.key}") {
+                        try {
+                            lane.enabled.close()
+                        } catch (e: Exception) {
+                            lane.note(e)
+                        }
+                    }
             }
+        val deadline = System.nanoTime() + closeTimeout.inWholeNanoseconds
+        closing.forEach { (lane, closer) ->
+            closer.join(maxOf(1L, (deadline - System.nanoTime()) / 1_000_000))
+            if (closer.isAlive) lane.note(IllegalStateException("the exporter did not close within $closeTimeout, Loop left it behind"))
+            val dropped = lane.pending.get()
+            if (dropped > 0) {
+                val events = if (dropped == 1) "1 event was" else "$dropped events were"
+                lane.note(IllegalStateException("$events not exported when the run ended, Loop dropped them"), dropped)
+            }
+            lane.flush()
         }
     }
 
     companion object {
         /** How many events an exporter's queue holds before it drops the next one. */
         const val DEFAULT_CAPACITY = 10_000
+
+        /** How long the exporters get to take what their queues hold when the run ends. */
+        val DRAIN_TIMEOUT: Duration = 1500.milliseconds
+
+        /** How long the exporters then get to close, which sends the spans still open. */
+        val CLOSE_TIMEOUT: Duration = 1.seconds
     }
 }

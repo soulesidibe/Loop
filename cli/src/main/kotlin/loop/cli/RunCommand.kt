@@ -374,7 +374,8 @@ class RunCommand(
         // The store closes inside untilSignal, so the shutdown hook waits for it.
         untilSignal(log, context, redactor, onEnd, keepAwake::close) {
             store.use {
-                // m4-42: the exporters take what their queues hold before the store closes.
+                // m4-42: the exporters take what their queues hold before the store closes, within about 2.5 s
+                // (ExportingSink.DRAIN_TIMEOUT and CLOSE_TIMEOUT), so a hanging collector never outlasts the stop grace.
                 sink.use {
                     try {
                         // m1-16, spec 8.6: the workspaces of terminal issues go before the first tick, in both modes.
@@ -427,7 +428,8 @@ class RunCommand(
     /**
      * m4-42: the sink the orchestrator records into: the store, then each exporter [workflow] turns on, wrapped in the
      * run's redactor, which first learns the secrets the exporters send. Logs the plugins found, `event=plugins`, and
-     * an exporter's failures, `event=export outcome=failed` at most once a minute, which never stop the run. The exporters are built
+     * an exporter's failures, `event=export outcome=failed` at most once a minute and once more at the end of the run with
+     * the events dropped then, which never stop the run. The exporters are built
      * once: a reload that changes `exporters:` is checked by the preflight and takes effect at the next run.
      */
     private fun exportingSink(

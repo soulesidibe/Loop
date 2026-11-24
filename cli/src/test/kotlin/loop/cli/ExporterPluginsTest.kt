@@ -12,8 +12,15 @@ import loop.api.ProjectId
 import loop.api.RecordedEvent
 import loop.api.SecretRedactor
 import org.junit.jupiter.api.io.TempDir
+import java.io.IOException
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.Socket
 import java.nio.file.Path
 import java.util.Collections
+import kotlin.concurrent.thread
+import kotlin.io.path.exists
+import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -21,6 +28,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.test.fail
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
@@ -167,7 +175,7 @@ class ExporterPluginsTest {
     }
 
     @Test
-    fun `m4-42 an exporter that fails or throws never fails the record, and its failures are reported once a minute`() {
+    fun `m4-42 an exporter that fails or throws never fails the record, and its failures are reported once a minute and at close`() {
         for (provider in listOf(Capturing(failWith = IllegalStateException("endpoint down")), Capturing(throwOn = true))) {
             val failures = Collections.synchronizedList(mutableListOf<String>())
             val enabled = plugins(provider).create(mapOf("capture" to mapOf("target" to "x")), emptyMap(), SecretRedactor())
@@ -187,9 +195,11 @@ class ExporterPluginsTest {
             assertTrue(results.all { it.isSuccess }, results.toString())
             assertEquals(3, store.events.size)
             assertEquals(3, provider.seen.size)
-            assertEquals(1, failures.size, failures.toString())
-            assertTrue(failures.single().startsWith("capture: "), failures.toString())
-            assertTrue(failures.single().endsWith(", 1"), failures.toString())
+            // One report at the first failure, then one when the sink closes, with the two failures since.
+            assertEquals(2, failures.size, failures.toString())
+            assertTrue(failures.all { it.startsWith("capture: ") }, failures.toString())
+            assertTrue(failures.first().endsWith(", 1"), failures.toString())
+            assertTrue(failures.last().endsWith(", 2"), failures.toString())
         }
     }
 
@@ -239,8 +249,52 @@ class ExporterPluginsTest {
         assertEquals("review", fixture.stateOf("t-1"), result.toString())
         assertContains(result.stderr.lines().single { "event=plugins" in it }, "enabled_exporters=otel")
         val failed = result.stderr.lines().filter { "event=export" in it && "outcome=failed" in it }
-        assertEquals(1, failed.size, result.toString())
-        assertContains(failed.single(), "exporter=otel")
+        // The first failure, then at most the count of those since, when the run ends.
+        assertTrue(failed.size in 1..2, result.toString())
+        failed.forEach { assertContains(it, "exporter=otel") }
+    }
+
+    @Test
+    fun `m4-42 loop stop exits 0 with the run end line when the collector accepts and never answers`() {
+        fixture.issue("t-1")
+        val started = root.resolve("started")
+        fixture.agentScript.writeText("#!/bin/sh\ntouch '$started'\nsleep 30\n")
+        // A collector that takes each connection and never answers, unlike a refused port: each export waits its whole timeout.
+        ServerSocket(0, 50, InetAddress.getLoopbackAddress()).use { collector ->
+            val held = Collections.synchronizedList(mutableListOf<Socket>())
+            thread(isDaemon = true) {
+                try {
+                    while (true) held += collector.accept()
+                } catch (_: IOException) {
+                    // The test closed the collector.
+                }
+            }
+            fixture.writeWorkflow(
+                extra = "exporters:\n  otel:\n    endpoint: http://127.0.0.1:${collector.localPort}\n    timeout_ms: 60000",
+            )
+            val running = fixture.start("run", fixture.workflow.toString())
+            try {
+                val deadline = System.nanoTime() + 60.seconds.inWholeNanoseconds
+                while (!started.exists() && System.nanoTime() < deadline) Thread.sleep(100)
+                if (!started.exists()) fail("the agent never started\n${running.await(30)}")
+
+                val stop = fixture.loop("stop", fixture.workflow.toString())
+                val run = running.await(30)
+
+                assertEquals(0, stop.exitCode, stop.toString())
+                // m1-34: a stop Loop handled is clean, 0 and not 143, the exporter's shutdown within the stop grace.
+                assertEquals(0, run.exitCode, run.toString())
+                assertTrue(run.stderr.lines().any { "event=run" in it && "outcome=completed" in it }, run.toString())
+                val failed = run.stderr.lines().filter { "event=export" in it && "outcome=failed" in it }
+                assertTrue(failed.isNotEmpty(), run.toString())
+                assertContains(failed.last(), "exporter=otel")
+                assertFalse(fixture.loopHome.resolve("runs/${fixture.projectId()}.json").exists(), "run file left\n$run")
+            } finally {
+                running.process.descendants().forEach { it.destroyForcibly() }
+                running.process.destroyForcibly()
+                held.forEach { it.close() }
+            }
+        }
     }
 
     @Test

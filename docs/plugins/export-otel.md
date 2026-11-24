@@ -94,11 +94,23 @@ The exporter keeps the state of the last 256 attempts. An attempt dropped from i
 
 The store redacts inside its own `record`, so an exporter beside it would get raw events, runner output and comments included. The host wraps every exporter in the run's redactor (`RedactingEventSink` in `plugin-api`) before it sees an event: the issue identifier, the phase and every data value are redacted as the store redacts them, so a token in a `runner_output` line never reaches a span. The ids, the event kind and the data keys are Loop's own and pass as they are. The run's redactor also learns the value of every header `$NAME`, so a header token is redacted wherever Loop writes.
 
+The redactor only knows the secrets Loop reads, the tracker and delivery tokens and the header `$NAME`s, and its own token patterns (`SecretRedactor`). A secret it does not know, such as a password an agent prints that Loop never read, leaves the machine with the export, as it is kept in the store. Point `endpoint` at a collector you trust with the run's output.
+
 ## Failures
 
-An exporter never stops or slows the run. `loop run` records each event in the store first, whose result is the only one the orchestrator sees, then hands it to each exporter through a bounded queue of its own, read by its own coroutine. A full queue drops the event.
+While the run goes on, an exporter never stops or slows it. `loop run` records each event in the store first, whose result is the only one the orchestrator sees, then hands it to each exporter through a bounded queue of its own, 10000 events, read by its own coroutine. A full queue drops the event and never blocks the record.
 
-An export that throws, fails or takes longer than `timeout_ms` is a failed `Result`, never an exception. `loop run` logs an exporter's failures at most once a minute, `event=export outcome=failed exporter=otel failures=<n>` with the latest reason, and goes on. The OpenTelemetry SDK's own log is turned off, so a collector that is down does not fill stderr with stack traces. When the run ends, each exporter gets up to 10 seconds to send what its queue holds, then it is closed.
+An export that throws, fails or takes longer than `timeout_ms` is a failed `Result`, never an exception. `loop run` logs an exporter's failures at most once a minute, `event=export outcome=failed exporter=otel failures=<n>` with the latest reason, and goes on. The OpenTelemetry SDK's own log is turned off, so a collector that is down does not fill stderr with stack traces.
+
+### Shutdown budget
+
+When the run ends, by `loop stop`, SIGINT, SIGTERM, a drain or the end of `--once`, the exporters do slow it, by at most about 2.5 seconds, whatever `timeout_ms` says:
+
+1. Each exporter gets up to 1.5 seconds to send what its queue holds.
+2. Each exporter then gets up to 1 second to close, which ends the spans still open and sends them. An exporter that has not closed by then is left behind on a thread of its own, and the run goes on to close the store.
+3. The events an exporter took but did not send, queued or in flight, are dropped. One last `event=export outcome=failed` line gives every failure not yet reported, the dropped events counted in `failures`.
+
+So a collector that takes the connection and never answers costs a stop at most those 2.5 seconds, inside the 10 seconds the shutdown hook of `loop run` waits, and the stop stays clean: exit 0, the run end line, the run file released and the store closed (m1-34). What the collector did not get by then is lost.
 
 ## Plugin interface
 
