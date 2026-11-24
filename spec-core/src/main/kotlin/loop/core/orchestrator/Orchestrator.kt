@@ -762,7 +762,9 @@ class Orchestrator(
             if (error == null) retries.requeueNoSlot(issue, effective) else retries.requeueNoSlot(issue, effective, error)
         }
         bounceNotReady(dispatchable.filter { it.id in notReady }, notReady)
-        recordSkips(skips)
+        // bl-101: a skip of the launch loop was added after the slot plan's own, so they are recorded in slot order.
+        val slotOrder = routable.withIndex().associate { (index, issue) -> issue.id to index }
+        recordSkips(skips.entries.sortedBy { slotOrder[it.key.id] }.associate { it.toPair() })
         return Dispatched(candidates = issues.size, attempts = attempts, verifications)
     }
 
