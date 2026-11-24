@@ -145,7 +145,8 @@ class MachineSlotLivenessTest {
                 assertEquals(1, warnings.size, "the same unreadable file warns once: $warnings")
                 assertTrue(warnings.single().startsWith("bbbbbbbbbbbbbbbb: "), warnings.single())
 
-                otherFiles.runFile.writeText(Json.encodeToString(RunRecord.serializer(), RunRecord.ofCurrentProcess("r-other", tmp.resolve("WORKFLOW.md"))))
+                val record = RunRecord.ofCurrentProcess("r-other", tmp.resolve("WORKFLOW.md"))
+                otherFiles.runFile.writeText(Json.encodeToString(RunRecord.serializer(), record))
                 assertTrue(machine.claimSlot("h3", cap = 10).getOrThrow())
                 otherFiles.runFile.writeText("{not json")
                 assertTrue(machine.claimSlot("h4", cap = 10).getOrThrow())
