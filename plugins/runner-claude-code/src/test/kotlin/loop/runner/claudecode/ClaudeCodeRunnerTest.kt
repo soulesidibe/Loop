@@ -1304,7 +1304,7 @@ class ClaudeCodeRunnerTest {
     }
 
     @Test
-    fun `m4-46 a session resumed after a network hold spawns claude with --resume at turn 1, on a new thread`() {
+    fun `m4-46 a session resumed after a network hold spawns claude with --resume at turn 1`() {
         val claude = FakeClaude(bin)
         val runner = runner(claude)
 
