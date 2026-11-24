@@ -3,6 +3,7 @@ package loop.core.delivery
 import kotlinx.coroutines.withContext
 import loop.api.DeliveryError
 import loop.api.DeliveryExecutor
+import loop.api.Issue
 import loop.api.IssueComment
 import loop.api.PullRequest
 import loop.api.PullRequestState
@@ -19,6 +20,7 @@ import loop.core.events.PullRequestFound
 import loop.core.events.PullRequestOpened
 import loop.core.events.PullRequestUpdated
 import loop.core.events.Tracker
+import loop.core.trackers.UnroutedWrite
 import loop.core.verify.WorkspaceFingerprint
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
@@ -27,22 +29,24 @@ import kotlin.time.Clock
 
 /**
  * What a pull request delivery needs (m2-25), all of it facts Loop holds, never the agent's result file or words:
- * the issue as the tracker shows it now ([title], [nativeRef]), the verification's [attemptId], [fingerprint],
- * rendered [checks] and number of [judgmentCalls], the [workspaceKey] that names the branch, and the URL of the pull
- * request already [commented] on the issue by an earlier try, null when none was.
+ * the [issue] as the tracker shows it now, which the comment and the move are made with (m4-14), the verification's
+ * [attemptId], [fingerprint], rendered [checks] and number of [judgmentCalls], the [workspaceKey] that names the
+ * branch, and the URL of the pull request already [commented] on the issue by an earlier try, null when none was.
  */
 data class DeliveryFacts(
-    val issueId: String,
+    val issue: Issue,
     val identifier: String,
-    val title: String,
-    val nativeRef: Map<String, String>,
     val attemptId: String?,
     val fingerprint: String,
     val checks: List<String>,
     val judgmentCalls: Int,
     val workspaceKey: String,
     val commented: String?,
-)
+) {
+    val issueId: String get() = issue.id
+    val title: String get() = issue.title
+    val nativeRef: Map<String, String> get() = issue.nativeRef.orEmpty()
+}
 
 /**
  * How a pull request delivery ended (m2-25). [commented] is the URL of the pull request commented on the issue, by
@@ -202,7 +206,7 @@ class PullRequestDelivery(
                 else -> "updated pull request #${pullRequest.number} for this issue"
             }
         val text = redactor.redact("Loop $what: ${pullRequest.url}")
-        step(STEP_COMMENT) { tracker.addComment(facts.issueId, IssueComment(LOOP_AUTHOR, clock.now(), text)) }
+        step(STEP_COMMENT) { tracker.addComment(facts.issue, IssueComment(LOOP_AUTHOR, clock.now(), text)) }
             .onFailure { return Result.failure(it) }
         record(
             IssueCommented,
@@ -220,7 +224,7 @@ class PullRequestDelivery(
         facts: DeliveryFacts,
         handoff: Handoff,
     ): Throwable? {
-        step(STEP_MOVE) { tracker.moveIssue(facts.issueId, handoff.to) }.onFailure { return it }
+        step(STEP_MOVE) { tracker.moveIssue(facts.issue, handoff.to) }.onFailure { return it }
         record(
             IssueMoved,
             mapOf(Tracker.FROM to handoff.from, Tracker.TO to handoff.to, Tracker.BY to Tracker.BY_HOST, Tracker.VERIFIED to "true") +
@@ -293,15 +297,16 @@ class PullRequestDelivery(
 
         /**
          * True when trying [error] again cannot help, so the delivery waits for a new approval: a [DeliveryError]
-         * says so itself; a tracker refusal, any status under 500 but a rate limit, is permanent; an unreachable
-         * tracker, a rate limit hold, a server error and any other exception are tried again at the next tick.
+         * says so itself; a tracker refusal, any status under 500 but a rate limit, is permanent, like a write for a
+         * tracker the registry does not have (m4-14); an unreachable tracker, a rate limit hold, a server error and any
+         * other exception are tried again at the next tick.
          */
         fun permanent(error: Throwable): Boolean =
             when (error) {
                 is DeliveryError -> error.permanent
                 is TrackerError.Unavailable, is TrackerError.RateLimited -> false
                 is TrackerError.Status -> error.status < SERVER_ERROR
-                is TrackerError -> true
+                is TrackerError, is UnroutedWrite -> true
                 else -> false
             }
 

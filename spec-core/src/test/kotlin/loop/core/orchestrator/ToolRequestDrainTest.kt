@@ -82,7 +82,7 @@ class ToolRequestDrainTest {
 
     /** Records the call and writes a stand in snapshot, as the cli writer would. */
     private val writer =
-        ToolConfigWriter { target, projectId, workflow, definedStates ->
+        ToolConfigWriter { target, projectId, workflow, _, definedStates ->
             writerCalls += WriterCall(target, projectId, workflow, definedStates)
             target.writeText("{}")
         }

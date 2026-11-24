@@ -1065,7 +1065,7 @@ internal class Merges(
         if (moveTo != null && issue.state.normalized() != moveTo.normalized()) {
             val failure =
                 try {
-                    withContext(io) { tracker.moveIssue(wait.issueId, moveTo) }.exceptionOrNull()
+                    withContext(io) { tracker.moveIssue(issue, moveTo) }.exceptionOrNull()
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
