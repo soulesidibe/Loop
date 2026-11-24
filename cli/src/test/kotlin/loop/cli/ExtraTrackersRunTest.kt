@@ -12,8 +12,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * m4-11, story 111: `loop run` with extra trackers under `trackers:` says once that it does not poll them before m4-13,
- * and works the primary tracker's issues as before; the host builds each tracker's adapter from its own entry.
+ * m4-11, story 111: `loop run` with extra trackers under `trackers:` works the primary tracker's issues as before, with
+ * no line saying the extra trackers are not polled, since m4-13 polls them; the host builds each tracker's adapter from
+ * its own entry. Two trackers polled together are tested in [MultiTrackerRunCommandTest].
  */
 class ExtraTrackersRunTest {
     @TempDir
@@ -29,7 +30,7 @@ class ExtraTrackersRunTest {
             "    required_labels: [side-ready]\n"
 
     @Test
-    fun `loop run with extra trackers logs one line that they are not polled yet and works the primary tracker`() {
+    fun `loop run with extra trackers logs no line that they are not polled and works the primary tracker`() {
         fixture.writeWorkflow(extra = trackers)
         fixture.issue("t-1")
 
@@ -37,15 +38,7 @@ class ExtraTrackersRunTest {
 
         assertEquals(0, result.statusCode, result.output)
         assertEquals("review", fixture.stateOf("t-1"), result.output)
-        val lines = result.stderr.lines().filter { "not poll" in it }
-        assertEquals(
-            listOf(
-                "loop run: warning: trackers lists side, which Loop does not poll yet (m4-13), " +
-                    "it polls only the primary tracker default.",
-            ),
-            lines,
-            result.stderr,
-        )
+        assertTrue(result.stderr.lines().none { "not poll" in it }, result.stderr)
     }
 
     @Test

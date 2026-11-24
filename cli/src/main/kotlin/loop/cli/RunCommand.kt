@@ -180,14 +180,15 @@ class RunCommand(
         val redactor = project.redactor
         val context = LogContext(runId = runId, projectId = projectId)
         logContext = context
-        // m2-23: the tracker is built once, but a move to a handoff state removes the required labels of the effective
-        // workflow, which follows reloads, so the issue leaves the active set the next poll checks.
-        val requiredLabels = AtomicReference(workflow.requiredLabels)
+        // m2-23: the trackers are built once, but a move to a handoff state removes the required labels of the effective
+        // workflow, which follows reloads, so the issue leaves the active set the next poll checks. m4-13: each tracker
+        // polled on its own, a handoff removing the labels of the issue's own tracker; one a reload removed keeps its own.
+        val trackersAt = AtomicReference(workflow.trackers)
         val tracker =
-            project.tracker(
+            project.trackerPoll(
                 onWarning = { warning -> log.log(LogLevel.WARN, "tracker", LogOutcome.FAILED, context, reason = warning.trimEnd('.')) },
                 onMalformed = { malformed -> log.log(LogLevel.WARN, "tracker", LogOutcome.FAILED, context, reason = malformed.sentence()) },
-                requiredLabels = { requiredLabels.get() },
+                requiredLabels = { id -> (trackersAt.get().entry(id) ?: workflow.trackers.entry(id))?.requiredLabels.orEmpty() },
             )
         val runnerCheck = host.runnerPreflight(workflow)
         runnerCheck.warnings.forEach { warn(redactor.redact(it)) }
@@ -204,8 +205,6 @@ class RunCommand(
         dollarBudgetWarning(workflow, runnerOf(workflow).capabilities)?.let { warn(redactor.redact(it)) }
         // m4-06: the merge risk reviewer runs through the Claude Code command whatever the runner; said once at startup.
         riskReviewerWarning(workflow, host.rawEnv)?.let { warn(redactor.redact(it)) }
-        // m4-11: extra trackers are read and checked, but polled only from m4-13; said once at startup.
-        workflow.trackers.notPolledNotice()?.let { warn(redactor.redact(it)) }
         val workspacesOf = { wf: WorkflowFile -> WorkspaceManager(Workspaces(wf.workspaceRoot), wf.config.hooks, ShellHookRunner()) }
         // m2-03: a check runs code the agent wrote, so it gets the agent env policy, never the full host env, and
         // the orchestrator adds only the issue and attempt ids: no tool config and no launcher on PATH.
@@ -308,9 +307,9 @@ class RunCommand(
                 runnerFor = runnerOf,
                 workspacesFor = workspacesOf,
                 checkRunnerFor = checksOf,
-                // Called once per applied reload: the tracker's required labels follow the new effective workflow too.
+                // Called once per applied reload: the trackers' required labels follow the new effective workflow too.
                 reloadWarnings = { previous, reloaded ->
-                    requiredLabels.set(reloaded.requiredLabels)
+                    trackersAt.set(reloaded.trackers)
                     reloadWarnings(previous, reloaded, host.rawEnv)
                 },
                 // m2-02: the retry queue, its counters and the claims survive a restart.

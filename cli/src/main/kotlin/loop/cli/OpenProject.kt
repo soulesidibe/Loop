@@ -8,6 +8,7 @@ import loop.api.TrackerError
 import loop.core.trackers.IssueIdDisplay
 import loop.core.trackers.NamespacedId
 import loop.core.trackers.NamespacedTracker
+import loop.core.trackers.TrackerPoll
 import loop.core.workflow.DeferredSecret
 import loop.core.workflow.WorkflowFile
 import loop.core.workflow.WorkflowLoader
@@ -102,6 +103,21 @@ class OpenedProject internal constructor(
         if (trackers.provider(workflow.trackerKind) == null) throw StartupFailure(unsupportedTracker(workflow, trackers))
         val primary = workflow.trackerId
         return NamespacedTracker(primary, primary, trackerFor(workflow, loopHome, onWarning, onMalformed, requiredLabels, trackers))
+    }
+
+    /**
+     * m4-13: every tracker of the workflow, built by its plugin like [tracker] builds the primary one, each polled and
+     * reconciled on its own. [requiredLabels] gives the labels a handoff move removes, by tracker id, see
+     * [trackerRegistryFor]. Throws [StartupFailure] like [tracker].
+     */
+    fun trackerPoll(
+        onWarning: (String) -> Unit = {},
+        onMalformed: (TrackerError.Malformed) -> Unit = {},
+        requiredLabels: (String) -> List<String> = { id -> workflow.trackers.entry(id)?.requiredLabels.orEmpty() },
+    ): TrackerPoll {
+        trackerSecret?.let { throw StartupFailure(it.sentence) }
+        if (trackers.provider(workflow.trackerKind) == null) throw StartupFailure(unsupportedTracker(workflow, trackers))
+        return TrackerPoll.of(trackerRegistryFor(workflow, loopHome, onWarning, onMalformed, requiredLabels, trackers))
     }
 
     /**

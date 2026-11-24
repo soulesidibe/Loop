@@ -1656,7 +1656,7 @@ class Orchestrator(
          * runner's configured model. A line names its session's reported model instead, the row the attempt's (bl-147).
          */
         private val ledger = LedgerMeter()
-        private val ledgerSetup = LedgerMeter.setupOf(workflow, runner.model)
+        private val ledgerSetup = LedgerMeter.setupOf(workflow, runner.model, issue.id)
 
         /** The latest turn line of this attempt, which a `stop` line copies (m4-04). */
         private var lastTurnLine: LedgerTurn? = null
@@ -2601,7 +2601,7 @@ class Orchestrator(
          * fails the attempt: its verification freezes the same dispatched list, or parks the issue when it cannot.
          */
         private suspend fun freezeAtDispatch() {
-            if (!declaresAcceptanceCommands(workflow) || workflow.trackerKind != FILES_TRACKER) return
+            if (!declaresAcceptanceCommands(workflow) || workflow.trackers.entryOf(issue.id).kind != FILES_TRACKER) return
             val commands = AcceptanceCriteria.of(issue.description).commands
             freezeAcceptanceCommands(issue.id, issue.identifier, commands) { definition, data -> record(definition, data = data) }
                 .onFailure { error ->
@@ -2806,8 +2806,10 @@ class Orchestrator(
          */
         private suspend fun issuePointer(issue: Issue): String {
             issue.nativeRef?.get(ISSUE_URL)?.let { return "at $it" }
-            if (workflow.trackerKind != FILES_TRACKER) return "in issue ${issue.identifier} of the ${workflow.trackerKind} tracker"
-            val folder = workflow.trackerDir
+            // m4-13: the issue's own tracker.
+            val own = workflow.trackers.entryOf(issue.id)
+            if (own.kind != FILES_TRACKER) return "in issue ${issue.identifier} of the ${own.kind} tracker"
+            val folder = own.dir
             val names = setOf(issue.id, issue.identifier)
             val file =
                 withContext(io) {
@@ -3802,8 +3804,9 @@ class Orchestrator(
             // bl-32: no command of the criteria runs, so their gate has nothing to refuse.
             if (diffPolicyOnly) return
             val commands = criteria?.commands ?: return
-            if (workflow.trackerKind != FILES_TRACKER) {
-                refusal = acceptanceCommandsNeedFiles(workflow.trackerKind)
+            val kind = workflow.trackers.entryOf(issueId).kind
+            if (kind != FILES_TRACKER) {
+                refusal = acceptanceCommandsNeedFiles(kind)
                 return
             }
             val digest = AcceptanceCriteria.digest(commands)

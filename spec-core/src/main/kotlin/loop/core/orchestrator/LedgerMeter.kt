@@ -139,14 +139,16 @@ internal class LedgerMeter {
 
         /**
          * What the ledger records of [workflow]'s setup on every line and row of an attempt: `runner.kind`, and
-         * [model], the model of the attempt's runner (m3-04: its settings belong to its plugin).
+         * [model], the model of the attempt's runner (m3-04: its settings belong to its plugin). Since m4-13 `tracker`
+         * is the id of the tracker of [issueId], the primary one's when it is null, so `loop report` groups by tracker.
          */
         fun setupOf(
             workflow: WorkflowFile,
             model: String? = null,
+            issueId: String? = null,
         ): LedgerSetup =
             LedgerSetup(
-                tracker = workflow.trackerKind,
+                tracker = issueId?.let { workflow.trackers.entryOf(it).id } ?: workflow.trackerId,
                 kind = workflow.config.kinds?.let { CODE },
                 runner = workflow.runner.kind,
                 model = model,
