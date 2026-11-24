@@ -171,8 +171,10 @@ class TrackerRegistryTest {
 
         assertEquals(listOf("gh", "local"), built)
         assertEquals("gh", registry.primary.id)
-        assertEquals("gh", (registry.primaryAdapter as NamedAdapter).id)
-        assertEquals("local", (registry.adapter("local") as NamedAdapter).id)
+        assertEquals("gh", (registry.primaryAdapter.native as NamedAdapter).id)
+        assertEquals("local", (registry.adapter("local")!!.native as NamedAdapter).id)
+        // m4-12: each adapter namespaces the ids of its own tracker.
+        assertEquals(listOf("gh", "local"), listOf(registry.primaryAdapter.trackerId, registry.adapter("local")!!.trackerId))
         assertEquals(listOf("mine"), registry.entry("local")!!.requiredLabels)
         assertEquals(listOf("todo", "in_progress"), registry.entry("local")!!.activeStates)
         assertSame(config, registry.config)
