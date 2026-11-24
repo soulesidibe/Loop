@@ -231,7 +231,11 @@ data class CodexAppServerSettings(
  * Strict MCP (m3-20, bl-72): with [CodexAppServerSettings.strictMcp] the startup reads the Codex config with
  * `config/read` and starts the thread with each MCP server it lists disabled and the `apps` feature off.
  *
- * Failures: `invalid_workspace_cwd` (the workspace is not a directory, nothing is started), `agent_not_found` (the
+ * Exec policy rules (bl-135): before a session starts its app server, [ExecPolicyRules] reads the Codex rules files
+ * it would load; one that allows a denied command, or cannot be read, fails the first turn with `exec_policy_rule`.
+ *
+ * Failures: `invalid_workspace_cwd` (the workspace is not a directory, nothing is started), `exec_policy_rule` (a rules
+ * file allows a denied command, nothing is started), `agent_not_found` (the
  * launcher could not spawn, or it exited 127, the command could not be run, before any stdout line), `response_error`,
  * `response_timeout`, `turn_timeout`, `turn_failed`, `turn_cancelled`, `port_exit: exit code N, before the <method>
  * response` (the server exited while a request waited for its answer), `port_exit: exit code N, no turn result` (it
@@ -438,6 +442,8 @@ class CodexAppServerRunner internal constructor(
                 try {
                     if (turn == 1) {
                         if (!ctx.workspace.isDirectory()) return fail(null, "invalid_workspace_cwd: ${ctx.workspace}")
+                        // bl-135: a rule that allows a denied command would run it with no approval request to decline.
+                        ExecPolicyRules.refusal(ExecPolicyRules.folders(ctx.workspace, agentEnv()))?.let { return fail(null, it) }
                         if (loopTools is LoopClientTools.Loaded.Unreadable) {
                             out(
                                 RunnerEvent.Output(

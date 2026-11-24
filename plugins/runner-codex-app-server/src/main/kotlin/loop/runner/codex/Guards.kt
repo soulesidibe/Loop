@@ -9,16 +9,30 @@ import java.util.Locale
 /**
  * The commands a Codex agent may not run (story 40, m2-24, m3-20): `git push`, `gh`, the history rewrites, and the
  * operator commands `loop approve` and `loop resume`. The list is the claude-code runner's (`ClaudeSettingsFile` in
- * `plugins/runner-claude-code`), kept equal by hand, so both runners refuse the same commands.
+ * `plugins/runner-claude-code`), and `DeniedCommandsTest` fails when the two differ (bl-135).
  *
  * A command is matched on its whole text, as Claude Code matches its deny rules: it is split into words at blanks,
  * quotes and the shell's operators, and a denied command matches as a run of whole words at any place, so `cd x &&
- * git push`, `bash -lc 'gh pr create'` and a quoted script that names one are all denied. An operator command run
- * through a launcher path, a word ending in `/loop`, is denied too. This is a guardrail, not a sandbox: a command can
- * still dodge a prefix, as `git -C . push` or a script file written first and run next do.
+ * git push`, `bash -lc 'gh pr create'` and a quoted script that names one are all denied. Since bl-135 also:
+ *
+ * - a program run by its path, a word ending in `/git`, `/loop` or, for `gh`, `/bin/gh`, so `/usr/bin/git push` is
+ *   denied and `cd /tmp/gh` is not;
+ * - git's own options before the subcommand, `git -c x=y push`, `git -C . push`, `git --git-dir=.git push`;
+ * - a git subcommand from a substitution or a variable, `git $(echo push)`, `git $SUB`, since it may be `push`;
+ * - a backslash a shell would drop, `g\h`;
+ * - not a commit message: the message of a `git commit -m` or `--message` is left out, so `git commit -m "use gh"`
+ *   is not denied, unless it holds a substitution, which runs.
+ *
+ * Matching more only declines a request. This is a guardrail, not a sandbox: a command can still dodge the words, as
+ * a script file written first and run next does.
  */
 internal object DeniedCommands {
     private const val LOOP = "loop"
+
+    private const val GIT = "git"
+
+    /** How deep a quoted script is read for its commit messages. */
+    private const val MAX_DEPTH = 3
 
     /** The `loop` subcommands only the operator may run (m2-24). */
     private val OPERATOR_SUBCOMMANDS = listOf("approve", "resume")
@@ -41,20 +55,177 @@ internal object DeniedCommands {
             "git replace",
         ) + OPERATOR_SUBCOMMANDS.map { "$LOOP $it" }
 
+    /** [commands], each as its words. */
+    val words: List<List<String>> = commands.map { it.split(" ") }
+
     /** True when [command] holds a denied command anywhere in its text, see [DeniedCommands]. */
     fun isDenied(command: String): Boolean {
-        val words = command.split(WORD_BREAK).filter { it.isNotEmpty() }
-        return words.indices.any { start -> startsDenied(words.subList(start, words.size)) }
+        // A backslash a shell drops is dropped, and a backtick is read as the `$` of a substitution.
+        val text = withoutCommitMessages(command, depth = 0).replace("\\", "").replace("`", " $ ")
+        return WORD_BREAKS.any { breaks ->
+            val words = text.split(breaks).filter { it.isNotEmpty() }
+            words.indices.any { start -> words.holdsDeniedAt(start) }
+        }
     }
 
-    private fun startsDenied(words: List<String>): Boolean =
-        deniedWords.any { prefix -> words.size >= prefix.size && words.subList(0, prefix.size) == prefix } ||
-            (words.size >= 2 && words[0].endsWith("/$LOOP") && words[1] in OPERATOR_SUBCOMMANDS)
+    /** True when [word] runs [name]: the name itself or a path to it, see [DeniedCommands]. */
+    fun runs(
+        word: String,
+        name: String,
+    ): Boolean = word == name || word.endsWith(if (name == GH) "/bin/$GH" else "/$name")
 
-    private val deniedWords: List<List<String>> = commands.map { it.split(" ") }
+    /** The index of the first of [words] after git's own options, from [from], see [GIT_OPTIONS_WITH_VALUE]. */
+    private fun afterGitOptions(
+        words: List<String>,
+        from: Int,
+    ): Int {
+        var i = from
+        while (i < words.size && words[i].startsWith("-")) i += if (words[i] in GIT_OPTIONS_WITH_VALUE) 2 else 1
+        return i
+    }
 
-    /** What splits a command into words: blanks, quotes, backslashes, the shell's operators and list punctuation. */
-    private val WORD_BREAK = Regex("""[\s'"`\\;|&<>(){}\[\],=]+""")
+    /** True when these words, from [start], hold a denied command. */
+    private fun List<String>.holdsDeniedAt(start: Int): Boolean =
+        words.any { prefix ->
+            if (!runs(this[start], prefix[0])) return@any false
+            var i = start + 1
+            if (prefix[0] == GIT) {
+                i = afterGitOptions(this, i)
+                // A subcommand from a substitution or a variable may be any of them.
+                if (i < size && this[i].startsWith("$")) return@any true
+            }
+            prefix.drop(1).all { word -> (i < size && this[i] == word).also { i++ } }
+        }
+
+    /**
+     * [command] as words, without the message of each `git commit` it runs; each quoted word that holds a blank may be
+     * a script, so it is read the same way, down to [MAX_DEPTH] levels. A message that holds a substitution is kept.
+     */
+    private fun withoutCommitMessages(
+        command: String,
+        depth: Int,
+    ): String {
+        val tokens = ShellTokens.of(command)
+        val texts = tokens.map { it.text }
+        val kept = mutableListOf<String>()
+        var i = 0
+        while (i < tokens.size) {
+            val token = tokens[i]
+            val sub = if (!token.separator && runs(token.text, GIT)) afterGitOptions(texts, i + 1) else -1
+            if (sub in tokens.indices && texts[sub] == "commit") {
+                kept += texts.subList(i, sub + 1)
+                i = sub + 1
+                while (i < tokens.size && !tokens[i].separator) {
+                    val word = texts[i]
+                    val cluster = SHORT_MESSAGE.matchEntire(word)
+                    when {
+                        word == "--message" || (cluster != null && cluster.groupValues[1].isEmpty()) -> {
+                            kept += word
+                            val value = tokens.getOrNull(i + 1)
+                            if (value != null && !value.separator) {
+                                if (substitutes(value.text)) kept += value.text
+                                i++
+                            }
+                        }
+                        word.startsWith("--message=") || cluster != null -> if (substitutes(word)) kept += word
+                        else -> kept += word
+                    }
+                    i++
+                }
+            } else {
+                val script = !token.separator && depth < MAX_DEPTH && token.text.any { it.isWhitespace() }
+                kept += if (script) withoutCommitMessages(token.text, depth + 1) else token.text
+                i++
+            }
+        }
+        return kept.joinToString(" ")
+    }
+
+    /** True when [text] holds a substitution, which a shell runs even inside a message. */
+    private fun substitutes(text: String): Boolean = "$(" in text || "`" in text
+
+    private const val GH = "gh"
+
+    /** A short option cluster of `git commit` that ends in `m`, `-m` or `-am`, with the message attached to it or not. */
+    private val SHORT_MESSAGE = Regex("-[A-Za-z]*?m(.*)")
+
+    /** The options git reads before its subcommand that take a separate value. */
+    private val GIT_OPTIONS_WITH_VALUE = setOf("-c", "-C", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env")
+
+    /**
+     * What splits a command into words: blanks, quotes, the shell's operators and list punctuation, once with `=` and
+     * once without, so `git -c x=y push` keeps `x=y` as the value of `-c` and `--exec=gh` still names `gh`.
+     */
+    private val WORD_BREAKS = listOf(Regex("""[\s'"`;|&<>(){}\[\],=]+"""), Regex("""[\s'"`;|&<>(){}\[\],]+"""))
+}
+
+/**
+ * A shell command as words (bl-135): split at blanks outside quotes, quotes removed, a backslash outside quotes
+ * escaping the next character, and `;`, `&`, `|` and a newline as separator tokens. Nothing is expanded, and an
+ * unterminated quote runs to the end of the text. It reads which commands a text runs for [DeniedCommands], it is not
+ * a shell.
+ */
+internal object ShellTokens {
+    /** One word, or a separator between two commands. */
+    data class Token(
+        val text: String,
+        val separator: Boolean = false,
+    )
+
+    private const val SEPARATORS = ";&|\n"
+
+    private const val DOUBLE_QUOTE_ESCAPES = "\"\\\$`"
+
+    fun of(command: String): List<Token> {
+        val tokens = mutableListOf<Token>()
+        val word = StringBuilder()
+        var inWord = false
+
+        fun endWord() {
+            if (inWord) tokens += Token(word.toString())
+            word.clear()
+            inWord = false
+        }
+
+        var i = 0
+        while (i < command.length) {
+            val c = command[i]
+            when {
+                c in SEPARATORS -> {
+                    endWord()
+                    tokens += Token(c.toString(), separator = true)
+                }
+                c.isWhitespace() -> endWord()
+                c == '\'' -> {
+                    val end = command.indexOf('\'', i + 1).let { if (it < 0) command.length else it }
+                    word.append(command, i + 1, end)
+                    inWord = true
+                    i = end
+                }
+                c == '"' -> {
+                    i++
+                    while (i < command.length && command[i] != '"') {
+                        if (command[i] == '\\' && i + 1 < command.length && command[i + 1] in DOUBLE_QUOTE_ESCAPES) i++
+                        word.append(command[i])
+                        i++
+                    }
+                    inWord = true
+                }
+                c == '\\' -> {
+                    if (i + 1 < command.length && command[i + 1] != '\n') word.append(command[i + 1])
+                    inWord = true
+                    i++
+                }
+                else -> {
+                    word.append(c)
+                    inWord = true
+                }
+            }
+            i++
+        }
+        endWord()
+        return tokens
+    }
 }
 
 /**

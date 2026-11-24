@@ -12,12 +12,17 @@ import loop.api.RunnerConfigException
  * makes the command a [RunnerConfigException] naming the key, so a command written for a shell fails when the config
  * is read instead of running with literal words: an operator (`|`, `&`, `;`, `<`, `>`, `(`, `)`), `$`, a backtick, a
  * glob (`*`, `?`, `[`) or a `~` that starts a word. So do an unterminated quote, a trailing backslash and an empty
- * program name.
+ * program name, and a program word that is an env assignment, `FOO=bar codex app-server` (bl-135): a shell would set
+ * `FOO` for codex, the launcher would run `FOO=bar` as the program and fail only at launch. The refusal names the
+ * variable, never its value, and points to `agent.env`.
  */
 internal object CommandWords {
     private const val SHELL_CHARACTERS = "|&;<>()\$`*?["
 
     private const val DOUBLE_QUOTE_ESCAPES = "\"\\\$`"
+
+    /** A word a shell reads as an env assignment, the variable name before its `=`. */
+    private val ASSIGNMENT = Regex("^([A-Za-z_][A-Za-z0-9_]*)=")
 
     /** The words of [command], see [CommandWords]; [key] names the setting in a refusal. */
     fun of(
@@ -69,7 +74,13 @@ internal object CommandWords {
             i++
         }
         if (inWord) words += word.toString()
-        if (words.firstOrNull().isNullOrEmpty()) throw RunnerConfigException("$key names no program")
+        val program = words.firstOrNull()
+        if (program.isNullOrEmpty()) throw RunnerConfigException("$key names no program")
+        ASSIGNMENT.find(program)?.let {
+            throw RunnerConfigException(
+                "$key starts with the env assignment ${it.groupValues[1]}, which no shell runs: set it in agent.env instead",
+            )
+        }
         return words
     }
 }
