@@ -1,7 +1,7 @@
 ---
 id: m4-13
 title: "Each tracker polled and reconciled on its own"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-47]
@@ -45,3 +45,29 @@ Out of this issue: the shared GitHub client and its rate limit hold (m4-48), rou
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-24 19:01Z loop: Loop opened pull request #42 for this issue: https://github.com/soulesidibe/Loop/pull/42
+
+2026-11-24 19:05Z loop: Loop did not merge pull request #42 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.73, at its worst verdict: impact.
+  - alignment: aligned, The diff polls, reconciles and filters each tracker on its own, and it adds the ledger tracker field, a TrackerPoll class and the decisions doc. The Orchestrator edit is mostly call sites, though some are per-tracker state lookups.
+  - impact: high, It changes the core poll, reconcile, retry, eligibility and handoff paths of the orchestrator for every project, and it changes what the ledger's tracker field holds.
+  - verification: strong, It adds TrackerPollTest, MultiTrackerOrchestratorTest and a CLI test on recorded GitHub answers. They cover merged order, own labels, a failing tracker, per-tracker terminal states, and the ledger field.
+  - rollback_cost: costly, A revert leaves ledger lines and rows already written with a tracker id where the kind used to be, which mixes two meanings in the same field. The store schema is unchanged.
+  - error_detection: loud, A tracker that fails is logged at error or warn level with its tracker id, and a test covers it. Its issues are skipped for that tick and their state is kept, so they are not dropped silently.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 10 of 21 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
+
+2026-11-24 19:12Z loop: Loop could not merge pull request #42: merging main at f25ee9cedcc50d74794d5fdebd8d5b89ac8ae843 into loop/m4-13 conflicts (conflict in docs/spec-decisions.md). The merge was aborted and the branch is unchanged. The next attempt merges refs/loop/base/main into its branch, resolves the conflict and submits the result again.
+
+2026-11-24 19:15Z loop: Loop updated pull request #42 for this issue: https://github.com/soulesidibe/Loop/pull/42
+
+2026-11-24 19:22Z loop: Loop did not merge pull request #42 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.73, at its worst verdict: impact.
+  - alignment: aligned, The diff polls, reconciles and filters each tracker on its own, adds the ledger tracker field, a TrackerPoll class and the decisions doc, with Orchestrator edits mostly replacing call sites.
+  - impact: high, It changes the core poll, reconcile, retry, eligibility and handoff paths of the orchestrator for every project, and the meaning of the ledger tracker field.
+  - verification: strong, New TrackerPollTest, MultiTrackerOrchestratorTest and a CLI test on recorded GitHub answers cover merged order, own labels, a failing tracker, per-tracker terminal states and the ledger field.
+  - rollback_cost: costly, A revert leaves ledger lines and rows written with a tracker id where the kind used to be, so one field then holds two meanings; the store schema is unchanged.
+  - error_detection: loud, A failing tracker is logged at error or warn level with its tracker id and covered by a test, and its issues keep their state for that tick instead of being dropped.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 11 of 21 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
