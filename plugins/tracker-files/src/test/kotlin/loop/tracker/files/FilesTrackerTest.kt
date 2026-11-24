@@ -302,6 +302,45 @@ class FilesTrackerTest {
     }
 
     @Test
+    fun `m4-17 the area front matter is read normalized, a list or one path, and no area is empty`() =
+        runTest {
+            issueFile("a-1", extra = "area: [spec-core/, ./docs/agents, spec-core]\n")
+            issueFile("a-2", extra = "area:\n  - plugins/tracker-files/src/main/kotlin/loop/tracker/files/FilesTracker.kt\n")
+            issueFile("a-3", extra = "area: cli\n")
+            issueFile("a-4", extra = "area: []\n")
+            issueFile("a-5", extra = "area:\n")
+            issueFile("a-6")
+            val tracker = tracker()
+
+            assertEquals(listOf("spec-core", "docs/agents"), tracker.todo("a-1").area)
+            assertEquals(listOf("plugins/tracker-files/src/main/kotlin/loop/tracker/files/FilesTracker.kt"), tracker.todo("a-2").area)
+            assertEquals(listOf("cli"), tracker.todo("a-3").area)
+            listOf("a-4", "a-5", "a-6").forEach { assertEquals(emptyList(), tracker.todo(it).area, it) }
+            assertEquals(listOf("spec-core", "docs/agents"), tracker.fetchIssuesByIds(listOf("a-1")).getOrThrow().single().area)
+            assertEquals(emptyList(), malformed)
+        }
+
+    @Test
+    fun `m4-17 a malformed area makes a malformed issue, skipped by states and failing a read by ids`() =
+        runTest {
+            issueFile("a-1")
+            issueFile("a-2", extra = "area: [spec-core/*]\n")
+            issueFile("a-3", extra = "area: [/etc]\n")
+            issueFile("a-4", extra = "area: [../other-repo]\n")
+            issueFile("a-5", extra = "area: [spec-core, [nested]]\n")
+            issueFile("a-6", extra = "area: {spec-core: true}\n")
+            issueFile("a-7", extra = "area: [\"\"]\n")
+            val tracker = tracker()
+
+            assertEquals(listOf("a-1"), tracker.fetchIssuesByStates(listOf("todo")).getOrThrow().map { it.id })
+            assertEquals(
+                (2..7).map { "a-$it-slug.md" },
+                malformed.map { Path.of(it.source).name }.sorted(),
+            )
+            assertIs<TrackerError.Malformed>(tracker.fetchIssuesByIds(listOf("a-2")).exceptionOrNull())
+        }
+
+    @Test
     fun `fetch by ids fails when a file is malformed`() =
         runTest {
             issueFile("a-1")

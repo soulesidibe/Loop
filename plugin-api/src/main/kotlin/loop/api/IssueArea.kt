@@ -7,17 +7,20 @@ package loop.api
  * the dispatch's rule, in `loop.core.trackers`.
  */
 public object IssueArea {
-    /** Characters of a glob pattern: an area names paths, never patterns. */
-    private val GLOB = setOf('*', '?', '[', ']', '{', '}')
+    /**
+     * Characters refused in an entry: those of a glob pattern, since an area names paths, never patterns, the
+     * backslash, and the backtick, which quotes a path in markdown and is never part of one in practice.
+     */
+    private val REFUSED = setOf('*', '?', '[', ']', '{', '}', '\\', '`')
 
     /**
      * [entry] normalized: trimmed, without `.` or empty segments and without a trailing slash, so `./spec-core/` is
      * `spec-core`. Null when it is no repository relative path: blank, absolute, holding a `..` segment, a glob
-     * character, a backslash or a control character, or naming the repository root itself (`.`).
+     * character, a backslash, a backtick or a control character, or naming the repository root itself (`.`).
      */
     public fun normalize(entry: String): String? {
         val trimmed = entry.trim()
-        if (trimmed.startsWith("/") || trimmed.any { it in GLOB || it == '\\' || it.isISOControl() }) return null
+        if (trimmed.startsWith("/") || trimmed.any { it in REFUSED || it.isISOControl() }) return null
         val segments = trimmed.split("/").filter { it.isNotEmpty() && it != "." }
         if (segments.isEmpty() || ".." in segments) return null
         return segments.joinToString("/")

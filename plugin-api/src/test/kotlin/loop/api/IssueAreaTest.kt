@@ -38,6 +38,7 @@ class IssueAreaTest {
             "spec-core/{a,b}",
             "spec-core\\src",
             "spec-core\tsrc",
+            "`spec-core`",
         ).forEach { assertNull(IssueArea.normalize(it), "\"$it\"") }
     }
 

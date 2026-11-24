@@ -24,7 +24,8 @@ import kotlin.time.Instant
  * prompt is rendered (bl-06). Only authors in `trusted_associations` reach the agent (bl-157): an issue by another
  * author is blocked, a comment by one is left out. A candidate with native blockers is blocked until each one is closed as
  * completed, see [GitHubBlockers] (bl-158). Writes (m2-23): a move to a handoff state is a label change, a move to `open` or
- * `closed` patches the issue state, a comment is posted as given. A write is never retried inside a call.
+ * `closed` patches the issue state, a comment is posted as given. A write is never retried inside a call. A column 0
+ * `Area:` line of the body is the issue's area (m4-17), see [GitHubArea]; a malformed one is ignored with a warning.
  */
 class GitHubTracker(
     private val settings: GitHubTrackerSettings,
@@ -41,6 +42,8 @@ class GitHubTracker(
      * rate limit hold with pull request delivery and every other tracker of that origin and token. Its own by default.
      */
     clients: GitHubClients = GitHubClients(transport, clock),
+    /** Gets one operator warning per issue and malformed `Area:` line (m4-17), the first time it is read. */
+    private val onWarning: (String) -> Unit = {},
 ) : TrackerAdapter {
     init {
         require(pageSize in 1..MAX_PAGE_SIZE) { "pageSize must be 1 to $MAX_PAGE_SIZE, got $pageSize" }
@@ -60,6 +63,9 @@ class GitHubTracker(
     private val scope = settings.scopeLabels.map { it.lowercase() }
 
     private val trusted = settings.trustedAssociations.map { it.uppercase() }.toSet()
+
+    /** Issue and malformed `Area:` line pairs already warned about, so each is warned once per process (m4-17). */
+    private val warnedAreas = ConcurrentHashMap.newKeySet<Pair<String, String>>()
 
     /** GitHub's comment count of every issue this tracker read, by id, as of its latest read (bl-06). */
     private val commentCounts = ConcurrentHashMap<String, Long>()
@@ -377,9 +383,14 @@ class GitHubTracker(
                     ?.toIntOrNull() != null
             }
         val association = item.association()
+        val identifier = "${settings.repo}-$number"
+        val area = GitHubArea.read(item.string("body"))
+        if (area.malformed != null && warnedAreas.add("$number" to area.malformed)) {
+            onWarning("$identifier: the line `${area.malformed}` is malformed, so $identifier runs with no area.")
+        }
         return Issue(
             id = "$number",
-            identifier = "${settings.repo}-$number",
+            identifier = identifier,
             title = title,
             state = state,
             priority = priorities.minOrNull(),
@@ -396,6 +407,7 @@ class GitHubTracker(
                     (item["id"] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull?.let { put("database_id", "$it") }
                     item.string("html_url")?.let { put("url", it) }
                 },
+            area = area.area,
         ).also { issue -> item.commentCount()?.let { commentCounts[issue.id] = it } ?: commentCounts.remove(issue.id) }
     }
 

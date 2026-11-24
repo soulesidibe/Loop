@@ -23,6 +23,7 @@ class GitHubTrackerTest {
     private val github = FakeGitHub()
     private val clock = TestClock(Instant.parse("2026-11-12T15:00:00Z"))
     private val malformed = mutableListOf<TrackerError.Malformed>()
+    private val warnings = mutableListOf<String>()
 
     private fun tracker(
         repo: String = "Hello-World",
@@ -35,6 +36,7 @@ class GitHubTrackerTest {
         clock,
         onMalformed = { malformed += it },
         pageSize = pageSize,
+        onWarning = { warnings += it },
     )
 
     private fun simulate(vararg issues: JsonObject) {
@@ -100,6 +102,55 @@ class GitHubTrackerTest {
                 assertTrue(issues.all { it.labels == listOf("ready-for-agent") && it.state == "open" }, "$issues")
             }
             assertEquals(emptyList(), malformed)
+        }
+
+    @Test
+    fun `m4-17 a column 0 Area line of the body is read into the area, normalized, from both reads`() =
+        runTest {
+            simulate(
+                FakeGitHub.issue(1, body = "Some text.\n\nArea: spec-core/, ./docs/agents , spec-core\n\nMore text."),
+                FakeGitHub.issue(2, body = "Area: cli\r\nArea: docs"),
+                FakeGitHub.issue(3, body = "No area here."),
+                FakeGitHub.issue(4, body = null),
+                FakeGitHub.issue(5, body = "```\nArea: spec-core\n```\n  Area: cli\narea: docs\nThe Area: line is prose."),
+            )
+            val tracker = tracker()
+
+            val listed = tracker.fetchIssuesByStates(listOf("open")).getOrThrow()
+            val byId = tracker.fetchIssuesByIds(listOf("1", "2", "3", "4", "5")).getOrThrow()
+
+            for (issues in listOf(listed, byId)) {
+                assertEquals(
+                    listOf(listOf("spec-core", "docs/agents"), listOf("cli", "docs"), emptyList(), emptyList(), emptyList()),
+                    issues.map { it.area },
+                )
+            }
+            assertEquals(emptyList(), warnings)
+        }
+
+    @Test
+    fun `m4-17 a malformed Area line is ignored with one warning, the issue runs with no area`() =
+        runTest {
+            simulate(
+                FakeGitHub.issue(1, body = "Area: spec-core/*"),
+                FakeGitHub.issue(2, body = "Area: spec-core, , docs"),
+                FakeGitHub.issue(3, body = "Area: the `Issue` model in `plugin-api`"),
+                FakeGitHub.issue(4, body = "Area:"),
+                FakeGitHub.issue(5, body = "Area: cli\nArea: /etc"),
+            )
+            val tracker = tracker()
+
+            val issues = tracker.fetchIssuesByStates(listOf("open")).getOrThrow()
+            tracker.fetchIssuesByStates(listOf("open")).getOrThrow()
+
+            assertEquals(List(5) { emptyList<String>() }, issues.map { it.area })
+            assertEquals(List(5) { null }, issues.map { it.blockedReason }, "a malformed area blocks nothing")
+            assertEquals(emptyList(), malformed)
+            assertEquals(5, warnings.size, "one warning per issue, not one per read: $warnings")
+            assertEquals(
+                "Hello-World-1: the line `Area: spec-core/*` is malformed, so Hello-World-1 runs with no area.",
+                warnings.first(),
+            )
         }
 
     @Test

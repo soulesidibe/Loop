@@ -69,6 +69,12 @@ class GitHubTrackerProvider : TrackerProvider {
         clients: GitHubClients,
     ): TrackerAdapter {
         require(settings is GitHubTrackerSettings) { "the github tracker is built from the settings its parse read" }
-        return GitHubTracker(settings, onMalformed = context.onMalformed, requiredLabels = context.requiredLabels, clients = clients)
+        return GitHubTracker(
+            settings,
+            onMalformed = context.onMalformed,
+            requiredLabels = context.requiredLabels,
+            clients = clients,
+            onWarning = context.onWarning,
+        )
     }
 }
