@@ -13,7 +13,6 @@ import loop.api.QueuedRetry
 import loop.api.RetryState
 import loop.api.RetryStates
 import loop.api.RunId
-import loop.api.TrackerAdapter
 import loop.core.events.EventDefinition
 import loop.core.events.HumanTouched
 import loop.core.events.IssueCommented
@@ -26,6 +25,8 @@ import loop.core.log.KeyValueLog
 import loop.core.log.LogContext
 import loop.core.log.LogLevel
 import loop.core.log.LogOutcome
+import loop.core.trackers.TrackerPoll
+import loop.core.trackers.TrackerRead
 import loop.core.workflow.PromptVariables
 import loop.core.workflow.WorkflowFile
 import kotlin.coroutines.cancellation.CancellationException
@@ -63,7 +64,8 @@ internal data class RetryFire(
  * of a new process. The workflow is passed on every call, never cached, since m1-15 swaps it.
  */
 internal class RetryCoordinator(
-    private val tracker: TrackerAdapter,
+    /** m4-13: every tracker of the run, each issue read by id from its own. */
+    private val tracker: TrackerPoll,
     private val parked: ParkedIssues,
     private val sink: EventSink,
     private val sinkName: String,
@@ -144,21 +146,18 @@ internal class RetryCoordinator(
         if (records.isEmpty()) return pending
         val candidatesById = candidates.associateBy { it.id }
         val missing = records.map { it.issueId }.filter { it !in candidatesById }
-        val result = if (missing.isEmpty()) Result.success(emptyList()) else fetchByIds(missing)
-        result.exceptionOrNull()?.let { error ->
-            log.log(LogLevel.WARN, "tracker", LogOutcome.FAILED, pollContext, reason = error.describe())
-        }
-        // Null when the by-id fetch failed.
-        val fetched: Map<String, Issue>? = result.getOrNull()?.associateBy { it.id }
+        val read = fetchByIds(missing)
+        // m4-13: the parks of a tracker whose read failed stay parked this tick, the others go on.
+        val fetched: Map<String, Issue> = read.issues.associateBy { it.id }
         val still = pending.toMutableSet()
         for (record in records) {
             val candidate = candidatesById[record.issueId]
-            if (candidate == null && fetched == null) {
+            if (candidate == null && !read.answered(record.issueId)) {
                 // The by-id fetch failed: no change can be seen this tick.
                 still += record.issueId
                 continue
             }
-            val current = candidate ?: fetched?.get(record.issueId)
+            val current = candidate ?: fetched[record.issueId]
             if (current == null) {
                 // The tracker no longer has the issue: nothing left to keep parked.
                 parked.unpark(projectId, record.issueId).onFailure { warnStore(it, record.issueId, record.identifier) }
@@ -219,6 +218,8 @@ internal class RetryCoordinator(
         workflow: WorkflowFile,
         busy: Set<String> = emptySet(),
         parked: Set<String> = emptySet(),
+        /** m4-13: false for an issue whose tracker failed this tick's poll, so its absence says nothing. */
+        polled: (String) -> Boolean = { true },
     ): RetryFire {
         for (issueId in parked) {
             if (queue.snapshot(issueId) == null) continue
@@ -227,7 +228,7 @@ internal class RetryCoordinator(
         }
         // An issue with a kept counter and no entry that is no longer fetched by the
         // active states left them: its counter resets (spec decisions answer 5).
-        unsaved += queue.forgetAbsent(candidates.map { it.id }.toSet())
+        unsaved += queue.forgetAbsent(candidates.map { it.id }.toSet(), polled)
         val now = clock.now()
         val due = queue.due(now).filter { it.issueId !in busy }
         if (due.isEmpty()) {
@@ -237,19 +238,16 @@ internal class RetryCoordinator(
         val handled = due.map { it.issueId }.toSet()
         unsaved += handled
         val refreshed = fetchByIds(due.map { it.issueId })
-        val issues = refreshed.getOrNull()?.associateBy { it.id }
-        if (issues == null) {
-            log.log(LogLevel.WARN, "tracker", LogOutcome.FAILED, pollContext, reason = refreshed.exceptionOrNull()?.describe())
-            for (entry in due) {
+        val issues = refreshed.issues.associateBy { it.id }
+        val dispatch = mutableListOf<DueRetry>()
+        for (entry in due) {
+            // m4-13: the retries of a tracker whose refresh failed are rescheduled, the others go on.
+            if (!refreshed.answered(entry.issueId)) {
                 val counts = rescheduleCounts(entry, workflow)
                 val next = queue.onRefreshFailed(entry.issueId, now, workflow.config.agent.maxRetryBackoffMs) ?: continue
                 scheduled(next, (next.dueAt - now).inWholeMilliseconds, queue.failures(entry.issueId), attemptId = null, counts)
+                continue
             }
-            save()
-            return RetryFire(emptyList(), handled)
-        }
-        val dispatch = mutableListOf<DueRetry>()
-        for (entry in due) {
             val issue = issues[entry.issueId]
             if (issue == null) {
                 queue.drop(entry.issueId, resetCounter = false)
@@ -691,14 +689,14 @@ internal class RetryCoordinator(
         attemptId: AttemptId? = null,
     ): LogContext = LogContext(runId = runId, projectId = projectId, issueId = issueId, issueIdentifier = identifier, attemptId = attemptId)
 
-    private suspend fun fetchByIds(ids: List<String>): Result<List<Issue>> =
-        try {
-            tracker.fetchIssuesByIds(ids)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
+    /** [ids] read by id, each from its own tracker (m4-13); each tracker that fails is logged with its id. */
+    private suspend fun fetchByIds(ids: List<String>): TrackerRead {
+        val read = tracker.readByIds(ids)
+        read.failures.forEach { (id, error) ->
+            log.log(LogLevel.WARN, "tracker", LogOutcome.FAILED, pollContext, fields = mapOf("tracker" to id), reason = error.describe())
         }
+        return read
+    }
 
     private companion object {
         const val TRACKER_CHANGED = IssueUnparked.TRACKER_CHANGED
@@ -753,12 +751,12 @@ internal enum class RetryTarget {
             issue: Issue,
             workflow: WorkflowFile,
         ): RetryTarget {
-            val state = issue.state.normalized()
-            val labels = issue.labels.normalizedSet()
+            // m4-13: judged by the issue's own tracker; an issue whose tracker left the workflow is no longer active.
+            val own = workflow.trackers.trackerOf(issue.id) ?: return NotActive
             return when {
-                state in workflow.terminalStates.map { it.normalized() } -> Terminal
-                state !in workflow.activeStates.map { it.normalized() } -> NotActive
-                !workflow.requiredLabels.map { it.normalized() }.all { it.isNotEmpty() && it in labels } -> NotEligible
+                own.isTerminal(issue.state) -> Terminal
+                !own.isActive(issue.state) -> NotActive
+                !own.hasRequiredLabels(issue.labels) -> NotEligible
                 // A blocked issue also ends a running attempt at its next turn boundary.
                 !issue.dispatchable -> NotEligible
                 else -> Eligible
