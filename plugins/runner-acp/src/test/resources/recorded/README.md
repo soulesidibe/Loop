@@ -12,6 +12,7 @@ Real scrubbed ACP JSON-RPC 2.0 server transcripts recorded from `agy 1.5.16` wit
 | `permission_request.jsonl` | `agy 1.5.16` | Two `session/request_permission` requests in one turn (`cat hello.txt` allowed with `allow_once`, `cat /tmp/loop-holdout/secret.txt` declined with `reject_once`) | 2026-11-24 |
 | `cancelled_turn.jsonl` | `agy 1.5.16` | Turn interrupted by `session/cancel` returning `stopReason: "cancelled"` with partial `result.usage` | 2026-11-24 |
 | `session_load_missing.jsonl` | `agy 1.5.16` | `initialize` and `session/load` for an unknown session id, returning `-32002 Session not found` | 2026-11-24 |
+| `bare_model_turn.jsonl` | `agy 1.5.16` | Full single turn on bare model id `gemini-pro-orchestrator-neon` (no `-thought_level` suffix) | 2026-11-24 |
 
 ## Check before committing
 

@@ -3,9 +3,13 @@ package loop.runner.acp
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.IOException
+import java.io.UncheckedIOException
+import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.DirectoryNotEmptyException
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
+import java.time.Instant
 import java.util.Comparator
 import java.util.UUID
 
@@ -17,6 +21,10 @@ import java.util.UUID
  * `$LOOP_HOME/attempts/<project>/<attempt>/agy-gemini-<id>`; otherwise it lives under
  * `$HOME/.loop-agy/<attempt>-<id>`. Contains `antigravity-cli/settings.json` with
  * `{"toolPermission": "strict", "allowNonWorkspaceAccess": false}`, and is deleted when the session stops.
+ *
+ * Fallback directories are populated under a hidden `.tmp-<id>` staging folder and atomically moved
+ * into place after writing both `settings.json` and `.loop-pid`, so a concurrent `sweepStale` never
+ * races with directory creation.
  */
 internal class AgyIsolationDir private constructor(
     /** Absolute path of the created directory on disk. */
@@ -44,10 +52,14 @@ internal class AgyIsolationDir private constructor(
             null
         } catch (e: IOException) {
             "could not remove isolated agy directory $path: ${e.message}"
+        } catch (e: UncheckedIOException) {
+            "could not remove isolated agy directory $path: ${e.cause?.message ?: e.message}"
         }
 
     companion object {
         const val FALLBACK_ROOT_NAME: String = ".loop-agy"
+        private const val STAGING_PREFIX = ".tmp-"
+        private const val STAGING_GRACE_SECONDS = 60L
         private const val PID_FILE_NAME = ".loop-pid"
         private const val SETTINGS_SUBDIR = "antigravity-cli"
         private const val SETTINGS_FILE = "settings.json"
@@ -62,9 +74,13 @@ internal class AgyIsolationDir private constructor(
         /**
          * Removes stale directories under `$HOME/.loop-agy/` left behind by crashed JVM runs (any
          * subdirectory whose `.loop-pid` file is missing or names a PID that is no longer alive).
+         * Staging directories (`.tmp-*`) younger than [stagingGraceSeconds] are skipped so a
+         * concurrent [create] call is never interrupted mid-creation.
          */
         fun sweepStale(
             homeDir: Path,
+            now: Instant = Instant.now(),
+            stagingGraceSeconds: Long = STAGING_GRACE_SECONDS,
             isPidAlive: (Long) -> Boolean = { pid -> ProcessHandle.of(pid).map { it.isAlive }.orElse(false) },
         ): List<String> {
             val fallbackRoot = canonicalizeBase(homeDir).resolve(FALLBACK_ROOT_NAME)
@@ -75,9 +91,16 @@ internal class AgyIsolationDir private constructor(
                     Files.list(fallbackRoot).use { it.toList() }
                 } catch (e: IOException) {
                     return listOf("could not list $fallbackRoot: ${e.message}")
+                } catch (e: UncheckedIOException) {
+                    return listOf("could not list $fallbackRoot: ${e.cause?.message ?: e.message}")
                 }
             for (child in children) {
                 if (!Files.isDirectory(child)) continue
+                val name = child.fileName?.toString().orEmpty()
+                if (name.startsWith(STAGING_PREFIX)) {
+                    val mtime = runCatching { Files.getLastModifiedTime(child).toInstant() }.getOrNull()
+                    if (mtime == null || mtime.isAfter(now.minusSeconds(stagingGraceSeconds))) continue
+                }
                 val pid =
                     runCatching {
                         val pidFile = child.resolve(PID_FILE_NAME)
@@ -90,6 +113,8 @@ internal class AgyIsolationDir private constructor(
                     }
                 } catch (e: IOException) {
                     errors += "could not remove stale agy directory $child: ${e.message}"
+                } catch (e: UncheckedIOException) {
+                    errors += "could not remove stale agy directory $child: ${e.cause?.message ?: e.message}"
                 }
             }
             try {
@@ -146,11 +171,21 @@ internal class AgyIsolationDir private constructor(
                 "isolated agy directory must be relative under HOME: $relativePath"
             }
 
-            val settingsPath = targetDir.resolve(SETTINGS_SUBDIR).resolve(SETTINGS_FILE)
-            Files.createDirectories(settingsPath.parent)
-            Files.writeString(settingsPath, SETTINGS_JSON, Charsets.UTF_8)
             if (fallbackParent != null) {
-                Files.writeString(targetDir.resolve(PID_FILE_NAME), ownerPid.toString(), Charsets.UTF_8)
+                val stagingDir = fallbackParent.resolve("$STAGING_PREFIX$uniqueId-${UUID.randomUUID().toString().take(6)}")
+                val settingsPath = stagingDir.resolve(SETTINGS_SUBDIR).resolve(SETTINGS_FILE)
+                Files.createDirectories(settingsPath.parent)
+                Files.writeString(settingsPath, SETTINGS_JSON, Charsets.UTF_8)
+                Files.writeString(stagingDir.resolve(PID_FILE_NAME), ownerPid.toString(), Charsets.UTF_8)
+                try {
+                    Files.move(stagingDir, targetDir, StandardCopyOption.ATOMIC_MOVE)
+                } catch (ignored: AtomicMoveNotSupportedException) {
+                    Files.move(stagingDir, targetDir)
+                }
+            } else {
+                val settingsPath = targetDir.resolve(SETTINGS_SUBDIR).resolve(SETTINGS_FILE)
+                Files.createDirectories(settingsPath.parent)
+                Files.writeString(settingsPath, SETTINGS_JSON, Charsets.UTF_8)
             }
             return AgyIsolationDir(targetDir, relativePath, fallbackParent)
         }

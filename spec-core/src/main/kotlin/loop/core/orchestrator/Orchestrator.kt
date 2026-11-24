@@ -2551,6 +2551,7 @@ class Orchestrator(
             }
 
             val codeKind = workflow.config.kinds?.code
+            val configuredBase = codeKind?.guards?.base ?: codeKind?.delivery?.pullRequest?.base
             val ctx =
                 AttemptContext(
                     runId = runId,
@@ -2559,7 +2560,7 @@ class Orchestrator(
                     attemptId = attemptId,
                     workspace = workspace.path,
                     env = env,
-                    baseRef = fetchedBase ?: codeKind?.guards?.base ?: codeKind?.delivery?.pullRequest?.base,
+                    baseRef = resolveAttemptBaseRef(workspace.path, fetchedBase, configuredBase),
                 )
             thresholds = TokenThresholds(thresholdEvery, recordedThreshold())
             // An issue or a day already past its budget parks before a turn spends more (m2-20).
@@ -3664,11 +3665,39 @@ class Orchestrator(
         }
 
         /** The commit `refs/loop/base/[base]` of the project repository is at, null when it has none or git fails (bl-59). */
-        private suspend fun lastFetchedBase(base: String): String? =
+        private suspend fun lastFetchedBase(base: String): String? = resolveGitCommit(workflow.path.parent, MergeCheck.baseRef(base))
+
+        /**
+         * Resolves the attempt base ref to an immutable commit SHA on the host side before the agent
+         * starts, so the agent cannot move a branch ref inside the workspace to defeat pre-turn checks.
+         */
+        private suspend fun resolveAttemptBaseRef(
+            workspace: Path,
+            fetchedBase: String?,
+            configuredBase: String?,
+        ): String? {
+            if (fetchedBase != null) return fetchedBase
+            val candidates =
+                if (configuredBase != null) {
+                    listOf(configuredBase)
+                } else {
+                    listOf("main", "master", "origin/HEAD")
+                }
+            for (candidate in candidates) {
+                resolveGitCommit(workflow.path.parent, candidate)?.let { return it }
+                resolveGitCommit(workspace, candidate)?.let { return it }
+            }
+            return configuredBase
+        }
+
+        private suspend fun resolveGitCommit(
+            dir: Path,
+            ref: String,
+        ): String? =
             try {
                 withContext(io) {
                     workspaceGit
-                        .run(workflow.path.parent, "rev-parse", "--verify", "-q", "${MergeCheck.baseRef(base)}^{commit}")
+                        .run(dir, "rev-parse", "--verify", "-q", "$ref^{commit}")
                         .takeIf { it.code == 0 }
                         ?.stdout
                         ?.trim()

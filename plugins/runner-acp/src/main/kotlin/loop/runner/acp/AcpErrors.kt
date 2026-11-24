@@ -16,8 +16,9 @@ import kotlin.time.Duration.Companion.seconds
  * Classifies structured ACP JSON-RPC errors into [RunnerEvent.TurnFailed.Category.RunnerUnavailable]
  * or ordinary failures (`null`), aligned with `RunnerEvent.kt` (`bl-39`, `bl-141`) and `m4-08`.
  *
- * Only structured JSON-RPC error responses are passed here, never raw agent stdout/stderr text or
- * process exit codes.
+ * Matches only structured JSON-RPC codes, structured HTTP statuses, explicit error class or enum
+ * identifiers, and whole-token POSIX/Node transport errno codes (with no HTTP status), never loose
+ * free-text phrases or raw agent stdout/stderr lines.
  */
 internal object AcpErrors {
     data class Classification(
@@ -29,74 +30,57 @@ internal object AcpErrors {
 
     private val UNAVAILABLE_HTTP_STATUSES = setOf(401L, 403L, 429L, 503L, 529L)
 
-    private val MODEL_REFUSAL_MARKERS =
-        listOf(
-            "unknown model",
+    private val STRUCTURED_MODEL_CODES =
+        setOf(
             "model_not_found",
             "modelnotfound",
-            "model not found",
-            "unsupported model",
+            "unknown_model",
+            "unsupported_model",
         )
 
-    private val AUTH_AND_ELIGIBILITY_MARKERS =
-        listOf(
+    private val STRUCTURED_AUTH_CODES =
+        setOf(
             "ineligibletiererror",
             "unauthenticated",
-            "authentication required",
             "auth_required",
-            "expired login",
-            "login expired",
-            "token expired",
-            "invalid credentials",
-            "not logged in",
-            "http 401",
-            "http 403",
-            "status 401",
-            "status 403",
-            "401 unauthorized",
-            "403 forbidden",
+            "authentication_required",
+            "invalid_credentials",
+            "token_expired",
         )
 
-    private val RATE_LIMIT_AND_OVERLOAD_MARKERS =
-        listOf(
+    private val STRUCTURED_RATE_LIMIT_CODES =
+        setOf(
             "rate_limit",
-            "rate limit",
-            "too many requests",
-            "quota exceeded",
+            "rate_limited",
+            "rate_limit_exceeded",
             "quota_exceeded",
             "resource_exhausted",
-            "overloaded",
-            "http 429",
-            "status 429",
-            "429 too many requests",
-            "503 service unavailable",
-            "529 overloaded",
+            "overloaded_error",
         )
 
-    private val NETWORK_TRANSPORT_MARKERS =
+    private val HTTP_STATUS_LINE_PATTERNS =
         listOf(
-            "econnrefused",
-            "econnreset",
-            "etimedout",
-            "enotfound",
-            "eai_again",
-            "ehostunreach",
-            "enetunreach",
-            "connection refused",
-            "connection reset",
-            "network error",
-            "network is unreachable",
-            "socket hang up",
-            "fetch failed",
-            "unable to connect",
-            "dns lookup failed",
-            "tls handshake",
+            Regex("""\bhttp\s+401\b"""),
+            Regex("""\bhttp\s+403\b"""),
+            Regex("""\bhttp\s+429\b"""),
+            Regex("""\bhttp\s+503\b"""),
+            Regex("""\bhttp\s+529\b"""),
+            Regex("""\b401\s+unauthorized\b"""),
+            Regex("""\b403\s+forbidden\b"""),
+            Regex("""\b429\s+too\s+many\s+requests\b"""),
+            Regex("""\b503\s+service\s+unavailable\b"""),
+            Regex("""\b529\s+overloaded\b"""),
         )
+
+    private val ERRNO_TOKEN =
+        Regex("""\b(econnrefused|econnreset|etimedout|enotfound|eai_again|ehostunreach|enetunreach)\b""")
+
+    private val IDENTIFIER_TOKEN = Regex("""[a-z0-9_]+""")
 
     /**
      * Classifies a structured JSON-RPC error response for [method]. Returns `RunnerUnavailable` only
-     * for authentication/eligibility/access failures, rate limit/quota/overload, model refusals, or
-     * runtime-reported network transport failures with no HTTP status.
+     * for structured model refusals, authentication/eligibility codes or 401/403 statuses, rate limit
+     * or overload codes or 429/503/529 statuses, or POSIX/Node transport errno codes with no HTTP status.
      */
     fun classify(
         method: String?,
@@ -107,10 +91,12 @@ internal object AcpErrors {
         val dataObj = data as? JsonObject
         val httpStatus = extractHttpStatus(dataObj)
         val combined = buildSearchText(message, dataObj)
+        val tokens = IDENTIFIER_TOKEN.findAll(combined).map { it.value }.toSet()
 
         val isModelRefusal =
             (method == AcpHandshake.METHOD_SESSION_SET_MODEL && code == INVALID_PARAMS_CODE) ||
-                MODEL_REFUSAL_MARKERS.any { it in combined }
+                "unknown model id" in combined ||
+                tokens.any { it in STRUCTURED_MODEL_CODES }
         if (isModelRefusal) {
             return Classification(RunnerEvent.TurnFailed.Category.RunnerUnavailable)
         }
@@ -122,13 +108,18 @@ internal object AcpErrors {
             )
         }
 
-        val isAuthOrEligibility = AUTH_AND_ELIGIBILITY_MARKERS.any { it in combined }
-        if (isAuthOrEligibility) {
+        if (HTTP_STATUS_LINE_PATTERNS.any { it.containsMatchIn(combined) }) {
+            return Classification(
+                category = RunnerEvent.TurnFailed.Category.RunnerUnavailable,
+                retryAfter = extractRetryAfter(dataObj),
+            )
+        }
+
+        if (tokens.any { it in STRUCTURED_AUTH_CODES }) {
             return Classification(RunnerEvent.TurnFailed.Category.RunnerUnavailable)
         }
 
-        val isRateLimitOrOverload = RATE_LIMIT_AND_OVERLOAD_MARKERS.any { it in combined }
-        if (isRateLimitOrOverload) {
+        if (tokens.any { it in STRUCTURED_RATE_LIMIT_CODES }) {
             return Classification(
                 category = RunnerEvent.TurnFailed.Category.RunnerUnavailable,
                 retryAfter = extractRetryAfter(dataObj),
@@ -137,7 +128,7 @@ internal object AcpErrors {
 
         // m4-08: a transport failure with no HTTP status at all is RunnerUnavailable; one with an HTTP
         // status outside the unavailability set reached the server and is an ordinary failure.
-        if (httpStatus == null && NETWORK_TRANSPORT_MARKERS.any { it in combined }) {
+        if (httpStatus == null && ERRNO_TOKEN.containsMatchIn(combined)) {
             return Classification(RunnerEvent.TurnFailed.Category.RunnerUnavailable)
         }
 

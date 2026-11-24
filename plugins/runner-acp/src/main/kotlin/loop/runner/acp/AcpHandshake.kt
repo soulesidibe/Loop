@@ -112,8 +112,19 @@ internal class AcpHandshake(
     private var pendingMethod: String? = null
     private var pendingPromptText: String? = null
     private var mcpServers: JsonArray = JsonArray(emptyList())
-    private var observedModelDuringSetModel: String? = null
+    private var observedModelDuringSetModel: ReportedModel? = null
     private var awaitingPostSetModelVerification: Boolean = false
+
+    private data class ReportedModel(
+        val bare: String,
+        val withThoughtLevel: String?,
+    ) {
+        val display: String get() = withThoughtLevel ?: bare
+
+        fun matches(expected: String): Boolean = expected == bare || (withThoughtLevel != null && expected == withThoughtLevel)
+
+        fun preferredFor(expected: String?): String = if (expected != null && matches(expected)) expected else display
+    }
 
     /** The ACP session id established by `session/new` or `session/load`. */
     var acpSessionId: String? = null
@@ -210,12 +221,12 @@ internal class AcpHandshake(
      */
     fun observeNotification(frame: AcpFrame.Notification): AcpHandshakeFailure.ModelMismatch? {
         val reported = extractModelFromSessionUpdate(frame) ?: return null
-        activeModelId = reported
+        val expected = configuredModel
+        activeModelId = reported.preferredFor(expected)
         if (awaitingPostSetModelVerification) {
             awaitingPostSetModelVerification = false
-            val expected = configuredModel
-            if (expected != null && reported != expected) {
-                return AcpHandshakeFailure.ModelMismatch(expected = expected, actual = reported)
+            if (expected != null && !reported.matches(expected)) {
+                return AcpHandshakeFailure.ModelMismatch(expected = expected, actual = reported.display)
             }
         }
         return null
@@ -354,7 +365,7 @@ internal class AcpHandshake(
             }
         acpSessionId = sid
         if (activeModelId == null) {
-            activeModelId = extractModelFromSetModelResult(result)
+            activeModelId = extractModelFromSetModelResult(result)?.display
         }
 
         if (preset == AcpSettings.PRESET_AGY) {
@@ -385,9 +396,10 @@ internal class AcpHandshake(
         val expected = checkNotNull(configuredModel) { "runners.acp.model is required when runners.acp.preset is agy" }
         val reported = extractModelFromSetModelResult(result) ?: observedModelDuringSetModel
         if (reported != null) {
-            if (reported != expected) {
-                return Step.Failed(AcpHandshakeFailure.ModelMismatch(expected = expected, actual = reported))
+            if (!reported.matches(expected)) {
+                return Step.Failed(AcpHandshakeFailure.ModelMismatch(expected = expected, actual = reported.display))
             }
+            activeModelId = reported.preferredFor(expected)
             awaitingPostSetModelVerification = false
         } else {
             // Real agy answers session/set_model with {} and sends config_option_update next; verify on arrival.
@@ -467,7 +479,7 @@ internal class AcpHandshake(
             return !primitive.isString && primitive.content == expected.toString()
         }
 
-        private fun extractModelFromSessionUpdate(frame: AcpFrame.Notification): String? {
+        private fun extractModelFromSessionUpdate(frame: AcpFrame.Notification): ReportedModel? {
             if (frame.method != METHOD_SESSION_UPDATE) return null
             val params = frame.params as? JsonObject ?: return null
             val update = params["update"] as? JsonObject ?: return null
@@ -477,16 +489,18 @@ internal class AcpHandshake(
             return modelFromConfigOptions(options)
         }
 
-        private fun extractModelFromSetModelResult(result: JsonObject): String? {
-            (result["modelId"] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull?.let { return it }
-            (result["currentModelId"] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull?.let { return it }
+        private fun extractModelFromSetModelResult(result: JsonObject): ReportedModel? {
+            (result["modelId"] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull?.let { return ReportedModel(it, null) }
+            (result["currentModelId"] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull?.let { return ReportedModel(it, null) }
             val models = result["models"] as? JsonObject
-            (models?.get("currentModelId") as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull?.let { return it }
+            (models?.get("currentModelId") as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull?.let {
+                return ReportedModel(it, null)
+            }
             val options = result["configOptions"] as? JsonArray
             return options?.let(::modelFromConfigOptions)
         }
 
-        private fun modelFromConfigOptions(options: JsonArray): String? {
+        private fun modelFromConfigOptions(options: JsonArray): ReportedModel? {
             val objs = options.mapNotNull { it as? JsonObject }
             val model =
                 objs
@@ -503,11 +517,13 @@ internal class AcpHandshake(
                     ?.let { it as? JsonPrimitive }
                     ?.takeIf { it.isString }
                     ?.contentOrNull
-            return if (thoughtLevel != null && !model.endsWith("-$thoughtLevel")) {
-                "$model-$thoughtLevel"
-            } else {
-                model
-            }
+            val combined =
+                if (thoughtLevel != null && !model.endsWith("-$thoughtLevel")) {
+                    "$model-$thoughtLevel"
+                } else {
+                    null
+                }
+            return ReportedModel(bare = model, withThoughtLevel = combined)
         }
     }
 }

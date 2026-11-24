@@ -211,6 +211,30 @@ class RecordedAcpSessionsTest {
         )
     }
 
+    @Test
+    fun `replays recorded agy 1_5_16 bare model id without thought level suffix`() {
+        val lines = resourceLines("/recorded/bare_model_turn.jsonl")
+        val server = replayServer(dir.resolve("bare"), lines)
+        val runner =
+            AcpRunner(
+                settings =
+                    AcpSettings(
+                        command = server.agyCommand,
+                        preset = AcpSettings.PRESET_AGY,
+                        model = "gemini-pro-orchestrator-neon",
+                        readTimeout = FakeAcpServer.READ_TIMEOUT,
+                    ),
+                hostEnv = mapOf("PATH" to System.getenv("PATH"), "HOME" to home.toString()),
+            )
+
+        val events = runBlocking { withTimeout(20.seconds) { runner.run(context(), "Reply hi.").toList() } }
+
+        assertIs<RunnerEvent.TurnCompleted>(events.last())
+        val occupancy = events.filterIsInstance<RunnerEvent.ContextUsage>().last()
+        assertEquals("google/gemini-pro-orchestrator-neon", occupancy.model)
+        assertTrue(occupancy.occupancyTokens > 0L)
+    }
+
     private fun replayServer(
         targetDir: Path,
         lines: List<String>,

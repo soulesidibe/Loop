@@ -152,6 +152,52 @@ class AcpMcpAndIsolationTest {
     }
 
     @Test
+    fun `concurrent AgyIsolationDir create and sweepStale never race or lose settings json`() {
+        val outsideLoopHome = dir.resolve("concurrent-loop-home")
+        val failures = java.util.Collections.synchronizedList(mutableListOf<Throwable>())
+        val stopSweeper =
+            java.util.concurrent.atomic
+                .AtomicBoolean(false)
+        val sweeper =
+            Thread {
+                while (!stopSweeper.get()) {
+                    try {
+                        AgyIsolationDir.sweepStale(home)
+                    } catch (t: Throwable) {
+                        failures += t
+                    }
+                }
+            }.apply { start() }
+        val workers =
+            (1..4).map { worker ->
+                Thread {
+                    repeat(50) { i ->
+                        try {
+                            val created =
+                                AgyIsolationDir.create(
+                                    homeDir = home,
+                                    loopHome = outsideLoopHome,
+                                    projectId = "p",
+                                    attemptId = "w$worker-$i",
+                                )
+                            assertTrue(
+                                created.path.resolve("antigravity-cli/settings.json").exists(),
+                                "settings.json vanished for ${created.path}",
+                            )
+                            assertNull(created.delete())
+                        } catch (t: Throwable) {
+                            failures += t
+                        }
+                    }
+                }.apply { start() }
+            }
+        workers.forEach { it.join(15_000) }
+        stopSweeper.set(true)
+        sweeper.join(5_000)
+        assertTrue(failures.isEmpty(), "concurrent create/sweep failures: $failures")
+    }
+
+    @Test
     fun `agy preset passes disable-telemetry, sandbox, and isolated relative gemini-dir and cleans up in stop`() {
         val capturedSettings = dir.resolve("captured-settings.json")
         val capturedArgs = dir.resolve("captured-args.txt")

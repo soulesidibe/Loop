@@ -282,10 +282,22 @@ class AcpTelemetryAndInterruptTest {
             )
         assertNull(serverError.category)
         assertNull(AcpErrors.classify("session/prompt", -32603, "Internal error").category)
-        // Ordinary workspace or tool errors mentioning capacity, access denied, or permission_denied stay null.
+        // Free-text error phrases without structured codes or HTTP statuses stay ordinary failures (null).
         assertNull(AcpErrors.classify("session/prompt", -32000, "Buffer capacity exceeded in user test").category)
         assertNull(AcpErrors.classify("session/prompt", -32000, "Access denied reading /etc/shadow").category)
         assertNull(AcpErrors.classify("session/prompt", -32000, "PERMISSION_DENIED on workspace file").category)
+        assertNull(AcpErrors.classify("session/prompt", -32000, "User test hit a rate limit fixture").category)
+        assertNull(AcpErrors.classify("session/prompt", -32000, "Worker pool overloaded during unit test").category)
+        assertNull(AcpErrors.classify("session/prompt", -32000, "fetch failed in mock client").category)
+        // Structured error codes still classify as RunnerUnavailable.
+        assertEquals(
+            RunnerEvent.TurnFailed.Category.RunnerUnavailable,
+            AcpErrors.classify("session/prompt", -32000, "RESOURCE_EXHAUSTED").category,
+        )
+        assertEquals(
+            RunnerEvent.TurnFailed.Category.RunnerUnavailable,
+            AcpErrors.classify("session/prompt", -32000, "HTTP 503").category,
+        )
     }
 
     @Test

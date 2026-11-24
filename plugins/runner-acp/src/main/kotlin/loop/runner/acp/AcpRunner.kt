@@ -221,10 +221,10 @@ class AcpRunner internal constructor(
             return telemetry.readPromptUsage(result, ids.sessionId, ids.turnId)
         }
 
-        private fun spawn(): LiveProcess {
+        private fun spawn(warnings: MutableList<String>): LiveProcess {
             val process = LiveProcess(Channel(Channel.UNLIMITED), Channel(Channel.UNLIMITED))
             val env = agentEnv()
-            val argv = buildLaunchArgv(env)
+            val argv = buildLaunchArgv(env, warnings)
             val spec =
                 LaunchSpec(
                     argv = argv,
@@ -248,14 +248,17 @@ class AcpRunner internal constructor(
             return process
         }
 
-        private fun buildLaunchArgv(env: Map<String, String>): List<String> {
+        private fun buildLaunchArgv(
+            env: Map<String, String>,
+            warnings: MutableList<String>,
+        ): List<String> {
             val base = settings.argv
             if (!settings.isAgyPreset) return base
             val homePath =
                 env["HOME"]?.takeIf { it.isNotBlank() }?.let(Path::of)
                     ?: hostEnv["HOME"]?.takeIf { it.isNotBlank() }?.let(Path::of)
                     ?: Path.of(System.getProperty("user.home"))
-            AgyIsolationDir.sweepStale(homePath).forEach { onWarn("$LOOP_PREFIX$it") }
+            AgyIsolationDir.sweepStale(homePath).forEach { warnings += it }
             val loopHomePath =
                 env["LOOP_HOME"]?.takeIf { it.isNotBlank() }?.let(Path::of)
                     ?: hostEnv["LOOP_HOME"]?.takeIf { it.isNotBlank() }?.let(Path::of)
@@ -287,10 +290,15 @@ class AcpRunner internal constructor(
             return dirs.distinct().map { HoldoutFolder(it, homePath) }
         }
 
-        private fun deleteIsolationDir() {
-            val dir = isolationDir ?: return
+        private fun deleteIsolationDir(): String? {
+            val dir = isolationDir ?: return null
             isolationDir = null
-            dir.delete()?.let { onWarn("$LOOP_PREFIX$it") }
+            val error = dir.delete() ?: return null
+            val clean = error.replace('"', '\'').replace('\n', ' ')
+            onWarn(
+                "level=warn event=acp_cleanup project=${ctx.projectId.value} attempt=${ctx.attemptId.value} reason=\"$clean\"",
+            )
+            return error
         }
 
         private fun agentEnv(): Map<String, String> {
@@ -298,14 +306,13 @@ class AcpRunner internal constructor(
             return agentEnvironment(ctx.env, removed, hostEnv, resolveAddedEnv(addedEnv, ctx.workspace))
         }
 
-        private suspend fun kill(process: LiveProcess) {
+        private suspend fun kill(process: LiveProcess): String? =
             withContext(NonCancellable) {
                 if (live === process) live = null
                 process.stdin.close()
                 process.job.cancelAndJoin()
                 deleteIsolationDir()
             }
-        }
 
         private inner class Turn(
             private val out: FlowCollector<RunnerEvent>,
@@ -366,7 +373,9 @@ class AcpRunner internal constructor(
                         }
                         val mcpEnv = ctx.env + mapOf(ENV_SESSION_ID to sessionId.value, ENV_TURN_ID to turnId.value)
                         val mcpServers = AcpMcpConfig.mcpServers(mcpEnv)
-                        val process = spawn()
+                        val spawnWarnings = mutableListOf<String>()
+                        val process = spawn(spawnWarnings)
+                        spawnWarnings.forEach { out(loopNote(it)) }
                         process.stdin.send(handshake.start(input, mcpServers))
                         read(process)
                     } else {
@@ -619,11 +628,12 @@ class AcpRunner internal constructor(
                 process: LiveProcess,
                 event: RunnerEvent,
             ) {
-                kill(process)
+                val cleanupWarning = kill(process)
                 while (true) {
                     val queued = process.events.tryReceive().getOrNull() ?: break
                     if (queued is ProcessEvent.Line) out(RunnerEvent.Output(queued.stream, queued.text))
                 }
+                cleanupWarning?.let { out(loopNote(it)) }
                 end(event)
             }
         }

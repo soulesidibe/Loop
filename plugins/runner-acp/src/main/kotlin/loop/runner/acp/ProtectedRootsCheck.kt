@@ -2,6 +2,7 @@ package loop.runner.acp
 
 import loop.runner.process.ProtectedWorkspaceRoots
 import java.io.IOException
+import java.io.UncheckedIOException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Locale
@@ -13,13 +14,39 @@ import kotlin.io.path.exists
  * against the attempt's host-provided [baseRef] before every session and every `session/prompt`
  * turn under `preset: agy`.
  *
- * Hardened against macOS case-insensitivity, symlinked roots (`ln -s build/x .agents`), type
- * changes (`T` in `--diff-filter=ACMRT`), gitignored untracked files, missing base refs (fail
- * closed), and hung git subprocesses (separate reader threads + `destroyForcibly` on timeout).
+ * Hardened against:
+ * - git index tricks (`git rm --cached`, `assume-unchanged`, `skip-worktree`) by comparing every
+ *   on-disk customization file directly against `git ls-tree -r -z <base>` using file mode and
+ *   `git hash-object` blob SHA,
+ * - nested paths `agy` never loads (`docs/examples/.agents/...`), by inspecting only roots sitting
+ *   directly in directories between `workspace` and `repoRoot`,
+ * - macOS case-insensitivity, symlinked protected roots, symlink type changes (`120000`),
+ *   unreadable directories (`UncheckedIOException`), missing base refs (fail closed after checking
+ *   `main`, `master`, and `origin/HEAD`), and hung git subprocesses (separate daemon drain threads,
+ *   alive-thread fail-closed check, and `destroyForcibly` on timeout).
  */
 internal object ProtectedRootsCheck {
     private const val GIT_TIMEOUT_SECONDS = 15L
+    private const val MODE_SYMLINK = "120000"
+    private const val MODE_EXECUTABLE = "100755"
+    private const val MODE_REGULAR = "100644"
     private val ROOT_NAMES_LOWER: Set<String> = ProtectedWorkspaceRoots.ROOT_NAMES.map { it.lowercase(Locale.ROOT) }.toSet()
+
+    internal data class GitResult(
+        val stdout: String,
+        val stderr: String,
+        val exitCode: Int,
+    )
+
+    private data class OnDiskCustomization(
+        val path: Path,
+        val relPath: String,
+    )
+
+    private data class TreeEntry(
+        val mode: String,
+        val sha: String,
+    )
 
     /**
      * Returns an ordinary failure reason naming the offending customization path when any protected
@@ -43,6 +70,8 @@ internal object ProtectedRootsCheck {
                     Files.list(dir).use { it.toList() }
                 } catch (e: IOException) {
                     return "protected_workspace_root: could not list $dir: ${e.message}"
+                } catch (e: UncheckedIOException) {
+                    return "protected_workspace_root: could not list $dir: ${e.cause?.message ?: e.message}"
                 }
             for (entry in entries.sortedBy { it.fileName.toString().lowercase(Locale.ROOT) }) {
                 val nameLower = entry.fileName.toString().lowercase(Locale.ROOT)
@@ -58,68 +87,79 @@ internal object ProtectedRootsCheck {
         }
 
         if (repoRoot == null) {
-            return scanOnDiskCustomizations(scanBase, matchedRoots)
+            val scanResult = scanOnDiskCustomizations(scanBase, matchedRoots)
+            scanResult.error?.let { return it }
+            return scanResult.files
                 .firstOrNull()
-                ?.let { "protected_workspace_root: added or modified workspace customization file $it" }
+                ?.let { "protected_workspace_root: added or modified workspace customization file ${it.relPath}" }
         }
 
-        val hasHead = gitSingleLine(repoRoot, listOf("rev-parse", "--verify", "HEAD"), gitTimeoutSeconds) != null
+        val hasHead = gitOk(repoRoot, listOf("rev-parse", "--verify", "HEAD"), gitTimeoutSeconds) != null
         if (!hasHead) {
             // Brand-new 0-commit git repository: no base exists yet, so refuse any customization file present.
-            val diskCustom = scanOnDiskCustomizations(repoRoot, matchedRoots)
-            if (diskCustom.isNotEmpty()) {
-                return "protected_workspace_root: added or modified workspace customization file ${diskCustom.first()}"
+            val scanResult = scanOnDiskCustomizations(repoRoot, matchedRoots)
+            scanResult.error?.let { return it }
+            if (scanResult.files.isNotEmpty()) {
+                return "protected_workspace_root: added or modified workspace customization file ${scanResult.files.first().relPath}"
             }
-            val staged =
-                gitNullSeparated(repoRoot, listOf("ls-files", "--cached", "-z"), gitTimeoutSeconds)
-                    ?: return "protected_workspace_root: could not list staged files in protected workspace roots"
-            val stagedOffending = staged.sorted().firstOrNull { isProtectedOrCustomization(it) }
+            val staged = runGit(repoRoot, listOf("ls-files", "--cached", "-z"), gitTimeoutSeconds)
+            if (staged == null || staged.exitCode != 0) {
+                return "protected_workspace_root: could not list staged files in protected workspace roots${stderrSuffix(staged)}"
+            }
+            val ancestorPrefixes = ancestorRelPrefixes(repoRoot, dirsToInspect)
+            val stagedOffending =
+                splitNullSeparated(staged.stdout)
+                    .sorted()
+                    .firstOrNull { isDirectProtectedCustomization(it, ancestorPrefixes) }
             return stagedOffending?.let { "protected_workspace_root: added or modified workspace customization file $it" }
         }
 
-        val base =
-            resolveBaseCommit(repoRoot, baseRef, gitTimeoutSeconds)
-                ?: return "protected_workspace_root: could not resolve base commit${baseRef?.let { " for $it" } ?: ""}"
-
-        // Include T so replacing a tracked hooks.json with a symlink is caught; omit case-sensitive pathspecs.
-        val diffPaths =
-            gitNullSeparated(repoRoot, listOf("diff", "--name-only", "-z", "--diff-filter=ACMRT", base), gitTimeoutSeconds)
-                ?: return "protected_workspace_root: could not diff protected workspace roots against base commit"
-        val diffOffending =
-            diffPaths
-                .distinct()
-                .sorted()
-                .firstOrNull { isProtectedOrCustomization(it) }
-        if (diffOffending != null) {
-            return "protected_workspace_root: added or modified workspace customization file $diffOffending"
+        val (base, baseError) = resolveBaseCommit(repoRoot, baseRef, gitTimeoutSeconds)
+        if (base == null) {
+            return baseError
         }
 
         if (matchedRoots.isEmpty()) return null
 
-        val onDiskCustom = scanOnDiskCustomizations(repoRoot, matchedRoots)
-        if (onDiskCustom.isEmpty()) return null
+        val scanResult = scanOnDiskCustomizations(repoRoot, matchedRoots)
+        scanResult.error?.let { return it }
+        if (scanResult.files.isEmpty()) return null
 
-        // Compare every on-disk customization file against the exact tracked tree at base (case-insensitively).
-        val baseTree =
-            gitNullSeparated(repoRoot, listOf("ls-tree", "-r", "--name-only", "-z", base), gitTimeoutSeconds)
-                ?: return "protected_workspace_root: could not read base tree for protected workspace roots"
-        val trackedLower = baseTree.map { it.replace('\\', '/').lowercase(Locale.ROOT) }.toSet()
-
-        val untrackedOrCaseVariant =
-            onDiskCustom.firstOrNull { rel ->
-                rel.lowercase(Locale.ROOT) !in trackedLower
-            }
-        return untrackedOrCaseVariant?.let {
-            "protected_workspace_root: added or modified workspace customization file $it"
+        val treeResult = runGit(repoRoot, listOf("ls-tree", "-r", "-z", base), gitTimeoutSeconds)
+        if (treeResult == null || treeResult.exitCode != 0) {
+            return "protected_workspace_root: could not read base tree for protected workspace roots${stderrSuffix(treeResult)}"
         }
+        val baseEntries = parseLsTree(treeResult.stdout)
+
+        for (file in scanResult.files) {
+            val baseEntry = baseEntries[file.relPath]
+            if (baseEntry == null) {
+                return "protected_workspace_root: added or modified workspace customization file ${file.relPath}"
+            }
+            val (onDiskMode, onDiskSha, hashError) = hashOnDisk(repoRoot, file, gitTimeoutSeconds)
+            if (hashError != null) {
+                return hashError
+            }
+            if (onDiskMode != baseEntry.mode || onDiskSha != baseEntry.sha) {
+                return "protected_workspace_root: added or modified workspace customization file ${file.relPath}"
+            }
+        }
+
+        return null
     }
+
+    private data class ScanResult(
+        val files: List<OnDiskCustomization>,
+        val error: String?,
+    )
 
     private fun scanOnDiskCustomizations(
         base: Path,
         roots: List<Path>,
-    ): List<String> {
-        val found = mutableListOf<String>()
+    ): ScanResult {
+        val found = mutableListOf<OnDiskCustomization>()
         for (root in roots) {
+            val rootRel = base.relativize(root).toString().replace('\\', '/')
             try {
                 Files.walk(root).use { stream ->
                     stream.forEach { path ->
@@ -127,22 +167,108 @@ internal object ProtectedRootsCheck {
                         if (!Files.isRegularFile(path) && !Files.isSymbolicLink(path)) return@forEach
                         val rel = base.relativize(path).toString().replace('\\', '/')
                         if (ProtectedWorkspaceRoots.isCustomizationPath(rel)) {
-                            found += rel
+                            found += OnDiskCustomization(path, rel)
                         }
                     }
                 }
             } catch (e: IOException) {
-                found += base.relativize(root).toString().replace('\\', '/')
+                return ScanResult(emptyList(), "protected_workspace_root: could not scan $rootRel: ${e.message}")
+            } catch (e: UncheckedIOException) {
+                return ScanResult(
+                    emptyList(),
+                    "protected_workspace_root: could not scan $rootRel: ${e.cause?.message ?: e.message}",
+                )
             }
         }
-        return found.distinct().sorted()
+        return ScanResult(found.distinctBy { it.relPath }.sortedBy { it.relPath }, error = null)
     }
 
-    private fun isProtectedOrCustomization(path: String): Boolean {
+    private data class DiskHash(
+        val mode: String?,
+        val sha: String?,
+        val error: String?,
+    )
+
+    private fun hashOnDisk(
+        repoRoot: Path,
+        file: OnDiskCustomization,
+        timeoutSeconds: Long,
+    ): DiskHash {
+        if (Files.isSymbolicLink(file.path)) {
+            val targetBytes =
+                try {
+                    Files.readSymbolicLink(file.path).toString().toByteArray(Charsets.UTF_8)
+                } catch (e: IOException) {
+                    return DiskHash(null, null, "protected_workspace_root: could not read symbolic link ${file.relPath}: ${e.message}")
+                }
+            val result = runGit(repoRoot, listOf("hash-object", "--stdin"), timeoutSeconds, stdinBytes = targetBytes)
+            if (result == null || result.exitCode != 0) {
+                return DiskHash(
+                    null,
+                    null,
+                    "protected_workspace_root: could not hash ${file.relPath}${stderrSuffix(result)}",
+                )
+            }
+            return DiskHash(MODE_SYMLINK, result.stdout.trim(), error = null)
+        }
+
+        val mode = if (Files.isExecutable(file.path)) MODE_EXECUTABLE else MODE_REGULAR
+        val result =
+            runGit(
+                repoRoot,
+                listOf("hash-object", "--", file.path.toAbsolutePath().toString()),
+                timeoutSeconds,
+            )
+        if (result == null || result.exitCode != 0) {
+            return DiskHash(
+                null,
+                null,
+                "protected_workspace_root: could not hash ${file.relPath}${stderrSuffix(result)}",
+            )
+        }
+        return DiskHash(mode, result.stdout.trim(), error = null)
+    }
+
+    private fun parseLsTree(output: String): Map<String, TreeEntry> {
+        if (output.isEmpty()) return emptyMap()
+        val entries = LinkedHashMap<String, TreeEntry>()
+        for (record in splitNullSeparated(output)) {
+            val tab = record.indexOf('\t')
+            if (tab <= 0 || tab + 1 >= record.length) continue
+            val meta = record.substring(0, tab).split(' ')
+            if (meta.size < 3) continue
+            val mode = meta[0]
+            val sha = meta[2]
+            val path = record.substring(tab + 1).replace('\\', '/')
+            entries[path] = TreeEntry(mode = mode, sha = sha)
+        }
+        return entries
+    }
+
+    private fun ancestorRelPrefixes(
+        repoRoot: Path,
+        dirsToInspect: List<Path>,
+    ): Set<String> =
+        dirsToInspect
+            .map { dir ->
+                val rel = repoRoot.relativize(dir).toString().replace('\\', '/')
+                if (rel.isEmpty() || rel == ".") "" else "$rel/"
+            }.toSet()
+
+    private fun isDirectProtectedCustomization(
+        path: String,
+        ancestorPrefixes: Set<String>,
+    ): Boolean {
         val normalized = path.replace('\\', '/')
-        if (ProtectedWorkspaceRoots.isCustomizationPath(normalized)) return true
-        val segments = normalized.split('/').filter { it.isNotEmpty() && it != "." }
-        return segments.size == 1 && segments[0].lowercase(Locale.ROOT) in ROOT_NAMES_LOWER
+        for (prefix in ancestorPrefixes) {
+            if (!normalized.startsWith(prefix)) continue
+            val remainder = normalized.removePrefix(prefix)
+            val firstSegment = remainder.substringBefore('/').lowercase(Locale.ROOT)
+            if (firstSegment in ROOT_NAMES_LOWER && ProtectedWorkspaceRoots.isCustomizationPath(remainder)) {
+                return true
+            }
+        }
+        return false
     }
 
     private fun ancestorDirs(
@@ -172,53 +298,72 @@ internal object ProtectedRootsCheck {
         repoRoot: Path,
         baseRef: String?,
         timeoutSeconds: Long,
-    ): String? {
+    ): Pair<String?, String?> {
         val trimmed = baseRef?.trim()?.takeIf { it.isNotEmpty() }
         if (trimmed != null) {
-            gitSingleLine(repoRoot, listOf("merge-base", trimmed, "HEAD"), timeoutSeconds)?.let { return it }
-            return gitSingleLine(repoRoot, listOf("rev-parse", "--verify", "$trimmed^{commit}"), timeoutSeconds)
+            gitOk(repoRoot, listOf("merge-base", trimmed, "HEAD"), timeoutSeconds)?.let { return it to null }
+            val verify = runGit(repoRoot, listOf("rev-parse", "--verify", "$trimmed^{commit}"), timeoutSeconds)
+            if (verify != null && verify.exitCode == 0 && verify.stdout.trim().isNotEmpty()) {
+                return verify.stdout.trim() to null
+            }
+            return null to "protected_workspace_root: could not resolve base commit for $trimmed${stderrSuffix(verify)}"
         }
-        gitSingleLine(repoRoot, listOf("merge-base", "main", "HEAD"), timeoutSeconds)?.let { return it }
-        return gitSingleLine(repoRoot, listOf("merge-base", "master", "HEAD"), timeoutSeconds)
+        for (candidate in DEFAULT_BASE_CANDIDATES) {
+            gitOk(repoRoot, listOf("merge-base", candidate, "HEAD"), timeoutSeconds)?.let { return it to null }
+        }
+        return null to
+            "protected_workspace_root: could not resolve base commit (checked main, master, and origin/HEAD): " +
+            "configure kinds.code.guards.base or kinds.code.delivery.pull_request.base"
     }
 
-    private fun gitSingleLine(
+    private fun gitOk(
         repoRoot: Path,
         args: List<String>,
         timeoutSeconds: Long,
     ): String? {
-        val output = runGit(repoRoot, args, timeoutSeconds) ?: return null
-        return output.trim().takeIf { it.isNotEmpty() }
+        val result = runGit(repoRoot, args, timeoutSeconds) ?: return null
+        if (result.exitCode != 0) return null
+        return result.stdout.trim().takeIf { it.isNotEmpty() }
     }
 
-    private fun gitNullSeparated(
-        repoRoot: Path,
-        args: List<String>,
-        timeoutSeconds: Long,
-    ): List<String>? {
-        val output = runGit(repoRoot, args, timeoutSeconds) ?: return null
-        if (output.isEmpty()) return emptyList()
-        return output.split('\u0000').filter { it.isNotEmpty() }
+    private fun splitNullSeparated(output: String): List<String> =
+        if (output.isEmpty()) emptyList() else output.split('\u0000').filter { it.isNotEmpty() }
+
+    private fun stderrSuffix(result: GitResult?): String {
+        if (result == null) return ": git timed out or did not finish cleanly"
+        val msg =
+            result.stderr
+                .trim()
+                .replace(Regex("\\s+"), " ")
+                .take(200)
+        return if (msg.isNotEmpty()) ": $msg" else " (exit ${result.exitCode})"
     }
 
     /**
      * Runs `git` with separate daemon threads draining stdout and stderr before [Process.waitFor]
      * so a hung git command always honors [timeoutSeconds] and is killed with [Process.destroyForcibly].
+     * Returns null when the command times out, fails to launch, or a drain thread stays alive past join.
      */
     internal fun runGit(
         repoRoot: Path,
         args: List<String>,
         timeoutSeconds: Long = GIT_TIMEOUT_SECONDS,
         gitCommand: String = "git",
-    ): String? =
+        stdinBytes: ByteArray? = null,
+    ): GitResult? =
         try {
             val process =
                 ProcessBuilder(listOf(gitCommand) + args)
                     .directory(repoRoot.toFile())
                     .redirectErrorStream(false)
                     .start()
-            process.outputStream.close()
+            if (stdinBytes != null) {
+                process.outputStream.use { it.write(stdinBytes) }
+            } else {
+                process.outputStream.close()
+            }
             var stdout = ""
+            var stderr = ""
             val outThread =
                 Thread {
                     stdout = runCatching { process.inputStream.readAllBytes().toString(Charsets.UTF_8) }.getOrDefault("")
@@ -228,7 +373,7 @@ internal object ProtectedRootsCheck {
                 }
             val errThread =
                 Thread {
-                    runCatching { process.errorStream.readAllBytes() }
+                    stderr = runCatching { process.errorStream.readAllBytes().toString(Charsets.UTF_8) }.getOrDefault("")
                 }.apply {
                     isDaemon = true
                     start()
@@ -242,7 +387,11 @@ internal object ProtectedRootsCheck {
             } else {
                 outThread.join(1_000)
                 errThread.join(1_000)
-                if (process.exitValue() == 0) stdout else null
+                if (outThread.isAlive || errThread.isAlive) {
+                    null
+                } else {
+                    GitResult(stdout = stdout, stderr = stderr, exitCode = process.exitValue())
+                }
             }
         } catch (e: IOException) {
             null
@@ -250,4 +399,6 @@ internal object ProtectedRootsCheck {
             Thread.currentThread().interrupt()
             null
         }
+
+    private val DEFAULT_BASE_CANDIDATES = listOf("main", "master", "origin/HEAD")
 }

@@ -273,6 +273,57 @@ class AcpRunnerTest {
             "response_error: session/set_model selected gemini-4-neon-low instead of gemini-4-neon-high",
             postMisFailed.reason,
         )
+
+        // Bare model id without -thought_level suffix matches config_option_update even when thought_level is present.
+        val bareMatch =
+            FakeAcpServer.write(dir.resolve("bare-match"), name = "agy") {
+                initialize()
+                sessionNew(sessionId = "s-bare")
+                sessionSetModel(id = 3)
+                awaitClient()
+                notification(
+                    AcpHandshake.METHOD_SESSION_UPDATE,
+                    buildJsonObject {
+                        put("sessionId", "s-bare")
+                        put(
+                            "update",
+                            buildJsonObject {
+                                put("sessionUpdate", "config_option_update")
+                                put(
+                                    "configOptions",
+                                    kotlinx.serialization.json.buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", "model")
+                                                put("currentValue", "gemini-pro-orchestrator")
+                                            },
+                                        )
+                                        add(
+                                            buildJsonObject {
+                                                put("id", "thought_level")
+                                                put("currentValue", "high")
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    },
+                )
+                response(id = 4, result = buildJsonObject { put("stopReason", "end_turn") })
+            }
+        val bareRunner =
+            AcpRunner(
+                settings =
+                    AcpSettings(
+                        command = bareMatch.agyCommand,
+                        preset = AcpSettings.PRESET_AGY,
+                        model = "gemini-pro-orchestrator",
+                        readTimeout = FakeAcpServer.READ_TIMEOUT,
+                    ),
+                hostEnv = hostEnv(),
+            )
+        assertIs<RunnerEvent.TurnCompleted>(runAll(bareRunner).last())
     }
 
     @Test
