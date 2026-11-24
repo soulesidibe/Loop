@@ -33,11 +33,11 @@ class DrainCommand(
             } catch (e: IOException) {
                 RunFiles.Probe.Unreadable(e)
             }
-        val noRun = "no run in progress for project ${project.projectId.value}. Nothing to drain"
+        val noRun = "no run in progress for project ${project.projectId.value}"
         val record =
             when (probe) {
-                RunFiles.Probe.Nothing -> fail(noRun, EXIT_NO_RUN)
-                is RunFiles.Probe.Stale -> fail("$noRun, removed a stale run file", EXIT_NO_RUN)
+                RunFiles.Probe.Nothing -> fail("$noRun. Nothing to drain", EXIT_NO_RUN)
+                is RunFiles.Probe.Stale -> fail("$noRun, removed a stale run file. Nothing to drain", EXIT_NO_RUN)
                 is RunFiles.Probe.Unreadable ->
                     fail("cannot read the run file at ${files.runFile}: ${probe.error.sentence()}", EXIT_RUN_FILE)
                 is RunFiles.Probe.Live -> probe.record

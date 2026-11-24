@@ -11,6 +11,7 @@ Written 2026-11-11 in issue m1-12. Terms follow [`CONTEXT.md`](../CONTEXT.md). T
    - [Java](#java)
 3. [Known limits](#known-limits)
 4. [Running Loop on its own issues](#running-loop-on-its-own-issues)
+   - [Drain before a stop](#drain-before-a-stop)
    - [Sleep while work runs](#sleep-while-work-runs)
    - [Network loss](#network-loss)
    - [Gradle daemons per Attempt](#gradle-daemons-per-attempt)
@@ -87,7 +88,7 @@ Loop's own [`WORKFLOW.md`](../WORKFLOW.md) dispatches `todo` issues labeled `rea
 
    The shell that starts the run needs `LOOP_PR_TOKEN` set, see [the token](#the-token).
 4. See what the run is doing with `~/.loop/install/bin/loop status /path/to/Loop/WORKFLOW.md`, from any terminal. Follow the Attempt with `~/.loop/install/bin/loop trace <identifier>`. Since m3-01 a verified issue ends merged and `done`, or waits for `loop approve`, see [Loop mode](#loop-mode-on-loops-own-backlog).
-5. Stop with `~/.loop/install/bin/loop stop /path/to/Loop/WORKFLOW.md`, or Ctrl+C in the terminal that runs it.
+5. Stop with `~/.loop/install/bin/loop stop /path/to/Loop/WORKFLOW.md`, or Ctrl+C in the terminal that runs it. To let the running issues finish first, drain the run instead, see [drain before a stop](#drain-before-a-stop).
 
 A branch that already exists keeps its commits: a later attempt, one the retry queue dispatches, and a fresh dispatch after a move from `review` back to `todo` both reuse it, and the `before_run` hook only checks it out. Merges into `main` since then are synced from the prompt, not the hook: its "Your workspace" section tells the agent, on every dispatch, to run `git merge refs/loop/base/main` when `git merge-base --is-ancestor refs/loop/base/main HEAD` fails, resolve any conflict keeping the intent of both sides, commit the merge, then rerun the full `./gradlew build` before anything else (m1-42, bl-02). On a fresh branch the check passes and nothing happens. The agent never fetches. Loop merges pull requests on GitHub and never moves the main checkout's local `main`, so a branch cut from it started from the last pull and missed the merges since (on 2026-11-15, bl-85 branched without bl-84 and bl-86, its two blockers, and lost an attempt to a merge conflict). An agent that resolves a conflict can prove the build, a hook that hits one would fail the attempt.
 
@@ -96,6 +97,16 @@ Since bl-59 Loop fetches `main` itself before every attempt, the first and every
 Loop's own `WORKFLOW.md` uses the plain hooks of [`workspaces.md`](workspaces.md#usage) and a prompt that syncs with `refs/loop/base/main`, which Loop fetches before each run. The earlier `fetch-base.sh` workaround is gone.
 
 Workspaces live in `workspaces/` at the repository root, which is gitignored. The agent keeps its progress file and evidence in `.scratch/<identifier>/` inside its workspace, also gitignored, so they are never committed.
+
+### Drain before a stop
+
+Since m4-10, `loop drain /path/to/Loop/WORKFLOW.md` lets the running issues finish while nothing new starts (bl-110). Use it at the end of a session, before a reinstall and before a planned stop, instead of removing `ready-for-agent` labels by hand. The command marks the live run as draining and returns at once. At its next poll the run stops dispatching: no candidate starts, and no retry of an issue that was not running when the drain began. The running attempts finish with their verifications, CI waits, merge checks and merges, a retry of one of those issues still runs, then the run stops by itself with exit code 0.
+
+A wait that needs a human does not hold the drain: an issue in `Waiting(approval)` with no approval yet, a `needs_info` issue, or a merge check behind a delivery queue paused after a CI timeout. It stays in the store and resumes at the next `loop run`.
+
+A drain waits for a running CI wait, which can last up to `ci_timeout_ms` (45 minutes by default, see [the CI wait](#the-ci-wait)). `loop stop` is the way out: during a drain it still stops the run at once and cancels what runs.
+
+What you see: `loop status` ends the run line with `draining` and prints `draining  run  since=... still=bl-1,bl-3  stops once these end, loop stop stops it at once` above the issues. `loop trace <identifier>` shows `run_draining` and `run_drained`, and the human log `draining, nothing new starts, the run stops once bl-1, bl-3 end`, then `run ended after loop drain`. With no live run, `loop drain` says so and exits 1. Details in [drain](spec-decisions.md#drain-extension-m4-10).
 
 ### Sleep while work runs
 
