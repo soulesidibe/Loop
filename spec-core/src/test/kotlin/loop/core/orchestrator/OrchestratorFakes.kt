@@ -219,7 +219,11 @@ class FakeTracker(
     val comments = mutableListOf<Pair<String, IssueComment>>()
     var fetchFailure: TrackerError? = null
 
-    override val definedStates: List<String> = listOf("todo", "in_progress", "review", "needs_info", "done", "canceled")
+    /** When set, the states this tracker defines instead of the files tracker's (m4-14). */
+    var definedStatesOverride: List<String>? = null
+
+    override val definedStates: List<String>
+        get() = definedStatesOverride ?: listOf("todo", "in_progress", "review", "needs_info", "done", "canceled")
 
     /** When true, [fetchIssuesByStates] returns only the issues in the states asked, like a real adapter. */
     var filterByStates: Boolean = false
@@ -281,6 +285,19 @@ class FakeTracker(
         comments += issueId to comment
         return Result.success(Unit)
     }
+
+    /** Every issue given to the move or the comment by issue (m4-14), in order, as the core passed it. */
+    val writtenIssues = mutableListOf<Issue>()
+
+    override suspend fun moveIssue(
+        issue: Issue,
+        toState: String,
+    ): Result<Unit> = moveIssue(issue.id, toState).also { writtenIssues += issue }
+
+    override suspend fun addComment(
+        issue: Issue,
+        comment: IssueComment,
+    ): Result<Unit> = addComment(issue.id, comment).also { writtenIssues += issue }
 
     /** Every issue given to [completeIssue], in order (bl-06). */
     val completions = mutableListOf<Issue>()

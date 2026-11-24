@@ -569,7 +569,7 @@ internal class RetryCoordinator(
         now: Instant,
     ) {
         val text = splitComment(issue.identifier, data[IssueParked.WITHOUT_PROGRESS]?.toIntOrNull() ?: SPLIT_AFTER)
-        val failure = safely { tracker.addComment(issue.id, IssueComment(LOOP_AUTHOR, now, text)) }.exceptionOrNull()
+        val failure = safely { tracker.addComment(issue, IssueComment(LOOP_AUTHOR, now, text)) }.exceptionOrNull()
         if (failure == null) {
             val event =
                 mapOf(Tracker.CHARS to text.length.toString(), Tracker.BY to Tracker.BY_HOST, Tracker.REASON to IssueCommented.SPLIT_ISSUE)

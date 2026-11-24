@@ -10,6 +10,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import loop.api.ProjectId
 import loop.core.orchestrator.ToolConfigWriter
 import loop.core.workflow.WorkflowLoader
+import loop.tracker.github.GitHubTracker
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
 import kotlin.io.path.readText
@@ -80,6 +81,48 @@ class ToolConfigSnapshotTest {
                 ),
             ),
             json.getValue("provider"),
+        )
+    }
+
+    @Test
+    fun `m4-14 the snapshot of an extra tracker's issue holds that tracker's kind, states and provider, the primary's id`() {
+        val file = root.resolve("WORKFLOW.md")
+        file.writeText(
+            "---\n" +
+                "tracker:\n" +
+                "  id: local\n" +
+                "  kind: files\n" +
+                "trackers:\n" +
+                "  - id: gh\n" +
+                "    kind: github\n" +
+                "    provider:\n" +
+                "      repo: octocat/Hello-World\n" +
+                "      token: \$LOOP_TEST_GITHUB_TOKEN\n" +
+                "runner:\n" +
+                "  kind: command\n" +
+                "runners:\n" +
+                "  command:\n" +
+                "    command: agent.sh\n" +
+                "---\n" +
+                "Work on {{ issue.identifier }}\n",
+        )
+        val token = "ghp_m414SnapshotToken0123456789abcdefgh"
+        val workflow = workflowLoader(mapOf("LOOP_TEST_GITHUB_TOKEN" to token), root).load(file).getOrThrow()
+        val target = root.resolve("tool-config.json")
+        val gh = checkNotNull(workflow.trackers.entry("gh"))
+
+        ToolConfigSnapshotWriter.write(target, ProjectId("p1"), workflow, gh, GitHubTracker.DEFINED_STATES)
+
+        val text = target.readText()
+        assertFalse(token in text || "LOOP_TEST_GITHUB_TOKEN" in text, "the token leaked: $text")
+        val config = readToolConfig(target).getOrThrow()
+        assertEquals("github", config.trackerKind)
+        assertEquals(GitHubTracker.DEFINED_STATES, config.definedStates)
+        assertEquals("local", config.trackerId, "the primary's id, which bare ids are read by")
+        assertEquals(listOf("local", "gh"), config.trackerIds)
+        assertEquals(
+            JsonObject(mapOf("repo" to JsonPrimitive("octocat/Hello-World"))),
+            Json.parseToJsonElement(text).jsonObject.getValue("provider"),
         )
     }
 }

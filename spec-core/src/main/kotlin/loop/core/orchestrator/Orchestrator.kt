@@ -792,7 +792,7 @@ class Orchestrator(
             if (issue.labels.any { it.normalized() == NEEDS_INFO_LABEL } || !bounced.add(issue.id)) continue
             val context = pollContext.copy(issueId = issue.id, issueIdentifier = issue.identifier)
             val text = notReadyComment(missing.getValue(issue.id))
-            withContext(io) { tracker.addComment(issue.id, IssueComment(LOOP_AUTHOR, clock.now(), text)) }.fold(
+            withContext(io) { tracker.addComment(issue, IssueComment(LOOP_AUTHOR, clock.now(), text)) }.fold(
                 onSuccess = {
                     recordIssueEvent(
                         issue,
@@ -1862,14 +1862,14 @@ class Orchestrator(
          * snapshot from the attempt's workflow. A failure gives its reason, null when all is in place.
          */
         private suspend fun createDirectory(): String? {
-            val states = tracker.definedStates
+            val states = trackers.definedStatesOf(issue.id)
             return try {
                 withContext(io) {
                     Files.createDirectories(directory.parent)
                     Files.createDirectory(directory, ownerOnly())
                     directoryCreated = true
                     Files.createDirectory(directory.resolve(REQUESTS_DIR), ownerOnly())
-                    toolConfigWriter.write(toolConfig, projectId, workflow, states)
+                    toolConfigWriter.write(toolConfig, projectId, workflow, workflow.trackers.entryOf(issue.id), states)
                 }
                 null
             } catch (e: CancellationException) {
@@ -2000,13 +2000,13 @@ class Orchestrator(
 
         /** Moves the issue and records `issue_moved` by host; the failure's reason, null when it moved. */
         private suspend fun applyMove(request: ToolRequest.Move): String? {
-            val from =
+            val current =
                 withContext(io) { tracker.fetchIssuesByIds(listOf(issue.id)) }
                     .getOrElse { return it.describe() }
                     .firstOrNull()
-                    ?.state
                     ?: return "no issue ${issue.identifier} in the tracker"
-            withContext(io) { tracker.moveIssue(issue.id, request.to) }.getOrElse { return it.describe() }
+            val from = current.state
+            withContext(io) { tracker.moveIssue(current, request.to) }.getOrElse { return it.describe() }
             record(IssueMoved, data = mapOf(Tracker.FROM to from, Tracker.TO to request.to, Tracker.BY to BY_HOST))
             return null
         }
@@ -2267,7 +2267,7 @@ class Orchestrator(
         private suspend fun applyComment(request: ToolRequest.Comment): String? {
             val text = redactor.redact(request.text).trim()
             val comment = IssueComment("agent ${attemptId.value.take(SHORT_ID)}", clock.now(), text)
-            withContext(io) { tracker.addComment(issue.id, comment) }.getOrElse { return it.describe() }
+            withContext(io) { tracker.addComment(issue, comment) }.getOrElse { return it.describe() }
             record(IssueCommented, data = mapOf(Tracker.CHARS to text.length.toString(), Tracker.BY to BY_HOST))
             return null
         }
@@ -4212,10 +4212,8 @@ class Orchestrator(
             }
             val facts =
                 DeliveryFacts(
-                    issueId = issueId,
+                    issue = current,
                     identifier = identifier,
-                    title = current.title,
-                    nativeRef = current.nativeRef.orEmpty(),
                     attemptId = attemptId?.value,
                     fingerprint = verifiedFingerprint,
                     checks = EvidenceSummary.lines(passed.toList()),
@@ -4261,7 +4259,7 @@ class Orchestrator(
                 if (!ownMove(from)) record(HumanTouched, mapOf(HumanTouched.TOUCH to HumanTouch.MOVE, HumanTouched.TO_STATE to from))
                 return "the issue is no longer active, it is in $from"
             }
-            postSummary(to)
+            postSummary(current, to)
             startApprovalWait(to, approvedBy = null, pullRequest = pullRequest)
             record(
                 ApprovalRequested,
@@ -4309,14 +4307,17 @@ class Orchestrator(
             storeWaiting(wait) { waits.save(wait) }
         }
 
-        /** Posts the evidence summary of the last [verify] on the issue, redacted; a failure is logged at warn. */
-        private suspend fun postSummary(to: String) {
+        /** Posts the evidence summary of the last [verify] on [issue], redacted; a failure is logged at warn. */
+        private suspend fun postSummary(
+            issue: Issue,
+            to: String,
+        ) {
             val attempt = attemptId?.value ?: return
             val text = redactor.redact(EvidenceSummary.text(identifier, attempt, to, verifiedFingerprint, passed.toList())).trim()
             val comment = IssueComment(LOOP_AUTHOR, clock.now(), text)
             val failure =
                 try {
-                    withContext(io) { tracker.addComment(issueId, comment) }.exceptionOrNull()
+                    withContext(io) { tracker.addComment(issue, comment) }.exceptionOrNull()
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -4355,7 +4356,7 @@ class Orchestrator(
                 if (!ownMove(from)) record(HumanTouched, mapOf(HumanTouched.TOUCH to HumanTouch.MOVE, HumanTouched.TO_STATE to from))
                 return "the issue is no longer active, it is in $from"
             }
-            withContext(io) { tracker.moveIssue(issueId, to) }.getOrElse { return it.describe() }
+            withContext(io) { tracker.moveIssue(current, to) }.getOrElse { return it.describe() }
             record(IssueMoved, mapOf(Tracker.FROM to from, Tracker.TO to to, Tracker.BY to BY_HOST, Tracker.VERIFIED to "true"))
             return null
         }
@@ -4833,7 +4834,7 @@ class Orchestrator(
         }
         val failure =
             try {
-                withContext(io) { tracker.moveIssue(wait.issueId, to) }.exceptionOrNull()
+                withContext(io) { tracker.moveIssue(issue, to) }.exceptionOrNull()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -4874,10 +4875,8 @@ class Orchestrator(
         val context = waitContext(wait)
         val facts =
             DeliveryFacts(
-                issueId = wait.issueId,
+                issue = issue,
                 identifier = wait.identifier,
-                title = issue.title,
-                nativeRef = issue.nativeRef.orEmpty(),
                 attemptId = wait.attemptId?.value,
                 fingerprint = wait.fingerprint.orEmpty(),
                 checks = wait.checks,
