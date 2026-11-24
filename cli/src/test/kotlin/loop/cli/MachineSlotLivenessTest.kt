@@ -15,6 +15,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.time.Clock
 import kotlin.time.Instant
 
 /**
@@ -106,6 +107,51 @@ class MachineSlotLivenessTest {
 
         assertTrue(slotLive(loopHome, slot(self.pid()), holding))
         assertFalse(slotLive(loopHome, slot(self.pid(), runId = "an-earlier-run"), holding))
+    }
+
+    @Test
+    fun `an unreadable run file is read once with no wait, under the claim's write lock (bl-101)`() {
+        val files = RunFiles(loopHome, project)
+        Files.createDirectories(files.dir)
+        files.runFile.writeText("{not json")
+        // Warmed up first, so the timing below is the read and nothing else.
+        slotLive(loopHome, slot(self.pid()))
+
+        val started = System.nanoTime()
+        assertTrue(slotLive(loopHome, slot(self.pid())))
+        val tookMs = (System.nanoTime() - started) / 1_000_000
+
+        assertTrue(tookMs < 50, "the read waited ${tookMs}ms, a peek's 100 ms retry inside the transaction")
+    }
+
+    @Test
+    fun `a claim warns once for a run file it cannot read, and again after it was readable (bl-101)`() {
+        val other = ProjectId("bbbbbbbbbbbbbbbb")
+        val otherFiles = RunFiles(loopHome, other)
+        val warnings = mutableListOf<String>()
+        open().use { store ->
+            runBlocking {
+                val held = MachineSlot(other, "other-slot", RunId("r-other"), self.pid(), Instant.parse("2026-11-15T10:00:00Z"))
+                assertTrue(store.claimMachineSlot(held, cap = 10) { true }.getOrThrow())
+                Files.createDirectories(otherFiles.dir)
+                otherFiles.runFile.writeText("{not json")
+                val machine =
+                    StoreMachine(loopHome, store, project, RunId(RUN), self.pid(), Clock.System) { project, error ->
+                        warnings += "${project.value}: ${error.message}"
+                    }
+
+                assertTrue(machine.claimSlot("h1", cap = 10).getOrThrow())
+                assertTrue(machine.claimSlot("h2", cap = 10).getOrThrow())
+                assertEquals(1, warnings.size, "the same unreadable file warns once: $warnings")
+                assertTrue(warnings.single().startsWith("bbbbbbbbbbbbbbbb: "), warnings.single())
+
+                otherFiles.runFile.writeText(Json.encodeToString(RunRecord.serializer(), RunRecord.ofCurrentProcess("r-other", tmp.resolve("WORKFLOW.md"))))
+                assertTrue(machine.claimSlot("h3", cap = 10).getOrThrow())
+                otherFiles.runFile.writeText("{not json")
+                assertTrue(machine.claimSlot("h4", cap = 10).getOrThrow())
+                assertEquals(2, warnings.size, "unreadable again after a good read warns again: $warnings")
+            }
+        }
     }
 
     private companion object {

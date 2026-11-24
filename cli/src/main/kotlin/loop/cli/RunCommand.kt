@@ -339,7 +339,18 @@ class RunCommand(
                 attemptEvents = { attempt -> store.eventsForAttempt(attempt).map { events -> events.map { it.event } } },
                 riskReviewerFor = { wf -> riskReviewerFor(wf, host.rawEnv, agentEnvRemovedNames(wf), holdoutDir) },
                 // m3-16: the machine limits of <LOOP_HOME>/config.yaml and the machine slots of the shared store.
-                machine = StoreMachine(host.loopHome, store, projectId, runId, ProcessHandle.current().pid(), clock),
+                // bl-101: a run file a claim cannot read counts its slots, with a warning once until it reads again.
+                machine =
+                    StoreMachine(host.loopHome, store, projectId, runId, ProcessHandle.current().pid(), clock) { other, error ->
+                        log.log(
+                            LogLevel.WARN,
+                            "machine_slot",
+                            LogOutcome.FAILED,
+                            context,
+                            fields = mapOf("project" to other.value),
+                            reason = "run file unreadable, its slots count: ${error.message ?: error::class.simpleName}",
+                        )
+                    },
                 // bl-175: a pause of the delivery queue an earlier run left, which this restart ends.
                 queuePausedBefore = {
                     store.eventsOfKinds(projectId, DeliveryQueuePaused.QUEUE_KINDS).getOrNull()?.let { stored ->
