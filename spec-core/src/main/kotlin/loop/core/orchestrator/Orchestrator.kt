@@ -753,7 +753,7 @@ class Orchestrator(
                 probing = true
             }
             // bl-101: started atomically, like a merge check's job (bl-180), so a scope cancelled since the claim still
-            // runs its finally, which releases the machine slot and the claim; it stops at its first suspension.
+            // runs its finally, which releases the machine slot and the claim; it runs nothing else.
             @OptIn(DelicateCoroutinesApi::class)
             val attempt = scope.async(start = CoroutineStart.ATOMIC) { attemptAndRelease(issue) }
             attempts += attempt

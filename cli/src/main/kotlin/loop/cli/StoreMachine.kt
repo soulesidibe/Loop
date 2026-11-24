@@ -59,9 +59,9 @@ internal class StoreMachine(
  * True when [slot] counts toward the machine cap (m3-16): the run file of its project names its run and its process,
  * and that process is alive and started when the run file says, so a reused pid does not count. No heartbeat: a
  * crashed run's slots stop counting at once. A run file Loop cannot read at the first try counts and goes to
- * [unreadable], so a half written one never lifts the cap. A `loop run` passes [holding], its own project and run: it holds that project's run file lock, and reading
- * the file would open and close a second descriptor, which drops a POSIX lock, so `loop stop` would take the live run
- * for a stale one. Its own project's slots count when they are of its own run, the only live run of that project.
+ * [unreadable], so a half written one never lifts the cap. A `loop run` passes [holding], its own project and run: it
+ * holds that project's run file lock, and reading the file would open and close a second descriptor, which drops a
+ * POSIX lock, so `loop stop` would take the live run for a stale one. Its own project's slots count when they are of its own run, the only live run of that project.
  */
 internal fun slotLive(
     loopHome: Path,
