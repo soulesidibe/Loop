@@ -203,6 +203,8 @@ class RunCommand(
         dollarBudgetWarning(workflow, runnerOf(workflow).capabilities)?.let { warn(redactor.redact(it)) }
         // m4-06: the merge risk reviewer runs through the Claude Code command whatever the runner; said once at startup.
         riskReviewerWarning(workflow, host.rawEnv)?.let { warn(redactor.redact(it)) }
+        // m4-11: extra trackers are read and checked, but polled only from m4-13; said once at startup.
+        workflow.trackers.notPolledNotice()?.let { warn(redactor.redact(it)) }
         val workspacesOf = { wf: WorkflowFile -> WorkspaceManager(Workspaces(wf.workspaceRoot), wf.config.hooks, ShellHookRunner()) }
         // m2-03: a check runs code the agent wrote, so it gets the agent env policy, never the full host env, and
         // the orchestrator adds only the issue and attempt ids: no tool config and no launcher on PATH.
