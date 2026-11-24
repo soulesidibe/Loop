@@ -62,7 +62,7 @@ data class WorkflowFile(
     val deferredSecrets: List<DeferredSecret> = emptyList(),
     /** m4-11: the primary tracker's id, `tracker.id` or [TrackersConfig.DEFAULT_ID]. */
     val trackerId: String = TrackersConfig.DEFAULT_ID,
-    /** m4-11: the extra trackers of `trackers:`, in the order written, none when it is absent. Not polled before m4-13. */
+    /** m4-11: the extra trackers of `trackers:`, in the order written, none when it is absent. Polled since m4-13. */
     val extraTrackers: List<TrackerEntry> = emptyList(),
 ) {
     /** m4-11: every tracker of the workflow, the primary one built from the `tracker*` fields above. */

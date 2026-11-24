@@ -175,20 +175,24 @@ fun trackerFor(
 
 /**
  * m4-11: the [TrackerRegistry] of [workflow], each tracker built by its plugin like [trackerFor] builds the primary
- * one, which gets [requiredLabels]. An extra tracker's move to a handoff state removes its own `required_labels`.
- * Nothing polls the extra trackers before m4-13, so `loop run` still builds the primary tracker alone.
+ * one. m4-13: a tracker's move to a handoff state removes its own `required_labels`, never another tracker's, as
+ * [requiredLabels] gives them by tracker id at each move, by default those of [workflow]. `loop run` polls them all.
  */
 fun trackerRegistryFor(
     workflow: WorkflowFile,
     loopHome: Path,
     onWarning: (String) -> Unit = {},
     onMalformed: (TrackerError.Malformed) -> Unit = {},
-    requiredLabels: () -> List<String> = { workflow.requiredLabels },
+    requiredLabels: (String) -> List<String> = { id ->
+        workflow.trackers
+            .entry(id)
+            ?.requiredLabels
+            .orEmpty()
+    },
     plugins: TrackerPlugins = TrackerPlugins.classpath,
 ): TrackerRegistry =
     TrackerRegistry.build(workflow.trackers) { entry ->
-        val labels = if (entry.id == workflow.trackerId) requiredLabels else ({ entry.requiredLabels })
-        adapterFor(entry, loopHome, onWarning, onMalformed, labels, plugins)
+        adapterFor(entry, loopHome, onWarning, onMalformed, { requiredLabels(entry.id) }, plugins)
     }
 
 private fun adapterFor(

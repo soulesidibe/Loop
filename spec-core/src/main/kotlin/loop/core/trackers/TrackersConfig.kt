@@ -22,11 +22,25 @@ data class TrackerEntry(
     val requiredLabels: List<String>,
     /** The `provider` map as written, whose `$NAME` values Loop redacts as secrets. */
     val provider: Map<String, ConfigValue> = emptyMap(),
-)
+) {
+    /** True when [state] is one of [activeStates], compared trimmed and lowercase like every state (spec 4.2). */
+    fun isActive(state: String): Boolean = activeStates.any { it.normalized() == state.normalized() }
+
+    /** True when [state] is one of [terminalStates]. */
+    fun isTerminal(state: String): Boolean = terminalStates.any { it.normalized() == state.normalized() }
+
+    /** True when [labels] hold every one of [requiredLabels] (m4-13: this tracker's own, never the primary's). */
+    fun hasRequiredLabels(labels: List<String>): Boolean {
+        val held = labels.map { it.normalized() }.toSet()
+        return requiredLabels.map { it.normalized() }.all { it.isNotEmpty() && it in held }
+    }
+
+    private fun String.normalized(): String = trim().lowercase()
+}
 
 /**
  * The trackers of a workflow (m4-11): the [primary] one of `tracker:` and the [extras] of `trackers:`, in the order
- * written. Their ids are unique and match [ID_PATTERN], which the loader checked. Nothing polls the extras before m4-13.
+ * written. Their ids are unique and match [ID_PATTERN], which the loader checked. Each is polled on its own (m4-13).
  */
 data class TrackersConfig(
     val primary: TrackerEntry,
@@ -41,15 +55,17 @@ data class TrackersConfig(
     fun entry(id: String): TrackerEntry? = all.firstOrNull { it.id == id }
 
     /**
-     * The one line `loop run` logs at startup when `trackers:` lists extra trackers, without a final period, so a
-     * workflow that sets them before m4-13 is not silently half read; null when it lists none.
+     * The tracker of the core id [issueId] (m4-13), whose states and `required_labels` judge the issue: the tracker of
+     * its namespace, a bare id being the primary's (m4-12), or null when no tracker of the workflow has it, as for an
+     * issue whose tracker a reload removed. With no extra tracker every id is the primary's, whatever it holds.
      */
-    fun notPolledNotice(): String? {
-        if (extras.isEmpty()) return null
-        val ids = extras.map { it.id }
-        val named = if (ids.size == 1) ids.single() else ids.dropLast(1).joinToString(", ") + " and " + ids.last()
-        return "trackers lists $named, which Loop does not poll yet (m4-13), it polls only the primary tracker ${primary.id}"
+    fun trackerOf(issueId: String): TrackerEntry? {
+        if (extras.isEmpty()) return primary
+        return entry(NamespacedId.read(issueId, primary.id).tracker)
     }
+
+    /** The tracker of [issueId] as [trackerOf] finds it, else the primary one, for a check that needs some states. */
+    fun entryOf(issueId: String): TrackerEntry = trackerOf(issueId) ?: primary
 
     companion object {
         /** The id of a primary tracker whose `tracker:` sets no `id`. */

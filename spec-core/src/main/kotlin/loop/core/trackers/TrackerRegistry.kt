@@ -4,8 +4,8 @@ import loop.api.TrackerAdapter
 
 /**
  * The tracker registry of a project (m4-11, PLAN 6.1): each tracker id of [config] with its adapter, states and
- * `required_labels`. The orchestrator still takes only the [primaryAdapter] until m4-13. Each adapter is handed out as
- * a [NamespacedTracker], so its issues reach the core with namespaced ids (m4-12).
+ * `required_labels`. Each adapter is handed out as a [NamespacedTracker], so its issues reach the core with namespaced
+ * ids (m4-12), and `loop run` polls them all through a [TrackerPoll] (m4-13).
  */
 class TrackerRegistry private constructor(
     val config: TrackersConfig,
