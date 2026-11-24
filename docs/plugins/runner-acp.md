@@ -66,10 +66,11 @@ Loop checks `runners.acp` against the profile and `AcpRunnerProvider.validate` o
 
 ## Launch and streams
 
-- **Launch:** argv words run in the workspace working directory inside an isolated process group (`ProcessGroupLauncher`) with no shell.
+- **Launch:** argv words run in the workspace working directory inside an isolated process group (`ProcessGroupLauncher`) with no shell. Under `preset: agy`, Loop appends `--disable-telemetry` and `--sandbox`, and under `strict_mcp: true` (the default) creates an attempt-local directory relative to `$HOME` containing `antigravity-cli/settings.json` (`{"toolPermission": "strict", "allowNonWorkspaceAccess": false}`), passes `--gemini-dir <relative-under-HOME>`, and deletes that directory when the session stops. Loop never passes `--dangerously-skip-permissions`, `--effort`, `--remote-agent`, or `--remote-control`.
+- **Loop MCP server:** when the attempt environment provides `LOOP_LAUNCHER` and `LOOP_TOOL_CONFIG`, `session/new` and `session/load` pass Loop's stdio MCP server (`name: "loop"`, `command: <LOOP_LAUNCHER>`, `args: ["tool", "mcp"]`) with only the 8 Loop environment variables (`LOOP_TOOL_CONFIG`, `LOOP_ATTEMPT_ID`, `LOOP_ISSUE_ID`, `LOOP_ISSUE_IDENTIFIER`, `LOOP_TRACKER_ID`, `LOOP_HOME`, `LOOP_SESSION_ID`, `LOOP_TURN_ID`). `LOOP_SESSION_ID` and `LOOP_TURN_ID` stay fixed at the values of the turn that opened the session.
 - **Stdout:** newline delimited JSON-RPC 2.0 messages, bounded to 10 MB per line (`ProcessGroupLauncher.MAX_LINE_BYTES`). Malformed lines are logged on stderr with a fixed reason (never quoting the line) and skipped.
 - **Stderr:** kept apart from the protocol stream as diagnostic output.
-- **Stop:** closing a session closes stdin and waits up to 5 seconds (`STOP_GRACE`) for the process to exit. When the grace expires, Loop kills the process group and reports `stop_grace_expired` through `AgentSession.stop(report)`.
+- **Stop:** closing a session closes stdin and waits up to 5 seconds (`STOP_GRACE`) for the process to exit. When the grace expires, Loop kills the process group and reports `stop_grace_expired` through `AgentSession.stop(report)`. The isolated `--gemini-dir` folder is removed after the process exits.
 
 ## Session startup and turns
 

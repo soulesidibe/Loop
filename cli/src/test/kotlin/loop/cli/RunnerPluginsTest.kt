@@ -159,6 +159,17 @@ class RunnerPluginsTest {
     }
 
     @Test
+    fun `runner kind acp with strict_mcp true and no preset fails preflight with invalid_config`() {
+        useRunner("acp", "    command: my-acp-agent\n", key = "acp")
+
+        val result = runBlocking { Preflight(host().workflowLoader(), fixture.workflow, TemplateEngine()) { null }.check() }
+
+        val failed = assertIs<PreflightResult.Failed>(result)
+        assertEquals("invalid_config", failed.code)
+        assertTrue(failed.message.startsWith("runners.acp.strict_mcp "), failed.message)
+    }
+
+    @Test
     fun `a provider in a JAR under the plugins folder of LOOP_HOME is found and selected by its kind`() {
         val jar =
             PluginJars.build(

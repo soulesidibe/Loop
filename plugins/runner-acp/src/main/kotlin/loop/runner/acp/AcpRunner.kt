@@ -35,6 +35,7 @@ import loop.runner.process.ProcessEvent
 import loop.runner.process.ProcessGroupLauncher
 import loop.runner.process.agentEnvironment
 import loop.runner.process.resolveAddedEnv
+import java.nio.file.Path
 import java.util.UUID
 import kotlin.io.path.isDirectory
 import kotlin.time.Duration
@@ -133,6 +134,8 @@ class AcpRunner internal constructor(
 
         @Volatile private var live: LiveProcess? = null
 
+        @Volatile private var isolationDir: AgyIsolationDir? = null
+
         @Volatile private var latest: TurnIds? = null
 
         override fun runTurn(
@@ -169,6 +172,7 @@ class AcpRunner internal constructor(
                         }
                     }
                 } finally {
+                    deleteIsolationDir()
                     scope.cancel()
                 }
             }
@@ -177,11 +181,13 @@ class AcpRunner internal constructor(
 
         private fun spawn(): LiveProcess {
             val process = LiveProcess(Channel(Channel.UNLIMITED), Channel(Channel.UNLIMITED))
+            val env = agentEnv()
+            val argv = buildLaunchArgv(env)
             val spec =
                 LaunchSpec(
-                    argv = settings.argv,
+                    argv = argv,
                     cwd = ctx.workspace,
-                    environment = agentEnv(),
+                    environment = env,
                     stdinLines = process.stdin,
                 )
             process.job =
@@ -200,6 +206,41 @@ class AcpRunner internal constructor(
             return process
         }
 
+        private fun buildLaunchArgv(env: Map<String, String>): List<String> {
+            val base = settings.argv
+            if (!settings.isAgyPreset) return base
+            val args = mutableListOf<String>()
+            args += base
+            args += FLAG_DISABLE_TELEMETRY
+            args += FLAG_SANDBOX
+            if (settings.strictMcp) {
+                val homePath =
+                    env["HOME"]?.takeIf { it.isNotBlank() }?.let(Path::of)
+                        ?: hostEnv["HOME"]?.takeIf { it.isNotBlank() }?.let(Path::of)
+                        ?: Path.of(System.getProperty("user.home"))
+                val loopHomePath =
+                    env["LOOP_HOME"]?.takeIf { it.isNotBlank() }?.let(Path::of)
+                        ?: hostEnv["LOOP_HOME"]?.takeIf { it.isNotBlank() }?.let(Path::of)
+                val isolated =
+                    AgyIsolationDir.create(
+                        homeDir = homePath,
+                        loopHome = loopHomePath,
+                        projectId = ctx.projectId.value,
+                        attemptId = ctx.attemptId.value,
+                    )
+                isolationDir = isolated
+                args += FLAG_GEMINI_DIR
+                args += isolated.relativePath
+            }
+            return args
+        }
+
+        private fun deleteIsolationDir() {
+            val dir = isolationDir ?: return
+            isolationDir = null
+            dir.delete()
+        }
+
         private fun agentEnv(): Map<String, String> {
             val removed = if (settings.isAgyPreset) removedEnvNames + AGY_REMOVED_ENV_NAMES else removedEnvNames
             return agentEnvironment(ctx.env, removed, hostEnv, resolveAddedEnv(addedEnv, ctx.workspace))
@@ -210,6 +251,7 @@ class AcpRunner internal constructor(
                 if (live === process) live = null
                 process.stdin.close()
                 process.job.cancelAndJoin()
+                deleteIsolationDir()
             }
         }
 
@@ -229,8 +271,10 @@ class AcpRunner internal constructor(
                 try {
                     if (turn == 1) {
                         if (!ctx.workspace.isDirectory()) return fail(null, "invalid_workspace_cwd: ${ctx.workspace}")
+                        val mcpEnv = ctx.env + mapOf(ENV_SESSION_ID to sessionId.value, ENV_TURN_ID to turnId.value)
+                        val mcpServers = AcpMcpConfig.mcpServers(mcpEnv)
                         val process = spawn()
-                        process.stdin.send(handshake.start(input))
+                        process.stdin.send(handshake.start(input, mcpServers))
                         read(process)
                     } else {
                         val process = live
@@ -455,6 +499,11 @@ class AcpRunner internal constructor(
         private const val LOOP_PREFIX = "loop: "
         private const val EXIT_COMMAND_NOT_FOUND = 127
         private const val METHOD_NOT_FOUND_CODE = -32601L
+        private const val ENV_SESSION_ID = "LOOP_SESSION_ID"
+        private const val ENV_TURN_ID = "LOOP_TURN_ID"
+        private const val FLAG_DISABLE_TELEMETRY = "--disable-telemetry"
+        private const val FLAG_SANDBOX = "--sandbox"
+        private const val FLAG_GEMINI_DIR = "--gemini-dir"
 
         /** Google API env variables removed from the inherited host env by default under `preset: agy`. */
         val AGY_REMOVED_ENV_NAMES: Set<String> =

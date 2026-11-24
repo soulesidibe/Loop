@@ -74,7 +74,6 @@ internal class AcpHandshake(
     private val preset: String?,
     private val configuredModel: String?,
     private val resumeFrom: String? = null,
-    private val mcpServers: JsonArray = JsonArray(emptyList()),
     private val pinnedAgyVersion: String = AcpSettings.PINNED_AGY_VERSION,
 ) {
     sealed interface Step {
@@ -111,6 +110,7 @@ internal class AcpHandshake(
     private var pendingId: Long? = null
     private var pendingMethod: String? = null
     private var pendingPromptText: String? = null
+    private var mcpServers: JsonArray = JsonArray(emptyList())
     private var observedModelDuringSetModel: String? = null
 
     /** The ACP session id established by `session/new` or `session/load`. */
@@ -129,8 +129,12 @@ internal class AcpHandshake(
     val isReadyForContinuation: Boolean
         get() = phase == Phase.Ready && acpSessionId != null
 
-    /** Begins turn 1 startup for [input]; returns the `initialize` JSON-RPC request line to write. */
-    fun start(input: String): String {
+    /** Begins turn 1 startup for [input] with [mcpServers]; returns the `initialize` JSON-RPC request line to write. */
+    fun start(
+        input: String,
+        mcpServers: JsonArray = JsonArray(emptyList()),
+    ): String {
+        this.mcpServers = mcpServers
         pendingPromptText = escapePrompt(input)
         val id = nextId.getAndIncrement()
         phase = Phase.WaitingInitialize
