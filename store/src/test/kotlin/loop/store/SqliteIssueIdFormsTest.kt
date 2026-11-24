@@ -126,7 +126,15 @@ class SqliteIssueIdFormsTest {
                 // A bare id given, as a command before m4-47 may, reads the same rows.
                 assertEquals(1, store.eventsForIssue(project, "t-1").getOrThrow().size)
             }
-            for (table in listOf("events", "attempts", "parked_issues", "claims", "retry_states", "waiting_issues", "acceptance_commands")) {
+            for (table in listOf(
+                "events",
+                "attempts",
+                "parked_issues",
+                "claims",
+                "retry_states",
+                "waiting_issues",
+                "acceptance_commands",
+            )) {
                 assertEquals(listOf("t-1"), issueIds(table), "$table is never rewritten")
             }
         }
@@ -175,10 +183,38 @@ class SqliteIssueIdFormsTest {
                 assertEquals(listOf("t-1"), issueIds("parked_issues"))
                 assertEquals(listOf("t-1"), issueIds("waiting_issues"))
                 assertEquals(listOf("t-1"), issueIds("acceptance_commands"))
-                assertEquals(AttemptId("a-2"), store.claims(project).getOrThrow().single().attemptId)
-                assertEquals(3, store.retryStates(project).getOrThrow().single().failures)
-                assertEquals("review", store.list(project).getOrThrow().single().state)
-                assertEquals(WaitReason.Verify, store.waitingIssues(project).getOrThrow().single().reason)
+                assertEquals(
+                    AttemptId("a-2"),
+                    store
+                        .claims(project)
+                        .getOrThrow()
+                        .single()
+                        .attemptId,
+                )
+                assertEquals(
+                    3,
+                    store
+                        .retryStates(project)
+                        .getOrThrow()
+                        .single()
+                        .failures,
+                )
+                assertEquals(
+                    "review",
+                    store
+                        .list(project)
+                        .getOrThrow()
+                        .single()
+                        .state,
+                )
+                assertEquals(
+                    WaitReason.Verify,
+                    store
+                        .waitingIssues(project)
+                        .getOrThrow()
+                        .single()
+                        .reason,
+                )
 
                 store.markChanged(project, "default:t-1", "d3", 4).getOrThrow()
                 assertEquals("d3", store.acceptChanged(project, "default:t-1", "d3").getOrThrow()?.digest)
@@ -201,7 +237,14 @@ class SqliteIssueIdFormsTest {
             open(forms).use { store ->
                 val approved = assertNotNull(store.approve(project, "default:t-1", "soule", at).getOrThrow())
                 assertEquals("default:t-1", approved.issueId)
-                assertEquals(true, store.waitingIssues(project).getOrThrow().single().approved)
+                assertEquals(
+                    true,
+                    store
+                        .waitingIssues(project)
+                        .getOrThrow()
+                        .single()
+                        .approved,
+                )
             }
         }
 

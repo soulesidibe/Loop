@@ -110,7 +110,11 @@ class ClaudeCodeStalledUsageTest {
         val result = LoopCommand(host()).test(listOf("run", fixture.workflow.toString(), "--once"))
 
         assertEquals(0, result.statusCode, result.output)
-        assertEquals("budget", fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 'default:t-1'").single()["reason"], result.output)
+        assertEquals(
+            "budget",
+            fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 'default:t-1'").single()["reason"],
+            result.output,
+        )
         val reached = fixture.query("SELECT data FROM events WHERE kind = 'budget_reached'").single()["data"].orEmpty()
         assertContains(reached, "\"budget\":\"per_attempt_usd\"")
         assertContains(reached, "\"used\":\"12.5\"")

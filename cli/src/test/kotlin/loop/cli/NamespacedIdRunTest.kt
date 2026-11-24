@@ -67,7 +67,12 @@ class NamespacedIdRunTest {
             listOf("local:t-1"),
             fixture.query("SELECT DISTINCT issue_id FROM events WHERE issue_id IS NOT NULL").map { it["issue_id"] },
         )
-        assertEquals(listOf("t-1"), fixture.query("SELECT DISTINCT issue_identifier FROM events WHERE issue_id IS NOT NULL").map { it["issue_identifier"] })
+        assertEquals(
+            listOf("t-1"),
+            fixture.query("SELECT DISTINCT issue_identifier FROM events WHERE issue_id IS NOT NULL").map {
+                it["issue_identifier"]
+            },
+        )
         assertEquals(listOf("local:t-1"), fixture.query("SELECT issue_id FROM attempts").map { it["issue_id"] })
         val lines = ledgerFile.readLines().filter { it.isNotBlank() }.map { Json.parseToJsonElement(it).jsonObject }
         assertTrue(lines.isNotEmpty(), "no ledger line")
@@ -99,7 +104,14 @@ class NamespacedIdRunTest {
         assertEquals(0, result.exitCode, result.toString())
         // The parked row of t-2, held under its bare id, still parks it.
         assertEquals("todo", fixture.stateOf("t-2"))
-        assertEquals(0, fixture.query("SELECT count(*) AS n FROM events WHERE kind = 'attempt_started' AND issue_id LIKE '%t-2'").single()["n"]?.toInt())
+        assertEquals(
+            0,
+            fixture
+                .query(
+                    "SELECT count(*) AS n FROM events WHERE kind = 'attempt_started' AND issue_id LIKE '%t-2'",
+                ).single()["n"]
+                ?.toInt(),
+        )
         assertEquals(listOf("t-2"), fixture.query("SELECT issue_id FROM parked_issues").map { it["issue_id"] })
         // t-1's earlier ledger row counts: its new row is its second attempt.
         assertEquals("review", fixture.stateOf("t-1"))

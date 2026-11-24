@@ -132,7 +132,10 @@ class AcceptanceCommandsCommandTest {
 
         assertEquals(0, parked.exitCode, parked.toString())
         assertEquals("todo", fixture.stateOf("t-1"), parked.toString())
-        assertEquals(listOf("unverified"), fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 'default:t-1'").map { it["reason"] })
+        assertEquals(
+            listOf("unverified"),
+            fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 'default:t-1'").map { it["reason"] },
+        )
         assertEquals(0, fixture.query("SELECT 1 FROM events WHERE kind = 'check_started'").size, "no command ran")
         val trace = fixture.loop("trace", "t-1", "--workflow", fixture.workflow.toString())
         val lines = trace.stdout.lines()
@@ -197,7 +200,10 @@ class AcceptanceCommandsCommandTest {
         loopMode("{ type: acceptance_commands }")
         freeze("test -f hello.txt", "echo restored")
         val parked = fixture.loop("run", fixture.workflow.toString(), "--once")
-        assertEquals(listOf("unverified"), fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 'default:t-1'").map { it["reason"] })
+        assertEquals(
+            listOf("unverified"),
+            fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 'default:t-1'").map { it["reason"] },
+        )
         assertEquals(AcceptanceCriteria.digest(listOf("test -f hello.txt")), frozenRow()["changed_digest"], parked.toString())
 
         // A human restores the criteria and unparks the issue through a label change.

@@ -145,7 +145,12 @@ class ClaudeCodeRunCommandTest {
         assertEquals(0, result.statusCode, result.output)
         assertEquals("todo", fixture.stateOf("t-1"), result.output)
         assertEquals("budget", fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 'default:t-1'").single()["reason"])
-        val parked = fixture.query("SELECT data FROM events WHERE kind = 'issue_parked' AND issue_id = 'default:t-1'").single()["data"].orEmpty()
+        val parked =
+            fixture
+                .query(
+                    "SELECT data FROM events WHERE kind = 'issue_parked' AND issue_id = 'default:t-1'",
+                ).single()["data"]
+                .orEmpty()
         assertContains(parked, "\"reason\":\"budget\"")
         assertContains(parked, "\"budget\":\"per_attempt_usd\"")
         assertEquals(1, fixture.query("SELECT kind FROM events WHERE kind = 'budget_reached'").size)
@@ -187,7 +192,12 @@ class ClaudeCodeRunCommandTest {
                 .single()
         assertContains(line, "\"tokens\":1004800")
         assertContains(line, "\"attempt_tokens\":1004800")
-        val parked = fixture.query("SELECT data FROM events WHERE kind = 'issue_parked' AND issue_id = 'default:t-1'").single()["data"].orEmpty()
+        val parked =
+            fixture
+                .query(
+                    "SELECT data FROM events WHERE kind = 'issue_parked' AND issue_id = 'default:t-1'",
+                ).single()["data"]
+                .orEmpty()
         assertContains(parked, "\"budget\":\"per_attempt_tokens\"")
     }
 
