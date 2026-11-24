@@ -1,7 +1,7 @@
 ---
 id: m4-46
 title: "After a network hold, a session below the soft limit resumes"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-08]
@@ -41,3 +41,5 @@ Out of this issue: the classification and the hold (m4-08), a resume after any o
 ## Comments
 
 2026-11-18 soule: written in m3-29, split from m4-08 after the Fable 5.2 review.
+
+2026-11-24 01:15Z loop: Loop opened pull request #32 for this issue: https://github.com/soulesidibe/Loop/pull/32

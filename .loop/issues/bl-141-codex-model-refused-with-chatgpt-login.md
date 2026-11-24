@@ -29,3 +29,7 @@ None. Backlog, not scheduled in a milestone. Found while recording the m3-03 fix
 ## Comments
 
 2026-11-18 soule: triaged ready-for-agent in m3-29. Blocked by m4-08, which defines the `runner_unavailable` category a refused model belongs to. Chained with bl-128 and bl-135, which edit the same Codex runner files.
+
+2026-11-24 01:42Z loop: Loop opened pull request #33 for this issue: https://github.com/soulesidibe/Loop/pull/33
+
+2026-11-24 01:42Z loop: Loop could not merge pull request #33: merging main at 36875764624795ea0f128b1ba01782669bdd825e into loop/bl-141 conflicts (conflict in docs/spec-decisions.md). The merge was aborted and the branch is unchanged. The next attempt merges refs/loop/base/main into its branch, resolves the conflict and submits the result again.
