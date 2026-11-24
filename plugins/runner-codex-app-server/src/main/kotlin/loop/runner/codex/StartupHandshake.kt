@@ -11,6 +11,7 @@ import kotlinx.serialization.json.put
 import loop.runner.codex.protocol.ClientInfo
 import loop.runner.codex.protocol.ClientNotification
 import loop.runner.codex.protocol.ClientRequest
+import loop.runner.codex.protocol.CodexCliVersion
 import loop.runner.codex.protocol.CodexJson
 import loop.runner.codex.protocol.InitializeCapabilities
 import loop.runner.codex.protocol.InitializeParams
@@ -54,6 +55,20 @@ sealed interface StartupFailure {
         override val reason: String get() = "response_error: an answer to request $id arrived while waiting for the $method response"
     }
 
+    /** The `initialize` answer's `userAgent` names no codex version (bl-128). */
+    data object UnknownVersion : StartupFailure {
+        override val reason: String get() = "response_error: the initialize response names no codex version in its userAgent"
+    }
+
+    /** The app server runs codex [found], whose major version is not the one of the [pinned] codex (bl-128, m3-02). */
+    data class OtherMajorVersion(
+        val found: String,
+        val pinned: String,
+    ) : StartupFailure {
+        override val reason: String
+            get() = "response_error: codex $found is not of the pinned major version ${pinned.substringBefore('.')} (codex-cli $pinned)"
+    }
+
     /** The answer to [method] is not that method's response type in the pinned schema. */
     data class InvalidAnswer(
         val method: String,
@@ -83,7 +98,8 @@ sealed interface StartupFailure {
  * its `turn/completed`, and an answer that comes late never fails the next turn's start.
  *
  * The `thread/start` answer names the thread's [modelProvider] and [model], the `context.windows` key of its
- * occupancy (m3-23).
+ * occupancy (m3-23). With [configuredModel], `runners.codex.model` (bl-141), `thread/start` asks for that model;
+ * without it the thread takes the model of the Codex config.
  *
  * [start] gives the first line to write, [read] takes each frame read from stdout and says what to do next. Every
  * line is one JSON object written with [CodexJson.format] through the base type of its union, so its `method` is
@@ -93,6 +109,11 @@ sealed interface StartupFailure {
  * With [tools] (m3-22, 17.5 item 15), Loop's client tools, `initialize` asks for the experimental API and `thread/start`
  * carries them as `dynamicTools`: the pinned app server refuses that member otherwise. Without them both stay on the
  * stable protocol.
+ *
+ * Version (bl-128, the m3-02 decision): the `initialize` answer's `userAgent`, `<originator>/<version> (...)`, names
+ * the codex version of the app server. A major version other than the one of [pinnedVersion], `codex-cli` in
+ * `gradle/libs.versions.toml`, or a `userAgent` with no version fails the start before `initialized` is written: the
+ * client speaks the pinned protocol only. Another minor or patch version of the same major starts.
  *
  * Every `thread/start` carries a `config` with `allow_login_shell: false`, so Codex runs each command of the agent in a
  * plain shell, not a login shell that would source the user's profile after the agent env policy built the env.
@@ -111,6 +132,8 @@ internal class StartupHandshake(
     private val loopVersion: String,
     private val strictMcp: Boolean = false,
     private val tools: JsonArray? = null,
+    private val configuredModel: String? = null,
+    private val pinnedVersion: String = CodexCliVersion.PINNED,
 ) {
     /** What the client does after reading one frame. */
     sealed interface Step {
@@ -222,10 +245,18 @@ internal class StartupHandshake(
         }.also { if (it is Step.Failed) awaiting = Awaiting.Done }
     }
 
+    /** Why the codex of [userAgent] cannot be used, or null when its major version is the pinned one. */
+    private fun versionFailure(userAgent: String): StartupFailure? {
+        val match = USER_AGENT_VERSION.find(userAgent) ?: return StartupFailure.UnknownVersion
+        val (version, major) = match.destructured
+        return if (major == pinnedVersion.substringBefore('.')) null else StartupFailure.OtherMajorVersion(version, pinnedVersion)
+    }
+
     private fun answered(result: JsonElement): Step =
         when (val current = awaiting) {
             is Awaiting.Initialize ->
-                decode(result, InitializeResponse.serializer(), "initialize") {
+                decode(result, InitializeResponse.serializer(), "initialize") { response ->
+                    versionFailure(response.userAgent)?.let { return@decode Step.Failed(it) }
                     val initialized = notification(ClientNotification.Initialized)
                     if (strictMcp) {
                         val config = Awaiting.Config(ids.getAndIncrement())
@@ -289,6 +320,7 @@ internal class StartupHandshake(
                         sandbox = SANDBOX,
                         cwd = workspace.toAbsolutePath().toString(),
                         config = config,
+                        model = configuredModel,
                     ),
             )
         if (tools == null) return request(request)
@@ -403,5 +435,12 @@ internal class StartupHandshake(
 
         /** The config key that lets Codex run the agent's commands in a login shell; Loop sets it to false. */
         private const val ALLOW_LOGIN_SHELL = "allow_login_shell"
+
+        /**
+         * The version at the start of a `userAgent`, after the originator and its slash and up to a blank or the end:
+         * `major.minor`, an optional patch and an optional pre-release or build suffix, every part bounded, so a reason
+         * never quotes more of what the server wrote. Group 1 is the version, group 2 its major.
+         */
+        private val USER_AGENT_VERSION = Regex("""^[^/\s]+/((\d{1,9})\.\d{1,9}(?:\.\d{1,9})?(?:[-+][0-9A-Za-z.-]{1,64})?)(?:\s|$)""")
     }
 }

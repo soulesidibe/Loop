@@ -81,6 +81,29 @@ class ProcessGroupLauncherTest {
     }
 
     @Test
+    fun `bl-128 a line longer than the maximum is dropped, reported as a loop line on stderr, and reading goes on`() {
+        val spec =
+            LaunchSpec(
+                argv = listOf("sh", "-c", "echo before; printf '%040d\\n' 0; echo after; printf '%020d\\n' 0 >&2"),
+                cwd = workspace,
+                environment = mapOf("PATH" to System.getenv("PATH")),
+            )
+
+        val events = runBlocking { withTimeout(10.seconds) { ProcessGroupLauncher(maxLineBytes = 16).launch(spec).toList() } }
+
+        val lines = events.filterIsInstance<ProcessEvent.Line>()
+        assertEquals(listOf("before", "after"), events.stdout())
+        assertEquals(
+            setOf(
+                "loop: a stdout line of 40 bytes was dropped, longer than the maximum of 16 bytes",
+                "loop: a stderr line of 20 bytes was dropped, longer than the maximum of 16 bytes",
+            ),
+            lines.filter { it.stream == Stream.Stderr }.map { it.text }.toSet(),
+        )
+        assertEquals(ProcessEvent.Exited(0), events.last())
+    }
+
+    @Test
     fun `a cancel right after the process starts leaves no process or group member behind`() {
         val childPidFile = workspace.resolve("child.pid")
         // A background child in the group writes its pid, then the root becomes a long sleep.

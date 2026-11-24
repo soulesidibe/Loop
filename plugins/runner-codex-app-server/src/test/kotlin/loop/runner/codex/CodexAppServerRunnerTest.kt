@@ -25,6 +25,7 @@ import loop.api.RunnerEvent
 import loop.api.RunnerEvent.Output.Stream
 import loop.api.SessionId
 import loop.api.TurnId
+import loop.runner.codex.protocol.CodexCliVersion
 import loop.runner.codex.protocol.CodexJson
 import loop.runner.codex.protocol.ServerNotification
 import loop.runner.codex.protocol.v2.AccountUpdatedNotification
@@ -324,6 +325,33 @@ class CodexAppServerRunnerTest {
 
         val failed = assertIs<RunnerEvent.TurnFailed>(events.last())
         assertEquals("response_error: the initialize response does not match the pinned schema", failed.reason)
+    }
+
+    @Test
+    fun `bl-128 an app server of another codex major version fails the start with response_error and is stopped`() {
+        val result =
+            buildJsonObject {
+                FakeAppServer.initializeResult().jsonObject.forEach { (key, value) -> put(key, value) }
+                put("userAgent", "loop/1.0.0 (Mac OS; arm64) unknown (loop; 0.0.0)")
+            }
+        val server =
+            FakeAppServer.write(dir) {
+                awaitClient()
+                response(1, result)
+                // A server that stays: the runner must stop it, not wait for it.
+                shell("sleep 1000")
+            }
+
+        val events = runAll(runner(server.command))
+
+        assertEquals(listOf("initialize"), received(server).map { it.string("method") })
+        assertEquals(1, events.count(::isTerminal), "$events")
+        val failed = assertIs<RunnerEvent.TurnFailed>(events.last())
+        assertEquals(
+            "response_error: codex 1.0.0 is not of the pinned major version 0 (codex-cli ${CodexCliVersion.PINNED})",
+            failed.reason,
+        )
+        assertNull(failed.exitCode)
     }
 
     @Test
@@ -643,7 +671,6 @@ class CodexAppServerRunnerTest {
         listOf(
             TurnStatus.FAILED to CodexErrorInfo.HttpConnectionFailed(httpStatusCode = 400),
             TurnStatus.FAILED to CodexErrorInfo.ResponseStreamDisconnected(httpStatusCode = 500),
-            TurnStatus.FAILED to CodexErrorInfo.ModelNotFound,
             TurnStatus.FAILED to CodexErrorInfo.Other,
             TurnStatus.INTERRUPTED to CodexErrorInfo.ResponseStreamDisconnected(),
         ).forEachIndexed { index, (status, info) ->
@@ -657,6 +684,69 @@ class CodexAppServerRunnerTest {
 
             assertNull(failed.category, "$status $info")
         }
+    }
+
+    /**
+     * bl-141: a model the login refuses is not the agent's fault. Codex ends the turn `failed` with `modelNotFound` before
+     * any work, so the turn is `runner_unavailable`, takes no `max_attempts` slot and holds the run, and its reason names
+     * the key that picks the model.
+     */
+    @Test
+    fun `bl-141 a failed turn refused with modelNotFound is runner_unavailable and its reason names the model key`() {
+        val message = "The 'gpt-5.1-codex-max' model is not supported when using Codex with a ChatGPT account."
+        val server =
+            FakeAppServer.write(dir) {
+                handshake()
+                turnCompleted(status = TurnStatus.FAILED, error = message, errorInfo = CodexErrorInfo.ModelNotFound)
+            }
+
+        val failed = assertIs<RunnerEvent.TurnFailed>(runAll(runner(server.command)).last())
+
+        assertEquals(RunnerEvent.TurnFailed.Category.RunnerUnavailable, failed.category)
+        assertEquals(
+            "turn_failed: $message (model_not_found: set runners.codex.model to a model the Codex login accepts)",
+            failed.reason,
+        )
+        assertNull(failed.retryAfter)
+    }
+
+    @Test
+    fun `bl-141 an interrupted turn with modelNotFound keeps a null category`() {
+        val server =
+            FakeAppServer.write(dir) {
+                handshake()
+                turnCompleted(status = TurnStatus.INTERRUPTED, error = "refused", errorInfo = CodexErrorInfo.ModelNotFound)
+            }
+
+        val failed = assertIs<RunnerEvent.TurnFailed>(runAll(runner(server.command)).last())
+
+        assertNull(failed.category)
+        assertEquals("turn_cancelled: refused", failed.reason)
+    }
+
+    @Test
+    fun `bl-141 thread start carries the model of runners codex, and no model without it`() {
+        val withModel =
+            FakeAppServer.write(dir.resolve("with").createDirectories()) {
+                handshake()
+                turnCompleted()
+            }
+        val without =
+            FakeAppServer.write(dir.resolve("without").createDirectories()) {
+                handshake()
+                turnCompleted()
+            }
+
+        runAll(runner(withModel.command, model = "gpt-6.1-sol"))
+        runAll(runner(without.command))
+
+        val thread = received(withModel).single { it.string("method") == "thread/start" }
+        assertEquals("gpt-6.1-sol", thread.obj("params").string("model"))
+        assertEquals(emptyList(), PinnedSchema.load().problems("v2/ThreadStartParams", thread.obj("params")))
+        val turn = received(withModel).single { it.string("method") == "turn/start" }
+        assertNull(turn.obj("params")["model"], "the turn keeps the thread's model")
+        val plain = received(without).single { it.string("method") == "thread/start" }
+        assertNull(plain.obj("params")["model"], "$plain")
     }
 
     @Test
@@ -833,11 +923,12 @@ class CodexAppServerRunnerTest {
         readTimeout: Duration = FakeAppServer.READ_TIMEOUT,
         turnTimeout: Duration = CodexAppServerSettings().turnTimeout,
         stopGrace: Duration = 5.seconds,
+        model: String? = null,
         launch: ((LaunchSpec) -> Flow<ProcessEvent>)? = null,
     ): CodexAppServerRunner =
         CodexAppServerRunner(
             // Strict MCP (m3-20) adds config/read to the startup; these tests pin the startup without it.
-            CodexAppServerSettings(command, turnTimeout = turnTimeout, readTimeout = readTimeout, strictMcp = false),
+            CodexAppServerSettings(command, turnTimeout = turnTimeout, readTimeout = readTimeout, strictMcp = false, model = model),
             hostEnv = hostEnv(),
             removedEnvNames = emptySet(),
             addedEnv = emptyMap(),

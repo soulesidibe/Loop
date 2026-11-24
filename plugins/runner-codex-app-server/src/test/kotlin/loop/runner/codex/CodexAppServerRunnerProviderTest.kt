@@ -52,7 +52,8 @@ class CodexAppServerRunnerProviderTest {
 
     /**
      * m3-19: the profile now has command and the two timeouts with the spec's defaults, no secret, and timeouts of one
-     * day at most; m3-20 adds `strict_mcp`, a boolean that defaults to true. The name predates m3-19 and is kept
+     * day at most; m3-20 adds `strict_mcp`, a boolean that defaults to true; bl-141 adds `model`, a string with no
+     * default. The name predates m3-19 and is kept
      * because the `deleted_tests` guard refutes any test name that disappears; the maintainer renames it after the
      * merge.
      */
@@ -64,6 +65,7 @@ class CodexAppServerRunnerProviderTest {
                 ProfileKey("turn_timeout_ms", ProfileType.INTEGER, default = "3600000"),
                 ProfileKey("read_timeout_ms", ProfileType.INTEGER, default = "5000"),
                 ProfileKey("strict_mcp", ProfileType.BOOLEAN, default = "true"),
+                ProfileKey("model", ProfileType.STRING),
             ),
             provider.profile.keys,
         )
@@ -201,6 +203,23 @@ class CodexAppServerRunnerProviderTest {
         assertFalse(CodexAppServerSettings.of(mapOf("strict_mcp" to false)).strictMcp)
         assertTrue(CodexAppServerSettings.of(mapOf("strict_mcp" to " ")).strictMcp)
         assertTrue(CodexAppServerSettings.of(mapOf("strict_mcp" to null)).strictMcp)
+    }
+
+    @Test
+    fun `bl-141 a section gives its model, trimmed, and none when it is absent, null or blank`() {
+        assertEquals("gpt-6.1-sol", CodexAppServerSettings.of(mapOf("model" to " gpt-6.1-sol ")).model)
+        assertNull(CodexAppServerSettings.of(emptyMap()).model)
+        assertNull(CodexAppServerSettings.of(mapOf("model" to null)).model)
+        assertNull(CodexAppServerSettings.of(mapOf("model" to " ")).model)
+    }
+
+    @Test
+    fun `bl-141 a model that is not a string is refused naming the key`() {
+        listOf(1, true, listOf("gpt-6.1-sol")).forEach { value ->
+            val failure = assertFailsWith<RunnerConfigException>("$value") { provider.validate(mapOf("model" to value)) }
+
+            assertEquals("runners.codex.model must be a string", failure.message)
+        }
     }
 
     @Test

@@ -56,7 +56,8 @@ import kotlin.time.TimeSource
  * (m3-19, spec 10.6). [strictMcp] (`strict_mcp`, m3-20 after bl-72) starts every thread with each MCP server of the
  * Codex config disabled and the `apps` feature off, so the agent gets no MCP server. [holdoutDir] is Loop's holdout
  * folder (m2-14), given by the host through plugin loading, whose reads and edits the approval rules refuse (m3-20);
- * null refuses none.
+ * null refuses none. [model] (`model`, bl-141) is sent as the `model` of `thread/start`, so the thread runs the model
+ * the workflow names rather than the one of the operator's Codex config; null sends none and keeps Codex's choice.
  */
 data class CodexAppServerSettings(
     val command: String = DEFAULT_COMMAND,
@@ -64,6 +65,7 @@ data class CodexAppServerSettings(
     val readTimeout: Duration = 5.seconds,
     val strictMcp: Boolean = true,
     val holdoutDir: Path? = null,
+    val model: String? = null,
 ) {
     /** [command] split into the words the runner launches, see [CommandWords]; throws [RunnerConfigException]. */
     val argv: List<String> get() = CommandWords.of(command, "runners.$SECTION.command")
@@ -83,8 +85,8 @@ data class CodexAppServerSettings(
 
         /**
          * The profile of `runners.codex`: `command` (m3-17), the two timeouts with the spec's defaults (5.3.6) and
-         * their limits (m3-19), and `strict_mcp`, true by default as for the claude-code runner (bl-72, m3-20). No
-         * secret.
+         * their limits (m3-19), `strict_mcp`, true by default as for the claude-code runner (bl-72, m3-20), and
+         * `model`, with no default (bl-141). No secret.
          */
         val PROFILE: PluginProfile =
             CodexAppServerSettings().let { defaults ->
@@ -95,6 +97,7 @@ data class CodexAppServerSettings(
                             ProfileKey("turn_timeout_ms", ProfileType.INTEGER, default = "${defaults.turnTimeout.inWholeMilliseconds}"),
                             ProfileKey("read_timeout_ms", ProfileType.INTEGER, default = "${defaults.readTimeout.inWholeMilliseconds}"),
                             ProfileKey("strict_mcp", ProfileType.BOOLEAN, default = "${defaults.strictMcp}"),
+                            ProfileKey("model", ProfileType.STRING),
                         ),
                     limits = mapOf("turn_timeout_ms" to 1L..MAX_TIMEOUT_MS, "read_timeout_ms" to 1L..MAX_TIMEOUT_MS),
                 )
@@ -104,8 +107,9 @@ data class CodexAppServerSettings(
          * Reads the section `runners.codex` as written: `command`, a string, [DEFAULT_COMMAND] when absent, null or
          * blank, as the profile check treats a blank value, refused when [CommandWords] cannot split it;
          * `turn_timeout_ms` and `read_timeout_ms`, positive integers, quoted or not, their defaults when absent, null or
-         * blank; `strict_mcp`, `true` or `false` in any case, bare or quoted, true when absent, null or blank. Throws [RunnerConfigException] naming the key. [holdoutDir] is the
-         * host's holdout folder.
+         * blank; `strict_mcp`, `true` or `false` in any case, bare or quoted, true when absent, null or blank; `model`,
+         * a string, trimmed, none when absent, null or blank. Throws [RunnerConfigException] naming the key.
+         * [holdoutDir] is the host's holdout folder.
          */
         fun of(
             config: Map<String, Any?>,
@@ -125,6 +129,12 @@ data class CodexAppServerSettings(
                 readTimeout = config.millis("read_timeout_ms") ?: defaults.readTimeout,
                 strictMcp = config.boolean("strict_mcp") ?: defaults.strictMcp,
                 holdoutDir = holdoutDir,
+                model =
+                    when (val value = config["model"]) {
+                        null -> null
+                        is String -> value.trim().takeIf { it.isNotEmpty() }
+                        else -> throw RunnerConfigException("runners.$SECTION.model must be a string")
+                    },
             )
         }
 
@@ -164,16 +174,18 @@ data class CodexAppServerSettings(
  *
  * Streams: stdout is the protocol stream. Each stdout line is kept as raw [RunnerEvent.Output] and read with
  * [ProtocolFraming], one JSON-RPC message per line; a line split across reads is whole once its line break arrives,
- * since the launcher reads lines. A line that is not a protocol message is logged as a `loop:` line on stderr naming
- * the framing's fixed reason, never the line, and reading goes on: a bad line never ends the turn. Stderr is kept
- * apart, as diagnostics: each stderr line is a raw `Output` on stderr and never reaches the framing. The client's
- * messages go to stdin, one per line.
+ * since the launcher reads lines. A line longer than [ProtocolFraming.MAX_LINE_BYTES] is dropped by the launcher, which
+ * writes a `loop:` line on stderr in its place (bl-128). A line that is not a protocol message is logged as a `loop:`
+ * line on stderr naming the framing's fixed reason, never the line, and reading goes on: a bad line never ends the
+ * turn. Stderr is kept apart, as diagnostics: each stderr line is a raw `Output` on stderr and never reaches the
+ * framing. The client's messages go to stdin, one per line.
  *
  * Startup ([StartupHandshake], spec 10.2): `initialize` with Loop's identity, `initialized`, `thread/start` and
  * `turn/start` with the prompt, each request written once the answer before it arrived, with the approval and sandbox
  * settings of `docs/spec-decisions.md`. An error answer, an answer to another request or an answer that is not its
  * method's response type fails the start with the [StartupFailure]'s `response_error` reason, and the process group
- * is killed at once. A continuation turn's `turn/start` is read the same way.
+ * is killed at once. So does an `initialize` answer whose codex is not of the pinned major version (bl-128). A
+ * continuation turn's `turn/start` is read the same way.
  *
  * Server requests (m3-20, spec 10.5): every request the app server sends, an approval, a user input request or a
  * dynamic tool call, is answered at once by [ServerRequestPolicy], which declines `git push`, `gh`, history rewrites
@@ -252,7 +264,7 @@ class CodexAppServerRunner internal constructor(
         hostEnv: Map<String, String> = System.getenv(),
         removedEnvNames: Set<String> = emptySet(),
         addedEnv: Map<String, String> = emptyMap(),
-    ) : this(settings, hostEnv, removedEnvNames, addedEnv, ProcessGroupLauncher()::launch)
+    ) : this(settings, hostEnv, removedEnvNames, addedEnv, ProcessGroupLauncher(maxLineBytes = ProtocolFraming.MAX_LINE_BYTES)::launch)
 
     /**
      * Continuation on one thread (m3-19); Loop's tools as client tools the runner declares to the server, the Codex
@@ -297,7 +309,7 @@ class CodexAppServerRunner internal constructor(
         private val loopTools = LoopClientTools.load(ctx.env)
         private val ready = loopTools as? LoopClientTools.Loaded.Ready
         private val toolCall = ready?.let { LoopToolCall(it.launcher, loopVersion) }
-        private val handshake = StartupHandshake(ctx.workspace, loopVersion, settings.strictMcp, ready?.tools?.specs)
+        private val handshake = StartupHandshake(ctx.workspace, loopVersion, settings.strictMcp, ready?.tools?.specs, settings.model)
         private val requests =
             ServerRequestPolicy(
                 ctx.workspace,
@@ -594,7 +606,10 @@ class CodexAppServerRunner internal constructor(
                         ?.let { ": $it" } ?: ""
                 when (completed.turn.status) {
                     TurnStatus.COMPLETED -> end(RunnerEvent.TurnCompleted(sessionId, turnId, exitCode = 0))
-                    TurnStatus.FAILED -> fail(null, "turn_failed$detail", category = categoryOf(completed.turn.error))
+                    TurnStatus.FAILED -> {
+                        val hint = if (completed.turn.error?.codexErrorInfo == CodexErrorInfo.ModelNotFound) MODEL_NOT_FOUND_HINT else ""
+                        fail(null, "turn_failed$detail$hint", category = categoryOf(completed.turn.error))
+                    }
                     TurnStatus.INTERRUPTED -> fail(null, "turn_cancelled$detail")
                     TurnStatus.IN_PROGRESS ->
                         killAndFail(process, "response_error: the $TURN_COMPLETED notification says the turn is still in progress")
@@ -655,19 +670,21 @@ class CodexAppServerRunner internal constructor(
 
     /**
      * The category of a turn that failed with [error]: `runner_unavailable` when its `codexErrorInfo` is a transport
-     * failure with no HTTP answer at all, a lost network or a machine waking from sleep (m4-08, bl-123, bl-156), null
-     * otherwise. A transport failure with an `httpStatusCode` reached the server, so it is an ordinary failure.
+     * failure with no HTTP answer at all, a lost network or a machine waking from sleep (m4-08, bl-123, bl-156), or
+     * `modelNotFound`, the login refusing the thread's model before any work (bl-141); null otherwise. A transport
+     * failure with an `httpStatusCode` reached the server, so it is an ordinary failure.
      */
     private fun categoryOf(error: TurnError?): RunnerEvent.TurnFailed.Category? {
-        val unanswered =
+        val unavailable =
             when (val info = error?.codexErrorInfo) {
                 is CodexErrorInfo.HttpConnectionFailed -> info.httpStatusCode == null
                 is CodexErrorInfo.ResponseStreamConnectionFailed -> info.httpStatusCode == null
                 is CodexErrorInfo.ResponseStreamDisconnected -> info.httpStatusCode == null
                 is CodexErrorInfo.ResponseTooManyFailedAttempts -> info.httpStatusCode == null
+                CodexErrorInfo.ModelNotFound -> true
                 else -> false
             }
-        return if (unanswered) RunnerEvent.TurnFailed.Category.RunnerUnavailable else null
+        return if (unavailable) RunnerEvent.TurnFailed.Category.RunnerUnavailable else null
     }
 
     /** The params of a `turn/completed` notification, null when they are not its type in the pinned schema. */
@@ -697,6 +714,9 @@ class CodexAppServerRunner internal constructor(
 
         /** The notification that ends a turn. */
         const val TURN_COMPLETED = "turn/completed"
+
+        /** Added to the reason of a turn the login refused for its model (bl-141), so the operator knows what to set. */
+        const val MODEL_NOT_FOUND_HINT = " (model_not_found: set runners.codex.model to a model the Codex login accepts)"
 
         /** What the launcher exits with when it cannot exec the command, see ProcessGroupLauncher. */
         const val EXIT_COMMAND_NOT_FOUND = 127

@@ -93,6 +93,31 @@ class RecordedSessionsTest {
         assertTrue(events.none { it is RunnerEvent.TurnCompleted }, "$events")
     }
 
+    /**
+     * bl-141: the recorded refusal, `modelNotFound` on a ChatGPT login, replayed with `runners.codex.model` set. The
+     * runner sends the model on `thread/start`, and the refused turn is `runner_unavailable`, not an agent failure.
+     */
+    @Test
+    fun `bl-141 a recorded model refusal is runner_unavailable, and thread start carries the configured model`() {
+        val model =
+            recording("failure")
+                .single { it["id"]?.jsonPrimitive?.content == "2" && "result" in it }
+                .getValue("result")
+                .jsonObject
+                .getValue("model")
+                .jsonPrimitive
+                .content
+
+        val received = mutableListOf<JsonObject>()
+        val events = replay("failure", received, model = model)
+
+        val failed = assertIs<RunnerEvent.TurnFailed>(events.last(), "$events")
+        assertEquals(RunnerEvent.TurnFailed.Category.RunnerUnavailable, failed.category)
+        assertTrue("runners.codex.model" in failed.reason, failed.reason)
+        val thread = received.single { it.method() == "thread/start" }
+        assertEquals(model, thread.params()["model"]?.jsonPrimitive?.content, "$thread")
+    }
+
     @Test
     fun `m3-03 a recorded command approval is answered by the runner's rules and the turn completes`() {
         val requests = recording("approval").filter { it.method() == "item/commandExecution/requestApproval" }
@@ -193,16 +218,20 @@ class RecordedSessionsTest {
             .filter { it.isNotBlank() }
             .map { CodexJson.format.parseToJsonElement(it).jsonObject }
 
-    /** Runs the runner against the replayed recording [name], the client lines the fake read added to [received]. */
+    /**
+     * Runs the runner, with [model] as `runners.codex.model`, against the replayed recording [name], the client lines
+     * the fake read added to [received].
+     */
     private fun replay(
         name: String,
         received: MutableList<JsonObject> = mutableListOf(),
+        model: String? = null,
     ): List<RunnerEvent> {
         val text = javaClass.getResource("/real/$name.jsonl")!!.readText()
         val server = FakeAppServer.write(dir) { replaySession(text.lines()) }
         val events =
             CompletableFuture
-                .supplyAsync { runBlocking { runner(server.command).run(context(), "Work on c-01").toList() } }
+                .supplyAsync { runBlocking { runner(server.command, model).run(context(), "Work on c-01").toList() } }
                 .get(TIMEOUT.inWholeSeconds, TimeUnit.SECONDS)
         if (server.received.exists()) {
             received +=
@@ -214,9 +243,12 @@ class RecordedSessionsTest {
         return events
     }
 
-    private fun runner(command: String): CodexAppServerRunner =
+    private fun runner(
+        command: String,
+        model: String? = null,
+    ): CodexAppServerRunner =
         CodexAppServerRunner(
-            CodexAppServerSettings(command, readTimeout = FakeAppServer.READ_TIMEOUT, strictMcp = false),
+            CodexAppServerSettings(command, readTimeout = FakeAppServer.READ_TIMEOUT, strictMcp = false, model = model),
             hostEnv = mapOf("PATH" to System.getenv("PATH"), "HOME" to home.toString()),
             removedEnvNames = emptySet(),
             addedEnv = emptyMap(),

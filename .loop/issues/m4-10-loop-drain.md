@@ -53,3 +53,11 @@ Out of this issue: `loop stop --drain` as an alias, a drain of one tracker only.
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-24 02:34Z loop: Loop opened pull request #34 for this issue: https://github.com/soulesidibe/Loop/pull/34
+
+2026-11-24 02:44Z loop: Loop did not merge pull request #34 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Failed conditions:
+  - diff_size: the diff changes 1192 lines, over the limit of 1000
+  Merge risk: not assessed, a condition failed.
+  Once approved, Loop runs the merge check again and merges.

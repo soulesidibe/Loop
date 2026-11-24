@@ -1,7 +1,7 @@
 ---
 id: bl-92
 title: "A merge wait with green CI queues behind attempts dispatched during its CI wait"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-agent]
 blocked_by: [m4-07]
@@ -35,3 +35,5 @@ Possible directions for triage: let the merge phase after green CI run without a
 Filed from run 284454f4: bl-39 attempt adcaf419, `ci_finished outcome=green` at 21:42:23 and no `merge_risk_assessed` since, with bl-85 and m3-16 running.
 
 2026-11-18 soule: triaged ready-for-agent in m3-29. Blocked by m4-07, which changes the same merge wait code. bl-86's slot plan owns the capacity rule, so the fix lands there.
+
+2026-11-24 00:23Z loop: Loop opened pull request #31 for this issue: https://github.com/soulesidibe/Loop/pull/31

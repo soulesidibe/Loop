@@ -60,11 +60,18 @@ sealed interface Frame {
  * The envelope is told apart by its members, as the schema's untagged `JSONRPCMessage` union defines it: `method`
  * and `id` make a request, `method` alone a notification, `id` and `result` a response, `id` and `error` an error.
  * Members the schema does not know are ignored, as [CodexJson.format] does everywhere.
+ *
+ * A line longer than [MAX_LINE_BYTES] in UTF-8 is malformed whatever it holds (bl-128). The launcher already drops such
+ * a line, so this holds for a line that did not come through it.
  */
 object ProtocolFraming {
+    /** The longest line, 10 MB, the max line size of spec 10.1. */
+    const val MAX_LINE_BYTES: Int = 10 * 1024 * 1024
+
     /** Reads one stdout [line]; never throws. */
     fun decode(line: String): Frame {
         if (line.isBlank()) return Frame.Malformed(line, "empty line")
+        if (utf8Length(line) > MAX_LINE_BYTES) return Frame.Malformed(line, "line longer than 10 MB")
         val element =
             try {
                 CodexJson.format.parseToJsonElement(line)
@@ -81,6 +88,14 @@ object ProtocolFraming {
             else -> Frame.Malformed(line, "not a JSON-RPC message")
         }
     }
+
+    /** The UTF-8 length of [line], counted only when it can pass the maximum: a UTF-16 unit takes at most 3 bytes. */
+    private fun utf8Length(line: String): Int =
+        when {
+            line.length > MAX_LINE_BYTES -> line.length
+            line.length <= MAX_LINE_BYTES / 3 -> line.length
+            else -> line.toByteArray(Charsets.UTF_8).size
+        }
 
     private fun <T> read(
         line: String,

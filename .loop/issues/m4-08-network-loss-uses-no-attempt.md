@@ -1,7 +1,7 @@
 ---
 id: m4-08
 title: "A lost network is runner_unavailable and uses no attempt"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-07]
@@ -44,3 +44,5 @@ Out of this issue: the resume after the hold (m4-46), the sleep assertion (m4-09
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-23 23:48Z loop: Loop opened pull request #30 for this issue: https://github.com/soulesidibe/Loop/pull/30
