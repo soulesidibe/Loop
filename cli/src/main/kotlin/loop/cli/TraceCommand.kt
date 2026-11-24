@@ -38,7 +38,7 @@ class TraceCommand(
         // m4-47: a bare id is the primary tracker's, a namespaced one names a tracker of the project.
         val typed = ids.typed(issue).getOrElse { fail(it.message.orEmpty(), EXIT_ISSUE) }
         // bl-70: without the secret of its tracker, the issue is looked up by its id in the store, and has no title.
-        // m4-47: so is an extra tracker's issue, since a command reads only the primary tracker before m4-13.
+        // m4-47: so is an extra tracker's issue, since a command reads only the primary tracker until the routed reads of m4-14.
         val secret = project.trackerSecret
         val found =
             if (typed.tracker != workflow.trackerId) {

@@ -176,8 +176,9 @@ class OrchestratorLedgerTest {
             assertEquals(listOf("completed", "completed", "completed"), lines.map { it.outcome })
             assertEquals(listOf("tu1", "tu2", "tu3"), lines.map { it.turnId?.value })
             assertTrue(lines.all { it.attemptId == AttemptId("a1") && it.identifier == "m2-19" && it.runId == RunId("r1") })
+            // m4-13: the tracker is the issue's tracker id, the primary tracker's `default` here.
             assertEquals(
-                LedgerSetup("files", null, "command", null, workflowHash(template), null),
+                LedgerSetup("default", null, "command", null, workflowHash(template), null),
                 lines.first().setup,
             )
             // The turns add up to the attempt row, so no token is counted twice.
@@ -251,7 +252,7 @@ class OrchestratorLedgerTest {
                     issueId = "id-m2-19",
                     identifier = "m2-19",
                     attemptId = AttemptId("a1"),
-                    setup = LedgerSetup("files", null, "command", null, workflowHash(template), null),
+                    setup = LedgerSetup("default", null, "command", null, workflowHash(template), null),
                     startedAt = FIXED_NOW,
                     finishedAt = FIXED_NOW,
                     outcome = "succeeded",
@@ -314,7 +315,7 @@ class OrchestratorLedgerTest {
             orchestrator(FakeTracker(listOf(issue("m2-19"))), runner, workflow, checks).tick()
 
             val row = rows.recorded.single()
-            assertEquals(LedgerSetup("files", "code", "claude-code", "claude-opus-5-5", workflowHash(template), null), row.setup)
+            assertEquals(LedgerSetup("default", "code", "claude-code", "claude-opus-5-5", workflowHash(template), null), row.setup)
             assertEquals(2, row.checks)
             assertEquals("verified", row.verdict)
             assertEquals("review", row.issueState)
