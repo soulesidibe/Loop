@@ -1,7 +1,7 @@
 ---
 id: m4-17
 title: "Minimal area lock, from front matter and a GitHub Area line"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-16]
@@ -65,3 +65,10 @@ Out of this issue: filling `area` on existing issues (the operator's call), area
   - **Low. Prose `Area:` lines.** Loop's own issue style has a column 0 `Area:` prose line (46 files in `.loop/issues`). On GitHub such a line is either malformed, which drops the whole area with a warning, or parsed into bogus entries with no warning. Document the expected form in `docs/spec-decisions.md` and make prose that is not a path list a malformed line with one warning.
   - **Low. One malformed `Area:` line drops every `Area:` line of the body** (`GitHubArea.kt` around lines 44 and 45). Keep it if the spec requires it, but say so in the warning.
   - **Low. Tests.** Add an orchestrator level test for "a skipped due retry stays queued" (only unit tested in `AreaLockTest`).
+
+2026-11-24 23:32Z loop: Loop updated pull request #50 for this issue: https://github.com/soulesidibe/Loop/pull/50
+
+2026-11-24 23:36Z loop: Loop did not merge pull request #50, ci: Actions runs did not pass: build (failure). The pull request stays open and the result waits for a new approval.
+  Failed runs:
+  - build (failure): https://github.com/soulesidibe/Loop/actions/runs/45510831282
+  Rerun the runs on GitHub or fix the branch, then approve again with loop approve.
