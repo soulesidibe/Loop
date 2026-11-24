@@ -174,16 +174,18 @@ data class CodexAppServerSettings(
  *
  * Streams: stdout is the protocol stream. Each stdout line is kept as raw [RunnerEvent.Output] and read with
  * [ProtocolFraming], one JSON-RPC message per line; a line split across reads is whole once its line break arrives,
- * since the launcher reads lines. A line that is not a protocol message is logged as a `loop:` line on stderr naming
- * the framing's fixed reason, never the line, and reading goes on: a bad line never ends the turn. Stderr is kept
- * apart, as diagnostics: each stderr line is a raw `Output` on stderr and never reaches the framing. The client's
- * messages go to stdin, one per line.
+ * since the launcher reads lines. A line longer than [ProtocolFraming.MAX_LINE_BYTES] is dropped by the launcher, which
+ * writes a `loop:` line on stderr in its place (bl-128). A line that is not a protocol message is logged as a `loop:`
+ * line on stderr naming the framing's fixed reason, never the line, and reading goes on: a bad line never ends the
+ * turn. Stderr is kept apart, as diagnostics: each stderr line is a raw `Output` on stderr and never reaches the
+ * framing. The client's messages go to stdin, one per line.
  *
  * Startup ([StartupHandshake], spec 10.2): `initialize` with Loop's identity, `initialized`, `thread/start` and
  * `turn/start` with the prompt, each request written once the answer before it arrived, with the approval and sandbox
  * settings of `docs/spec-decisions.md`. An error answer, an answer to another request or an answer that is not its
  * method's response type fails the start with the [StartupFailure]'s `response_error` reason, and the process group
- * is killed at once. A continuation turn's `turn/start` is read the same way.
+ * is killed at once. So does an `initialize` answer whose codex is not of the pinned major version (bl-128). A
+ * continuation turn's `turn/start` is read the same way.
  *
  * Server requests (m3-20, spec 10.5): every request the app server sends, an approval, a user input request or a
  * dynamic tool call, is answered at once by [ServerRequestPolicy], which declines `git push`, `gh`, history rewrites
@@ -262,7 +264,7 @@ class CodexAppServerRunner internal constructor(
         hostEnv: Map<String, String> = System.getenv(),
         removedEnvNames: Set<String> = emptySet(),
         addedEnv: Map<String, String> = emptyMap(),
-    ) : this(settings, hostEnv, removedEnvNames, addedEnv, ProcessGroupLauncher()::launch)
+    ) : this(settings, hostEnv, removedEnvNames, addedEnv, ProcessGroupLauncher(maxLineBytes = ProtocolFraming.MAX_LINE_BYTES)::launch)
 
     /**
      * Continuation on one thread (m3-19); Loop's tools as client tools the runner declares to the server, the Codex

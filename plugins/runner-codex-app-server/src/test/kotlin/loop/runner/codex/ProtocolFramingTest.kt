@@ -78,4 +78,21 @@ class ProtocolFramingTest {
 
         assertTrue("sk-secret-value" !in malformed.reason, malformed.reason)
     }
+
+    @Test
+    fun `bl-128 a line longer than 10 MB is malformed, counted in bytes, and a line of exactly 10 MB decodes`() {
+        val max = ProtocolFraming.MAX_LINE_BYTES
+        assertEquals(10 * 1024 * 1024, max)
+        val prefix = """{"id":1,"result":{"text":""""
+        val suffix = """"}}"""
+        val atLimit = prefix + "a".repeat(max - prefix.length - suffix.length) + suffix
+        // One two byte character: as many characters as the line at the limit, one byte more.
+        val overByOneByte = prefix + "é" + "a".repeat(max - prefix.length - suffix.length - 1) + suffix
+
+        assertIs<Frame.Response>(ProtocolFraming.decode(atLimit))
+        assertEquals(max, overByOneByte.length)
+        val malformed = assertIs<Frame.Malformed>(ProtocolFraming.decode(overByOneByte))
+        assertEquals("line longer than 10 MB", malformed.reason)
+        assertEquals("line longer than 10 MB", assertIs<Frame.Malformed>(ProtocolFraming.decode(atLimit + " ")).reason)
+    }
 }

@@ -25,6 +25,7 @@ import loop.api.RunnerEvent
 import loop.api.RunnerEvent.Output.Stream
 import loop.api.SessionId
 import loop.api.TurnId
+import loop.runner.codex.protocol.CodexCliVersion
 import loop.runner.codex.protocol.CodexJson
 import loop.runner.codex.protocol.ServerNotification
 import loop.runner.codex.protocol.v2.AccountUpdatedNotification
@@ -324,6 +325,33 @@ class CodexAppServerRunnerTest {
 
         val failed = assertIs<RunnerEvent.TurnFailed>(events.last())
         assertEquals("response_error: the initialize response does not match the pinned schema", failed.reason)
+    }
+
+    @Test
+    fun `bl-128 an app server of another codex major version fails the start with response_error and is stopped`() {
+        val result =
+            buildJsonObject {
+                FakeAppServer.initializeResult().jsonObject.forEach { (key, value) -> put(key, value) }
+                put("userAgent", "loop/1.0.0 (Mac OS; arm64) unknown (loop; 0.0.0)")
+            }
+        val server =
+            FakeAppServer.write(dir) {
+                awaitClient()
+                response(1, result)
+                // A server that stays: the runner must stop it, not wait for it.
+                shell("sleep 1000")
+            }
+
+        val events = runAll(runner(server.command))
+
+        assertEquals(listOf("initialize"), received(server).map { it.string("method") })
+        assertEquals(1, events.count(::isTerminal), "$events")
+        val failed = assertIs<RunnerEvent.TurnFailed>(events.last())
+        assertEquals(
+            "response_error: codex 1.0.0 is not of the pinned major version 0 (codex-cli ${CodexCliVersion.PINNED})",
+            failed.reason,
+        )
+        assertNull(failed.exitCode)
     }
 
     @Test
