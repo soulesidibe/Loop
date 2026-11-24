@@ -309,4 +309,147 @@ class WorkflowFileTest {
     fun `front matter that is not a map fails`() {
         assertIs<WorkflowError.FrontMatterNotAMap>(loadError("---\n- a\n- b\n---\nPrompt"))
     }
+
+    /** [minimal] with the `kinds:` lines [kinds], its keys indented two spaces, and a `notes` files tracker beside the primary. */
+    private fun withKinds(kinds: String): String =
+        minimal.replace(
+            "polling:",
+            "trackers:\n  - { id: notes, kind: files, provider: { dir: notes } }\nkinds:\n" + kinds.trimEnd() + "\npolling:",
+        )
+
+    private fun kindsError(kinds: String): String = assertIs<WorkflowError.InvalidConfig>(loadError(withKinds(kinds))).message!!
+
+    private val codeKind = "  code:\n    verify:\n      checks: []\n"
+
+    @Test
+    fun `m4-18 a workflow with only code and no match parses to the same config as before`() {
+        val kinds = load(withKinds(codeKind + "    ready: { require_sections: [Acceptance criteria] }\n")).config.kinds
+
+        assertEquals(KindsConfig(KindConfig(emptyList(), ReadyConfig(listOf("Acceptance criteria")))), kinds)
+        assertEquals(KindMatch.DEFAULT, kinds?.code?.match)
+        assertEquals(listOf("code"), kinds?.named?.keys?.toList())
+    }
+
+    @Test
+    fun `m4-18 a second kind name next to code is accepted, with its own slots and match, in the order written`() {
+        val kinds =
+            load(
+                withKinds(
+                    codeKind +
+                        "  content:\n    match: { label: Content }\n" +
+                        "    ready: { require_sections: [Brief] }\n" +
+                        "    verify:\n      checks:\n        - { type: file_exists, path: out/post.md }\n" +
+                        "    delivery: { policy: human }\n" +
+                        "  research:\n    match: { tracker: notes, state: Todo }\n    verify:\n      checks: []\n",
+                ),
+            ).config.kinds!!
+
+        assertEquals(listOf("code", "content", "research"), kinds.named.keys.toList())
+        assertEquals(
+            KindConfig(
+                checks = listOf(CheckConfig.FileExists("out/post.md")),
+                ready = ReadyConfig(listOf("Brief")),
+                match = KindMatch(label = "content"),
+            ),
+            kinds.named["content"],
+        )
+        assertEquals(KindMatch(tracker = "notes", state = "Todo"), kinds.named.getValue("research").match)
+        assertEquals(KindConfig(emptyList()), kinds.code)
+    }
+
+    @Test
+    fun `m4-18 the default may be another kind when code has a match`() {
+        val kinds =
+            load(
+                withKinds(
+                    "  code:\n    match: { label: code }\n    verify:\n      checks: []\n" +
+                        "  content:\n    match: { default: true }\n    verify:\n      checks: []\n",
+                ),
+            ).config.kinds!!
+
+        assertEquals(KindMatch(label = "code"), kinds.code.match)
+        assertEquals(KindMatch.DEFAULT, kinds.named.getValue("content").match)
+    }
+
+    @Test
+    fun `m4-18 preflight refuses two default kinds`() {
+        assertEquals(
+            "kinds.code and kinds.content are both the default kind, keep one match: { default: true }, " +
+                "code is the default when it has no match",
+            kindsError(codeKind + "  content:\n    match: { default: true }\n    verify:\n      checks: []\n"),
+        )
+    }
+
+    @Test
+    fun `m4-18 preflight refuses a kind with neither match nor default`() {
+        assertEquals(
+            "kinds.content.match is required, only the code kind is the default without one",
+            kindsError(codeKind + "  content:\n    verify:\n      checks: []\n"),
+        )
+    }
+
+    @Test
+    fun `m4-18 preflight refuses an unknown match key, a front matter field key included`() {
+        val supported = "use default, label, tracker or state"
+        assertEquals(
+            "kinds.content.match.field is not supported, $supported",
+            kindsError(codeKind + "  content:\n    match: { field: { type: post } }\n    verify:\n      checks: []\n"),
+        )
+        assertEquals(
+            "kinds.content.match.type is not supported, $supported",
+            kindsError(codeKind + "  content:\n    match: { label: content, type: post }\n    verify:\n      checks: []\n"),
+        )
+    }
+
+    @Test
+    fun `m4-18 preflight refuses a match it cannot read`() {
+        fun content(match: String) = kindsError(codeKind + "  content:\n    match: $match\n    verify:\n      checks: []\n")
+
+        assertEquals("kinds.content.match must be a map", content("content"))
+        assertEquals("kinds.content.match must hold default, label, tracker or state", content("{}"))
+        assertEquals("kinds.content.match must hold default, label, tracker or state", content("{ default: false }"))
+        assertEquals("kinds.content.match.default must be true or false, got \"yes\"", content("{ default: yes }"))
+        assertEquals("kinds.content.match.default is alone in its match", content("{ default: true, label: post }"))
+        assertEquals("kinds.content.match.label must not be blank", content("{ label: \"  \" }"))
+        assertEquals("kinds.content.match.state must not be blank", content("{ state: \"\" }"))
+        assertEquals(
+            "kinds.content.match.tracker \"gh\" is not a tracker id, use one of default, notes",
+            content("{ tracker: gh }"),
+        )
+    }
+
+    @Test
+    fun `m4-18 preflight refuses kinds with no default`() {
+        assertEquals(
+            "kinds has no default kind, give one kind match: { default: true }",
+            kindsError("  code:\n    match: { label: code }\n    verify:\n      checks: []\n"),
+        )
+    }
+
+    @Test
+    fun `m4-18 a kind other than code reads its slots under its own name and cannot deliver a pull request yet`() {
+        assertEquals(
+            "kinds.content.verify is required",
+            kindsError(codeKind + "  content:\n    match: { label: content }\n"),
+        )
+        assertEquals(
+            "kinds.content.verify.checks[0].run is required",
+            kindsError(codeKind + "  content:\n    match: { label: content }\n    verify:\n      checks:\n        - { type: command }\n"),
+        )
+        assertEquals(
+            "kinds.content.delivery.pull_request is not supported yet, only the code kind delivers a pull request",
+            kindsError(
+                codeKind + "  content:\n    match: { label: content }\n    verify:\n      checks: []\n" +
+                    "    delivery:\n      pull_request: { repo: o/r, token: \$GH }\n",
+            ),
+        )
+    }
+
+    @Test
+    fun `m4-18 kinds still need a code kind`() {
+        assertEquals(
+            "kinds must be a map with a code kind",
+            kindsError("  content:\n    match: { default: true }\n    verify:\n      checks: []\n"),
+        )
+    }
 }

@@ -248,7 +248,7 @@ class WorkflowLoader(
         val budgets = parseBudgets(config.child("budgets"))
         val context = parseContext(config.child("context"))
         val observability = parseObservability(config.child("observability"))
-        val kinds = parseKinds(config, tracker.kind, deferred)
+        val kinds = parseKinds(config, tracker.kind, listOf(tracker.id) + extraTrackers.map { it.id }, deferred)
 
         val workspaceRoot =
             config
@@ -399,12 +399,15 @@ class WorkflowLoader(
             }.orEmpty()
 
     /**
-     * m2-03: `kinds:`. Absent is Symphony mode. Present, it must hold a `code` kind with an explicit
-     * `verify.checks` list, so an empty or misspelled key never switches verification off silently.
+     * m2-03: `kinds:`. Absent is Symphony mode. Present, it must hold a `code` kind, and every kind an explicit
+     * `verify.checks` list, so an empty or misspelled key never switches verification off silently. Since m4-18 it is
+     * a map of named kinds, read in the order written, each with the slots of `code` and a `match` ([parseMatch]).
+     * Exactly one kind is the default: `code` when it has no `match`, else the kind with `match: { default: true }`.
      */
     private fun parseKinds(
         config: YamlMap?,
         trackerKind: String,
+        trackerIds: List<String>,
         deferred: MutableList<DeferredSecret>,
     ): KindsConfig? {
         val entry = config?.entries?.entries?.firstOrNull { it.key.content == "kinds" } ?: return null
@@ -420,12 +423,34 @@ class WorkflowLoader(
                 ?.keys
                 ?.map { it.content }
                 .orEmpty()
-        names.firstOrNull { it != "code" }?.let { throw WorkflowError.InvalidConfig("kinds.$it is not supported, use code") }
-        if ("code" !in names) throw WorkflowError.InvalidConfig("kinds must be a map with a code kind")
-        val verify =
-            kinds.child("code", "kinds.code").child("verify", "kinds.code.verify")
-                ?: throw WorkflowError.InvalidConfig("kinds.code.verify is required")
-        val guards = parseGuards(verify)
+        if (KindsConfig.CODE !in names) throw WorkflowError.InvalidConfig("kinds must be a map with a code kind")
+        names.firstOrNull { !KIND_NAME.matches(it) }?.let {
+            throw WorkflowError.InvalidConfig("kinds.$it is not a kind name, use lowercase letters, digits and -, starting with a letter")
+        }
+        val named = names.associateWith { name -> parseKind(name, kinds, trackerKind, trackerIds, deferred) }
+        val defaults = named.filterValues { it.match.default }.keys.toList()
+        when {
+            defaults.isEmpty() -> throw WorkflowError.InvalidConfig("kinds has no default kind, give one kind match: { default: true }")
+            defaults.size > 1 -> throw WorkflowError.InvalidConfig(
+                "${defaults.joinToString(" and ") { "kinds.$it" }} are both the default kind, keep one match: { default: true }, " +
+                    "code is the default when it has no match",
+            )
+        }
+        return KindsConfig(named)
+    }
+
+    /** m4-18: the kind [name] of [kinds], read like `kinds.code` always was, under its own name. */
+    private fun parseKind(
+        name: String,
+        kinds: YamlMap?,
+        trackerKind: String,
+        trackerIds: List<String>,
+        deferred: MutableList<DeferredSecret>,
+    ): KindConfig {
+        val kindKey = "kinds.$name"
+        val kind = kinds.child(name, kindKey)
+        val verify = kind.child("verify", "$kindKey.verify") ?: throw WorkflowError.InvalidConfig("$kindKey.verify is required")
+        val guards = parseGuards(kindKey, verify)
         val listed =
             when (
                 val node =
@@ -433,12 +458,12 @@ class WorkflowLoader(
                         .firstOrNull { it.key.content == "checks" }
                         ?.value
             ) {
-                null, is YamlNull -> throw WorkflowError.InvalidConfig("kinds.code.verify.checks is required")
+                null, is YamlNull -> throw WorkflowError.InvalidConfig("$kindKey.verify.checks is required")
                 is YamlList ->
                     node.items
-                        .mapIndexed { index, item -> parseCheck("kinds.code.verify.checks[$index]", item, guards) }
-                        .alsoOnce()
-                else -> throw WorkflowError.InvalidConfig("kinds.code.verify.checks must be a list")
+                        .mapIndexed { index, item -> parseCheck(kindKey, "$kindKey.verify.checks[$index]", item, guards) }
+                        .alsoOnce(kindKey)
+                else -> throw WorkflowError.InvalidConfig("$kindKey.verify.checks must be a list")
             }
         // m2-12: a guard is never silently off, so guards without a diff_policy check add one, last, so the listed
         // checks keep their numbers. An empty list stays empty: a guard alone proves no work.
@@ -448,26 +473,84 @@ class WorkflowLoader(
             } else {
                 listed
             }
-        val code = kinds.child("code", "kinds.code")
-        val ready = parseReady(code)
-        val holdout = parseHoldout(verify, guards)
-        return KindsConfig(KindConfig(checks, ready, guards, holdout, parseDelivery(code, trackerKind, deferred)))
+        val ready = parseReady(kindKey, kind)
+        val holdout = parseHoldout(kindKey, verify, guards)
+        // m4-18: the merge check, the auto merge and the pinned diff base read the code kind alone until each kind
+        // takes them up (m4-20 to m4-23), so no other kind may deliver a pull request yet.
+        if (name != KindsConfig.CODE && kind.child("delivery", "$kindKey.delivery").node("pull_request") != null) {
+            throw WorkflowError.InvalidConfig(
+                "$kindKey.delivery.pull_request is not supported yet, only the code kind delivers a pull request",
+            )
+        }
+        val delivery = parseDelivery(kindKey, kind, trackerKind, deferred)
+        val match = parseMatch(kindKey, kind, trackerIds) ?: if (name == KindsConfig.CODE) KindMatch.DEFAULT else null
+        return KindConfig(
+            checks,
+            ready,
+            guards,
+            holdout,
+            delivery,
+            match ?: throw WorkflowError.InvalidConfig("$kindKey.match is required, only the code kind is the default without one"),
+        )
     }
 
     /**
-     * m2-14: `kinds.code.verify.holdout`, the hidden checks. Absent is none. Present, it must be a list of checks
+     * m4-18: `kinds.<kind>.match`, null when absent. Present, a map of the keys [MATCH_KEYS], at least one set:
+     * `default: true` alone, or any of `label`, `tracker`, a tracker id of [trackerIds], and `state`, each a non blank
+     * string. Any other key, a front matter field included, is refused, so a match never holds by a key Loop ignores.
+     */
+    private fun parseMatch(
+        kindKey: String,
+        kind: YamlMap?,
+        trackerIds: List<String>,
+    ): KindMatch? {
+        val name = "$kindKey.match"
+        val entry = kind?.entries?.entries?.firstOrNull { it.key.content == "match" } ?: return null
+        val match = entry.value as? YamlMap ?: throw WorkflowError.InvalidConfig("$name must be a map")
+        match.entries.keys
+            .map { it.content }
+            .firstOrNull { it !in MATCH_KEYS }
+            ?.let { throw WorkflowError.InvalidConfig("$name.$it is not supported, use default, label, tracker or state") }
+        val default =
+            match.string("$name.default", "default")?.let { written ->
+                when (written.trim().lowercase()) {
+                    "true" -> true
+                    "false" -> false
+                    else -> throw WorkflowError.InvalidConfig("$name.default must be true or false, got \"$written\"")
+                }
+            } ?: false
+
+        fun nonBlank(key: String): String? =
+            match.string("$name.$key", key)?.let { written ->
+                written.trim().takeIf { it.isNotEmpty() } ?: throw WorkflowError.InvalidConfig("$name.$key must not be blank")
+            }
+        val label = nonBlank("label")?.lowercase()
+        val tracker = nonBlank("tracker")
+        val state = nonBlank("state")
+        if (tracker != null && tracker !in trackerIds) {
+            throw WorkflowError.InvalidConfig("$name.tracker \"$tracker\" is not a tracker id, use one of ${trackerIds.joinToString(", ")}")
+        }
+        val keys = listOfNotNull(label, tracker, state)
+        if (default && keys.isNotEmpty()) throw WorkflowError.InvalidConfig("$name.default is alone in its match")
+        if (!default && keys.isEmpty()) throw WorkflowError.InvalidConfig("$name must hold default, label, tracker or state")
+        return if (default) KindMatch.DEFAULT else KindMatch(label = label, tracker = tracker, state = state)
+    }
+
+    /**
+     * m2-14: `kinds.<kind>.verify.holdout`, the hidden checks. Absent is none. Present, it must be a list of checks
      * of the same shape as `checks`, but never `acceptance_commands` (m2-09); `holdout: ~` is an error too, so an
      * empty key never drops them silently.
      */
     private fun parseHoldout(
+        kindKey: String,
         verify: YamlMap,
         guards: GuardsConfig?,
     ): List<CheckConfig> {
-        val name = "kinds.code.verify.holdout"
+        val name = "$kindKey.verify.holdout"
         val entry = verify.entries.entries.firstOrNull { it.key.content == "holdout" } ?: return emptyList()
         val list = entry.value as? YamlList ?: throw WorkflowError.InvalidConfig("$name must be a list")
         return list.items.mapIndexed { index, item ->
-            parseCheck("$name[$index]", item, guards).also {
+            parseCheck(kindKey, "$name[$index]", item, guards).also {
                 // m2-09: the issue shows its acceptance commands to the agent, so they can never be a hidden check.
                 if (it is CheckConfig.AcceptanceCommands) {
                     throw WorkflowError.InvalidConfig(
@@ -479,28 +562,34 @@ class WorkflowLoader(
     }
 
     /**
-     * m2-12 and m2-13: `kinds.code.verify.guards`. Absent guards nothing. Present, it needs `protect`, at least one non
+     * m2-12 and m2-13: `kinds.<kind>.verify.guards`. Absent guards nothing. Present, it needs `protect`, at least one non
      * blank glob with a leading `/` dropped since every glob is anchored at the workspace root, unless it lists `deny`
      * guards, which make `protect` optional. The optional `base`, `main` by default, must not be blank, and the
      * optional `languages` add test patterns to the built in ones, or replace one by name.
      */
-    private fun parseGuards(verify: YamlMap): GuardsConfig? {
-        val guards = verify.child("guards", "kinds.code.verify.guards") ?: return null
-        val deny = parseDeny(guards)
-        val name = "kinds.code.verify.guards.protect"
+    private fun parseGuards(
+        kindKey: String,
+        verify: YamlMap,
+    ): GuardsConfig? {
+        val guards = verify.child("guards", "$kindKey.verify.guards") ?: return null
+        val deny = parseDeny(kindKey, guards)
+        val name = "$kindKey.verify.guards.protect"
         val protect =
             guards.strings(name, "protect")
                 ?: if (deny.isEmpty()) throw WorkflowError.InvalidConfig("$name is required") else emptyList()
         if (protect.isEmpty() && deny.isEmpty()) throw WorkflowError.InvalidConfig("$name must list at least one path")
         if (protect.any { it.isBlank() }) throw WorkflowError.InvalidConfig("$name must not hold a blank path")
-        val base = guards.string("kinds.code.verify.guards.base", "base") ?: GuardsConfig.DEFAULT_BASE
-        if (base.isBlank()) throw WorkflowError.InvalidConfig("kinds.code.verify.guards.base must not be blank")
-        return GuardsConfig(protect.map { it.trim().removePrefix("/") }, base.trim(), deny, parseLanguages(guards))
+        val base = guards.string("$kindKey.verify.guards.base", "base") ?: GuardsConfig.DEFAULT_BASE
+        if (base.isBlank()) throw WorkflowError.InvalidConfig("$kindKey.verify.guards.base must not be blank")
+        return GuardsConfig(protect.map { it.trim().removePrefix("/") }, base.trim(), deny, parseLanguages(kindKey, guards))
     }
 
     /** m2-13: `guards.deny`, absent or a non empty list of known guards, each kept once in the listed order. */
-    private fun parseDeny(guards: YamlMap): List<DenyGuard> {
-        val name = "kinds.code.verify.guards.deny"
+    private fun parseDeny(
+        kindKey: String,
+        guards: YamlMap,
+    ): List<DenyGuard> {
+        val name = "$kindKey.verify.guards.deny"
         val keys = guards.strings(name, "deny") ?: return emptyList()
         if (keys.isEmpty()) throw WorkflowError.InvalidConfig("$name must list at least one guard")
         return keys
@@ -516,8 +605,11 @@ class WorkflowLoader(
      * m2-13: `guards.languages`, the built in test patterns with each listed language replacing the built in one of
      * its name, in place, or added after them.
      */
-    private fun parseLanguages(guards: YamlMap): List<TestLanguage> {
-        val name = "kinds.code.verify.guards.languages"
+    private fun parseLanguages(
+        kindKey: String,
+        guards: YamlMap,
+    ): List<TestLanguage> {
+        val name = "$kindKey.verify.guards.languages"
         val listed =
             when (val node = guards.node("languages")) {
                 null -> return TestLanguage.BUILT_IN
@@ -585,13 +677,16 @@ class WorkflowLoader(
     }
 
     /**
-     * m2-11: `kinds.code.ready`. Absent runs no readiness check. Present, it must be a map with a non empty
+     * m2-11: `kinds.<kind>.ready`. Absent runs no readiness check. Present, it must be a map with a non empty
      * `require_sections` list of non blank names, so a misspelled or empty key never switches it off silently.
      */
-    private fun parseReady(code: YamlMap?): ReadyConfig? {
+    private fun parseReady(
+        kindKey: String,
+        code: YamlMap?,
+    ): ReadyConfig? {
         val entry = code?.entries?.entries?.firstOrNull { it.key.content == "ready" } ?: return null
-        val ready = entry.value as? YamlMap ?: throw WorkflowError.InvalidConfig("kinds.code.ready must be a map")
-        val name = "kinds.code.ready.require_sections"
+        val ready = entry.value as? YamlMap ?: throw WorkflowError.InvalidConfig("$kindKey.ready must be a map")
+        val name = "$kindKey.ready.require_sections"
         val sections = ready.strings(name, "require_sections") ?: throw WorkflowError.InvalidConfig("$name is required")
         if (sections.isEmpty()) throw WorkflowError.InvalidConfig("$name must list at least one section")
         if (sections.any { it.isBlank() }) throw WorkflowError.InvalidConfig("$name must not hold a blank name")
@@ -599,42 +694,43 @@ class WorkflowLoader(
     }
 
     /**
-     * m2-24: `kinds.code.delivery`. Absent, or without `policy`, is `human`. Present, it must be a map and its
+     * m2-24: `kinds.<kind>.delivery`. Absent, or without `policy`, is `human`. Present, it must be a map and its
      * `policy` `human` or `auto`, so a misspelled or empty value never switches the approval off silently.
      */
     private fun parseDelivery(
+        kindKey: String,
         code: YamlMap?,
         trackerKind: String,
         deferred: MutableList<DeferredSecret>,
     ): DeliveryConfig {
         val entry = code?.entries?.entries?.firstOrNull { it.key.content == "delivery" } ?: return DeliveryConfig()
-        val delivery = entry.value as? YamlMap ?: throw WorkflowError.InvalidConfig("kinds.code.delivery must be a map")
-        val pullRequest = parsePullRequest(delivery, trackerKind, deferred)
-        val moveTo = parseOnDelivered(delivery)
-        val name = "kinds.code.delivery.policy"
+        val delivery = entry.value as? YamlMap ?: throw WorkflowError.InvalidConfig("$kindKey.delivery must be a map")
+        val pullRequest = parsePullRequest(kindKey, delivery, trackerKind, deferred)
+        val moveTo = parseOnDelivered(kindKey, delivery)
+        val name = "$kindKey.delivery.policy"
         val policy =
             delivery.string(name, "policy")?.let { written ->
                 DeliveryPolicy.entries.firstOrNull { it.wire == written.trim().lowercase() }
                     ?: throw WorkflowError.InvalidConfig("$name must be human or auto, got \"$written\"")
             } ?: DeliveryPolicy.Human
-        val autoMerge = parseAutoMerge(delivery)
-        val risk = parseRisk(delivery)
+        val autoMerge = parseAutoMerge(kindKey, delivery)
+        val risk = parseRisk(kindKey, delivery)
         // m2-28: off unless the project opts in, so `auto` alone never delivers without a human.
         if (policy == DeliveryPolicy.Auto && !autoMerge.enabled) {
             throw WorkflowError.InvalidConfig(
-                "kinds.code.delivery.policy is auto, which needs the opt in kinds.code.delivery.auto_merge.enabled: true",
+                "$kindKey.delivery.policy is auto, which needs the opt in $kindKey.delivery.auto_merge.enabled: true",
             )
         }
         if (pullRequest?.merge != null) {
             if (moveTo == null) {
                 throw WorkflowError.InvalidConfig(
-                    "kinds.code.delivery.on_delivered.move_to is required with kinds.code.delivery.pull_request.merge",
+                    "$kindKey.delivery.on_delivered.move_to is required with $kindKey.delivery.pull_request.merge",
                 )
             }
             // m2-28: an auto merge needs a low merge risk band, which needs a reviewer.
             if (policy == DeliveryPolicy.Auto && risk.reviewer == null) {
                 throw WorkflowError.InvalidConfig(
-                    "kinds.code.delivery.risk.reviewer is required with policy auto and kinds.code.delivery.pull_request.merge",
+                    "$kindKey.delivery.risk.reviewer is required with policy auto and $kindKey.delivery.pull_request.merge",
                 )
             }
         }
@@ -642,12 +738,15 @@ class WorkflowLoader(
     }
 
     /**
-     * m2-28: `kinds.code.delivery.auto_merge`, off when absent. Present, a map whose `enabled` is `true` or `false`,
+     * m2-28: `kinds.<kind>.delivery.auto_merge`, off when absent. Present, a map whose `enabled` is `true` or `false`,
      * whose optional `protected_paths` replace the default globs, whose optional `max_diff_lines` is positive, and whose
      * optional `doc_paths` replace the default doc globs (bl-96).
      */
-    private fun parseAutoMerge(delivery: YamlMap): AutoMergeConfig {
-        val prefix = "kinds.code.delivery.auto_merge"
+    private fun parseAutoMerge(
+        kindKey: String,
+        delivery: YamlMap,
+    ): AutoMergeConfig {
+        val prefix = "$kindKey.delivery.auto_merge"
         val autoMerge = delivery.mapEntry("auto_merge", prefix) ?: return AutoMergeConfig()
         val enabled =
             autoMerge.string("$prefix.enabled", "enabled")?.let { written ->
@@ -666,11 +765,14 @@ class WorkflowLoader(
     }
 
     /**
-     * m2-28: `kinds.code.delivery.risk`, the defaults when absent. Present, a map with an optional non blank `reviewer`
+     * m2-28: `kinds.<kind>.delivery.risk`, the defaults when absent. Present, a map with an optional non blank `reviewer`
      * model, optional `sensitive_paths` and `one_way_paths` globs replacing the defaults, and a positive `timeout_ms`.
      */
-    private fun parseRisk(delivery: YamlMap): RiskConfig {
-        val prefix = "kinds.code.delivery.risk"
+    private fun parseRisk(
+        kindKey: String,
+        delivery: YamlMap,
+    ): RiskConfig {
+        val prefix = "$kindKey.delivery.risk"
         val risk = delivery.mapEntry("risk", prefix) ?: return RiskConfig()
         val reviewer =
             risk.string("$prefix.reviewer", "reviewer")?.let { written ->
@@ -703,9 +805,12 @@ class WorkflowLoader(
         return globs.map { it.trim().removePrefix("/") }
     }
 
-    /** m2-26: `kinds.code.delivery.on_delivered.move_to`, null when absent; present, a map with a non blank `move_to`. */
-    private fun parseOnDelivered(delivery: YamlMap): String? {
-        val prefix = "kinds.code.delivery.on_delivered"
+    /** m2-26: `kinds.<kind>.delivery.on_delivered.move_to`, null when absent; present, a map with a non blank `move_to`. */
+    private fun parseOnDelivered(
+        kindKey: String,
+        delivery: YamlMap,
+    ): String? {
+        val prefix = "$kindKey.delivery.on_delivered"
         val entry = delivery.entries.entries.firstOrNull { it.key.content == "on_delivered" } ?: return null
         val onDelivered = entry.value as? YamlMap ?: throw WorkflowError.InvalidConfig("$prefix must be a map")
         val moveTo = onDelivered.string("$prefix.move_to", "move_to") ?: return null
@@ -713,15 +818,18 @@ class WorkflowLoader(
     }
 
     /**
-     * m2-26: `kinds.code.delivery.pull_request.merge`, null when absent. Present, a map whose `method` is `merge`, the
+     * m2-26: `kinds.<kind>.delivery.pull_request.merge`, null when absent. Present, a map whose `method` is `merge`, the
      * default, or `squash`, never `rebase`, and whose `ci` is required, `none` or, since m3-15, `actions`. With
      * `actions`, `ci_timeout_ms` and `ci_no_run_grace_ms` are positive, the grace below the timeout, and `ci_no_run` is
      * `fail`, the default, or `pass`. Under `none` no `ci_*` key is allowed, so a key that would change nothing is never
      * read as a CI wait. The optional `recheck_skip_paths` (bl-176) is a list of path globs with no blank one, anchored like
      * `guards.protect`, empty when absent.
      */
-    private fun parseMerge(pullRequest: YamlMap): MergeConfig? {
-        val prefix = "kinds.code.delivery.pull_request.merge"
+    private fun parseMerge(
+        kindKey: String,
+        pullRequest: YamlMap,
+    ): MergeConfig? {
+        val prefix = "$kindKey.delivery.pull_request.merge"
         val entry = pullRequest.entries.entries.firstOrNull { it.key.content == "merge" } ?: return null
         val merge = entry.value as? YamlMap ?: throw WorkflowError.InvalidConfig("$prefix must be a map")
         val method =
@@ -756,17 +864,18 @@ class WorkflowLoader(
     }
 
     /**
-     * m2-25: `kinds.code.delivery.pull_request`. Absent keeps the m2-24 move. Present, it must be a map. `repo` is
+     * m2-25: `kinds.<kind>.delivery.pull_request`. Absent keeps the m2-24 move. Present, it must be a map. `repo` is
      * `owner/name` and `token` a `$NAME` reference whose variable is set, both required on the `files` tracker; on
      * another tracker they default to its own. `base`, `remote` and `api_url` are optional. Only the token's variable
      * name is kept, never its value.
      */
     private fun parsePullRequest(
+        kindKey: String,
         delivery: YamlMap,
         trackerKind: String,
         deferred: MutableList<DeferredSecret>,
     ): PullRequestConfig? {
-        val prefix = "kinds.code.delivery.pull_request"
+        val prefix = "$kindKey.delivery.pull_request"
         val entry = delivery.entries.entries.firstOrNull { it.key.content == "pull_request" } ?: return null
         val pullRequest = entry.value as? YamlMap ?: throw WorkflowError.InvalidConfig("$prefix must be a map")
         val files = trackerKind == FILES_TRACKER
@@ -814,11 +923,12 @@ class WorkflowLoader(
             base = nonBlank("base") ?: PullRequestConfig.DEFAULT_BASE,
             remote = nonBlank("remote") ?: PullRequestConfig.DEFAULT_REMOTE,
             apiUrl = apiUrl,
-            merge = parseMerge(pullRequest),
+            merge = parseMerge(kindKey, pullRequest),
         )
     }
 
     private fun parseCheck(
+        kindKey: String,
         name: String,
         node: YamlNode,
         guards: GuardsConfig?,
@@ -849,7 +959,7 @@ class WorkflowLoader(
                 CheckConfig.FileMatches(path, pattern)
             }
             "diff_policy" -> {
-                guards ?: throw WorkflowError.InvalidConfig("$name diff_policy needs kinds.code.verify.guards.protect")
+                guards ?: throw WorkflowError.InvalidConfig("$name diff_policy needs $kindKey.verify.guards.protect")
                 CheckConfig.DiffPolicy(guards.protect, guards.base, guards.deny, guards.languages)
             }
             CHANGED_LINE_COVERAGE -> parseChangedLineCoverage(name, check, guards)
@@ -908,10 +1018,10 @@ class WorkflowLoader(
     }
 
     /** m2-09: `acceptance_commands` once at most, so the issue's commands never run twice in one verification. */
-    private fun List<CheckConfig>.alsoOnce(): List<CheckConfig> {
+    private fun List<CheckConfig>.alsoOnce(kindKey: String): List<CheckConfig> {
         val repeat = withIndex().filter { it.value is CheckConfig.AcceptanceCommands }.drop(1).firstOrNull()
         if (repeat != null) {
-            throw WorkflowError.InvalidConfig("kinds.code.verify.checks[${repeat.index}] repeats $ACCEPTANCE_COMMANDS, declare it once")
+            throw WorkflowError.InvalidConfig("$kindKey.verify.checks[${repeat.index}] repeats $ACCEPTANCE_COMMANDS, declare it once")
         }
         return this
     }
@@ -1293,6 +1403,12 @@ class WorkflowLoader(
 
         /** m3-15: the keys of the CI wait under `merge`, in the order a refusal names them. */
         private val CI_KEYS = listOf("ci_timeout_ms", "ci_no_run", "ci_no_run_grace_ms")
+
+        /** m4-18: the keys of a kind's `match`. */
+        private val MATCH_KEYS = setOf("default", "label", "tracker", "state")
+
+        /** m4-18: what a kind name must match, like a tracker id, since it reaches `LOOP_KIND` and the ledger. */
+        private val KIND_NAME = Regex("[a-z][a-z0-9-]*")
         const val NON_NEGATIVE = "a non-negative integer"
         const val INTEGER = "an integer"
         const val FRACTION = "a fraction above 0 and at most 1"

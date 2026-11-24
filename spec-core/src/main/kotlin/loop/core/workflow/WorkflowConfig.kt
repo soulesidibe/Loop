@@ -34,12 +34,28 @@ data class WorkflowConfig(
 )
 
 /**
- * Loop mode (m2-03, plan 6.0 and 6.2). For now one kind, `code`, matches every issue. Its verify
- * contract is a list of [checks], run host side when the agent submits its result.
+ * Loop mode (m2-03, plan 6.0 and 6.2). Since m4-18 a map of named kinds, [named], in the order written, which always
+ * holds the `code` kind. Each issue gets the first kind whose match holds, else the default kind
+ * (`loop.core.kinds.KindMatcher`). [code] reads the `code` kind, for the paths that are code only so far.
  */
 data class KindsConfig(
-    val code: KindConfig,
-)
+    val named: Map<String, KindConfig>,
+) {
+    /** A workflow whose only kind is `code`, the default. */
+    constructor(code: KindConfig) : this(mapOf(CODE to code))
+
+    init {
+        require(CODE in named) { "kinds must hold a $CODE kind: ${named.keys}" }
+    }
+
+    /** The kind named `code`. */
+    val code: KindConfig get() = named.getValue(CODE)
+
+    companion object {
+        /** The kind every workflow in Loop mode has, the default when it has no `match`. */
+        const val CODE = "code"
+    }
+}
 
 /**
  * One kind: its verify contract and its readiness check. An empty [checks] list is valid config: nothing
@@ -47,7 +63,7 @@ data class KindsConfig(
  * `verify.guards` key (m2-12); its protected paths are already in each [CheckConfig.DiffPolicy] of [checks].
  * [holdout] holds the hidden checks (m2-14), run after every visible check passed, from the holdout folder
  * outside every workspace; empty when the kind declares none. [delivery] is how a verified result is delivered
- * (m2-24), `human` by default.
+ * (m2-24), `human` by default. [match] says which issues the kind takes (m4-18), the default kind by default.
  */
 data class KindConfig(
     val checks: List<CheckConfig>,
@@ -55,7 +71,24 @@ data class KindConfig(
     val guards: GuardsConfig? = null,
     val holdout: List<CheckConfig> = emptyList(),
     val delivery: DeliveryConfig = DeliveryConfig(),
+    val match: KindMatch = KindMatch.DEFAULT,
 )
+
+/**
+ * A kind's `match` (m4-18, plan 6.2): [default] for the kind an issue gets when no other kind matches, alone in its
+ * match; otherwise every key set must hold: the issue carries the [label], comes from the tracker of id [tracker], or
+ * is in the [state]. The loader keeps [label] lowercase like the labels of an issue, and [state] trimmed.
+ */
+data class KindMatch(
+    val default: Boolean = false,
+    val label: String? = null,
+    val tracker: String? = null,
+    val state: String? = null,
+) {
+    companion object {
+        val DEFAULT = KindMatch(default = true)
+    }
+}
 
 /**
  * A kind's delivery (m2-24, plan 6.5, story 77): with [DeliveryPolicy.Human] a verified result waits for
