@@ -3,7 +3,7 @@ id: m4-25
 title: "request_resource and release_resource on the Claude Code runner"
 state: todo
 priority: 1
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [m4-50]
 ---
 

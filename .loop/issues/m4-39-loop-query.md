@@ -3,7 +3,7 @@ id: m4-39
 title: "loop query runs read only SQL over the store"
 state: todo
 priority: 1
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [m4-38]
 ---
 

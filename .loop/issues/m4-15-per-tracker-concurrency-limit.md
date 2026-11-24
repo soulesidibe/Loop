@@ -3,7 +3,7 @@ id: m4-15
 title: "A per tracker concurrency limit, and a quieter retry requeue"
 state: todo
 priority: 1
-labels: [ready-for-agent]
+labels: [deferred]
 blocked_by: [m4-14]
 ---
 
