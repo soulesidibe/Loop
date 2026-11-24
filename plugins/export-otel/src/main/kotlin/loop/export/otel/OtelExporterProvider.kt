@@ -7,6 +7,8 @@ import loop.api.EventExporter
 import loop.api.EventExporterProvider
 import loop.api.PluginProfile
 import java.util.concurrent.TimeUnit
+import java.util.logging.Level
+import java.util.logging.Logger
 import kotlin.time.Clock
 
 /**
@@ -32,7 +34,14 @@ public class OtelExporterProvider : EventExporterProvider {
         env: Map<String, String>,
     ): EventExporter {
         val settings = OtelSettings.parse(config, env)
+        // The SDK logs a failed export with its stack trace on stderr; Loop reports it once, as `event=export`.
+        sdkLogger.level = Level.OFF
         return OtelEventExporter(spanExporter(settings), settings.timeout, clock = { Clock.System.now() })
+    }
+
+    private companion object {
+        /** Held here: `java.util.logging` keeps its loggers weakly, so a level set on one dropped would be lost. */
+        val sdkLogger: Logger = Logger.getLogger("io.opentelemetry")
     }
 
     private fun spanExporter(settings: OtelSettings): SpanExporter {
