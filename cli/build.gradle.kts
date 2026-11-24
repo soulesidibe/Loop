@@ -180,18 +180,27 @@ val cdsArchiveFile = layout.buildDirectory.file("tmp/cds/loop.jsa")
 val generateTestCdsArchive =
     tasks.register<Exec>("generateTestCdsArchive") {
         dependsOn(tasks.installDist)
-        // Without build-info.properties: a new commit alone does not regenerate the CDS archive.
+        // Without build-info.properties: a new commit alone does not invalidate content-based inputs,
+        // while outputs.upToDateWhen checks jar mtimes so the JVM never sees a stale CDS archive.
         inputs
             .files(fileTree(launcherInstallDir) { exclude("build-info.properties") })
             .withPropertyName("launcherInstall")
             .withPathSensitivity(PathSensitivity.RELATIVE)
         outputs.file(cdsArchiveFile)
         val launcher = launcherInstallDir.map { it.file("bin/loop").asFile.absolutePath }
+        val installLibDir = launcherInstallDir.map { it.dir("lib").asFile }
         val archive = cdsArchiveFile.map { it.asFile.absolutePath }
         val javaHome =
             javaToolchains
                 .launcherFor { languageVersion.set(JavaLanguageVersion.of(21)) }
                 .map { it.metadata.installationPath.asFile.absolutePath }
+        outputs.upToDateWhen {
+            val outFile = File(archive.get())
+            val libDir = installLibDir.get()
+            outFile.isFile &&
+                libDir.isDirectory &&
+                (libDir.listFiles()?.all { it.lastModified() <= outFile.lastModified() } ?: false)
+        }
         executable = launcher.get()
         args("--help")
         doFirst {
@@ -263,9 +272,9 @@ tasks.test {
             .file("bin/loop")
             .asFile.absolutePath,
     )
-    // Optional deterministic sharding for CI (`-PcliTestShard=1/4`): assigns each test source file to one shard
-    // by greedy LPT packing weighted by subprocess spawns (`fixture.loop`/`fixture.start`) and `@Test` count,
-    // so non-test helpers add zero weight and heavy launcher-spawning suites spread evenly across shards.
+    // Optional deterministic sharding for CI (`-PcliTestShard=1/4`): partitions all compiled top-level test
+    // classes at execution time so adding or renaming tests works with the configuration cache and no class
+    // (regardless of filename, package, or language) can be silently omitted.
     providers.gradleProperty("cliTestShard").orNull?.let { spec ->
         val parts = spec.split("/")
         require(parts.size == 2) { "cliTestShard must be <index>/<total> (1-based), got: $spec" }
@@ -274,37 +283,59 @@ tasks.test {
         require(shardTotal >= 1 && shardIndex in 1..shardTotal) {
             "cliTestShard out of range: $spec"
         }
-        val spawnRegex = Regex("""\b(?:fixture\.loop|fixture\.start)\(""")
-        val testRegex = Regex("""@Test\b""")
-        val testSrcRoot = layout.projectDirectory.dir("src/test/kotlin").asFile
-        val testFiles =
-            testSrcRoot
-                .walkTopDown()
-                .filter { it.isFile && it.extension == "kt" }
-                .map { file ->
-                    val text = file.readText()
-                    val tests = testRegex.findAll(text).count()
-                    val weight =
-                        if (tests > 0) {
-                            spawnRegex.findAll(text).count() * 10L + tests
-                        } else {
-                            0L
+        inputs.property("cliTestShard", spec)
+        val testSrcRootPath =
+            layout.projectDirectory
+                .dir("src/test/kotlin")
+                .asFile.absolutePath
+        doFirst {
+            val testTask = this as Test
+            val spawnRegex = Regex("""\b(?:fixture\.loop|fixture\.start)\(""")
+            val testRegex = Regex("""@Test\b""")
+            val testSrcRoot = File(testSrcRootPath)
+            val sourceWeights =
+                if (testSrcRoot.isDirectory) {
+                    testSrcRoot
+                        .walkTopDown()
+                        .filter { it.isFile && it.extension == "kt" }
+                        .associate { file ->
+                            val text = file.readText()
+                            val tests = testRegex.findAll(text).count()
+                            val weight =
+                                if (tests > 0) {
+                                    spawnRegex.findAll(text).count() * 10L + tests
+                                } else {
+                                    0L
+                                }
+                            file.relativeTo(testSrcRoot).invariantSeparatorsPath.removeSuffix(".kt") to weight
                         }
-                    file.relativeTo(testSrcRoot).invariantSeparatorsPath to weight
-                }.sortedWith(compareByDescending<Pair<String, Long>> { it.second }.thenBy { it.first })
-                .toList()
-        val shardWeights = LongArray(shardTotal)
-        val assigned = mutableListOf<String>()
-        for ((relPath, weight) in testFiles) {
-            val target = shardWeights.indices.minBy { shardWeights[it] }
-            shardWeights[target] += weight
-            if (target == shardIndex - 1) {
-                val base = relPath.removeSuffix(".kt")
-                assigned.add("$base.class")
-                assigned.add("$base\$*.class")
+                } else {
+                    emptyMap()
+                }
+            val topLevelClasses =
+                testTask.testClassesDirs.files
+                    .filter { it.isDirectory }
+                    .flatMap { dir ->
+                        dir
+                            .walkTopDown()
+                            .filter { it.isFile && it.extension == "class" && '$' !in it.name }
+                            .map { it.relativeTo(dir).invariantSeparatorsPath.removeSuffix(".class") }
+                            .toList()
+                    }.distinct()
+                    .map { base -> base to (sourceWeights[base] ?: 1L) }
+                    .sortedWith(compareByDescending<Pair<String, Long>> { it.second }.thenBy { it.first })
+            val shardWeights = LongArray(shardTotal)
+            val excluded = mutableListOf<String>()
+            for ((base, weight) in topLevelClasses) {
+                val target = shardWeights.indices.minBy { shardWeights[it] }
+                shardWeights[target] += weight
+                if (target != shardIndex - 1) {
+                    excluded.add("$base.class")
+                    excluded.add("$base\$*.class")
+                }
             }
+            testTask.exclude(excluded)
         }
-        include(assigned)
     }
 }
 

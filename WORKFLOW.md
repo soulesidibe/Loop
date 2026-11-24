@@ -88,7 +88,7 @@ kinds:
         merge:
           method: merge
           # m3-15: wait for the GitHub Actions runs of the merged head. build.yml runs on every push (and on
-          # pull requests from forks) and takes 12 to 16 minutes, so the default 45 minute ci_timeout_ms fits;
+          # pull requests from forks) and takes around 2 to 4 minutes, so the default 45 minute ci_timeout_ms fits;
           # it has no paths-ignore, so a merged head always gets a run and the default ci_no_run: fail stays.
           ci: actions
       on_delivered:

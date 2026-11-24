@@ -325,8 +325,11 @@ class LoopFixture(
 
     /**
      * Runs [LoopCommand] in-process through [runMain] with the same env/cwd isolation as [loop].
-     * Safe for read, formatting, and state-mutation commands (never spawns a JVM); keep [loop] for
-     * `run`, signal, launcher, and end-to-end smoke tests.
+     * Safe for read, formatting, and state-mutation commands (never spawns a JVM). Output is captured
+     * only through Clikt's [TerminalRecorder], so JVM warnings, direct `System.out`/`System.err` writes,
+     * the start script, and `exitProcess` are not observed here. Keep [loop] for `run`, signal, launcher,
+     * empty-stderr end-to-end smoke tests, and commands that take the run lock (`stop`, `drain`, `install`)
+     * while another run holds it in the same JVM.
      */
     fun inProcess(
         vararg args: String,
@@ -472,7 +475,7 @@ class LoopFixture(
             System
                 .getProperty("loop.cdsArchive")
                 ?.takeIf { it.isNotBlank() }
-                ?.let { " \"-XX:SharedArchiveFile=$it\" -Xlog:cds=off" }
+                ?.let { " \"-XX:SharedArchiveFile=$it\" -Xlog:cds*=off" }
                 .orEmpty()
         // Keep sqlite-jdbc out of the host TMPDIR and skip C2 JIT in short-lived test launcher JVMs.
         processEnv["LOOP_OPTS"] =

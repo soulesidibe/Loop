@@ -3,6 +3,7 @@ package loop.cli
 import com.github.ajalt.clikt.core.CliktCommand
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
+import kotlin.io.path.createDirectories
 import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -95,5 +96,20 @@ class MainFallbackTest {
 
         assertEquals(listOf(1), outcome.exitCodes)
         assertEquals(listOf("loop run: internal error: boom"), outcome.stderr)
+    }
+
+    @Test
+    fun `a relative LOOP_WORKFLOW resolves against workingDir when redacting fallback errors`() {
+        val sub = root.resolve("sub").createDirectories()
+        sub.resolve("custom.md").writeText("---\ntracker:\n  kind: files\n  provider:\n    token: \$LOOP_TEST_SECRET\n---\nbody\n")
+        val outcome = Outcome()
+        val env = mapOf("LOOP_TEST_SECRET" to secret, "LOOP_WORKFLOW" to "custom.md")
+
+        runMain(arrayOf("trace", "t-1"), env, { outcome.exitCodes += it }, { outcome.stderr += it }, workingDir = sub) {
+            throw IllegalStateException("boom $secret")
+        }
+
+        assertEquals(listOf(1), outcome.exitCodes)
+        assertEquals(listOf("loop trace: internal error: boom [redacted:LOOP_TEST_SECRET]"), outcome.stderr)
     }
 }
