@@ -1,7 +1,7 @@
 ---
 id: m4-16
 title: "Cross tracker blockers from a Blocked by line in the body"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-15]
@@ -48,3 +48,5 @@ Out of this issue: blocker lines in the GitHub tracker's native fields, a Linear
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-24 22:16Z loop: Loop opened pull request #49 for this issue: https://github.com/soulesidibe/Loop/pull/49
