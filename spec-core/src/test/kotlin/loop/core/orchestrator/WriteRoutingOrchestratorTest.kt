@@ -4,7 +4,6 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import loop.api.AttemptId
-import loop.api.Issue
 import loop.api.ProjectId
 import loop.api.Redactor
 import loop.api.RunId
@@ -183,7 +182,12 @@ class WriteRoutingOrchestratorTest {
             assertEquals(2, sink.events.count { it.kind == "approval_requested" }, sink.events.map { it.kind }.toString())
             assertEquals(listOf("id-l-1"), local.comments.map { it.first })
             assertEquals(listOf("id-26"), github.comments.map { it.first })
-            assertContains(github.comments.single().second.text, "26")
+            assertContains(
+                github.comments
+                    .single()
+                    .second.text,
+                "26",
+            )
             assertEquals(listOf("id-26" to GH_REF), github.written())
             assertEquals(emptyList(), local.moves + github.moves, "nothing moves before the approval")
         }

@@ -107,7 +107,7 @@ class ToolConfigSnapshotTest {
                 "Work on {{ issue.identifier }}\n",
         )
         val token = "ghp_m414SnapshotToken0123456789abcdefgh"
-        val workflow = WorkflowLoader(env = mapOf("LOOP_TEST_GITHUB_TOKEN" to token), home = root).load(file).getOrThrow()
+        val workflow = workflowLoader(mapOf("LOOP_TEST_GITHUB_TOKEN" to token), root).load(file).getOrThrow()
         val target = root.resolve("tool-config.json")
         val gh = checkNotNull(workflow.trackers.entry("gh"))
 
