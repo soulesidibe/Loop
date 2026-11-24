@@ -163,16 +163,10 @@ class WorkflowLoader(
         }
 
     /**
-     * Best effort: the `tracker.provider` map of the front matter at [path], as written, with
-     * none of [load]'s validation, so the secrets it names can be learned before a load or a
-     * preflight that may fail (m1-11). Never throws: an unreadable file, front matter that is not
-     * yaml or a `tracker.provider` that is not a map gives an empty map.
-     */
-    fun trackerProvider(path: Path): Map<String, ConfigValue> = trackerProviders(path).first()
-
-    /**
-     * m4-11: like [trackerProvider], the `tracker.provider` map first, then the `provider` map of each entry of
-     * `trackers:` that has one, as written. Never throws and never empty: a file that cannot be read gives one empty map.
+     * Best effort: the `tracker.provider` map of the front matter at [path], then the `provider` map of each entry of
+     * `trackers:` that has one (m4-11), as written, with none of [load]'s validation, so the secrets they name can be
+     * learned before a load or a preflight that may fail (m1-11). Never throws and never empty: an unreadable file,
+     * front matter that is not yaml or a `tracker.provider` that is not a map gives an empty map first.
      */
     fun trackerProviders(path: Path): List<Map<String, ConfigValue>> =
         try {

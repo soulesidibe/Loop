@@ -506,7 +506,7 @@ private fun deliveryTokenNames(workflow: WorkflowFile): List<String> =
             ?.tokenEnvName,
     )
 
-/** [secretValues] from a `tracker.provider` map, as [WorkflowLoader.trackerProvider] reads it before a load. */
+/** [secretValues] from one `tracker.provider` map. */
 fun secretValues(
     trackerProvider: Map<String, ConfigValue>,
     env: Map<String, String>,
