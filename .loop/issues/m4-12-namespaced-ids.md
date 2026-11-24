@@ -1,7 +1,7 @@
 ---
 id: m4-12
 title: "Namespaced issue ids in the core, primary workspace keys and branches kept"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-11]
@@ -50,3 +50,11 @@ Out of this issue: commands taking a bare id and the display of ids (m4-47), pol
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-24 14:09Z loop: Loop opened pull request #39 for this issue: https://github.com/soulesidibe/Loop/pull/39
+
+2026-11-24 14:31Z loop: Loop did not merge pull request #39 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Failed conditions:
+  - diff_size: the diff changes 1456 lines, over the limit of 1000
+  Merge risk: not assessed, a condition failed.
+  Once approved, Loop runs the merge check again and merges.
