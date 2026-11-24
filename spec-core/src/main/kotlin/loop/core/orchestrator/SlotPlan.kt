@@ -1,17 +1,20 @@
 package loop.core.orchestrator
 
 import loop.api.Issue
+import loop.core.trackers.TrackerSlots
 import loop.core.workflow.AgentConfig
 import kotlin.time.Instant
 
 /**
  * What holds an agent slot of the project now: the normalized state of each running attempt, as reconciliation
  * last read it, and the number of running merge checks, phase `check` work only. A restored wait's checks and a
- * delivery's merge phase take no slot (bl-173).
+ * delivery's merge phase take no slot (bl-173). [attemptTrackers] holds the tracker id of each running attempt, for the
+ * per tracker limits (m4-15); an attempt of no tracker of the workflow is left out.
  */
 internal data class SlotUse(
     val attemptStates: List<String>,
     val mergeChecks: Int,
+    val attemptTrackers: List<String> = emptyList(),
 )
 
 /**
@@ -27,8 +30,9 @@ internal data class AttemptSlots(
 
 /**
  * Who gets an agent slot (bl-86), in two pure steps that share one capacity rule: running attempts and running merge
- * checks together count against `agent.max_concurrent_agents`, `agent.max_concurrent_agents_by_state` caps attempt
- * launches only, and at most one merge check runs at a time. Step one, [mergeCheckFits], runs first in the tick, so a
+ * checks together count against `agent.max_concurrent_agents`, `agent.max_concurrent_agents_by_state` and, since m4-15,
+ * `agent.max_concurrent_agents_by_tracker` ([TrackerSlots]) cap attempt launches only, and at most one merge check runs
+ * at a time. Step one, [mergeCheckFits], runs first in the tick, so a
  * merge check takes the last free slot ahead of due retries and candidates. Step two, [attempts], fills what is left.
  * A delivery's merge phase asks neither step: it holds no agent slot (bl-173).
  */
@@ -42,25 +46,33 @@ internal object SlotPlan {
     /**
      * Step two: the attempt slots for the [due] retries and the fresh [candidates], both already filtered for
      * eligibility, blockers and readiness, in [slotOrder]. A launch holds its slot for the rest of the plan, for the
-     * total and for its state's cap, so a capped state skips its later issues and other states still get slots.
+     * total, for its state's cap and for its tracker's limit, so a capped state or tracker skips its later issues and
+     * other states and trackers still get slots. [trackerOf] gives the tracker id of an issue id, null for none.
      */
     fun attempts(
         agent: AgentConfig,
         use: SlotUse,
         due: List<DueRetry>,
         candidates: List<Issue>,
+        trackerOf: (String) -> String? = { null },
     ): AttemptSlots {
         val retryDueAt = due.associate { it.issue.id to it.firstDueAt }
         val ordered = (due.map { it.issue } + candidates).distinctBy { it.id }.sortedWith(slotOrder(retryDueAt))
         val states = use.attemptStates.toMutableList()
+        val trackers = use.attemptTrackers.toMutableList()
         val launches = mutableListOf<Issue>()
         val requeues = mutableListOf<Issue>()
         val skips = mutableListOf<Issue>()
         for (issue in ordered) {
             val state = issue.state.normalized()
-            if (hasFreeSlot(agent, SlotUse(states, use.mergeChecks)) && stateHasRoom(agent, states, state)) {
+            val tracker = trackerOf(issue.id)
+            if (hasFreeSlot(agent, SlotUse(states, use.mergeChecks)) &&
+                stateHasRoom(agent, states, state) &&
+                TrackerSlots.hasRoom(agent.maxConcurrentAgentsByTracker, trackers, tracker)
+            ) {
                 launches += issue
                 states += state
+                tracker?.let { trackers += it }
             } else if (issue.id in retryDueAt) {
                 requeues += issue
             } else {

@@ -214,4 +214,126 @@ class SlotPlanTest {
 
         assertEquals(Triple(listOf("m1-02", "m1-03"), listOf("m1-01"), emptyList()), slots.ids())
     }
+
+    // m4-15: the per tracker limit, `agent.max_concurrent_agents_by_tracker`.
+
+    /** [identifier] of the tracker [tracker], with the namespaced id the core carries. */
+    private fun of(
+        tracker: String,
+        identifier: String,
+        state: String = "todo",
+        priority: Int? = 2,
+    ): Issue = issue(identifier, state = state, priority = priority).copy(id = "$tracker:$identifier")
+
+    /** The tracker of a namespaced test id, as the orchestrator reads it from the workflow's trackers. */
+    private val trackerOf: (String) -> String? = { id -> id.substringBefore(':', missingDelimiterValue = "").ifEmpty { null } }
+
+    @Test
+    fun `a tracker at its limit skips its issues and another tracker's candidate takes the free slot`() {
+        val agent = AgentConfig(maxConcurrentAgents = 3, maxConcurrentAgentsByTracker = mapOf("gh" to 1))
+        val slots =
+            SlotPlan.attempts(
+                agent,
+                SlotUse(listOf("todo"), mergeChecks = 0, attemptTrackers = listOf("gh")),
+                due = emptyList(),
+                candidates = listOf(of("gh", "26", priority = 1), of("local", "l-1", priority = 3)),
+                trackerOf = trackerOf,
+            )
+
+        assertEquals(Triple(listOf("l-1"), emptyList(), listOf("26")), slots.ids())
+    }
+
+    @Test
+    fun `a tracker limit counts the launches of the same tick, so its second issue waits and the other tracker's launches`() {
+        val agent = AgentConfig(maxConcurrentAgents = 5, maxConcurrentAgentsByTracker = mapOf("gh" to 1))
+        val slots =
+            SlotPlan.attempts(
+                agent,
+                SlotUse(emptyList(), mergeChecks = 0),
+                due = emptyList(),
+                candidates = listOf(of("gh", "26", priority = 1), of("gh", "27", priority = 1), of("local", "l-1", priority = 3)),
+                trackerOf = trackerOf,
+            )
+
+        assertEquals(Triple(listOf("26", "l-1"), emptyList(), listOf("27")), slots.ids())
+    }
+
+    @Test
+    fun `a due retry blocked by its tracker's limit is requeued and another tracker's candidate launches (bl-77 finding 2)`() {
+        val agent = AgentConfig(maxConcurrentAgents = 3, maxConcurrentAgentsByTracker = mapOf("gh" to 1))
+        val slots =
+            SlotPlan.attempts(
+                agent,
+                SlotUse(listOf("open"), mergeChecks = 0, attemptTrackers = listOf("gh")),
+                due = listOf(due(of("gh", "26"))),
+                candidates = listOf(of("local", "l-1")),
+                trackerOf = trackerOf,
+            )
+
+        assertEquals(Triple(listOf("l-1"), listOf("26"), emptyList()), slots.ids())
+    }
+
+    @Test
+    fun `a tracker with no entry has no limit of its own`() {
+        val agent = AgentConfig(maxConcurrentAgents = 5, maxConcurrentAgentsByTracker = mapOf("gh" to 1))
+        val slots =
+            SlotPlan.attempts(
+                agent,
+                SlotUse(listOf("todo", "todo"), mergeChecks = 0, attemptTrackers = listOf("local", "local")),
+                due = emptyList(),
+                candidates = listOf(of("local", "l-1"), of("local", "l-2")),
+                trackerOf = trackerOf,
+            )
+
+        assertEquals(Triple(listOf("l-1", "l-2"), emptyList(), emptyList()), slots.ids())
+    }
+
+    @Test
+    fun `a launch needs a free slot under all three limits`() {
+        data class Row(
+            val name: String,
+            val agent: AgentConfig,
+            val use: SlotUse,
+            val launches: Boolean,
+        )
+        val issue = of("gh", "26", state = "in_progress")
+        val rows =
+            listOf(
+                Row(
+                    "room under every limit",
+                    AgentConfig(2, maxConcurrentAgentsByState = mapOf("in_progress" to 1), maxConcurrentAgentsByTracker = mapOf("gh" to 1)),
+                    SlotUse(emptyList(), mergeChecks = 0),
+                    launches = true,
+                ),
+                Row(
+                    "the total is full, the tracker has room",
+                    AgentConfig(1, maxConcurrentAgentsByTracker = mapOf("gh" to 2)),
+                    SlotUse(listOf("todo"), mergeChecks = 0, attemptTrackers = listOf("local")),
+                    launches = false,
+                ),
+                Row(
+                    "the state is at its cap, the tracker has room",
+                    AgentConfig(5, maxConcurrentAgentsByState = mapOf("in_progress" to 1), maxConcurrentAgentsByTracker = mapOf("gh" to 2)),
+                    SlotUse(listOf("in_progress"), mergeChecks = 0, attemptTrackers = listOf("local")),
+                    launches = false,
+                ),
+                Row(
+                    "the tracker is at its limit, the total and the state have room",
+                    AgentConfig(5, maxConcurrentAgentsByState = mapOf("in_progress" to 2), maxConcurrentAgentsByTracker = mapOf("gh" to 1)),
+                    SlotUse(listOf("todo"), mergeChecks = 0, attemptTrackers = listOf("gh")),
+                    launches = false,
+                ),
+            )
+        for (row in rows) {
+            val slots = SlotPlan.attempts(row.agent, row.use, due = emptyList(), candidates = listOf(issue), trackerOf = trackerOf)
+            assertEquals(row.launches, slots.launches.isNotEmpty(), row.name)
+        }
+    }
+
+    @Test
+    fun `a tracker limit caps attempts only, never the merge check slot`() {
+        val agent = AgentConfig(maxConcurrentAgents = 3, maxConcurrentAgentsByTracker = mapOf("gh" to 1))
+
+        assertEquals(true, SlotPlan.mergeCheckFits(agent, SlotUse(listOf("open"), mergeChecks = 0, attemptTrackers = listOf("gh"))))
+    }
 }

@@ -137,6 +137,7 @@ import loop.core.template.Template
 import loop.core.template.TemplateEngine
 import loop.core.trackers.NamespacedId
 import loop.core.trackers.TrackerPoll
+import loop.core.trackers.TrackerSlots
 import loop.core.verify.AcceptanceCriteria
 import loop.core.verify.AcceptanceCriterion
 import loop.core.verify.CheckResult
@@ -695,6 +696,7 @@ class Orchestrator(
                 slotUse(),
                 due = fire.dispatch.filter { it.issue.id in eligibleIds },
                 candidates = eligible.filter { it.id !in retryAttempts },
+                trackerOf = { effective.trackers.trackerOf(it)?.id },
             )
         val attempts = mutableListOf<Deferred<AttemptSummary?>>()
         // Due retries with no slot, each with the error its `retry_scheduled` gives, null for the orchestrator's own.
@@ -762,8 +764,12 @@ class Orchestrator(
             mergeJobs = waits.busy.filter(waits::isChecking).toSet(),
         )
 
-    /** What holds an agent slot now, for the [SlotPlan]: the running attempts by state and the running merge checks. */
-    private fun slotUse(): SlotUse = SlotUse(running.values.toList(), waits.checks)
+    /**
+     * What holds an agent slot now, for the [SlotPlan]: the running attempts by state and by tracker (m4-15), and the
+     * running merge checks.
+     */
+    private fun slotUse(): SlotUse =
+        SlotUse(running.values.toList(), waits.checks, TrackerSlots.runningTrackers(running.keys, effective.trackers))
 
     /**
      * The sections the kind's readiness check finds missing in [issue] (m2-11); empty when it is ready, in
