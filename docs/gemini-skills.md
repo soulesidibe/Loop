@@ -26,7 +26,7 @@ agy --model gemini-4-neon-high
 
 `agy` discovers skills (`SKILL.md` with YAML front matter) in:
 
-- **Workspace:** `.agents/skills/` in each directory from the working directory up to the repository root, and folders listed in `.agents/skills.json`.
+- **Workspace:** `.agents/skills/` in each directory from the working directory up to the repository root, and folders listed in `.agents/skills.json`. `agy` also accepts `.agent/`, `_agents/` and `_agent/` as the customization root.
 - **Global:** `~/.gemini/config/skills/`, and folders listed in `~/.gemini/config/skills.json`.
 
 One copy serves Claude Code, Codex and Gemini. Rather than copying or linking skills, `~/.gemini/config/skills.json` points at the folders Claude Code already uses, each scanned one level deep:
@@ -42,14 +42,14 @@ One copy serves Claude Code, Codex and Gemini. Rather than copying or linking sk
 
 - An entry pointing into a plugin cache names the plugin's version folder (for example `mattpocock-skills/1.3.1`), so it needs updating after a plugin upgrade.
 - When two folders hold a skill of the same name, keep one with `include_only` or `exclude`.
-- A skill with `disable-model-invocation: true` is hidden from the model's list, but `/name` still expands it in a session, print mode included.
+- A skill with `disable-model-invocation: true` is hidden from the model's list, but `/name` still expands it in a session, print mode included. Observed with `agy` 1.5.16; agy's own docs list only `name` and `description` in the front matter.
 - `agy` shows each skill's name and description; the full `SKILL.md` loads only when the skill is used.
 
 ## Shared instructions
 
 `agy` loads `AGENTS.md` (and `GEMINI.md`) from each directory between the working directory and the repository root. A repository that keeps its instructions in `AGENTS.md`, with a one line `CLAUDE.md` (`@AGENTS.md`) for Claude Code, needs nothing more for `agy`.
 
-Global instructions live in `~/.gemini/config/GEMINI.md`. It can include the Claude Code global rules instead of copying them, with agy's include syntax:
+Global instructions can live in `~/.gemini/config/GEMINI.md` (observed: `agy` 1.5.16 loads it as global rules; agy's docs name `~/.gemini/config/` as the global root without listing this file). It can include the Claude Code global rules instead of copying them, with agy's include syntax:
 
 ```markdown
 @[Claude global rules](/Users/<you>/.claude/CLAUDE.md)
@@ -61,7 +61,7 @@ Each rule file is capped at 24,000 bytes after includes, and always-on rules sha
 
 Skills written for Claude Code often rely on three Claude specific features that need adjusting to work on `agy` and Codex:
 
-- **Slash invocation (`/tdd`, `/issue`):** a skill can be started with `/name` in an `agy` session. In a Loop run, the `WORKFLOW.md` prompt template names the skill instead, so the agent activates it or reads its `SKILL.md`; whether a Loop runner's prompt expands a slash command is pending Spike 0.
+- **Slash invocation (`/tdd`, `/issue`):** a skill can be started with `/name` in an `agy` session. In a Loop run, the `WORKFLOW.md` prompt template names the skill instead, so the agent activates it or reads its `SKILL.md`. Loop's `agy` runners turn slash expansion off, since the prompt carries issue text Loop does not trust (`--disable-slash-commands` in print mode; under ACP, pending Spike 0).
 - **Hardcoded tool names:** Claude specific names (`Bash`, `Edit`, `Read`, `mcp__loop__move`) become runtime neutral phrasing, for example "use Loop's `move`, `comment` and `submit_result` MCP tools when available, else `loop tool move` and `loop tool comment`".
 - **Subagent delegation (`Agent` tool, `context: fork`, `SendMessage`):** skills that fan out to parallel Claude subagents (such as expert reviewers in an issue skill) do not carry over to `agy` as written. Until Loop's Koog manager and expert agents land in M6 (`docs/PLAN.md`), either:
   - flatten those subagent steps into sequential single agent phases, portable across Claude Code, Codex and `agy`, or
