@@ -506,6 +506,9 @@ class Orchestrator(
     /** bl-39: the run level hold of a runner that cannot reach its model; it gates every dispatch. */
     private val hold = RunnerHold(clock)
 
+    /** m4-46: whether the next attempt of an issue the hold took resumes its last session. */
+    private val networkResume = NetworkResume()
+
     /** bl-175: the pause of the delivery queue after the head's CI timed out; it stops every merge check from starting. */
     private val queuePause = DeliveryQueuePause()
 
@@ -831,7 +834,9 @@ class Orchestrator(
             if (reconciled == null) {
                 unavailable = summary.runnerUnavailable != null
                 // A cancel throws out of runAttempt, so it never counts as a failure.
-                if (!holdOn(issue, summary)) retries.afterAttempt(issue, summary, effective)
+                val held = holdOn(issue, summary)
+                networkResume.attemptEnded(issue.id, summary.attemptId, held)
+                if (!held) retries.afterAttempt(issue, summary, effective)
             } else {
                 retries.onReconciled(issue.id, reconciled)
                 // Spec 8.5: after the attempt closed, so the agent and after_run are done with the workspace.
@@ -2498,7 +2503,8 @@ class Orchestrator(
             // An issue or a day already past its budget parks before a turn spends more (m2-20).
             checkBudgets()
             if (breach != null) return budgetEnd(turns = 0)
-            session = runner.openSession(ctx)
+            val resume = networkResume.choose(issue.id, workflow.runner.kind, workflow.config.context.softLimit)
+            session = NetworkResume.open(runner, ctx, resume)
             val executed =
                 try {
                     runTurns(ctx, prompt)
@@ -2522,6 +2528,8 @@ class Orchestrator(
                 recordRotation(newThreadId = null, runtimeSessionId = null)
                 session?.let { stopUsage.stop(it) }
                 session = null
+                val fraction = occupancy.fraction(workflow.config.context.windows)
+                networkResume.sessionEnded(issue.id, attemptId, workflow.runner.kind, runtimeSessionId, fraction)
                 StopUsage.line(lastTurnLine, ledger, clock.now())?.let { line ->
                     ledgerWrite { withContext(io) { turnLedger.append(line) } }
                 }

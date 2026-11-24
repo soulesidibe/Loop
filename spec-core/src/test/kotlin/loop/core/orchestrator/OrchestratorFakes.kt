@@ -451,6 +451,26 @@ class FakeRunner(
         return script(ctx, prompt)
     }
 
+    /** m4-46: true makes [resumeSession] resume, as Claude Code does; false keeps the default, as Codex does. */
+    var resumes = false
+
+    /** The runtime session ids [resumeSession] resumed, in order. */
+    val resumedSessions = mutableListOf<String>()
+
+    /** The number, counted from 1 like [sessionsOpened], of each session [resumeSession] opened. */
+    val resumedNumbers = mutableListOf<Int>()
+
+    override fun resumeSession(
+        ctx: AttemptContext,
+        runtimeSessionId: String,
+    ): AgentSession? {
+        if (!resumes) return super.resumeSession(ctx, runtimeSessionId)
+        val session = openSession(ctx) ?: return null
+        resumedSessions += runtimeSessionId
+        resumedNumbers += sessionsOpened
+        return session
+    }
+
     override fun openSession(ctx: AttemptContext): AgentSession? {
         val turns = sessionScript ?: return null
         sessionsOpened++

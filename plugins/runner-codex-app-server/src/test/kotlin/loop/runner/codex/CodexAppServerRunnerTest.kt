@@ -482,6 +482,13 @@ class CodexAppServerRunnerTest {
     }
 
     @Test
+    fun `m4-46 it resumes no session across attempts, so after a network hold Loop opens a fresh one with the brief`() {
+        val runner = runner("codex app-server")
+
+        assertNull(runner.resumeSession(context(), "thread-of-the-held-attempt"))
+    }
+
+    @Test
     fun `contract before a handshake, SessionStarted first, ids on every event, one TurnFailed last and nothing undeclared`() {
         val server =
             FakeAppServer.write(dir) {

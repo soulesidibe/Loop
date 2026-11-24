@@ -74,7 +74,7 @@ What `ClaudeCodeRunner.capabilities` declares (m3-06, see [runner capabilities](
 
 | Capability | Value | Why |
 |---|---|---|
-| `continuation` | true | Turns 2 to n write their input to the attempt's long lived process; a process that died is respawned with `--resume <runtime session id>` (m3-07). |
+| `continuation` | true | Turns 2 to n write their input to the attempt's long lived process; a process that died is respawned with `--resume <runtime session id>` (m3-07). After a network hold, `resumeSession` resumes the session of the held attempt at turn 1 when it was below the soft limit (m4-46). |
 | `loop_tools` | `mcp` | Loop's MCP server, `loop tool mcp`, passed with `--mcp-config`. |
 | `usage` | true | From the `result` lines, absolute for the session. Since bl-71 each line's `model_usage_since_last_result`, every model and subagent included, else its `usage`, see [subagent spend](../spec-decisions.md#claude-code-subagent-spend-extension-bl-71). |
 | `cost` | true | `total_cost_usd` of the `result` lines, the session's so far, subagents included. |
