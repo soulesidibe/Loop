@@ -88,7 +88,9 @@ class AreaLockOrchestratorTest {
                     agent = AgentConfig(maxConcurrentAgents = 10, maxTurns = 1),
                     kinds =
                         if (kinds) {
-                            KindsConfig(KindConfig(listOf(CheckConfig.Command("./gradlew test")), delivery = DeliveryConfig(DeliveryPolicy.Auto)))
+                            KindsConfig(
+                                KindConfig(listOf(CheckConfig.Command("./gradlew test")), delivery = DeliveryConfig(DeliveryPolicy.Auto)),
+                            )
                         } else {
                             null
                         },
@@ -251,7 +253,12 @@ class AreaLockOrchestratorTest {
             val orchestrator = orchestrator(submitting(), workflow(kinds = true), checks, waiting)
             val first = launch { orchestrator.tick() }
             runCurrent()
-            assertEquals(WaitReason.Verify, waiting.records.values.single().reason)
+            assertEquals(
+                WaitReason.Verify,
+                waiting.records.values
+                    .single()
+                    .reason,
+            )
 
             tracker.issues += area("b", "docs/agents/issue-tracker.md")
             val second = launch { orchestrator.tick() }

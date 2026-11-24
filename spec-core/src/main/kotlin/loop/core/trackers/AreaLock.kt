@@ -23,8 +23,7 @@ object AreaOverlap {
     fun first(
         a: List<String>,
         b: List<String>,
-    ): Pair<String, String>? =
-        a.firstNotNullOfOrNull { x -> b.firstOrNull { y -> overlaps(x, y) }?.let { x to it } }
+    ): Pair<String, String>? = a.firstNotNullOfOrNull { x -> b.firstOrNull { y -> overlaps(x, y) }?.let { x to it } }
 }
 
 /**

@@ -316,7 +316,14 @@ class FilesTrackerTest {
             assertEquals(listOf("plugins/tracker-files/src/main/kotlin/loop/tracker/files/FilesTracker.kt"), tracker.todo("a-2").area)
             assertEquals(listOf("cli"), tracker.todo("a-3").area)
             listOf("a-4", "a-5", "a-6").forEach { assertEquals(emptyList(), tracker.todo(it).area, it) }
-            assertEquals(listOf("spec-core", "docs/agents"), tracker.fetchIssuesByIds(listOf("a-1")).getOrThrow().single().area)
+            assertEquals(
+                listOf("spec-core", "docs/agents"),
+                tracker
+                    .fetchIssuesByIds(listOf("a-1"))
+                    .getOrThrow()
+                    .single()
+                    .area,
+            )
             assertEquals(emptyList(), malformed)
         }
 

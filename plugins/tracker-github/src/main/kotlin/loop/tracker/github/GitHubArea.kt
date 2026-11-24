@@ -31,7 +31,9 @@ internal object GitHubArea {
             }
             if (fence != null) {
                 val closes =
-                    marker != null && marker.groupValues[1][0] == fence[0] && marker.groupValues[1].length >= fence.length &&
+                    marker != null &&
+                        marker.groupValues[1][0] == fence[0] &&
+                        marker.groupValues[1].length >= fence.length &&
                         marker.groupValues[2].isBlank()
                 if (closes) fence = null
                 continue

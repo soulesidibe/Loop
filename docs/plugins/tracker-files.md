@@ -96,6 +96,7 @@ The first line must be `---`, and the front matter ends at the next line that is
 | `priority` | front matter `priority` | An integer is passed through as is. Missing or non integer values normalize to null. No remapping, so values outside 1 to 4 sort with null ([answer 3](../spec-decisions.md#answers-to-the-five-ambiguities)). |
 | `labels` | front matter `labels` | Lowercased. Absent or null gives an empty list. A value that is not a list of scalars makes the record malformed. |
 | `blocked_by` | front matter `blocked_by` | A list of Issue ids. Absent or null gives an empty list. A value that is not a list of scalars makes the record malformed. |
+| `area` | front matter `area` | A list of repository relative paths, or one path, normalized (m4-17, see [area lock](../spec-decisions.md#minimal-area-lock-extension-m4-17)). Absent, null or an empty list gives an empty list. A value that is not a list of scalars or a scalar, or an entry that is no repository relative path (blank, absolute, a `..` segment, a glob character, a backslash, a backtick, or the root `.`), makes the record malformed. |
 | `description` | the body after the front matter | Trimmed; an empty body is null. |
 | `created_at` | none | Always null, see below. |
 | `updated_at` | none | Not provided. |
@@ -138,6 +139,7 @@ A file is malformed when any of these holds:
 - the front matter is empty, is not valid YAML, or is not a map;
 - `id`, `title` or `state` is missing or empty;
 - `labels` or `blocked_by` is present but not a list of scalars.
+- `area` is present but neither a list of scalars nor a scalar, or holds an entry that is no repository relative path.
 
 The two read calls treat a malformed file differently (11.1, [clarification](../spec-decisions.md#files-tracker-refresh-fails-on-malformed-records-clarification-of-111)):
 
