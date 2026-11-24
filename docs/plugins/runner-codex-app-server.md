@@ -2,7 +2,7 @@
 
 The `codex-app-server` runner runs the Codex app server as the agent, over JSON-RPC on stdio (spec section 10). This page is its plugin profile, the keys, defaults, secrets and limits plan section 12 asks every plugin to publish. The implementation is `CodexAppServerRunner` in `plugins/runner-codex-app-server` (`loop.runner.codex`), registered as `CodexAppServerRunnerProvider` in `META-INF/services/loop.api.RunnerProvider`; its profile is `CodexAppServerSettings.PROFILE`.
 
-Written 2026-11-16 in issue m3-17, the first slice of the Codex lane: the runner launches the app server and reads it. Since m3-18 it starts the session, `initialize`, then the thread and the first turn. Since m3-19 a turn ends at its `turn/completed` notification, the read and turn timeouts are enforced, and continuation turns run on the same thread in the same app server. Since m3-20 the runner answers approvals, user input and tool calls by rule, refuses `git push`, `gh`, history rewrites and the holdout folder, and starts every thread with no MCP server under `strict_mcp`. Since m3-21 it reports usage and rate limits, and no cost. Since m3-22 it declares Loop's tools to the thread as client tools and runs their calls through `loop tool mcp`. Since m3-23 it reports the occupancy of its thread and interrupts a turn at the hard limit, so Loop rotates its sessions. The later issues of the lane each add their own keys here. Terms follow [`CONTEXT.md`](../../CONTEXT.md); the pinned Codex version and schema are in [`spec-decisions.md`](../spec-decisions.md#codex-cli-app-server-schema-and-mcp-loading-m3-02).
+Written 2026-11-16 in issue m3-17, the first slice of the Codex lane: the runner launches the app server and reads it. Since m3-18 it starts the session, `initialize`, then the thread and the first turn. Since m3-19 a turn ends at its `turn/completed` notification, the read and turn timeouts are enforced, and continuation turns run on the same thread in the same app server. Since m3-20 the runner answers approvals, user input and tool calls by rule, refuses `git push`, `gh`, history rewrites and the holdout folder, and starts every thread with no MCP server under `strict_mcp`. Since m3-21 it reports usage and rate limits, and no cost. Since m3-22 it declares Loop's tools to the thread as client tools and runs their calls through `loop tool mcp`. Since m3-23 it reports the occupancy of its thread and interrupts a turn at the hard limit, so Loop rotates its sessions. Since bl-141 `runners.codex.model` picks the thread's model, and a turn the login refuses for its model is `runner_unavailable`. The later issues of the lane each add their own keys here. Terms follow [`CONTEXT.md`](../../CONTEXT.md); the pinned Codex version and schema are in [`spec-decisions.md`](../spec-decisions.md#codex-cli-app-server-schema-and-mcp-loading-m3-02).
 
 ## Contents
 
@@ -32,6 +32,7 @@ runners:
     turn_timeout_ms: 3600000
     read_timeout_ms: 5000
     strict_mcp: true
+    model: gpt-6.1-sol
 ```
 
 - `command`: the program that starts the app server and its arguments, run in the workspace with no shell (m3-20). It is split into words at blanks as a shell would, with single quotes, double quotes and backslashes, but nothing is expanded: an unquoted operator (`|`, `&`, `;`, `<`, `>`, `(`, `)`), `$`, a backtick, a glob or a leading `~`, or an unterminated quote, fails the startup check. The program is looked up on the agent env's `PATH`. Without it, or blank, the spec's default `codex app-server`.
@@ -39,6 +40,7 @@ runners:
 - `read_timeout_ms`: how long Loop waits for the answer to each request it writes, `initialize`, `thread/start` and every `turn/start`, before it kills the app server and fails the turn with `response_timeout`. The spec's default, 5 seconds.
 
 - `strict_mcp`: `true` or `false`, `true` by default. With it every thread starts with each MCP server of the Codex config disabled and the `apps` feature off, so the agent gets no MCP server, see [guards](#guards). `false` lets Codex start every server its config lists.
+- `model`: the model the thread runs, sent as `model` on `thread/start` (bl-141). Without it, or blank, Loop sends none and the thread takes the `model` of `$CODEX_HOME/config.toml`, else Codex's default. Set it to the model the workflow was checked with, one of those `model/list` returns for the Codex login: a ChatGPT login refuses some models, such as `gpt-5.1-codex-max`, that an operator's config may name, see [a refused model](#a-refused-model).
 
 All are read from `runners.codex`, beside `command`, with the same names as the claude-code runner's. The top level `codex` block of the spec is not read by this runner.
 
@@ -50,6 +52,7 @@ All are read from `runners.codex`, beside `command`, with the same names as the 
 | `runners.codex.turn_timeout_ms` | integer | `3600000` | no | 1 to 86400000 |
 | `runners.codex.read_timeout_ms` | integer | `5000` | no | 1 to 86400000 |
 | `runners.codex.strict_mcp` | boolean | `true` | no | none |
+| `runners.codex.model` | string | none | no | none |
 
 The runner has no secret key. Codex reads its own login from `$CODEX_HOME`; `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are removed from the agent env, as for every runner.
 
@@ -65,6 +68,7 @@ Loop checks `runners.codex` against the profile on every load of `WORKFLOW.md`, 
 | a timeout that is not an integer, such as `turn_timeout_ms: soon` | `invalid_config` | `runners.codex.turn_timeout_ms must be an integer` |
 | a timeout out of its limits | `invalid_config` | `runners.codex.turn_timeout_ms must be between 1 and 86400000, got 0` |
 | `strict_mcp` not a boolean, such as `yes` | `invalid_config` | `runners.codex.strict_mcp must be a boolean` |
+| `model` not a string, such as a list | `invalid_config` | `runners.codex.model must be a string` |
 | `runners.codex` not a map | `invalid_config` | `runners.codex must be a map` |
 | a key the profile does not list | none, a startup warning | `runners.codex.<key> is not a key of the codex-app-server runner, Loop ignores it` |
 
@@ -88,7 +92,7 @@ The startup of spec 10.2 on the pinned protocol (m3-18), each request written on
 | 1 | `initialize` (id 1) | `clientInfo` `{"name": "loop", "version": "<Loop's version>"}`, `capabilities` `{"experimentalApi": false}`, or `true` when the thread declares [Loop's tools](#loops-tools) |
 | 2 | `initialized` | after the `initialize` answer |
 | 3 | `config/read` (id 2), with `strict_mcp` only | `cwd` the workspace's absolute path; the answer lists the MCP servers of the Codex config |
-| 4 | `thread/start` (id 3, or 2 without `strict_mcp`) | `approvalPolicy` `untrusted`, `sandbox` `danger-full-access`, `cwd` the workspace's absolute path, and a `config` with `allow_login_shell: false`, plus, with `strict_mcp`, each server `config/read` listed disabled and the `apps` feature off, plus, in an attempt Loop started, [Loop's tools](#loops-tools) as `dynamicTools` |
+| 4 | `thread/start` (id 3, or 2 without `strict_mcp`) | `approvalPolicy` `untrusted`, `sandbox` `danger-full-access`, `cwd` the workspace's absolute path, `model` when `runners.codex.model` is set, and a `config` with `allow_login_shell: false`, plus, with `strict_mcp`, each server `config/read` listed disabled and the `apps` feature off, plus, in an attempt Loop started, [Loop's tools](#loops-tools) as `dynamicTools` |
 | 5 | `turn/start` (id 4, or 3 without `strict_mcp`) | `threadId` from the `thread/start` answer, the prompt as one `text` input, `approvalPolicy` `untrusted`, `sandboxPolicy` `{"type": "dangerFullAccess"}`, `cwd` the workspace |
 
 - **Ids:** `session_started` carries `thread.id` of the `thread/start` answer and `turn.id` of the `turn/start` answer, with the session id `<thread_id>-<turn_id>`. Output read before it comes right after it. A run that ends before the turn started gets two UUIDs instead.
@@ -105,6 +109,15 @@ How a turn ends, the timeouts and the turns after the first (m3-19). The decisio
 - **Continuation:** a session runs every turn on one app server and one thread. Turn 2 and later write one more `turn/start` (request id 5, then 6 and so on, or 4, 5 and so on without `strict_mcp`) on the thread of turn 1, with the continuation input as the only `text` item and the same approval, sandbox and `cwd` settings, and emit `turn_started` with that thread id and the turn id of the answer. What the app server wrote between turns comes right after it.
 - **Exit:** an app server that exits during a turn fails it at once with `port_exit`, whatever the timeouts. A turn whose app server is gone, because it exited or an earlier turn's failure killed it, fails at once with `port_exit: the app server of this session is gone, ...` after its `turn_started`. Loop starts no second app server for the session.
 - **Stop:** stopping the session, or the end of a single turn run, closes stdin, gives the app server 5 seconds to exit, then kills its group.
+- **Network loss:** a `failed` turn whose error is a transport failure with no HTTP answer is `runner_unavailable` (m4-08): it takes no `retries.max_attempts` slot and holds the run until a probe succeeds.
+
+### A refused model
+
+When the Codex login refuses the thread's model, Codex warns that the model's metadata is missing, then ends the turn `failed` with the `codexErrorInfo` `modelNotFound`, for example `The 'gpt-5.1-codex-max' model is not supported when using Codex with a ChatGPT account.` Every turn on that machine then fails the same way, before any work (bl-141).
+
+- **Category:** such a turn is `runner_unavailable`, not an agent failure: it takes no `retries.max_attempts` slot and holds the run, as a lost network does, so no issue is parked or charged for it. `loop status` shows the hold with Codex's message.
+- **Reason:** `turn_failed: <Codex's message> (model_not_found: set runners.codex.model to a model the Codex login accepts)`.
+- **Fix:** set `runners.codex.model` to a model `model/list` returns for the login, such as `gpt-6.1-sol`, or change the `model` of the operator's `$CODEX_HOME/config.toml`. The command can also pass it, with no change to the section's keys: `command: codex app-server -c model=gpt-6.1-sol`. The workflow reloads on its next tick and the next probe lifts the hold.
 
 ## Approvals, user input and tool calls
 

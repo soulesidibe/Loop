@@ -83,7 +83,8 @@ sealed interface StartupFailure {
  * its `turn/completed`, and an answer that comes late never fails the next turn's start.
  *
  * The `thread/start` answer names the thread's [modelProvider] and [model], the `context.windows` key of its
- * occupancy (m3-23).
+ * occupancy (m3-23). With [configuredModel], `runners.codex.model` (bl-141), `thread/start` asks for that model;
+ * without it the thread takes the model of the Codex config.
  *
  * [start] gives the first line to write, [read] takes each frame read from stdout and says what to do next. Every
  * line is one JSON object written with [CodexJson.format] through the base type of its union, so its `method` is
@@ -111,6 +112,7 @@ internal class StartupHandshake(
     private val loopVersion: String,
     private val strictMcp: Boolean = false,
     private val tools: JsonArray? = null,
+    private val configuredModel: String? = null,
 ) {
     /** What the client does after reading one frame. */
     sealed interface Step {
@@ -289,6 +291,7 @@ internal class StartupHandshake(
                         sandbox = SANDBOX,
                         cwd = workspace.toAbsolutePath().toString(),
                         config = config,
+                        model = configuredModel,
                     ),
             )
         if (tools == null) return request(request)
