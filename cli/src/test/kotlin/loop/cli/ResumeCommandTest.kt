@@ -76,7 +76,7 @@ class ResumeCommandTest {
         parkOnFirstFailure()
         runOnce()
 
-        val resume = fixture.loop("resume", "t-1", cwd = fixture.projectDir)
+        val resume = fixture.inProcess("resume", "t-1", cwd = fixture.projectDir)
         assertEquals(0, resume.exitCode, resume.toString())
 
         val row =
@@ -94,7 +94,7 @@ class ResumeCommandTest {
         parkOnFirstFailure()
         runOnce()
 
-        val resume = fixture.loop("resume", "t-1", cwd = fixture.projectDir)
+        val resume = fixture.inProcess("resume", "t-1", cwd = fixture.projectDir)
         assertEquals(0, resume.exitCode, resume.toString())
         val touch = fixture.query("SELECT issue_id, attempt_id, data FROM events WHERE kind = 'human_touch'").single()
         assertEquals("default:t-1", touch["issue_id"])
@@ -126,7 +126,7 @@ class ResumeCommandTest {
         val parked = fixture.query("SELECT issue_id, reason, parked_at FROM parked_issues")
         val events = fixture.query("SELECT seq FROM events").size
 
-        val refused = fixture.loop("resume", "t-1", cwd = fixture.projectDir, env = mapOf("LOOP_ATTEMPT_ID" to "attempt-1"))
+        val refused = fixture.inProcess("resume", "t-1", cwd = fixture.projectDir, env = mapOf("LOOP_ATTEMPT_ID" to "attempt-1"))
 
         assertEquals(5, refused.exitCode, refused.toString())
         assertEquals(
@@ -138,14 +138,14 @@ class ResumeCommandTest {
         assertEquals(events, fixture.query("SELECT seq FROM events").size)
 
         // The same command from an operator shell, without the variable, still resumes.
-        assertEquals(0, fixture.loop("resume", "t-1", cwd = fixture.projectDir).exitCode)
+        assertEquals(0, fixture.inProcess("resume", "t-1", cwd = fixture.projectDir).exitCode)
     }
 
     @Test
     fun `resuming an issue that is not parked changes nothing and exits 4`() {
         fixture.issue("t-1")
 
-        val result = fixture.loop("resume", "t-1", cwd = fixture.projectDir)
+        val result = fixture.inProcess("resume", "t-1", cwd = fixture.projectDir)
 
         assertEquals(4, result.exitCode, result.toString())
         assertEquals("loop resume: t-1 is not parked. Nothing changed.", result.stderr.trim())
@@ -156,7 +156,7 @@ class ResumeCommandTest {
     fun `resuming an unknown issue exits 2`() {
         fixture.issue("t-1")
 
-        val result = fixture.loop("resume", "t-9", cwd = fixture.projectDir)
+        val result = fixture.inProcess("resume", "t-9", cwd = fixture.projectDir)
 
         assertEquals(2, result.exitCode, result.toString())
         assertEquals("loop resume: no issue \"t-9\" in the tracker at ${fixture.issuesDir.toRealPath()}.", result.stderr.trim())
@@ -202,7 +202,7 @@ class ResumeCommandTest {
         runOnce()
         assertEquals(1, fixture.agentCalls())
 
-        val resume = fixture.loop("resume", "t-1", cwd = fixture.projectDir)
+        val resume = fixture.inProcess("resume", "t-1", cwd = fixture.projectDir)
 
         assertEquals(0, resume.exitCode, resume.toString())
         assertContains(resume.stdout, "(max_continuations). It can be dispatched again on the next tick.")
@@ -227,7 +227,7 @@ class ResumeCommandTest {
         assertContains(parkedRun.stdout, "No eligible issue.")
         assertEquals(1, attemptsStarted())
 
-        val resume = fixture.loop("resume", "t-1", cwd = fixture.projectDir)
+        val resume = fixture.inProcess("resume", "t-1", cwd = fixture.projectDir)
 
         assertEquals(0, resume.exitCode, resume.toString())
         assertContains(resume.stdout, "(unverified). It can be dispatched again on the next tick.")

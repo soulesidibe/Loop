@@ -111,7 +111,7 @@ class HoldoutCommandTest {
         evidence.forEach { assertFalse(secret in it.readText(), it.toString()) }
         assertFalse(secret in fixture.humanLog.readText())
         assertContains(fixture.humanLog.readText(), "hidden check \$LOOP_HOLDOUT/acceptance.sh failed\n")
-        val trace = fixture.loop("trace", "t-1", "--workflow", fixture.workflow.toString())
+        val trace = fixture.inProcess("trace", "t-1", "--workflow", fixture.workflow.toString())
         val hiddenLines = trace.stdout.lines().filter { "check_finished" in it && "check=1" in it }
         // The failed holdout, its rerun (m2-08), then the holdout that passed.
         assertEquals(3, hiddenLines.size, trace.toString())
@@ -130,7 +130,7 @@ class HoldoutCommandTest {
         assertFalse(secret in trace.stdout)
         assertFalse(secret in result.stderr)
         val attemptId = fixture.query("SELECT attempt_id FROM events WHERE kind = 'verdict' ORDER BY seq").first()["attempt_id"]!!
-        val shown = fixture.loop("show", attemptId, "--evidence", "--check", "1", "--workflow", fixture.workflow.toString())
+        val shown = fixture.inProcess("show", attemptId, "--evidence", "--check", "1", "--workflow", fixture.workflow.toString())
         assertEquals(0, shown.exitCode, shown.toString())
         assertContains(shown.stdout, "holdout: true\n")
         assertContains(shown.stdout, "result: ")
@@ -182,7 +182,7 @@ class HoldoutCommandTest {
         }
         val attemptId = fixture.query("SELECT attempt_id FROM events WHERE kind = 'verdict' ORDER BY seq").first()["attempt_id"]!!
         for (view in listOf("--events", "--evidence")) {
-            val shown = fixture.loop("show", attemptId, view, "--workflow", fixture.workflow.toString())
+            val shown = fixture.inProcess("show", attemptId, view, "--workflow", fixture.workflow.toString())
             assertEquals(0, shown.exitCode, shown.toString())
             assertFalse(secret in shown.stdout, shown.toString())
             assertFalse(scriptMarker in shown.stdout, shown.toString())

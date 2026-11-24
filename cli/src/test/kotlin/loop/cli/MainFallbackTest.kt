@@ -32,7 +32,7 @@ class MainFallbackTest {
         build: () -> CliktCommand,
     ): Outcome {
         val outcome = Outcome()
-        runMain(args.toList().toTypedArray(), env(), { outcome.exitCodes += it }, { outcome.stderr += it }, build)
+        runMain(args.toList().toTypedArray(), env(), { outcome.exitCodes += it }, { outcome.stderr += it }, build = build)
         return outcome
     }
 

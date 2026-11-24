@@ -243,7 +243,7 @@ class PullRequestDeliveryCommandTest {
     private val results = mutableListOf<LoopResult>()
 
     private fun approve() {
-        val approved = fixture.loop("approve", "t-1", "--workflow", fixture.workflow.toString(), env = env)
+        val approved = fixture.inProcess("approve", "t-1", "--workflow", fixture.workflow.toString(), env = env)
         assertEquals(0, approved.exitCode, approved.toString())
         results += approved
     }
@@ -309,10 +309,10 @@ class PullRequestDeliveryCommandTest {
         assertContains(events("pull_request_opened").single(), "\"number\":\"1\"")
         assertEquals(emptyList(), fixture.query("SELECT 1 FROM waiting_issues"))
 
-        val trace = fixture.loop("trace", "t-1", "--workflow", fixture.workflow.toString(), env = env).also { results += it }
+        val trace = fixture.inProcess("trace", "t-1", "--workflow", fixture.workflow.toString(), env = env).also { results += it }
         assertTrue(trace.stdout.lines().any { "branch_pushed" in it && "branch=loop/t-1" in it }, trace.stdout)
         assertTrue(trace.stdout.lines().any { "pull_request_opened" in it && "number=1" in it }, trace.stdout)
-        val log = fixture.loop("log", fixture.workflow.toString(), env = env).also { results += it }
+        val log = fixture.inProcess("log", fixture.workflow.toString(), env = env).also { results += it }
         assertContains(log.stdout, "opened pull request #1, https://github.com/acme/widgets/pull/1")
 
         // A second delivery of the same issue updates the open pull request: a human sends it back, the agent works again.
@@ -451,10 +451,10 @@ class PullRequestDeliveryCommandTest {
         assertEquals(listOf("{\"touch\":\"approve\"}"), events("human_touch"), "the approval is the only human touch")
         assertFalse(fixture.workspace("t-1").exists(), "the workspace is removed, the local branch stays")
 
-        val trace = fixture.loop("trace", "t-1", "--workflow", fixture.workflow.toString(), env = env).also { results += it }
+        val trace = fixture.inProcess("trace", "t-1", "--workflow", fixture.workflow.toString(), env = env).also { results += it }
         assertTrue(trace.stdout.lines().any { "merge_check_finished" in it && "outcome=merged" in it }, trace.stdout)
         assertTrue(trace.stdout.lines().any { "pull_request_merged" in it && "number=1" in it }, trace.stdout)
-        val log = fixture.loop("log", fixture.workflow.toString(), env = env).also { results += it }
+        val log = fixture.inProcess("log", fixture.workflow.toString(), env = env).also { results += it }
         assertContains(log.stdout, "merged pull request #1 at ${merged.take(12)} with merge")
         assertContains(log.stdout, "fetched main at ${remoteMain.take(12)}")
 
@@ -515,7 +515,7 @@ class PullRequestDeliveryCommandTest {
         assertContains(warning, "\"sha\":\"$earlier\"")
         assertEquals(emptyList(), events("base_fetched"))
         assertEquals("todo", fixture.stateOf("t-1"), "the attempt ran and waits for approval")
-        val log = fixture.loop("log", fixture.workflow.toString(), env = env).also { results += it }
+        val log = fixture.inProcess("log", fixture.workflow.toString(), env = env).also { results += it }
         val sentence = "could not fetch main before the attempt, the hooks start from the last fetched main at ${earlier.take(12)}"
         assertContains(log.stdout, sentence)
         assertTokenAbsent(repo)

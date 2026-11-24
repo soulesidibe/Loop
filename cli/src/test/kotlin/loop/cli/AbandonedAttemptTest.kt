@@ -49,7 +49,7 @@ class AbandonedAttemptTest {
             val deadRun = dead["run_id"]!!
 
             // Trace stays read only: before a restart the dead attempt still shows as running.
-            val before = fixture.loop("trace", "t-1", "--workflow", fixture.workflow.toString())
+            val before = fixture.inProcess("trace", "t-1", "--workflow", fixture.workflow.toString())
             assertTrue(header(before.stdout, 1).endsWith("running"), before.toString())
 
             fixture.agentScript.writeText("#!/bin/sh\necho \$\$ > '$secondPid'\nexec sleep 60\n")
@@ -61,7 +61,7 @@ class AbandonedAttemptTest {
                         "SELECT run_id FROM events WHERE kind = 'attempt_started' AND run_id <> '$deadRun'",
                     ).single()["run_id"]!!
 
-            val trace = fixture.loop("trace", "t-1", "--workflow", fixture.workflow.toString())
+            val trace = fixture.inProcess("trace", "t-1", "--workflow", fixture.workflow.toString())
             assertEquals(0, trace.exitCode, trace.toString())
             val deadHeader = header(trace.stdout, 1)
             assertContains(deadHeader, deadAttempt.take(8))
@@ -73,14 +73,14 @@ class AbandonedAttemptTest {
             assertTrue(header(trace.stdout, 2).endsWith("running"), trace.toString())
 
             // The new attempt runs; the dead one is not running in status.
-            val status = fixture.loop("status", fixture.workflow.toString())
+            val status = fixture.inProcess("status", fixture.workflow.toString())
             assertEquals(0, status.exitCode, status.toString())
             val running = status.stdout.lines().filter { it.startsWith("running") }
             assertEquals(1, running.size, status.toString())
             assertContains(running.single(), "attempt 2")
             assertFalse(deadAttempt.take(8) in status.stdout, status.toString())
 
-            val show = fixture.loop("show", deadAttempt, "--events", "--workflow", fixture.workflow.toString())
+            val show = fixture.inProcess("show", deadAttempt, "--events", "--workflow", fixture.workflow.toString())
             assertEquals(0, show.exitCode, show.toString())
             val finished = show.stdout.lines().single { "\"kind\":\"attempt_finished\"" in it }
             assertContains(finished, "\"reason\":\"abandoned\"")

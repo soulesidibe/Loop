@@ -81,7 +81,7 @@ class AcceptanceCommandsCommandTest {
                 .readText()
                 .trim(),
         )
-        val trace = fixture.loop("trace", "t-1", "--workflow", fixture.workflow.toString())
+        val trace = fixture.inProcess("trace", "t-1", "--workflow", fixture.workflow.toString())
         assertEquals(0, trace.exitCode, trace.toString())
         val lines = trace.stdout.lines()
         assertContains(lines.line("check_finished", trace), "command=\"test -f hello.txt && echo \$LOOP_ISSUE_IDENTIFIER > checked.txt\"")
@@ -111,7 +111,7 @@ class AcceptanceCommandsCommandTest {
             listOf("unverified"),
             fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 'default:t-1'").map { it["reason"] },
         )
-        val trace = fixture.loop("trace", "t-1", "--workflow", fixture.workflow.toString())
+        val trace = fixture.inProcess("trace", "t-1", "--workflow", fixture.workflow.toString())
         // The measured duration varies with the machine: only the shape of the reason is asserted.
         assertContains(trace.stdout.lines().line("verdict", trace), "check 0 could not run: timed out after ")
         assertEquals(1, fixture.query("SELECT 1 FROM events WHERE kind = 'check_started'").size, "not rerun")
@@ -137,7 +137,7 @@ class AcceptanceCommandsCommandTest {
             fixture.query("SELECT reason FROM parked_issues WHERE issue_id = 'default:t-1'").map { it["reason"] },
         )
         assertEquals(0, fixture.query("SELECT 1 FROM events WHERE kind = 'check_started'").size, "no command ran")
-        val trace = fixture.loop("trace", "t-1", "--workflow", fixture.workflow.toString())
+        val trace = fixture.inProcess("trace", "t-1", "--workflow", fixture.workflow.toString())
         val lines = trace.stdout.lines()
         assertContains(lines.line("acceptance_commands_changed", trace), "frozen=2 count=1")
         assertContains(lines.line("verdict", trace), "reason=\"acceptance commands changed\"")
@@ -146,14 +146,14 @@ class AcceptanceCommandsCommandTest {
             "acceptance criteria hold 1 command where 2 commands were frozen at the first dispatch, none runs until loop resume accepts them",
         )
 
-        val resume = fixture.loop("resume", "t-1", "--workflow", fixture.workflow.toString())
+        val resume = fixture.inProcess("resume", "t-1", "--workflow", fixture.workflow.toString())
 
         assertEquals(0, resume.exitCode, resume.toString())
         assertContains(
             resume.stdout,
             "Accepted the changed acceptance commands of t-1, checked from its next verification:\n  1. test -f hello.txt\n",
         )
-        val accepted = fixture.loop("trace", "t-1", "--workflow", fixture.workflow.toString())
+        val accepted = fixture.inProcess("trace", "t-1", "--workflow", fixture.workflow.toString())
         assertContains(accepted.stdout.lines().line("acceptance_commands_accepted", accepted), "count=1")
 
         val verified = fixture.loop("run", fixture.workflow.toString(), "--once")
@@ -161,7 +161,7 @@ class AcceptanceCommandsCommandTest {
         assertEquals(0, verified.exitCode, verified.toString())
         assertEquals("review", fixture.stateOf("t-1"), verified.toString())
         assertEquals(1, fixture.query("SELECT 1 FROM events WHERE kind = 'check_started'").size)
-        val again = fixture.loop("resume", "t-1", "--workflow", fixture.workflow.toString())
+        val again = fixture.inProcess("resume", "t-1", "--workflow", fixture.workflow.toString())
         assertFalse("Accepted" in again.stdout, again.toString())
     }
 
@@ -245,7 +245,7 @@ class AcceptanceCommandsCommandTest {
             }
         }
 
-        val resume = fixture.loop("resume", "t-1", "--workflow", fixture.workflow.toString())
+        val resume = fixture.inProcess("resume", "t-1", "--workflow", fixture.workflow.toString())
 
         assertEquals(0, resume.exitCode, resume.toString())
         assertContains(resume.stdout, "Resumed t-1")
@@ -264,7 +264,7 @@ class AcceptanceCommandsCommandTest {
         // The issue changed again after the park: the human would accept a list Loop never compared.
         fixture.issue("t-1", criteria = "- [ ] `test -f hello.txt` passes.\n- [ ] `echo third` passes.")
 
-        val resume = fixture.loop("resume", "t-1", "--workflow", fixture.workflow.toString())
+        val resume = fixture.inProcess("resume", "t-1", "--workflow", fixture.workflow.toString())
 
         assertEquals(0, resume.exitCode, resume.toString())
         assertContains(resume.stdout, "Resumed t-1")
@@ -290,7 +290,7 @@ class AcceptanceCommandsCommandTest {
         val env = mapOf("LOOP_TEST_SECRET" to secret)
         fixture.loop("run", fixture.workflow.toString(), "--once", env = env)
 
-        val resume = fixture.loop("resume", "t-1", "--workflow", fixture.workflow.toString(), env = env)
+        val resume = fixture.inProcess("resume", "t-1", "--workflow", fixture.workflow.toString(), env = env)
 
         assertEquals(0, resume.exitCode, resume.toString())
         assertContains(
@@ -324,16 +324,16 @@ class AcceptanceCommandsCommandTest {
         val checks = fixture.query("SELECT data FROM events WHERE kind = 'check_finished' ORDER BY seq").map { it["data"].orEmpty() }
         assertContains(checks[0], "$attemptId.evidence-2.log")
         assertContains(checks[1], "$attemptId.evidence-3.log")
-        val first = fixture.loop("show", attemptId, "--evidence", "--check", "0", "--workflow", fixture.workflow.toString())
+        val first = fixture.inProcess("show", attemptId, "--evidence", "--check", "0", "--workflow", fixture.workflow.toString())
         assertEquals(0, first.exitCode, first.toString())
         assertContains(first.stdout, "first-check-output")
         assertFalse("judgment_calls" in first.stdout, first.toString())
-        val second = fixture.loop("show", attemptId, "--evidence", "--check", "1", "--workflow", fixture.workflow.toString())
+        val second = fixture.inProcess("show", attemptId, "--evidence", "--check", "1", "--workflow", fixture.workflow.toString())
         assertContains(second.stdout, "second-check-output")
         assertFalse("first-check-output" in second.stdout, second.toString())
-        val last = fixture.loop("show", attemptId, "--evidence", "--workflow", fixture.workflow.toString())
+        val last = fixture.inProcess("show", attemptId, "--evidence", "--workflow", fixture.workflow.toString())
         assertContains(last.stdout, "second-check-output")
-        val none = fixture.loop("show", attemptId, "--evidence", "--check", "2", "--workflow", fixture.workflow.toString())
+        val none = fixture.inProcess("show", attemptId, "--evidence", "--check", "2", "--workflow", fixture.workflow.toString())
         assertContains(none.stdout, "No evidence recorded for check 2 of this attempt.")
     }
 
@@ -368,7 +368,7 @@ class AcceptanceCommandsCommandTest {
         )
         val command = fixture.query("SELECT data FROM events WHERE kind = 'check_finished'").single()["data"].orEmpty()
         assertContains(command, "echo [redacted:LOOP_TEST_SECRET] > token.txt")
-        val trace = fixture.loop("trace", "t-1", "--workflow", fixture.workflow.toString())
+        val trace = fixture.inProcess("trace", "t-1", "--workflow", fixture.workflow.toString())
         assertFalse(secret in trace.stdout, trace.toString())
         val files = Files.walk(fixture.loopHome).use { paths -> paths.filter { it.isRegularFile() }.toList() }
         val evidence = files.filter { it.fileName.toString().contains(".evidence-") }

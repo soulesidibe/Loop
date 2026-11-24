@@ -48,7 +48,7 @@ fun Host.openProject(
     scope: RedactorScope,
     load: (WorkflowLoader, Path) -> Result<WorkflowFile> = { loader, file -> loader.load(file) },
 ): OpenedProject {
-    val file = Path(path).toAbsolutePath().normalize()
+    val file = workingDir.resolve(path).toAbsolutePath().normalize()
     val loader = workflowLoader(deferSecrets = access == Access.READ)
     val redactor = startupRedactor(file, loader, rawEnv)
     scope.redactor = redactor

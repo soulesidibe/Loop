@@ -57,7 +57,7 @@ class LoopModeCommandTest {
                 .readText()
                 .trim(),
         )
-        val trace = fixture.loop("trace", "t-1", "--workflow", fixture.workflow.toString())
+        val trace = fixture.inProcess("trace", "t-1", "--workflow", fixture.workflow.toString())
         assertEquals(0, trace.exitCode, trace.toString())
         val lines = trace.stdout.lines()
         val started = lines.line("check_started", trace)
@@ -95,7 +95,7 @@ class LoopModeCommandTest {
         assertEquals(2, finished.size)
         finished.forEach { assertContains(it["data"].orEmpty(), "\"exit_code\":\"3\"") }
         assertEquals(0, fixture.query("SELECT 1 FROM events WHERE kind IN ('issue_moved', 'tool_request_failed')").size)
-        val trace = fixture.loop("trace", "t-1", "--workflow", fixture.workflow.toString())
+        val trace = fixture.inProcess("trace", "t-1", "--workflow", fixture.workflow.toString())
         trace.stdout
             .lines()
             .filter { "check_finished" in it }
@@ -217,7 +217,7 @@ class LoopModeCommandTest {
         assertContains(guidance, "Check: diff_policy base=main protect=guarded/,WORKFLOW.md\nExit code: 1\n")
         assertContains(guidance, "modified guarded/data.txt (protected by guarded/)")
         assertEquals("review", fixture.stateOf("t-1"), result.toString())
-        val trace = fixture.loop("trace", "t-1", "--workflow", fixture.workflow.toString())
+        val trace = fixture.inProcess("trace", "t-1", "--workflow", fixture.workflow.toString())
         assertContains(trace.stdout, "command=\"diff_policy base=main protect=guarded/,WORKFLOW.md\"")
     }
 
@@ -253,7 +253,7 @@ class LoopModeCommandTest {
         )
         val finished = fixture.query("SELECT data FROM events WHERE kind = 'attempt_finished'").single()["data"].orEmpty()
         assertContains(finished, "\"reason\":\"unverified\"")
-        val trace = fixture.loop("trace", "t-1", "--workflow", fixture.workflow.toString())
+        val trace = fixture.inProcess("trace", "t-1", "--workflow", fixture.workflow.toString())
         assertContains(trace.stdout.lines().line("verdict ", trace), "unverified")
         assertContains(trace.stdout.lines().line("issue_parked", trace), "reason=unverified")
         assertContains(fixture.humanLog.readText(), "parked because its result could not be verified, $reason")
@@ -311,7 +311,7 @@ class LoopModeCommandTest {
         assertContains(attempts.resolve("$attemptId.evidence-1.log").readText(), "exit_code: 1\n")
         assertContains(attempts.resolve("$attemptId.evidence-1.log").readText(), "flaky")
         assertContains(attempts.resolve("$attemptId.evidence-2.log").readText(), "exit_code: 0\n")
-        val trace = fixture.loop("trace", "t-1", "--workflow", fixture.workflow.toString())
+        val trace = fixture.inProcess("trace", "t-1", "--workflow", fixture.workflow.toString())
         val finished = trace.stdout.lines().filter { "check_finished" in it }
         assertEquals(2, finished.size, trace.toString())
         assertContains(finished[0], "exit=1")

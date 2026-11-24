@@ -68,7 +68,7 @@ class EvidenceCommandTest {
         assertContains(text, "exit_code: 0\n")
         val fingerprint = Regex("""fingerprint: (\S+)""").find(text)?.groupValues?.get(1) ?: kotlin.test.fail(text)
 
-        val trace = fixture.loop("trace", "t-1", "--workflow", fixture.workflow.toString())
+        val trace = fixture.inProcess("trace", "t-1", "--workflow", fixture.workflow.toString())
 
         assertEquals(0, trace.exitCode, trace.toString())
         val verdict = trace.stdout.lines().singleOrNull { "verdict" in it } ?: kotlin.test.fail(trace.toString())
@@ -91,7 +91,7 @@ class EvidenceCommandTest {
         assertEquals("todo", fixture.stateOf("t-1"), run.toString())
         val attemptId = verdictAttempt()
 
-        val last = fixture.loop("show", attemptId.take(8), "--evidence", "--workflow", fixture.workflow.toString())
+        val last = fixture.inProcess("show", attemptId.take(8), "--evidence", "--workflow", fixture.workflow.toString())
 
         assertEquals(0, last.exitCode, last.toString())
         // Check 1 failed and was rerun (m2-08): its rerun is the third file, the last one.
@@ -100,18 +100,18 @@ class EvidenceCommandTest {
         assertContains(last.stdout, "exit_code: 4\n")
         assertContains(last.stdout, "second output")
 
-        val first = fixture.loop("show", attemptId, "--evidence", "--check", "0", "--workflow", fixture.workflow.toString())
+        val first = fixture.inProcess("show", attemptId, "--evidence", "--check", "0", "--workflow", fixture.workflow.toString())
 
         assertEquals(0, first.exitCode, first.toString())
         assertContains(first.stdout, "check: 0\n")
         assertContains(first.stdout, "first output")
         assertFalse("second output" in first.stdout, first.stdout)
 
-        val none = fixture.loop("show", attemptId, "--evidence", "--check", "7", "--workflow", fixture.workflow.toString())
+        val none = fixture.inProcess("show", attemptId, "--evidence", "--check", "7", "--workflow", fixture.workflow.toString())
         assertEquals(0, none.exitCode, none.toString())
         assertEquals("No evidence recorded for check 7 of this attempt.\n", none.stdout)
 
-        val trace = fixture.loop("trace", "t-1", "--workflow", fixture.workflow.toString())
+        val trace = fixture.inProcess("trace", "t-1", "--workflow", fixture.workflow.toString())
         val verdicts = trace.stdout.lines().filter { "verdict" in it }
         assertTrue(verdicts.isNotEmpty(), trace.toString())
         verdicts.forEach { line ->
@@ -127,12 +127,12 @@ class EvidenceCommandTest {
         assertEquals(0, run.exitCode, run.toString())
         val attemptId = fixture.query("SELECT DISTINCT attempt_id FROM events WHERE attempt_id IS NOT NULL").single()["attempt_id"]!!
 
-        val none = fixture.loop("show", attemptId, "--evidence", "--workflow", fixture.workflow.toString())
+        val none = fixture.inProcess("show", attemptId, "--evidence", "--workflow", fixture.workflow.toString())
 
         assertEquals(0, none.exitCode, none.toString())
         assertEquals("No evidence recorded for this attempt.\n", none.stdout)
 
-        val usage = fixture.loop("show", attemptId, "--prompt", "--check", "0", "--workflow", fixture.workflow.toString())
+        val usage = fixture.inProcess("show", attemptId, "--prompt", "--check", "0", "--workflow", fixture.workflow.toString())
         assertEquals(2, usage.exitCode, usage.toString())
         assertContains(usage.stderr, "--check")
     }

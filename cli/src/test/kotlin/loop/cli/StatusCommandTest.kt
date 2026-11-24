@@ -220,7 +220,7 @@ class StatusCommandTest {
         seedThreeIssues()
         val lock = holdRunFile()
         try {
-            val result = fixture.loop("status", "--full-ids", fixture.workflow.toString())
+            val result = fixture.inProcess("status", "--full-ids", fixture.workflow.toString())
 
             assertEquals(0, result.exitCode, result.toString())
             assertContains(result.stdout, "Run ${LoopFixture.RUN_ID}  pid")
@@ -242,7 +242,7 @@ class StatusCommandTest {
             """{"pid":${gone.pid()},"started_at":"2026-11-10T20:00:00Z","run_id":"${LoopFixture.RUN_ID}","workflow":"${fixture.workflow}"}""",
         )
 
-        val result = fixture.loop("status", cwd = fixture.projectDir)
+        val result = fixture.inProcess("status", cwd = fixture.projectDir)
 
         assertEquals(0, result.exitCode, result.toString())
         assertEquals(
@@ -275,7 +275,7 @@ class StatusCommandTest {
         )
         val lock = holdRunFile()
         try {
-            val result = fixture.loop("status", fixture.workflow.toString())
+            val result = fixture.inProcess("status", fixture.workflow.toString())
 
             assertEquals(0, result.exitCode, result.toString())
             val lines = result.stdout.trimEnd().lines()
@@ -300,7 +300,7 @@ class StatusCommandTest {
         try {
             RunFiles(fixture.loopHome, project).requestDrain(LoopFixture.RUN_ID)
 
-            val result = fixture.loop("status", fixture.workflow.toString())
+            val result = fixture.inProcess("status", fixture.workflow.toString())
 
             assertEquals(0, result.exitCode, result.toString())
             val lines = result.stdout.trimEnd().lines()
@@ -330,7 +330,7 @@ class StatusCommandTest {
         )
         val lock = holdRunFile()
         try {
-            val result = fixture.loop("status", fixture.workflow.toString())
+            val result = fixture.inProcess("status", fixture.workflow.toString())
 
             assertEquals(0, result.exitCode, result.toString())
             assertEquals(
@@ -370,7 +370,7 @@ class StatusCommandTest {
         )
         val lock = holdRunFile()
         try {
-            val result = fixture.loop("status", fixture.workflow.toString())
+            val result = fixture.inProcess("status", fixture.workflow.toString())
 
             assertEquals(0, result.exitCode, result.toString())
             assertEquals(
@@ -401,7 +401,7 @@ class StatusCommandTest {
         wait("t-1", A1, "2026-11-11T10:05:00Z", WaitReason.Merge)
         wait("t-6", F1, "2026-11-11T10:01:00Z", WaitReason.Approval)
 
-        val result = fixture.loop("status", fixture.workflow.toString())
+        val result = fixture.inProcess("status", fixture.workflow.toString())
 
         assertEquals(0, result.exitCode, result.toString())
         assertEquals(
@@ -420,7 +420,7 @@ class StatusCommandTest {
 
     @Test
     fun `status of an empty project says nothing is running, retrying, waiting or parked`() {
-        val result = fixture.loop("status", fixture.workflow.toString())
+        val result = fixture.inProcess("status", fixture.workflow.toString())
 
         assertEquals(0, result.exitCode, result.toString())
         assertEquals(
@@ -440,7 +440,7 @@ class StatusCommandTest {
         runFiles.dir.toFile().mkdirs()
         runFiles.runFile.writeText("not json")
 
-        val result = fixture.loop("status", fixture.workflow.toString())
+        val result = fixture.inProcess("status", fixture.workflow.toString())
 
         assertEquals(3, result.exitCode, result.toString())
         assertTrue(result.stderr.startsWith("loop status: cannot read the run file at ${runFiles.runFile}: "), result.toString())
@@ -449,7 +449,7 @@ class StatusCommandTest {
 
     @Test
     fun `a workflow that does not load exits 1`() {
-        val result = fixture.loop("status", root.resolve("missing/WORKFLOW.md").toString())
+        val result = fixture.inProcess("status", root.resolve("missing/WORKFLOW.md").toString())
 
         assertEquals(1, result.exitCode, result.toString())
         assertTrue(result.stderr.startsWith("loop status: "), result.toString())
@@ -488,7 +488,7 @@ class StatusCommandTest {
             val deadline = System.nanoTime() + WAIT_NANOS
             var last: LoopResult? = null
             while (System.nanoTime() < deadline) {
-                val status = fixture.loop("status", fixture.workflow.toString())
+                val status = fixture.inProcess("status", fixture.workflow.toString())
                 last = status
                 assertEquals(0, status.exitCode, status.toString())
                 if (wanted.all { it.containsMatchIn(status.stdout) }) {
@@ -528,7 +528,7 @@ class StatusCommandTest {
         )
         val lock = holdRunFile()
         try {
-            val result = fixture.loop("status", fixture.workflow.toString())
+            val result = fixture.inProcess("status", fixture.workflow.toString())
 
             assertEquals(0, result.exitCode, result.toString())
             assertEquals(
@@ -590,7 +590,7 @@ class StatusCommandTest {
         )
         val lock = holdRunFile()
         try {
-            val result = fixture.loop("status", fixture.workflow.toString())
+            val result = fixture.inProcess("status", fixture.workflow.toString())
 
             assertEquals(0, result.exitCode, result.toString())
             assertEquals(
@@ -621,7 +621,7 @@ class StatusCommandTest {
         )
         val lock = holdRunFile()
         try {
-            val result = fixture.loop("status", fixture.workflow.toString())
+            val result = fixture.inProcess("status", fixture.workflow.toString())
 
             assertEquals(0, result.exitCode, result.toString())
             assertEquals(
@@ -652,7 +652,7 @@ class StatusCommandTest {
         )
         val lock = holdRunFile()
         try {
-            val result = fixture.loop("status", fixture.workflow.toString())
+            val result = fixture.inProcess("status", fixture.workflow.toString())
 
             assertEquals(0, result.exitCode, result.toString())
             assertEquals(
@@ -688,7 +688,7 @@ class StatusCommandTest {
             val deadline = System.nanoTime() + WAIT_NANOS
             var last: LoopResult? = null
             while (System.nanoTime() < deadline) {
-                val status = fixture.loop("status", fixture.workflow.toString())
+                val status = fixture.inProcess("status", fixture.workflow.toString())
                 last = status
                 assertEquals(0, status.exitCode, status.toString())
                 if (wanted.containsMatchIn(status.stdout)) {
@@ -758,7 +758,7 @@ class StatusCommandTest {
         seedMachine()
         fixture.loopHome.resolve("config.yaml").writeText("machine:\n  max_concurrent_agents: 2\n  per_day_usd: 10\n")
 
-        val result = fixture.loop("status", fixture.workflow.toString())
+        val result = fixture.inProcess("status", fixture.workflow.toString())
 
         assertEquals(0, result.exitCode, result.toString())
         assertEquals(
@@ -779,12 +779,12 @@ class StatusCommandTest {
         seedMachine()
         fixture.loopHome.resolve("config.yaml").writeText("machine:\n  per_day_tokens: 5000\n")
         assertContains(
-            fixture.loop("status", fixture.workflow.toString()).stdout,
+            fixture.inProcess("status", fixture.workflow.toString()).stdout,
             "Machine slots 1 in use, no cap\nMachine day spend 1200 tokens of 5000, 0.5 usd\n",
         )
 
         fixture.loopHome.resolve("config.yaml").writeText("machine:\n  max_concurrent_agents: none\n")
-        val result = fixture.loop("status", fixture.workflow.toString())
+        val result = fixture.inProcess("status", fixture.workflow.toString())
         assertEquals(0, result.exitCode, result.toString())
         assertContains(result.stdout, "Machine config fails, no dispatch until it is fixed: ")
         assertContains(result.stdout, "machine.max_concurrent_agents must be a positive integer, got \"none\"")
@@ -794,7 +794,7 @@ class StatusCommandTest {
     fun `without a machine config status prints no machine line`() {
         seedMachine()
 
-        val result = fixture.loop("status", fixture.workflow.toString())
+        val result = fixture.inProcess("status", fixture.workflow.toString())
 
         assertEquals(0, result.exitCode, result.toString())
         assertTrue(result.stdout.lines().none { it.startsWith("Machine") }, result.toString())

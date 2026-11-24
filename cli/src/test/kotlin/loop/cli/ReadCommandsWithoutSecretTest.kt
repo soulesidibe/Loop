@@ -104,7 +104,7 @@ class ReadCommandsWithoutSecretTest {
     fun `loop status works with the token variable unset`() {
         project()
 
-        val result = fixture.loop("status", fixture.workflow.toString(), env = unset)
+        val result = fixture.inProcess("status", fixture.workflow.toString(), env = unset)
 
         assertEquals(0, result.exitCode, result.toString())
         assertContains(result.stdout, "Project ${fixture.projectId()}")
@@ -116,7 +116,7 @@ class ReadCommandsWithoutSecretTest {
     fun `loop log works with the token variable unset`() {
         project()
 
-        val result = fixture.loop("log", fixture.workflow.toString(), env = unset)
+        val result = fixture.inProcess("log", fixture.workflow.toString(), env = unset)
 
         assertEquals(0, result.exitCode, result.toString())
         assertEquals("17:02:01  Hello-World-26  attempt 1 started", result.stdout.trim())
@@ -128,7 +128,7 @@ class ReadCommandsWithoutSecretTest {
     fun `loop trace works with the token variable unset, reading the issue from the store and saying why`() {
         project()
 
-        val result = fixture.loop("trace", "26", "--workflow", fixture.workflow.toString(), env = unset)
+        val result = fixture.inProcess("trace", "26", "--workflow", fixture.workflow.toString(), env = unset)
 
         assertEquals(0, result.exitCode, result.toString())
         val lines = result.stdout.lines()
@@ -146,7 +146,7 @@ class ReadCommandsWithoutSecretTest {
     fun `loop trace with the token variable unset says when the store holds no attempt of the issue`() {
         project()
 
-        val result = fixture.loop("trace", "99", "--workflow", fixture.workflow.toString(), env = unset)
+        val result = fixture.inProcess("trace", "99", "--workflow", fixture.workflow.toString(), env = unset)
 
         assertEquals(0, result.exitCode, result.toString())
         assertEquals("No attempt recorded for this issue in project ${fixture.projectId()}.", result.stdout.trim())
@@ -157,7 +157,7 @@ class ReadCommandsWithoutSecretTest {
     fun `loop trace still reads the issue from the tracker when the token is set`() {
         project()
 
-        val result = fixture.loop("trace", "26", "--workflow", fixture.workflow.toString(), env = mapOf(TOKEN_VAR to token))
+        val result = fixture.inProcess("trace", "26", "--workflow", fixture.workflow.toString(), env = mapOf(TOKEN_VAR to token))
 
         assertEquals(0, result.exitCode, result.toString())
         assertTrue(
@@ -176,7 +176,7 @@ class ReadCommandsWithoutSecretTest {
     fun `loop approve still refuses with the token variable unset, naming the variable`() {
         project()
 
-        val result = fixture.loop("approve", "26", "--workflow", fixture.workflow.toString(), env = unset + mapOf("USER" to "soule"))
+        val result = fixture.inProcess("approve", "26", "--workflow", fixture.workflow.toString(), env = unset + mapOf("USER" to "soule"))
 
         assertEquals(1, result.exitCode, result.toString())
         assertContains(result.stderr, "loop approve: tracker.provider.token uses \$$TOKEN_VAR, which is not set")

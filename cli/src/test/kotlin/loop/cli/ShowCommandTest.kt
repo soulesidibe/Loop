@@ -75,7 +75,7 @@ class ShowCommandTest {
         assertEquals(2000, storedLong.text("line")!!.length, "the store keeps a bounded preview")
         assertEquals("true", storedLong.text("truncated"))
 
-        val result = fixture.loop("show", attemptId, "--events")
+        val result = fixture.inProcess("show", attemptId, "--events")
 
         assertEquals(0, result.exitCode, result.toString())
         val printed =
@@ -106,7 +106,7 @@ class ShowCommandTest {
                 .resolve("$attemptId.jsonl.gz"),
         )
 
-        val result = fixture.loop("show", attemptId, "--events")
+        val result = fixture.inProcess("show", attemptId, "--events")
 
         assertEquals(0, result.exitCode, result.toString())
         val long =
@@ -125,7 +125,7 @@ class ShowCommandTest {
         // The long line's record is cut in half, as by a kill or a full disk, and the records after it stay whole.
         rewriteWithLongLineCut(file, keepAfter = true)
 
-        val result = fixture.loop("show", attemptId, "--events")
+        val result = fixture.inProcess("show", attemptId, "--events")
 
         assertEquals(0, result.exitCode, result.toString())
         val printed = runnerLines(result.stdout)
@@ -146,8 +146,8 @@ class ShowCommandTest {
         // The file ends in the middle of the long line's record, as for a live attempt or a killed one.
         rewriteWithLongLineCut(file, keepAfter = false)
 
-        val events = fixture.loop("show", attemptId, "--events")
-        val prompt = fixture.loop("show", attemptId, "--prompt")
+        val events = fixture.inProcess("show", attemptId, "--events")
+        val prompt = fixture.inProcess("show", attemptId, "--prompt")
 
         assertEquals(0, events.exitCode, events.toString())
         assertEquals(LONG_LINE.take(2000), runnerLines(events.stdout).single { it.text("chars") == "5000" }.text("line"))
@@ -219,7 +219,7 @@ class ShowCommandTest {
         assertEquals(0, run.exitCode, run.toString())
         val attemptId = fixture.query("SELECT DISTINCT attempt_id FROM events WHERE attempt_id IS NOT NULL").single()["attempt_id"]!!
 
-        val result = fixture.loop("show", attemptId, "--prompt")
+        val result = fixture.inProcess("show", attemptId, "--prompt")
 
         assertEquals(0, result.exitCode, result.toString())
         assertEquals("Work on t-1: Say hello\n", result.stdout)
@@ -244,7 +244,7 @@ class ShowCommandTest {
         assertEquals(0, run.exitCode, run.toString())
         val attemptId = fixture.query("SELECT DISTINCT attempt_id FROM events WHERE attempt_id IS NOT NULL").single()["attempt_id"]!!
 
-        val result = fixture.loop("show", attemptId, "--prompt", env = env)
+        val result = fixture.inProcess("show", attemptId, "--prompt", env = env)
 
         assertEquals(0, result.exitCode, result.toString())
         assertEquals("Work on t-1: Use [redacted:LOOP_TEST_SECRET]\n", result.stdout)
@@ -263,7 +263,7 @@ class ShowCommandTest {
         fixture.issue("t-1")
         fixture.seed(fixture.attemptStarted(ATTEMPT, "t-1"))
 
-        val result = fixture.loop("show", ATTEMPT, "--prompt")
+        val result = fixture.inProcess("show", ATTEMPT, "--prompt")
 
         assertEquals(0, result.exitCode, result.toString())
         assertEquals("No prompt recorded for this attempt.\n", result.stdout)
@@ -281,7 +281,7 @@ class ShowCommandTest {
                 .resolve("$ATTEMPT.jsonl.gz")
         file.writeText("not gzip")
 
-        val result = fixture.loop("show", ATTEMPT, "--prompt")
+        val result = fixture.inProcess("show", ATTEMPT, "--prompt")
 
         assertEquals(3, result.exitCode, result.toString())
         assertContains(result.stderr, "loop show: cannot read the attempt file at $file")
@@ -315,7 +315,7 @@ class ShowCommandTest {
             started.copy(kind = "attempt_finished", data = mapOf("outcome" to "succeeded", "turns" to "2")),
         )
 
-        val result = fixture.loop("show", ATTEMPT, "--cost")
+        val result = fixture.inProcess("show", ATTEMPT, "--cost")
 
         assertEquals(0, result.exitCode, result.toString())
         assertEquals(
@@ -343,8 +343,8 @@ class ShowCommandTest {
             usage(other, attemptTokens = "10", input = "4", output = "6", cacheRead = "0", cacheCreation = "0", cost = null),
         )
 
-        val none = fixture.loop("show", ATTEMPT, "--cost")
-        val noSpend = fixture.loop("show", OTHER, "--cost")
+        val none = fixture.inProcess("show", ATTEMPT, "--cost")
+        val noSpend = fixture.inProcess("show", OTHER, "--cost")
 
         assertEquals(0, none.exitCode, none.toString())
         assertEquals(listOf("Attempt $ATTEMPT  issue t-1", "No usage recorded for this attempt."), none.stdout.trimEnd().lines())
@@ -370,7 +370,7 @@ class ShowCommandTest {
             usage(started, attemptTokens = "10", input = "4", output = "6", cacheRead = "0", cacheCreation = "0", cost = null),
         )
 
-        val result = fixture.loop("show", ATTEMPT, "--cost")
+        val result = fixture.inProcess("show", ATTEMPT, "--cost")
 
         assertEquals(0, result.exitCode, result.toString())
         assertEquals(
@@ -396,7 +396,7 @@ class ShowCommandTest {
         val started = fixture.attemptStarted(ATTEMPT, "t-1")
         fixture.seed(started, turnStarted(started, "th1", "tu1"))
 
-        val result = fixture.loop("show", ATTEMPT, "--cost")
+        val result = fixture.inProcess("show", ATTEMPT, "--cost")
 
         assertEquals(0, result.exitCode, result.toString())
         assertEquals(
@@ -428,7 +428,7 @@ class ShowCommandTest {
             contextUsage(started, "th3-tu3", latest = "30000", peak = "30000", window = "1000000"),
         )
 
-        val result = fixture.loop("show", ATTEMPT, "--cost")
+        val result = fixture.inProcess("show", ATTEMPT, "--cost")
 
         assertEquals(0, result.exitCode, result.toString())
         assertEquals(
@@ -452,7 +452,7 @@ class ShowCommandTest {
         fixture.issue("t-1")
         fixture.seed(fixture.attemptStarted(ATTEMPT, "t-1"), fixture.attemptStarted(OTHER, "t-1"))
 
-        val result = fixture.loop("show", ATTEMPT.take(8), "--cost")
+        val result = fixture.inProcess("show", ATTEMPT.take(8), "--cost")
 
         assertEquals(0, result.exitCode, result.toString())
         assertEquals("Attempt $ATTEMPT  issue t-1", result.stdout.lines().first())
@@ -463,7 +463,7 @@ class ShowCommandTest {
         fixture.issue("t-1")
         fixture.seed(fixture.attemptStarted(ATTEMPT, "t-1"), fixture.attemptStarted(OTHER, "t-1"))
 
-        val result = fixture.loop("show", "3d9a", "--cost")
+        val result = fixture.inProcess("show", "3d9a", "--cost")
 
         assertEquals(2, result.exitCode, result.toString())
         assertEquals("loop show: \"3d9a\" matches 2 attempts in project ${fixture.projectId()}, give more of the id.\n", result.stderr)
@@ -475,7 +475,7 @@ class ShowCommandTest {
         fixture.issue("t-1")
         fixture.seed(fixture.attemptStarted(ATTEMPT, "t-1"))
 
-        val result = fixture.loop("show", "no-such-attempt", "--events")
+        val result = fixture.inProcess("show", "no-such-attempt", "--events")
 
         assertEquals(2, result.exitCode, result.toString())
         assertEquals("loop show: no attempt \"no-such-attempt\" in project ${fixture.projectId()}.\n", result.stderr)
@@ -487,7 +487,7 @@ class ShowCommandTest {
         fixture.issue("t-1")
         fixture.seed(fixture.attemptStarted(ATTEMPT, "t-1").copy(projectId = loop.api.ProjectId("0123456789abcdef")))
 
-        val result = fixture.loop("show", ATTEMPT, "--cost")
+        val result = fixture.inProcess("show", ATTEMPT, "--cost")
 
         assertEquals(2, result.exitCode, result.toString())
         assertContains(result.stderr, "loop show: no attempt \"$ATTEMPT\" in project ${fixture.projectId()}.")
@@ -498,7 +498,7 @@ class ShowCommandTest {
         fixture.issue("t-1")
         fixture.seed(fixture.attemptStarted(ATTEMPT, "t-1"))
 
-        val result = fixture.loop("show", ATTEMPT)
+        val result = fixture.inProcess("show", ATTEMPT)
 
         assertEquals(2, result.exitCode, result.toString())
         assertContains(result.stderr, "pick a view: --prompt, --events, --cost or --evidence")

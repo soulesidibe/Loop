@@ -52,7 +52,7 @@ class ToolCommentCommandTest {
         val config = fixture.attemptDir(ATTEMPT).resolve("tool-config.json")
         Files.delete(config)
 
-        val result = fixture.loop("tool", "comment", "hello", cwd = root, env = env)
+        val result = fixture.inProcess("tool", "comment", "hello", cwd = root, env = env)
 
         assertEquals(4, result.exitCode, result.toString())
         assertEquals(
@@ -69,7 +69,7 @@ class ToolCommentCommandTest {
         val before = file.readBytes()
         fixture.seed(fixture.attemptStarted(ATTEMPT, "t-1"), fixture.attemptFinished(ATTEMPT, "t-1"))
 
-        val result = fixture.loop("tool", "comment", "hello", cwd = root, env = fixture.toolEnv(ATTEMPT, "t-1"))
+        val result = fixture.inProcess("tool", "comment", "hello", cwd = root, env = fixture.toolEnv(ATTEMPT, "t-1"))
 
         assertEquals(5, result.exitCode, result.toString())
         val message = result.stderr.trim()
@@ -87,7 +87,7 @@ class ToolCommentCommandTest {
         val env = fixture.toolEnv(ATTEMPT, "t-1")
         Files.delete(fixture.attemptDir(ATTEMPT).resolve("requests"))
 
-        val result = fixture.loop("tool", "comment", "hello", cwd = root, env = env)
+        val result = fixture.inProcess("tool", "comment", "hello", cwd = root, env = env)
 
         assertEquals(5, result.exitCode, result.toString())
         assertEquals(
@@ -103,7 +103,7 @@ class ToolCommentCommandTest {
         val before = file.readBytes()
         fixture.seed(fixture.attemptStarted(ATTEMPT, "t-1"))
 
-        val result = fixture.loop("tool", "comment", "  \n ", cwd = root, env = fixture.toolEnv(ATTEMPT, "t-1"))
+        val result = fixture.inProcess("tool", "comment", "  \n ", cwd = root, env = fixture.toolEnv(ATTEMPT, "t-1"))
 
         assertEquals(2, result.exitCode, result.toString())
         assertEquals(
@@ -121,7 +121,7 @@ class ToolCommentCommandTest {
         fixture.issue("t-1")
         fixture.seed(fixture.attemptStarted(ATTEMPT, "t-1"))
 
-        val result = fixture.loop("tool", "comment", "the key is $token, ok?", cwd = root, env = fixture.toolEnv(ATTEMPT, "t-1"))
+        val result = fixture.inProcess("tool", "comment", "the key is $token, ok?", cwd = root, env = fixture.toolEnv(ATTEMPT, "t-1"))
 
         assertEquals(0, result.exitCode, result.toString())
         assertEquals(listOf<ToolRequest>(ToolRequest.Comment("the key is [redacted:github-token], ok?")), queued())
@@ -133,7 +133,7 @@ class ToolCommentCommandTest {
         fixture.seed(fixture.attemptStarted(ATTEMPT, "t-1"))
 
         val result =
-            fixture.loop(
+            fixture.inProcess(
                 "tool",
                 "comment",
                 "--",
@@ -156,7 +156,7 @@ class ToolCommentCommandTest {
         Files.delete(fixture.workflow)
         val text = "  Should the export include archived items?  "
 
-        val result = fixture.loop("tool", "comment", text, cwd = root, env = env)
+        val result = fixture.inProcess("tool", "comment", text, cwd = root, env = env)
 
         assertEquals(0, result.exitCode, result.toString())
         assertEquals(
@@ -183,12 +183,12 @@ class ToolCommentCommandTest {
         fixture.seed(fixture.attemptStarted(ATTEMPT, "t-1"))
         val text = "Is two chars enough?"
 
-        val result = fixture.loop("tool", "comment", text, cwd = root, env = fixture.toolEnv(ATTEMPT, "t-1"))
+        val result = fixture.inProcess("tool", "comment", text, cwd = root, env = fixture.toolEnv(ATTEMPT, "t-1"))
 
         assertEquals(0, result.exitCode, result.toString())
         assertFalse(text in fixture.query("SELECT * FROM events").joinToString { it.toString() })
 
-        val trace = fixture.loop("trace", "t-1", cwd = fixture.projectDir)
+        val trace = fixture.inProcess("trace", "t-1", cwd = fixture.projectDir)
 
         assertEquals(0, trace.exitCode, trace.toString())
         assertTrue(trace.stdout.lines().any { "issue_comment_requested" in it && "chars=${text.length}" in it }, trace.stdout)

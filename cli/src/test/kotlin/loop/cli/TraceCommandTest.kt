@@ -70,7 +70,7 @@ class TraceCommandTest {
         val run = fixture.loop("run", fixture.workflow.toString(), "--once")
         assertEquals(0, run.exitCode, run.toString())
 
-        val result = fixture.loop("trace", "t-2", cwd = fixture.projectDir)
+        val result = fixture.inProcess("trace", "t-2", cwd = fixture.projectDir)
 
         assertEquals(0, result.exitCode, result.toString())
         assertContains(result.stdout, "No attempt recorded for this issue in project ${fixture.projectId()}.")
@@ -80,7 +80,7 @@ class TraceCommandTest {
     fun `an unknown issue is reported on stderr with exit 2`() {
         fixture.issue("t-1")
 
-        val result = fixture.loop("trace", "t-99", cwd = fixture.projectDir)
+        val result = fixture.inProcess("trace", "t-99", cwd = fixture.projectDir)
 
         assertEquals(2, result.exitCode, result.toString())
         assertContains(result.stderr, "loop trace: no issue \"t-99\" in the tracker at ")
@@ -97,7 +97,7 @@ class TraceCommandTest {
         fixture.issue("t-1")
         val started = fixture.attemptStarted("a-1", "t-1").copy(data = startedData)
         fixture.seed(started, started.copy(kind = "attempt_finished", data = mapOf("outcome" to "succeeded", "turns" to "3")))
-        val result = fixture.loop("trace", "t-1", *args, cwd = fixture.projectDir)
+        val result = fixture.inProcess("trace", "t-1", *args, cwd = fixture.projectDir)
         assertEquals(0, result.exitCode, result.toString())
         return result
     }
@@ -209,7 +209,7 @@ class TraceCommandTest {
             fixture.attemptFinished("a-1", "t-1"),
         )
 
-        val result = fixture.loop("trace", "t-1", cwd = fixture.projectDir)
+        val result = fixture.inProcess("trace", "t-1", cwd = fixture.projectDir)
 
         assertEquals(0, result.exitCode, result.toString())
         val lines = result.stdout.lines()
@@ -261,7 +261,7 @@ class TraceCommandTest {
     private fun trace(vararg events: RecordedEvent): List<String> {
         fixture.issue("t-1")
         fixture.seed(*events)
-        val result = fixture.loop("trace", "t-1", cwd = fixture.projectDir)
+        val result = fixture.inProcess("trace", "t-1", cwd = fixture.projectDir)
         assertEquals(0, result.exitCode, result.toString())
         return result.stdout.lines()
     }
@@ -698,7 +698,7 @@ class TraceCommandTest {
         fixture.issue("t-1")
         fixture.seed(*turnSession(3).toTypedArray())
 
-        val result = fixture.loop("trace", "t-1", "--full-ids", cwd = fixture.projectDir)
+        val result = fixture.inProcess("trace", "t-1", "--full-ids", cwd = fixture.projectDir)
 
         assertEquals(0, result.exitCode, result.toString())
         val lines = result.stdout.lines()
@@ -739,7 +739,7 @@ class TraceCommandTest {
         val run = fixture.loop("run", fixture.workflow.toString(), "--once")
         assertEquals(0, run.exitCode, run.toString())
 
-        val out = fixture.loop("trace", "t-1", cwd = fixture.projectDir).stdout
+        val out = fixture.inProcess("trace", "t-1", cwd = fixture.projectDir).stdout
 
         val line = phaseLine(out.lines(), "BuildingPrompt")
         val sizes =
@@ -762,7 +762,7 @@ class TraceCommandTest {
         val run = fixture.loop("run", fixture.workflow.toString(), "--once")
         assertEquals(0, run.exitCode, run.toString())
 
-        val line = phaseLine(fixture.loop("trace", "t-1", cwd = fixture.projectDir).stdout.lines(), "BuildingPrompt")
+        val line = phaseLine(fixture.inProcess("trace", "t-1", cwd = fixture.projectDir).stdout.lines(), "BuildingPrompt")
 
         val tokens =
             Regex(
@@ -794,7 +794,7 @@ class TraceCommandTest {
         val run = fixture.loop("run", fixture.workflow.toString(), "--once")
         assertEquals(0, run.exitCode, run.toString())
 
-        val line = phaseLine(fixture.loop("trace", "t-1", cwd = fixture.projectDir).stdout.lines(), "BuildingPrompt")
+        val line = phaseLine(fixture.inProcess("trace", "t-1", cwd = fixture.projectDir).stdout.lines(), "BuildingPrompt")
 
         assertContains(line, " prompt_limit_tokens=200 over_limit=true token_counter=estimate")
         val tokens = Regex("""prompt_tokens=(\d+)""").find(line)!!.groupValues[1].toInt()
@@ -823,7 +823,7 @@ class TraceCommandTest {
         val run = fixture.loop("run", fixture.workflow.toString(), "--once")
         assertEquals(0, run.exitCode, run.toString())
 
-        val line = phaseLine(fixture.loop("trace", "t-1", cwd = fixture.projectDir).stdout.lines(), "BuildingPrompt")
+        val line = phaseLine(fixture.inProcess("trace", "t-1", cwd = fixture.projectDir).stdout.lines(), "BuildingPrompt")
 
         val cut =
             Regex(
@@ -852,7 +852,7 @@ class TraceCommandTest {
             event("attempt_finished", "13:48:42", "a1", data = mapOf("outcome" to "succeeded")),
         )
 
-        val out = fixture.loop("trace", "t-1", cwd = fixture.projectDir).stdout
+        val out = fixture.inProcess("trace", "t-1", cwd = fixture.projectDir).stdout
 
         assertTrue(phaseLine(out.lines(), "BuildingPrompt").endsWith("BuildingPrompt         prompt_chars=1234"), out)
     }
@@ -870,7 +870,7 @@ class TraceCommandTest {
             event("attempt_finished", "13:48:42", "a1", data = mapOf("outcome" to "failed")),
         )
 
-        val out = fixture.loop("trace", "t-1", cwd = fixture.projectDir).stdout
+        val out = fixture.inProcess("trace", "t-1", cwd = fixture.projectDir).stdout
 
         assertEquals(1, out.lines().count { "turn_input_required" in it }, out)
         assertFalse("turn_failed" in out, out)
@@ -886,7 +886,7 @@ class TraceCommandTest {
             event("phase", "13:50:42", "a3", phase = "Succeeded", data = mapOf("exit_reason" to "not_active", "turns" to "3")),
             event("attempt_finished", "13:50:42", "a3", data = mapOf("outcome" to "succeeded")),
         )
-        val again = fixture.loop("trace", "t-1", cwd = fixture.projectDir).stdout
+        val again = fixture.inProcess("trace", "t-1", cwd = fixture.projectDir).stdout
         assertContains(again, "turn_failed".padEnd(NAME_WIDTH) + "number=2/10 turn=turn-2 reason=\"exit_code=1\"")
         val succeeded = again.lines().single { it.split(Regex("\\s+")).getOrNull(2) == "Succeeded" }
         assertContains(succeeded, "exit_reason=not_active")

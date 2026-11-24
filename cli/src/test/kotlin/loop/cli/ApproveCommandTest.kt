@@ -65,7 +65,7 @@ class ApproveCommandTest {
         fixture.loop("run", fixture.workflow.toString(), "--once").also { assertEquals(0, it.exitCode, it.toString()) }
 
     private fun approve(issue: String = "t-1"): LoopResult =
-        fixture.loop("approve", issue, "--workflow", fixture.workflow.toString(), env = approver)
+        fixture.inProcess("approve", issue, "--workflow", fixture.workflow.toString(), env = approver)
 
     private fun attempts(): Int = fixture.query("SELECT 1 FROM events WHERE kind = 'attempt_started'").size
 
@@ -75,7 +75,7 @@ class ApproveCommandTest {
         fixture.query("SELECT attempt_id, data FROM events WHERE kind = '$kind' ORDER BY seq")
 
     private fun trace(id: String): List<String> {
-        val trace = fixture.loop("trace", id, "--workflow", fixture.workflow.toString())
+        val trace = fixture.inProcess("trace", id, "--workflow", fixture.workflow.toString())
         assertEquals(0, trace.exitCode, trace.toString())
         return trace.stdout.lines()
     }
@@ -113,7 +113,7 @@ class ApproveCommandTest {
         assertEquals(1, attempts())
         assertEquals("todo", fixture.stateOf("t-1"))
 
-        val status = fixture.loop("status", fixture.workflow.toString())
+        val status = fixture.inProcess("status", fixture.workflow.toString())
         assertEquals(0, status.exitCode, status.toString())
         val line = status.stdout.lines().singleOrNull { it.startsWith("waiting") } ?: fail("no waiting line\n$status")
         assertContains(line, "reason=approval")
@@ -204,7 +204,7 @@ class ApproveCommandTest {
         val lines = trace("t-1")
         assertTrue(lines.any { "approval_given" in it && "by=soule" in it }, lines.joinToString("\n"))
         assertTrue(lines.any { "issue_moved" in it && "after approval" in it }, lines.joinToString("\n"))
-        assertContains(fixture.loop("log", fixture.workflow.toString()).stdout, "approved by soule")
+        assertContains(fixture.inProcess("log", fixture.workflow.toString()).stdout, "approved by soule")
     }
 
     @Test
@@ -272,7 +272,7 @@ class ApproveCommandTest {
             )
 
             val result =
-                fixture.loop(
+                fixture.inProcess(
                     "approve",
                     "26",
                     "--workflow",
@@ -310,7 +310,7 @@ class ApproveCommandTest {
             runBlocking { it.startWaiting(wait) }.getOrThrow()
         }
 
-        val status = fixture.loop("status", fixture.workflow.toString())
+        val status = fixture.inProcess("status", fixture.workflow.toString())
         assertEquals(0, status.exitCode, status.toString())
         val line = status.stdout.lines().singleOrNull { it.startsWith("waiting") } ?: fail("no waiting line\n$status")
         assertContains(line, "reason=merge")

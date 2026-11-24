@@ -53,7 +53,7 @@ class ToolMoveCommandTest {
         val before = file.readBytes()
         val env = fixture.toolEnv(ATTEMPT, "t-1") + ("LOOP_ATTEMPT_ID" to null)
 
-        val result = fixture.loop("tool", "move", "review", cwd = root, env = env)
+        val result = fixture.inProcess("tool", "move", "review", cwd = root, env = env)
 
         assertEquals(4, result.exitCode, result.toString())
         assertEquals(
@@ -71,7 +71,7 @@ class ToolMoveCommandTest {
         val before = file.readBytes()
         fixture.seed(fixture.attemptStarted(ATTEMPT, "t-1"), fixture.attemptFinished(ATTEMPT, "t-1"))
 
-        val result = fixture.loop("tool", "move", "review", cwd = root, env = fixture.toolEnv(ATTEMPT, "t-1"))
+        val result = fixture.inProcess("tool", "move", "review", cwd = root, env = fixture.toolEnv(ATTEMPT, "t-1"))
 
         assertEquals(5, result.exitCode, result.toString())
         val message = result.stderr.trim()
@@ -88,7 +88,7 @@ class ToolMoveCommandTest {
         val before = mapOf(mine to mine.readBytes(), other to other.readBytes())
         fixture.seed(fixture.attemptStarted(ATTEMPT, "t-3"))
 
-        val result = fixture.loop("tool", "move", "review", cwd = root, env = fixture.toolEnv(ATTEMPT, "t-1"))
+        val result = fixture.inProcess("tool", "move", "review", cwd = root, env = fixture.toolEnv(ATTEMPT, "t-1"))
 
         assertEquals(5, result.exitCode, result.toString())
         assertEquals(
@@ -105,7 +105,7 @@ class ToolMoveCommandTest {
         fixture.seed(fixture.attemptStarted(ATTEMPT, "default:t-1").copy(issueIdentifier = "t-1"))
         val env = fixture.toolEnv(ATTEMPT, "t-1") + ("LOOP_TRACKER_ID" to "default")
 
-        val result = fixture.loop("tool", "move", "review", cwd = root, env = env)
+        val result = fixture.inProcess("tool", "move", "review", cwd = root, env = env)
 
         assertEquals(0, result.exitCode, result.toString())
         assertEquals(listOf(ToolRequest.Move("review")), fixture.queuedRequests(ATTEMPT).map { assertIs<QueuedRequest.Valid>(it).request })
@@ -120,7 +120,7 @@ class ToolMoveCommandTest {
         fixture.seed(fixture.attemptStarted(ATTEMPT, "default:t-1").copy(issueIdentifier = "t-1"))
         val env = fixture.toolEnv(ATTEMPT, "t-1") + ("LOOP_TRACKER_ID" to "local")
 
-        val result = fixture.loop("tool", "move", "review", cwd = root, env = env)
+        val result = fixture.inProcess("tool", "move", "review", cwd = root, env = env)
 
         assertEquals(5, result.exitCode, result.toString())
         assertEquals(emptyList(), fixture.queuedRequests(ATTEMPT))
@@ -131,7 +131,7 @@ class ToolMoveCommandTest {
         fixture.issue("t-1")
         fixture.seed(fixture.attemptStarted(ATTEMPT, "t-1"))
 
-        val result = fixture.loop("tool", "close", "done", cwd = root, env = fixture.toolEnv(ATTEMPT, "t-1"))
+        val result = fixture.inProcess("tool", "close", "done", cwd = root, env = fixture.toolEnv(ATTEMPT, "t-1"))
 
         assertEquals(2, result.exitCode, result.toString())
         assertContains(result.stderr, "close")
@@ -144,7 +144,7 @@ class ToolMoveCommandTest {
         fixture.issue("t-1")
         fixture.seed(fixture.attemptStarted(ATTEMPT, "t-1"))
 
-        val result = fixture.loop("tool", "move", cwd = root, env = fixture.toolEnv(ATTEMPT, "t-1"))
+        val result = fixture.inProcess("tool", "move", cwd = root, env = fixture.toolEnv(ATTEMPT, "t-1"))
 
         assertEquals(2, result.exitCode, result.toString())
         assertEquals("todo", fixture.stateOf("t-1"))
@@ -166,9 +166,9 @@ class ToolMoveCommandTest {
                 )
         config.writeText(JsonObject(github).toString())
 
-        val review = fixture.loop("tool", "move", "review", cwd = root, env = env)
-        val needsInfo = fixture.loop("tool", "move", "needs_info", cwd = root, env = env)
-        val done = fixture.loop("tool", "move", "done", cwd = root, env = env)
+        val review = fixture.inProcess("tool", "move", "review", cwd = root, env = env)
+        val needsInfo = fixture.inProcess("tool", "move", "needs_info", cwd = root, env = env)
+        val done = fixture.inProcess("tool", "move", "done", cwd = root, env = env)
 
         assertEquals(0, review.exitCode, review.toString())
         assertEquals(0, needsInfo.exitCode, needsInfo.toString())
@@ -192,7 +192,7 @@ class ToolMoveCommandTest {
         val projectId = fixture.projectId()
         Files.delete(fixture.workflow)
 
-        val result = fixture.loop("tool", "move", "review", cwd = root, env = env)
+        val result = fixture.inProcess("tool", "move", "review", cwd = root, env = env)
 
         assertEquals(0, result.exitCode, result.toString())
         assertEquals(
@@ -221,7 +221,7 @@ class ToolMoveCommandTest {
         val config = fixture.attemptDir(ATTEMPT).resolve("tool-config.json")
         config.writeText("not json")
 
-        val result = fixture.loop("tool", "move", "review", cwd = root, env = env)
+        val result = fixture.inProcess("tool", "move", "review", cwd = root, env = env)
 
         assertEquals(4, result.exitCode, result.toString())
         assertEquals(
@@ -240,7 +240,7 @@ class ToolMoveCommandTest {
         val config = fixture.attemptDir(ATTEMPT).resolve("tool-config.json")
         config.writeText(config.readText().replace("\"version\":1", "\"version\":2"))
 
-        val result = fixture.loop("tool", "move", "review", cwd = root, env = env)
+        val result = fixture.inProcess("tool", "move", "review", cwd = root, env = env)
 
         assertEquals(4, result.exitCode, result.toString())
         assertEquals(
@@ -258,7 +258,7 @@ class ToolMoveCommandTest {
         val env = fixture.toolEnv(ATTEMPT, "t-1")
         Files.delete(fixture.attemptDir(ATTEMPT).resolve("requests"))
 
-        val result = fixture.loop("tool", "move", "review", cwd = root, env = env)
+        val result = fixture.inProcess("tool", "move", "review", cwd = root, env = env)
 
         assertEquals(5, result.exitCode, result.toString())
         assertEquals(
