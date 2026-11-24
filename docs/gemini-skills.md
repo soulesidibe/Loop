@@ -2,7 +2,7 @@
 
 Loop stays runner agnostic: it renders `WORKFLOW.md` and lets the runtime load whatever skills exist in the environment or the workspace. This page covers the setup that lives outside Loop's code when a project runs Gemini next to Claude Code and Codex: the runtime to use, sharing `SKILL.md` skills, sharing project and global instructions, adapting Claude specific skills, and where enforcement belongs.
 
-Written 2026-11-24 for the spec [`.loop/specs/gemini-support.md`](../.loop/specs/gemini-support.md), section out of scope. Terms follow [`CONTEXT.md`](../CONTEXT.md). Loop has no Gemini runner yet. Statements marked "pending Spike 0" wait on the spike in that spec and are corrected there once it runs.
+Written 2026-11-24 for the spec [`.loop/specs/gemini-support.md`](../.loop/specs/gemini-support.md), section out of scope, and updated with the Spike 0 findings of 2026-11-24 (`agy` 1.5.16). Terms follow [`CONTEXT.md`](../CONTEXT.md). Loop has no Gemini runner yet.
 
 ## Contents
 
@@ -14,7 +14,7 @@ Written 2026-11-24 for the spec [`.loop/specs/gemini-support.md`](../.loop/specs
 
 ## Runtime
 
-Gemini runs through the Antigravity CLI, `agy` (1.5.14 here). The older Gemini CLI, `gemini`, fails on a personal Google login with `IneligibleTierError` since 2026-11, whatever the model.
+Gemini runs through the Antigravity CLI, `agy` (1.5.16 pinned in Spike 0). The older Gemini CLI, `gemini`, fails on a personal Google login with `IneligibleTierError` since 2026-11, whatever the model.
 
 `agy models` lists the model ids, each carrying its effort level. Loop's Gemini work uses `gemini-4-neon-high` (Gemini 4 Neon, high effort), passed explicitly:
 
@@ -61,15 +61,15 @@ Each rule file is capped at 24,000 bytes after includes, and always-on rules sha
 
 Skills written for Claude Code often rely on three Claude specific features that need adjusting to work on `agy` and Codex:
 
-- **Slash invocation (`/tdd`, `/issue`):** a skill can be started with `/name` in an `agy` session. In a Loop run, the `WORKFLOW.md` prompt template names the skill instead, so the agent activates it or reads its `SKILL.md`. Loop's `agy` runners turn slash expansion off, since the prompt carries issue text Loop does not trust (`--disable-slash-commands` in print mode; under ACP, pending Spike 0).
-- **Hardcoded tool names:** Claude specific names (`Bash`, `Edit`, `Read`, `mcp__loop__move`) become runtime neutral phrasing, for example "use Loop's `move`, `comment` and `submit_result` MCP tools when available, else `loop tool move` and `loop tool comment`".
+- **Slash invocation (`/tdd`, `/issue`):** a skill can be started with `/name` in an `agy` session (Spike 0 confirmed `/tdd` expands skills in `agy acp` too). In a Loop run, the `WORKFLOW.md` prompt template names the skill instead, so the agent activates it or reads its `SKILL.md`, and Loop's `agy` preset escapes a leading `/` on every prompt so untrusted issue text never triggers a slash command.
+- **Hardcoded tool names:** Claude specific names (`Bash`, `Edit`, `Read`, `mcp__loop__move`) become runtime neutral phrasing, for example "use Loop's `move`, `comment` and `submit_result` MCP tools when available, else `loop tool move` and `loop tool comment`". Under `agy acp`, Loop's MCP tools use single underscores (`mcp_loop_submit_result`, `mcp_loop_move`, `mcp_loop_comment`), whereas Claude Code uses double underscores (`mcp__loop__submit_result`).
 - **Subagent delegation (`Agent` tool, `context: fork`, `SendMessage`):** skills that fan out to parallel Claude subagents (such as expert reviewers in an issue skill) do not carry over to `agy` as written. Until Loop's Koog manager and expert agents land in M6 (`docs/PLAN.md`), either:
   - flatten those subagent steps into sequential single agent phases, portable across Claude Code, Codex and `agy`, or
   - keep a thin variant where the fan out is essential, for example one that sends its reviews to Claude through `claude -p`.
 
 ## Enforcement stays in Loop
 
-Claude specific skill front matter such as `allowed-tools`, and Claude Code hooks, are not expected to have any effect in `agy` (pending Spike 0). Nothing a skill declares is relied on for safety:
+Claude specific skill front matter such as `allowed-tools`, and Claude Code hooks, are ignored by `agy`. Nothing a skill declares is relied on for safety:
 
-- **Guardrails and verification** (blocking `git push`, `gh`, history rewrites, `loop approve`, `loop resume` and holdout reads) belong in Loop's runners (generated deny rules or hooks in an isolated config, and ACP `session/request_permission` answers) and in `kinds.*.verify`, never in a skill.
+- **Guardrails and verification** (blocking `git push`, `gh`, history rewrites, `loop approve`, `loop resume` and holdout reads) belong in Loop's `runner-acp` preset (`--gemini-dir` isolation, `"toolPermission": "strict"` routing every tool to Kotlin `session/request_permission`, `--sandbox` Seatbelt terminal containment, and pre-session + pre-turn checks on `.agents/`, `.agent/`, `_agents/` and `_agent/`) and in `kinds.*.verify`, never in a skill.
 - **Mandatory workflow rules** (progress file, evidence files, writing rules, handoff steps) belong in the `WORKFLOW.md` prompt template, not in an optional skill a model might never activate.
