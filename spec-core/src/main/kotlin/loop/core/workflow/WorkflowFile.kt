@@ -64,6 +64,11 @@ data class WorkflowFile(
     val trackerId: String = TrackersConfig.DEFAULT_ID,
     /** m4-11: the extra trackers of `trackers:`, in the order written, none when it is absent. Polled since m4-13. */
     val extraTrackers: List<TrackerEntry> = emptyList(),
+    /**
+     * m4-42: the sections of `exporters:` as written, by exporter key, each turning one exporter plugin on. Empty when
+     * it is absent: nothing is exported. The host checks each section against its plugin in the preflight.
+     */
+    val exporters: Map<String, Any?> = emptyMap(),
 ) {
     /** m4-11: every tracker of the workflow, the primary one built from the `tracker*` fields above. */
     val trackers: TrackersConfig
@@ -227,6 +232,14 @@ class WorkflowLoader(
         }
         runnerCheck?.problem(runner)?.let { throw WorkflowError.InvalidConfig(it) }
 
+        val exporters =
+            config
+                .child("exporters")
+                ?.entries
+                ?.entries
+                ?.associate { it.key.content to it.value.toPlain() }
+                .orEmpty()
+
         val polling = parsePolling(config.child("polling"))
         val hooks = parseHooks(config.child("hooks"))
         val agent = parseAgent(config.child("agent"))
@@ -287,6 +300,7 @@ class WorkflowLoader(
             deferredSecrets = deferred.toList(),
             trackerId = tracker.id,
             extraTrackers = extraTrackers,
+            exporters = exporters,
         )
     }
 
