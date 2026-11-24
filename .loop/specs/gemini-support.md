@@ -1,111 +1,72 @@
 ---
 id: spec-gemini-support
-title: Gemini CLI support in Loop, headless and ACP runners, plus skill portability
+title: Gemini CLI support in Loop, ACP and headless runners
 labels: [needs-triage]
 ---
 
 ## Problem statement
 
-Loop currently runs issues through three runners: `command` (single-turn shell command), `claude-code` (Claude Code bidirectional `stream-json`), and `codex-app-server` (Codex JSON-RPC over stdio). There is no runner for Google's Gemini CLI (`gemini`, v0.42.0 installed locally).
+Loop runs issues through three runners today: `command` (a shell command that supports continuation turns by re-invoking per turn, see `docs/spec-decisions.md#command-runner-continuation-extension-m1-06`), `claude-code` (Claude Code bidirectional `stream-json`), and `codex-app-server` (Codex JSON-RPC over stdio). There is no runner for Google's Gemini CLI (`gemini`, v0.42.0 installed on the development machine).
 
 Gemini CLI exposes two programmatic transports:
 
-1. **Headless streaming JSON** (`gemini -p ... --output-format stream-json`): unidirectional, one process per turn, `--resume <session_id>` for continuation, native `--policy` TOML rules, `--sandbox`, and `-m/--model`.
-2. **Agent Client Protocol** (`gemini --acp`): bidirectional JSON-RPC 2.0 over stdio, one long-lived process per session, `session/cancel` for clean mid-turn interrupts, `session/new` `mcpServers` for Loop's MCP tools, and `session/request_permission` callbacks for host-side guards.
+1. **Agent Client Protocol** (`gemini --acp`): bidirectional JSON-RPC 2.0 over stdio, one long lived process per session, `session/cancel` for mid-turn interrupts, `session/new` `mcpServers` for Loop's MCP server, and `session/request_permission` callbacks for host side guards.
+2. **Headless streaming JSON** (`gemini -p ... --output-format stream-json`): unidirectional, one process per turn, `--session-id` / `--resume` for continuation, native `--admin-policy` TOML rules, `--sandbox`, and `-m/--model`.
 
-Supporting both lets operators choose between a lightweight native Gemini CLI runner and a full-fidelity bidirectional ACP runner, while also delivering the generic `runner-acp` plugin planned for M7 in `docs/PLAN.md`.
+`docs/PLAN.md` lists both `acp` and `gemini` as `AgentRunner` plugins (`docs/PLAN.md` section 12) and schedules `runner-acp` in M7 (section 17). Pulling Gemini and ACP ahead of M5 (permissions hardening) and M6 (manager agents) lets Loop run and compare Gemini models now; `docs/PLAN.md` will carry a note recording this milestone jump when implementation starts.
 
-## Architectural decision: two separate plugins
+## Solution
 
-Rather than adding a `mode: headless | acp` switch inside one runner, Gemini support is split into two `RunnerProvider` plugins:
+Support Gemini CLI through two separate `RunnerProvider` plugins, built in order after a shared verification spike:
 
-- **`plugins/runner-gemini-cli`** (`runner.kind: gemini-cli`, section `runners.gemini-cli`): drives Gemini CLI headless with `-p` and `--output-format stream-json`.
-- **`plugins/runner-acp`** (`runner.kind: acp`, section `runners.acp`): drives any Agent Client Protocol agent over JSON-RPC stdio, with `command: gemini --acp` as its first proven target.
+1. **`plugins/runner-acp`** (`runner.kind: acp`, section `runners.acp`): built **first**, gated on Spike 0. Drives an Agent Client Protocol agent over JSON-RPC stdio, with an optional `runners.acp.agent: gemini` preset that injects per-attempt Gemini flags (`--admin-policy`, `--skip-trust`, `--allowed-mcp-server-names`, `-e`). Only ACP can give Loop live context occupancy, clean mid-turn `interrupt()`, and session rotation to keep main sessions under 25 percent of their window.
+2. **`plugins/runner-gemini`** (`runner.kind: gemini`, section `runners.gemini`, matching `docs/PLAN.md` section 12): built **second**, only if Spike 0 shows a clear reason (for example, if ACP occupancy or guards prove unusable, or if a lightweight headless fallback without context limits is still wanted). If dropped, `gemini` stays unregistered and is never aliased to `acp`.
 
-Why two plugins instead of one:
+Both plugins register through `META-INF/services/loop.api.RunnerProvider`, reuse `plugins/runner-process` (`ProcessGroupLauncher`, `BoundedLineReader`, `agentEnvironment` in `HostEnvironment.kt`), share one canonical deny list and holdout matcher moved into `plugins/runner-process`, and pass `AgentRunnerContract`.
 
-- **Honest capabilities:** `claude-code` uses bidirectional `stream-json` and `codex-app-server` uses bidirectional JSON-RPC, whereas Gemini's `-p -o stream-json` is unidirectional (no stdin interrupt channel) and `gemini --acp` is bidirectional. Separate plugins keep each `RunnerCapabilities` declaration exact and avoid conditional branching across unrelated lifecycles.
-- **No duplicate work for M7:** `runner-acp` is already on the roadmap in `docs/PLAN.md` (sections 6.3, 14 and 17). Running `runners.acp.command: gemini --acp` proves `runner-acp` on a real runtime today and works for other ACP agents tomorrow with no extra runner code.
+| Capability | `runner-acp` (`command: gemini --acp`, `agent: gemini`) | `runner-acp` (generic, no `agent` preset) | `runner-gemini` (headless `stream-json`) |
+|---|---|---|---|
+| Process model | One long lived JSON-RPC process per session | One long lived JSON-RPC process per session | One process per turn (UUID resume verified in Spike 0) |
+| Context occupancy and rotation | Yes, if Spike 0 confirms per-request input tokens; else reconsider spec | Agent dependent (`false` when not reported) | No (`occupancy = false`); Loop warns and enforces only the prompt limit and turn cap (`RunCommand.kt:264`) |
+| Hard-limit `interrupt()` | Clean `session/cancel` plus `cancelled` reply to any pending permission request | Clean `session/cancel` | Falls back to Loop's 10 s grace and kill; never triggers without occupancy |
+| Loop MCP server (`submit_result` and tracker tools) | Passed in `session/new` `mcpServers` | Passed in `session/new` `mcpServers` | Via Gemini MCP config (mechanism verified in Spike 0) |
+| `strict_mcp` | Enforced via preset flags (`--allowed-mcp-server-names`, `-e`), verified in Spike 0 | `strict_mcp: true` refuses to start (cannot isolate unknown agent's MCP config) | Enforced via `--allowed-mcp-server-names` and `-e`, verified in Spike 0 |
+| Guards and holdout folder | Kotlin `session/request_permission` (fail closed) plus generated `--admin-policy` TOML (guardrail, not a sandbox) | Kotlin `session/request_permission` (fail closed) plus client `fs` reads if supported; weaker on unprompted reads (guardrail, not a sandbox) | Generated `--admin-policy` TOML and `-e` (guardrail, not a sandbox) |
 
-| Capability | `runner-gemini-cli` (headless `stream-json`) | `runner-acp` (`command: gemini --acp`) |
-|---|---|---|
-| Process model | One process per turn (`--resume <id>` for turns 2..n) | One long-lived JSON-RPC process per session |
-| Hard-limit `interrupt()` | Falls back to Loop's 10 s grace + kill (in-flight turn usage may be lost) | Clean `session/cancel` notification |
-| Loop tools (`loop tool mcp`) | Via Gemini MCP settings / `--allowed-mcp-server-names` | Passed directly in `session/new` `mcpServers` |
-| Guards and holdout folder | Generated `--policy` TOML rules | Kotlin `session/request_permission` rules (plus optional `--policy` in `command`) |
-| Gemini-specific flags | First-class config keys (`model`, `sandbox`, `strict_mcp`) | Passed through `command` args (for example `gemini --acp -m gemini-2.5-pro`) |
-| Works with other agents | Gemini CLI only | Any ACP agent |
+## Decisions
 
----
+### Spike 0 gates both plugins (ACP probes first)
 
-## Part 1: Inside Loop's Gemini support
+Before writing runner code, an operator spike probes `gemini 0.42.0` and pins the version in `docs/spec-decisions.md` (following the Codex precedent in `docs/spec-decisions.md#codex-cli-app-server-schema-and-mcp-loading-m3-02`). Run the ACP probes first so work can stop early if neither path can enforce context occupancy.
 
-Everything in this section lives in the Loop repository.
+**ACP probes (first):**
 
-### Shared Spike 0 (human / HITL prerequisite)
+1. **Handshake, auth and protocol version:** record `initialize` (protocol version, auth methods, agent capabilities), whether `authenticate` is required under Google OAuth login, and whether `session/load` works for `resumeSession`.
+2. **Occupancy and usage:** confirm whether ACP updates emit per-request input tokens (main session, cached included, not cumulative) for `RunnerEvent.ContextUsage`, absolute totals for `RunnerEvent.Usage`, USD cost, and the active default model name and context window for CLI 0.42.0. If ACP does not expose per-request occupancy and headless does not either, stop and reconsider this spec.
+3. **Permission triggers and client `fs`:** list every built-in tool (`read_file`, `read_many_files`, glob, grep, `list_directory`, `write_file`, `replace`, shell, MCP) and record which ones fire `session/request_permission`, what fields their payloads carry (`rawInput`, `locations`), and whether advertising ACP client `fs` capabilities routes file reads through Loop.
+4. **Preset flags under `--acp`:** confirm whether `--admin-policy <file>`, `--skip-trust`, `--allowed-mcp-server-names loop`, and `-e` are honored by `gemini --acp`, whether `--admin-policy` overrides workspace `.gemini/policies/` and `--approval-mode`, and whether `session/new` `mcpServers` works alongside `--allowed-mcp-server-names`.
+5. **Cancel and errors:** capture `session/cancel` during an active turn and during a pending `session/request_permission`, plus structured errors for auth failure, 429 / quota / overload, model refusal, and network loss.
+6. **MCP tool names and skills:** record the exact tool names Gemini exposes for `loop tool mcp` (`submit_result`, `move`, `comment`) and confirm `--skip-trust` loads `.agents/skills/` in a fresh worktree.
 
-Before implementing either plugin, probe the installed `gemini` CLI (`0.42.0`) in both `-p -o stream-json` and `--acp` modes, modeled on `m3-02` and `m3-03` from the Codex lane:
+**Headless probes (second, if still building `runner-gemini`):**
 
-1. Pin the tested `gemini` CLI version in `docs/spec-decisions.md`.
-2. Capture scrubbed JSONL session recordings for both transports under `src/test/resources/recorded/`:
-   - normal multi-turn session (`--resume` for headless; two `session/prompt` calls for ACP),
-   - tool call and denied command / holdout denial,
-   - `session/cancel` mid-turn interrupt in ACP mode,
-   - usage and per-request input token fields (to confirm whether `occupancy` and `cost` can be declared `true`),
-   - error responses (auth refusal, 429 / quota, model not found, network failure).
-3. Verify how `strict_mcp` isolates Loop's `loop tool mcp` from the operator's `~/.gemini/settings.json` and project `.gemini/settings.json` without modifying git-tracked workspace files.
-4. Verify whether `--skip-trust` loads `.agents/skills/` and `.gemini/skills/` in a fresh worktree in both modes.
-5. Record the exact MCP tool names Gemini exposes for `loop tool mcp` (`submit_result`, `move`, `comment`).
+7. **UUID resume:** prove starting a session with `--session-id <uuid>` and resuming that exact UUID from a fresh process. Never use `--resume latest`, since parallel attempts collide.
+8. **Workspace config reload across turns:** verify whether `.gemini/settings.json`, `.gemini/policies/`, hooks, or extensions written during turn `n` reload in turn `n+1` under `--skip-trust`, and confirm `--admin-policy` plus `-e` prevent override.
+9. **Approval mode and policy coverage:** pick one approval mode (`yolo` vs `auto_edit`) and confirm `--admin-policy` deny rules beat it across shell and file tools.
+10. **Stats and exit codes:** confirm the exact `stream-json` `result` stats shape (confirming whether occupancy is unavailable) and exit codes (including 41 auth, 42 input error, 53 turn limit).
 
-### Plugin 1: `plugins/runner-gemini-cli` (headless `stream-json`)
+**Recordings:** save scrubbed JSONL transcripts in `plugins/runner-acp/src/test/resources/recorded/` and (if built) `plugins/runner-gemini/src/test/resources/streams/`, scrubbed with a script modeled on `plugins/runner-codex-app-server/recording/scrub.py`.
 
-#### Configuration and profile
+### Auth, env policy and secret redaction
 
-```yaml
-runner:
-  kind: gemini-cli
-runners:
-  gemini-cli:
-    command: gemini
-    model: gemini-2.5-pro
-    turn_timeout_ms: 3600000
-    read_timeout_ms: 120000
-    strict_mcp: true
-    sandbox: false
-```
+- **Leave `ALWAYS_REMOVED_ENV_NAMES` untouched** (`plugins/runner-process/src/main/kotlin/loop/runner/process/HostEnvironment.kt:9`). That global list wins even over `agent.env` and would affect the `command` runner.
+- **Strip inside the Gemini runners by default:** pass `env.removedEnvNames + setOf("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_GENAI_USE_VERTEXAI")` to `agentEnvironment(...)` (following `ClaudeCodeRunner.kt:650` and `CodexAppServerRunner.kt:387`). Both runners therefore default to the operator's Google OAuth login (`~/.gemini`), matching the subscription login rule.
+- **Opt in to API billing or Vertex AI via `agent.env`:** because `agentEnvironment` applies `added` (`agent.env`) after `removed` (`HostEnvironment.kt:20-25`), setting `GEMINI_API_KEY`, `GOOGLE_API_KEY`, or Vertex variables under `agent.env` is the single opt in, with no extra config key.
+- **Redaction:**
+  - Add `GEMINI_API_KEY` and `GOOGLE_API_KEY` beside `ANTHROPIC_KEYS` in `cli/src/main/kotlin/loop/cli/Host.kt` (`Host.kt:592`, `617`) so host values are always redacted.
+  - Add two prefix-anchored linear patterns to `TokenPattern.DEFAULTS` in `plugin-api/src/main/kotlin/loop/api/TokenPattern.kt`: `google-api-key` (`AIza[0-9A-Za-z_-]{35}`) and `google-oauth-token` (`ya29\.[0-9A-Za-z_-]{20,}`). Keys written into `agent.env` rely on these patterns. Google OAuth refresh tokens (`1//`) are skipped because the prefix is too generic.
 
-| Key | Type | Required or default | Secret | Limits |
-|---|---|---|---|---|
-| `runners.gemini-cli.command` | string | `gemini` | no | no shell metacharacters, run without a shell |
-| `runners.gemini-cli.model` | string | none | no | none |
-| `runners.gemini-cli.turn_timeout_ms` | integer | `3600000` | no | 1 to 86400000 |
-| `runners.gemini-cli.read_timeout_ms` | integer | `120000` | no | 1 to 86400000 |
-| `runners.gemini-cli.strict_mcp` | boolean | `true` | no | none |
-| `runners.gemini-cli.sandbox` | boolean | `false` | no | none |
-
-#### Behavior
-
-- **Launch:** Uses `plugins/runner-process` (`ProcessGroupLauncher`, `BoundedLineReader`, `HostEnvironment`) with no shell, workspace as `cwd`, and `--skip-trust`, `--output-format stream-json`, `--approval-mode yolo` (or `auto_edit` paired with `--policy`), and optional `-m <model>` and `-s` when `sandbox: true`.
-- **Continuation:** Turn 1 captures `session_id` from the `init` JSONL event and emits `RunnerEvent.SessionStarted` with `runtimeSessionId`. Turns 2..n pass `--resume <runtimeSessionId>`. `resumeSession(ctx, runtimeSessionId)` resumes across attempts after a network hold.
-- **Loop tools and `strict_mcp`:** Exposes `loop tool mcp` to the session (exact mechanism confirmed in Spike 0) and restricts active MCP servers to Loop's server when `strict_mcp: true`.
-- **Guards and holdout folder:** Generates a per-attempt TOML policy file in the attempt directory and passes `--policy <file>`. Denies:
-  - the exact same command list as `ClaudeSettingsFile.deniedCommands` and `runner-codex-app-server` (`git push`, `gh`, history rewrites, `loop approve`, `loop resume`, plus the attempt's `LOOP_LAUNCHER` path),
-  - file reads and edits (`read_file`, `write_file`, `replace`) and shell paths referencing `holdoutDir` (both absolute and real paths).
-- **Usage, occupancy and cost:** Accumulates `RunnerEvent.Usage` as absolute totals across turns in the session (never decreasing). Emits `RunnerEvent.ContextUsage` with `google/<model>` only if Spike 0 confirms per-request input tokens (not cumulative totals) are present; otherwise declares `occupancy = false`. Declares `cost = false` unless Gemini CLI reports USD cost.
-- **Errors:** Maps exit code 42 / 53, auth errors (401/403), 429 / quota / overload, model refusal, and transport failures to `RunnerEvent.TurnFailed`, setting `category = RunnerUnavailable` only for runtime/model unavailability (never from agent-printed text).
-
-#### Declared `RunnerCapabilities`
-
-- `continuation = true`
-- `loopTools = RunnerCapabilities.LoopTools.Mcp`
-- `usage = true`
-- `cost = false` (pending Spike 0)
-- `occupancy = false` (or `true` if Spike 0 confirms per-request input tokens)
-- `sandbox = settings.sandbox` (`false` by default; `--policy` is a guardrail, not a sandbox)
-
-### Plugin 2: `plugins/runner-acp` (Agent Client Protocol)
-
-#### Configuration and profile
+### `runner-acp` preset, strict MCP and lifecycle
 
 ```yaml
 runner:
@@ -113,6 +74,7 @@ runner:
 runners:
   acp:
     command: gemini --acp
+    agent: gemini
     turn_timeout_ms: 3600000
     read_timeout_ms: 120000
     strict_mcp: true
@@ -121,103 +83,115 @@ runners:
 | Key | Type | Required or default | Secret | Limits |
 |---|---|---|---|---|
 | `runners.acp.command` | string | required | no | split into words without a shell, like `runners.codex.command` |
+| `runners.acp.agent` | string | none | no | optional preset; `gemini` is the first supported value |
 | `runners.acp.turn_timeout_ms` | integer | `3600000` | no | 1 to 86400000 |
 | `runners.acp.read_timeout_ms` | integer | `120000` | no | 1 to 86400000 |
 | `runners.acp.strict_mcp` | boolean | `true` | no | none |
 
-#### Behavior
+- **Launch and framing:** `ProcessGroupLauncher` with no shell, workspace as `cwd`, `BoundedLineReader` with `ProcessGroupLauncher.MAX_LINE_BYTES` (10 MB line cap), JSON-RPC 2.0 over stdio. When `agent: gemini` is set, the runner appends per-attempt flags (`--admin-policy <file>`, `--skip-trust`, and under `strict_mcp: true`, `--allowed-mcp-server-names loop` and `-e`, exact flags confirmed by Spike 0) using files in the attempt directory.
+- **`strict_mcp` behavior:** with `strict_mcp: true` (the default) and `agent: gemini`, the preset isolates MCP servers to Loop's `loop` server. With `strict_mcp: true` and no `agent` preset (generic ACP agent), startup refuses with an explicit error because Loop cannot prevent an unknown agent from loading its own MCP servers (matching the Codex precedent in `docs/spec-decisions.md#strict-mcp-extension-bl-72`). Operators using an unpreset ACP agent must set `strict_mcp: false`.
+- **Startup sequence:**
+  1. `initialize` with Loop's client info, pinned ACP protocol version (confirmed in Spike 0), and client capabilities (including client `fs` if Spike 0 confirms it routes reads through Loop).
+  2. `authenticate` when `initialize` requires an auth method.
+  3. `session/new` with `cwd` (workspace path) and `mcpServers` containing Loop's MCP server (`<LOOP_LAUNCHER> tool mcp`, server name `loop`) with all 8 env vars of `ClaudeMcpConfig.PASSED` (`ClaudeMcpConfig.kt:24-34`): `LOOP_TOOL_CONFIG`, `LOOP_ATTEMPT_ID`, `LOOP_ISSUE_ID`, `LOOP_ISSUE_IDENTIFIER`, `LOOP_TRACKER_ID`, `LOOP_HOME`, `LOOP_SESSION_ID`, `LOOP_TURN_ID`. Because the process lives across turns, `LOOP_SESSION_ID` and `LOOP_TURN_ID` in the MCP server env stay fixed at the values of the turn that opened the session, matching the Claude Code precedent (`docs/spec-decisions.md#session-and-turn-ids-for-the-claude-code-runner-clarification-of-42-m1-05`).
+- **Turns, interrupt, resume and stop:**
+  - Turn 1 emits `RunnerEvent.SessionStarted` with the ACP `sessionId` as `runtimeSessionId`; turns 2..n send `session/prompt` on the same process and emit `RunnerEvent.TurnStarted`.
+  - `AgentSession.interrupt()` sends `session/cancel` and answers any pending `session/request_permission` with `cancelled`, so the turn ends cleanly and reports its usage before rotation.
+  - `resumeSession(ctx, runtimeSessionId)` uses ACP `session/load` if Spike 0 confirms support, else returns `null` (falling back to a fresh session with the session brief).
+  - `stop()` and `stop(report)` close stdin, wait up to 5 seconds for exit, report any final usage read during the grace, and emit `RunnerEvent.StopGraceExpired` (`m4-04`) before killing the process group when the grace expires.
+- **ACP guards (guardrail, not a sandbox):**
+  - `session/request_permission` checks commands and paths using the shared `plugins/runner-process` matchers (including the attempt's `LOOP_LAUNCHER` path for `loop approve` and `loop resume`, plus `holdoutDir` absolute and real paths).
+  - **Fail closed:** any shell or write permission request with no readable command text or path is declined (matching `NO_COMMAND` in `plugins/runner-codex-app-server/.../ServerRequestPolicy.kt`).
+  - Unsupported human-input prompts end the turn at once with `RunnerEvent.TurnInputRequired` and stop the session.
+  - With `agent: gemini`, the generated `--admin-policy` TOML file adds a second guardrail covering unprompted read tools (`read_file`, `read_many_files`, glob, grep, `list_directory`) and workspace policy overrides. Without `agent: gemini`, unprompted reads rely on client `fs` routing when supported and remain a documented guardrail limit.
 
-- **Launch and framing:** Uses `plugins/runner-process` (`ProcessGroupLauncher`, `BoundedLineReader` with 10 MB line cap, `HostEnvironment`), JSON-RPC 2.0 over stdio, no shell.
-- **Session startup:** `initialize` -> `session/new` (passing `cwd` and `mcpServers` with `loop tool mcp`, plus `LOOP_SESSION_ID`, `LOOP_TURN_ID`, `LOOP_TOOL_CONFIG`). Emits `RunnerEvent.SessionStarted` with the ACP `sessionId` as `runtimeSessionId`.
-- **Turns and continuation:** Each turn sends `session/prompt` on the same long-lived process and reads `session/update` notifications until the prompt response completes. `read_timeout_ms` guards JSON-RPC request/response handshakes; `turn_timeout_ms` guards silence during an active turn.
-- **Interrupt:** `AgentSession.interrupt()` sends a `session/cancel` notification so the agent ends the current turn cleanly at the hard context limit and reports usage before Loop rotates the session.
-- **Approvals and guards:** Answers `session/request_permission` callbacks in Kotlin (modeled on `runner-codex-app-server`'s `ServerRequestPolicy`):
-  - declines any shell command matching the shared denied-command list (`git push`, `gh`, history rewrites, `loop approve`, `loop resume`),
-  - declines any command or file operation touching `holdoutDir`,
-  - accepts allowed workspace operations,
-  - maps unsupported human-input prompts to `RunnerEvent.TurnInputRequired` and stops the session.
-- **Stop:** Closes stdin, waits up to 5 seconds for clean exit, then kills the process group.
-- **Usage, occupancy and errors:** Maps ACP usage updates to `RunnerEvent.Usage` (absolute session totals) and `RunnerEvent.ContextUsage` (`<provider>/<model>`, for example `google/gemini-2.5-pro`) when reported. Classifies transport/auth/rate-limit/model-refused errors as `RunnerUnavailable`.
+### `runner-gemini` (headless, conditional on Spike 0)
 
-#### Declared `RunnerCapabilities`
+Built only if Spike 0 gives a clear reason after evaluating `runner-acp`. Its plugin doc states clearly that it declares `occupancy = false` and **cannot enforce Loop's context limits** (Loop logs a warning and enforces only the prompt limit and `agent.max_turns`, `RunCommand.kt:264`).
 
-- `continuation = true`
-- `loopTools = RunnerCapabilities.LoopTools.Mcp`
-- `usage = true` (confirmed in Spike 0)
-- `cost = false` (or `true` if ACP usage reports cost)
-- `occupancy = true` (if Spike 0 confirms per-request input tokens in ACP updates; otherwise `false`)
-- `sandbox = false`
+```yaml
+runner:
+  kind: gemini
+runners:
+  gemini:
+    command: gemini
+    model: <pinned-default-from-spike>
+    turn_timeout_ms: 3600000
+    read_timeout_ms: 120000
+    strict_mcp: true
+    sandbox: false
+```
 
-### Core Loop touchpoints
+| Key | Type | Required or default | Secret | Limits |
+|---|---|---|---|---|
+| `runners.gemini.command` | string | required | no | no shell metacharacters, run without a shell (matches `runners.claude-code.command`) |
+| `runners.gemini.model` | string | none | no | none |
+| `runners.gemini.turn_timeout_ms` | integer | `3600000` | no | 1 to 86400000 |
+| `runners.gemini.read_timeout_ms` | integer | `120000` | no | 1 to 86400000 |
+| `runners.gemini.strict_mcp` | boolean | `true` | no | none |
+| `runners.gemini.sandbox` | boolean | `false` | no | none |
 
-Loop's plugin architecture keeps core edits small:
+- **Continuation:** mints a UUID with `--session-id <uuid>` on turn 1 and resumes that UUID across turns (exact resume flag verified in Spike 0; never `--resume latest`).
+- **Guards and workspace isolation:** writes a per-attempt TOML file in the attempt directory and passes `--admin-policy <file>` (never `--policy`, which workspace `.gemini/policies/` could outrank on turn `n+1`), passes `-e` to pin extensions, passes `--skip-trust`, and passes the single approval mode selected in Spike 0 (`yolo` or `auto_edit`) once confirmed that `--admin-policy` deny beats it.
+- **Policy coverage:** deny rules cover the shared denied command list (plus `LOOP_LAUNCHER` for `approve` and `resume`), `holdoutDir` (absolute and real paths) across `read_file`, `read_many_files`, glob, grep, `list_directory`, `write_file`, `replace`, and shell commands, plus non-Loop MCP servers under `strict_mcp: true`. Documented guardrail limits (not a sandbox): `@path` includes, relative paths, symlinks created inside the workspace, and shell indirections (`sh -c`, scripts, `git -C . push`) that bypass simple prefix rules.
+- **Capabilities:** `continuation = true`, `loopTools = Mcp`, `usage = true`, `cost = false` (unless Spike 0 confirms USD cost), `occupancy = false`, `sandbox = settings.sandbox`.
 
-1. **Gradle wiring:** Add `:plugins:runner-gemini-cli` and `:plugins:runner-acp` to `settings.gradle.kts` and `cli/build.gradle.kts`. Each plugin registers via `META-INF/services/loop.api.RunnerProvider`, so `cli/src/main/kotlin/loop/cli/Host.kt` needs no discovery code.
-2. **Secret redaction:** Add a `google-api-key` pattern (`AIza[0-9A-Za-z_-]{35}`) to `TokenPattern.DEFAULTS` in `plugin-api/src/main/kotlin/loop/api/TokenPattern.kt`.
-3. **Environment policy:** Decide whether `GEMINI_API_KEY` and `GOOGLE_API_KEY` are redacted in `Host.kt` and whether they are stripped in `HostEnvironment.kt` (`ALWAYS_REMOVED_ENV_NAMES`) or allowed through (see Open decisions).
-4. **Context windows:** Add shipped defaults for Gemini models (for example `google/gemini-2.5-pro: 1_048_576`) in `spec-core/src/main/kotlin/loop/core/workflow/WorkflowConfig.kt`.
-5. **Shared deny-list parity:** Add a test asserting that the denied command list in `runner-claude-code`, `runner-codex-app-server`, `runner-gemini-cli`, and `runner-acp` never drifts.
-6. **Loop repo context and workflow:** Add `GEMINI.md` (`@./AGENTS.md`) at the root of Loop if running Gemini on Loop's own backlog. Update `WORKFLOW.md` by one line only if Gemini's MCP tool naming differs from `mcp__loop__*`.
-7. **Plugin docs:** Add `docs/plugins/runner-gemini-cli.md` and `docs/plugins/runner-acp.md` matching the structure of `docs/plugins/runner-claude-code.md` and `docs/plugins/runner-codex-app-server.md`.
+### Shared guards in `plugins/runner-process`
 
-### Vertical delivery slices
+Move the canonical denied command list and hardened matchers (`DeniedCommands` and `HoldoutFolder` from `plugins/runner-codex-app-server/.../Guards.kt`) into `plugins/runner-process` as shared utilities used by `runner-claude-code`, `runner-codex-app-server`, `runner-acp`, and `runner-gemini`. This replaces `DeniedCommandsTest`'s source-file scraping (`DeniedCommandsTest.kt:103-119`) and keeps all runners in sync, including denying `loop approve` and `loop resume` via both bare `loop` and the attempt's `LOOP_LAUNCHER` path.
 
-| Slice | Target | Scope | Proof |
-|---|---|---|---|
-| **0. Spike and recordings** | Both | Probe `gemini 0.42.0` in `-p -o stream-json` and `--acp`; verify MCP isolation, `--skip-trust`, usage/occupancy, `--policy`, and `session/cancel`. | Pinned version in `docs/spec-decisions.md`; scrubbed JSONL recordings. |
-| **1. `runner-gemini-cli` scaffold and single turn** | Headless | Module, `RunnerProvider`, `PluginProfile`, process launch without shell, `stream-json` parser, timeouts, `docs/plugins/runner-gemini-cli.md`. | Profile tests + launch/timeout/exit tests + fake `gemini` script. |
-| **2. `runner-gemini-cli` continuation, MCP and guards** | Headless | `--resume` across turns, `resumeSession()`, `loop tool mcp` + `strict_mcp`, generated `--policy` TOML for denied commands and holdout folder. | Multi-turn tests + MCP E2E test + deny-list parity test. |
-| **3. `runner-gemini-cli` usage, errors and contract** | Headless | Absolute `Usage`, optional `ContextUsage`, `RunnerUnavailable` classification, `TokenPattern` `AIza...`, `context.windows` defaults. | Recorded stream replay tests + `AgentRunnerContract` passing. |
-| **4. `runner-acp` scaffold and JSON-RPC framing** | ACP | Module, `RunnerProvider`, `PluginProfile`, process launch without shell, JSON-RPC 2.0 framing, `initialize` / `session/new`, `docs/plugins/runner-acp.md`. | Profile tests + fake ACP server handshake tests. |
-| **5. `runner-acp` turns, continuation and `interrupt()`** | ACP | `session/prompt` turns 1..n, `read_timeout_ms` and `turn_timeout_ms`, `session/cancel` interrupt, graceful `stop()`. | Multi-turn and interrupt tests + `AgentRunnerContract` lifecycle tests. |
-| **6. `runner-acp` MCP tools and permission guards** | ACP | `session/new` `mcpServers` (`loop tool mcp`), `strict_mcp`, `session/request_permission` Kotlin rules (shared deny list + holdout), `TurnInputRequired`. | Permission policy unit tests + deny-list parity test + MCP E2E test. |
-| **7. `runner-acp` usage, occupancy, rotation and contract** | ACP | ACP usage/occupancy mapping, hard-limit rotation test, `RunnerUnavailable` classification. | Recorded ACP replay tests + rotation test + `AgentRunnerContract` full suite. |
-| **8. Real integration and exit runs** | Both | `LOOP_REAL_INTEGRATION=gemini` smoke tests for both runners; deliver a real issue with `runner.kind: gemini-cli` and one with `runner.kind: acp` (`gemini --acp`). | Green real integration tests + traced deliveries (`loop trace`, `loop show --cost`). |
+### Error mapping
 
----
+Aligned with `RunnerEvent.kt` (`bl-39`, `bl-141`) and `docs/spec-decisions.md#network-loss-extension-m4-08`:
 
-## Part 2: Outside Loop's Gemini support (skills and project setup)
+- **`RunnerEvent.TurnFailed(category = RunnerUnavailable)`** is set **only** when the runtime's own structured error result reports unavailability: authentication or access failure (401, 403, expired login, exit 41 once verified), rate limit / quota / overload (429, 529), model refusal (`modelNotFound`, `bl-141`), or a runtime-reported network transport failure with no HTTP response (`m4-08`).
+- **Ordinary failure (`category = null`)** for everything else: process crashes, non-zero exits without a structured unavailability error, malformed JSON, exit 42 (input error), exit 53 (turn limit), and any error text printed by the agent or a tool output.
 
-Everything in this section lives in your personal environment (`~/.agents/skills/`, `~/.claude/skills/`) or in target project repositories, not in Loop's core code. Loop remains runner-agnostic: it renders `WORKFLOW.md` and lets the runtime load whatever skills exist in the environment or workspace.
+### Merge risk reviewer
 
-### 1. Share one source of truth for `SKILL.md` skills
+Keep the existing Claude reviewer (`Host.kt:403-413`, `m4-06`). `docs/PLAN.md` asks for a reviewer model different from the worker, and `riskReviewerCommand` already falls back to `runners.claude-code.command` or `claude` for non-Claude workers. Gemini runs under `policy: auto` with merge still require Claude Code installed (`riskReviewerWarning`). A Gemini-backed `RiskReviewer` is filed as a separate `bl-<nn>` (`needs-triage`) backlog issue.
 
-Gemini CLI (`0.42.0`) natively supports the Agent Skills standard (`SKILL.md` with YAML frontmatter) via `gemini skills` (`list`, `enable`, `disable`, `link`, `install`) and discovers skills in:
+### Core touchpoints
 
-- **Project:** `.agents/skills/` and `.gemini/skills/`
-- **Global:** `~/.agents/skills/` and `~/.gemini/skills/`
+1. **Gradle wiring:** add `:plugins:runner-acp` (and `:plugins:runner-gemini` if built) to `settings.gradle.kts` and `cli/build.gradle.kts`.
+2. **Shared guards:** move `DeniedCommands` and `HoldoutFolder` into `plugins/runner-process` and update `runner-claude-code` and `runner-codex-app-server` to use them.
+3. **Secrets and redaction:** add `google-api-key` (`AIza...`) and `google-oauth-token` (`ya29....`) to `TokenPattern.DEFAULTS` (`TokenPattern.kt`), and redact `GEMINI_API_KEY` and `GOOGLE_API_KEY` in `Host.kt`.
+4. **Context windows:** add the default `google/<model>` window from Spike 0 to `spec-core/src/main/kotlin/loop/core/workflow/WorkflowConfig.kt`.
+5. **Real integration targets:** add `"gemini"` (and `"acp"` if gated separately) to `RealIntegration.TARGETS` in `plugin-api/src/testFixtures/kotlin/loop/api/RealIntegration.kt:27`.
+6. **Startup preflight:** add a Gemini preflight check (binary reachable, login state warnings) in `cli/src/main/kotlin/loop/cli/Host.kt` (`runnerPreflight`, line 653).
+7. **Loop repo files:** add `GEMINI.md` (`@./AGENTS.md`) at the root of Loop if running Gemini on Loop's backlog. Update `WORKFLOW.md:153` once Spike 0 records Gemini's exact MCP tool names for `move`, `comment`, and `submit_result` (today line 153 names `mcp__loop__move` with a `loop tool move` fallback).
+8. **Docs:** add `docs/plugins/runner-acp.md` and (if built) `docs/plugins/runner-gemini.md`, each stating clearly whether the runner enforces context limits, and record the M7 milestone jump in `docs/PLAN.md`.
 
-To avoid maintaining duplicate skill copies across Claude Code, Codex, and Gemini:
+## Rejected
 
-- Keep portable skills under `.agents/skills/<name>/SKILL.md` in a repository or `~/.agents/skills/<name>/SKILL.md` globally.
-- Link existing Claude skills into Gemini with `gemini skills link ~/.claude/skills/<name>`.
-- In target repositories that use `AGENTS.md` and `CLAUDE.md` (`@AGENTS.md`), add a one-line `GEMINI.md` containing `@./AGENTS.md` so Gemini reads the same project instructions.
+- **One `runner-gemini-cli` plugin with a `mode: headless | acp` switch.** The two transports have different process lifecycles, interrupt semantics, guard mechanisms, and `RunnerCapabilities`. Two plugins match `docs/PLAN.md:647` and avoid duplicating ACP in M7.
+- **Pure generic `runner-acp` with no `agent` preset.** A static `runners.acp.command` cannot pass per-attempt generated `--admin-policy` files or Gemini's `--allowed-mcp-server-names` and `-e` flags, leaving holdout reads unguarded and `strict_mcp` unenforceable on Gemini.
+- **An `{attempt_dir}` placeholder in `runners.acp.command`.** Pushes internal policy file paths and flag syntax onto every operator's `WORKFLOW.md` instead of encapsulating them in a validated preset (`runners.acp.agent: gemini`).
+- **Adding `GEMINI_API_KEY` and `GOOGLE_API_KEY` to `ALWAYS_REMOVED_ENV_NAMES`.** That global list wins over `agent.env` and would also strip those keys from the `command` runner. Stripping inside the Gemini runners via `removedEnvNames` matches the subscription login rule while keeping `agent.env` as the clean opt in.
+- **Aliasing `runner.kind: gemini` to `acp` if the headless runner is dropped.** Confusing when `gemini` is documented as the headless runner; leave `gemini` unregistered instead.
+- **Using `--resume latest` in headless mode.** Parallel attempts on the same repository would collide on the latest session.
+- **Using `--policy` instead of `--admin-policy` in headless mode.** Workspace `.gemini/policies/` written during turn `n` could reload and outrank `--policy` on turn `n+1`.
 
-### 2. Adapt Claude-specific skills for cross-runtime use
+## Issues
 
-Skills originally written for Claude Code commonly have three dependencies that need adaptation when running on Gemini (or Codex):
+Each slice is scoped to land independently after Spike 0 settles the facts:
 
-- **Slash invocation (`/tdd`, `/issue`):** In headless and ACP runs, slash commands are not expanded like interactive TUI commands. Reference the skill by name in the `WORKFLOW.md` prompt template so Gemini activates it via its skill tool or reads the `SKILL.md` directly.
-- **Hardcoded tool names:** Replace Claude-specific names (`Bash`, `Edit`, `Read`, `mcp__loop__move`) with runtime-neutral phrasing (for example, "use Loop's `move` or `submit_result` MCP tool when available, else `loop tool move`"). Loop's own `WORKFLOW.md` already follows this pattern.
-- **Subagent delegation (`Agent` tool, `context: fork`, `SendMessage`):** Skills that fan out to parallel Claude subagents (such as expert reviewers in the pilot app's issue skill) will not behave identically on Gemini CLI. Until Loop's Koog manager/expert agents land in M6 (`docs/PLAN.md`), either:
-  - flatten those subagent steps into sequential single-agent phases (portable across Claude, Codex, and Gemini), or
-  - keep a thin Gemini-adapted skill variant only where subagent fan-out is essential.
+1. **Spike 0 (operator spike):** probe `gemini 0.42.0` in `--acp` mode first, then `-p -o stream-json`; pin version and model/window in `docs/spec-decisions.md`; save scrubbed recordings; confirm whether to build `runner-gemini` after `runner-acp`.
+2. **Shared guards and core prep:** move `DeniedCommands` and `HoldoutFolder` into `plugins/runner-process` (updating Claude and Codex runners); add `AIza...` and `ya29....` to `TokenPattern.DEFAULTS`, `GEMINI_API_KEY` / `GOOGLE_API_KEY` redaction to `Host.kt`, default `google/<model>` window to `WorkflowConfig.kt`, and `"gemini"` to `RealIntegration.TARGETS`.
+3. **`runner-acp` scaffold, handshake and turns:** create `plugins/runner-acp`, `RunnerProvider`, `PluginProfile`, JSON-RPC 2.0 framing (`ProcessGroupLauncher.MAX_LINE_BYTES`), `initialize` / `authenticate` / `session/new` / `session/prompt`, `read_timeout_ms` and `turn_timeout_ms`, `stop(report)` with `StopGraceExpired`, fake ACP server, `docs/plugins/runner-acp.md`.
+4. **`runner-acp` MCP server and `strict_mcp`:** pass `loop tool mcp` with all 8 `ClaudeMcpConfig.PASSED` env vars in `session/new` `mcpServers`; implement `runners.acp.agent: gemini` preset isolation flags and startup refusal when `strict_mcp: true` has no preset.
+5. **`runner-acp` permission guards and holdout protection:** implement fail-closed `session/request_permission` policy using shared `runner-process` matchers (including `LOOP_LAUNCHER` and `holdoutDir`), client `fs` read handling if supported, `TurnInputRequired`, and generated `--admin-policy` TOML for `agent: gemini`.
+6. **`runner-acp` usage, occupancy, interrupt and contract:** map ACP usage and `ContextUsage` (`google/<model>`), wire `interrupt()` to `session/cancel` plus `cancelled` permission replies, map `RunnerUnavailable` per `RunnerEvent.kt` and `m4-08`, add Gemini preflight in `Host.kt`, replay recorded sessions, pass `AgentRunnerContract` and rotation tests.
+7. **`runner-acp` real integration and exit run:** add `LOOP_REAL_INTEGRATION=gemini` smoke test and deliver a real Loop issue on `runner.kind: acp` (`command: gemini --acp`, `agent: gemini`) with peak occupancy under 25 percent.
+8. **`runner-gemini` scaffold, turns and UUID resume *(conditional on Spike 0)*:** create `plugins/runner-gemini`, `RunnerProvider`, `PluginProfile` (`command` required), `stream-json` parser, `--session-id` / verified UUID resume, `docs/plugins/runner-gemini.md` noting no context limit enforcement.
+9. **`runner-gemini` MCP, `strict_mcp` and `--admin-policy` guards *(conditional on Spike 0)*:** wire `loop tool mcp`, `--allowed-mcp-server-names`, `-e`, and generated `--admin-policy` TOML covering shared denied commands and `holdoutDir` under the chosen approval mode.
+10. **`runner-gemini` usage, errors, contract and real integration *(conditional on Spike 0)*:** absolute `Usage`, `RunnerUnavailable` mapping, recorded stream replay tests, `AgentRunnerContract`, and `LOOP_REAL_INTEGRATION=gemini` smoke test.
+11. **Backlog (`needs-triage`):** file `bl-<nn>` for a Gemini-backed `RiskReviewer`.
 
-### 3. Keep enforcement in Loop, not in skill frontmatter
+## Out of scope
 
-Gemini CLI ignores Claude-specific frontmatter fields such as `allowed-tools` and Claude Code hooks:
-
-- **Security and guardrails** (blocking `git push`, `gh`, history rewrites, `loop approve`/`resume`, and holdout reads) are enforced by Loop's runner (`--policy` TOML in `runner-gemini-cli` and `session/request_permission` in `runner-acp`) and by `kinds.*.verify`.
-- **Mandatory workflow steps** (progress file, evidence files, writing rules, handoff protocol) should live in the `WORKFLOW.md` prompt template rather than an optional skill that a model might skip activating.
-
----
-
-## Open decisions
-
-1. **Auth and env policy for Gemini API keys:** Claude Code strips `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` so Loop always runs on the operator's subscription login. For Gemini, choose one:
-   - *(a)* Allow `GEMINI_API_KEY` / `GOOGLE_API_KEY` to pass through to Gemini CLI if set, while always redacting their values (and any `AIza...` key) from logs, traces, and evidence.
-   - *(b)* Strip `GEMINI_API_KEY` / `GOOGLE_API_KEY` in `ALWAYS_REMOVED_ENV_NAMES` so Gemini CLI always runs on the operator's Google OAuth login (`~/.gemini`).
-2. **Implementation order after Spike 0:**
-   - *(a)* Build `runner-gemini-cli` (headless `stream-json`) first for the fastest path to a working Gemini delivery, then `runner-acp`.
-   - *(b)* Build `runner-acp` first to get full hard-limit `interrupt()` and Kotlin `session/request_permission` guards from day one, then `runner-gemini-cli`.
-3. **Merge risk reviewer:** Under `policy: auto` with merge, `Host.kt` currently runs the merge risk reviewer via `runners.claude-code.command` even when the worker is Codex (`m4-06`). Keep that behavior for Gemini runs, or also add a Gemini-backed `RiskReviewer`?
+- **Skill portability and target-project setup:** sharing `SKILL.md` skills via `.agents/skills/` and `gemini skills link`, adding `GEMINI.md` (`@./AGENTS.md`) to target repositories, and adapting Claude-specific skills (slash commands, hardcoded tool names, `Agent` subagents). Documented separately in `docs/gemini-skills.md`.
+- **A Gemini-backed `RiskReviewer`:** tracked as a separate backlog issue; Claude Code stays the merge risk reviewer under `policy: auto`.
+- **OS sandboxing guarantees (M5):** `--admin-policy` and `session/request_permission` are guardrails, not a sandbox. Full worker sandboxing remains in M5.
+- **Additional ACP agent presets** beyond `gemini` (for example Goose or OpenCode).
+- **Per-kind runner selection** (`docs/PLAN.md` section 6.2, gap after M4).
