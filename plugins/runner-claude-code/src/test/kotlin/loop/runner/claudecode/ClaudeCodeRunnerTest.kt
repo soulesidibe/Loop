@@ -52,6 +52,7 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Instant
 
 /** ClaudeCodeRunner against a long lived fake `claude` script that replays recorded stream-json transcripts, one per turn. */
 class ClaudeCodeRunnerTest {
@@ -995,6 +996,24 @@ class ClaudeCodeRunnerTest {
         val two = second.filterIsInstance<RunnerEvent.Usage>().single()
         assertEquals(listOf(1226L + 2, 331L + 4, 41393L + 30452, 38365L + 40), two.tokens())
         assertEquals(0.0072257499999999995, two.totalCostUsd)
+    }
+
+    @Test
+    fun `bl-209 the real rate limit line is reported once, right after its line, as the claude limit`() {
+        val transcript = Fixtures.lines("real_two_turns_one_process")
+        val (turn1, turn2, afterLast) = splitTurns(transcript)
+        val claude = Scripted(listOf(listOf(turn1, turn2).map(::stdout)), atExit = stdout(afterLast))
+
+        val (first, second) = twoTurns(scriptedRunner(claude), "Say hi", "Run a command")
+
+        val limit = first.filterIsInstance<RunnerEvent.RateLimit>().single()
+        assertEquals("claude", limit.limitId)
+        assertEquals(RunnerEvent.RateLimit.Window(74, 10080, Instant.fromEpochSeconds(1794906000)), limit.primary)
+        assertEquals(null, limit.reached)
+        val before = first[first.indexOf(limit) - 1]
+        assertEquals("rate_limit_event", kind(assertIs<RunnerEvent.Output>(before).line))
+        assertEquals(assertIs<RunnerEvent.TurnCompleted>(first.last()).turnId, limit.turnId)
+        assertTrue(second.none { it is RunnerEvent.RateLimit }, "the second turn read no rate limit line: $second")
     }
 
     @Test

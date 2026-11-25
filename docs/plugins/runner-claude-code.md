@@ -10,7 +10,7 @@ Written 2026-11-16 in issue m3-05. Terms follow [`CONTEXT.md`](../../CONTEXT.md)
 2. [Profile](#profile)
 3. [Startup check](#startup-check)
 4. [Machine checks](#machine-checks)
-5. [Capabilities](#capabilities)
+5. [Capabilities and telemetry](#capabilities-and-telemetry)
 6. [MCP servers](#mcp-servers)
 
 ## Configuration
@@ -78,7 +78,7 @@ Since bl-210 it also checks the Claude Code version. The runner is pinned to Cla
 
 The version read is recorded as `runner_version` on the operator log line `event=run outcome=started`. The merge risk reviewer (m2-28) uses the same `command`, whatever `runner.kind` is (m4-06): under another runner it reads `runners.claude-code.command` when set, else runs `claude`, and under `policy: auto` with merge `loop run` warns at startup when that command cannot be found ([the reviewer apart from the runner](../spec-decisions.md#the-reviewer-apart-from-the-runner-extension-m4-06)).
 
-## Capabilities
+## Capabilities and telemetry
 
 What `ClaudeCodeRunner.capabilities` declares (m3-06, see [runner capabilities](../spec-decisions.md#runner-capabilities-and-the-agentrunner-contract-extension-m3-06)), checked by `ClaudeCodeRunnerContractTest`:
 
@@ -90,6 +90,8 @@ What `ClaudeCodeRunner.capabilities` declares (m3-06, see [runner capabilities](
 | `cost` | true | `total_cost_usd` of the `result` lines, the session's so far, subagents included. |
 | `occupancy` | true | Since m3-08: each main session `assistant` message's usage, `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`, once per message id, with the model of the `init` line. Subagent messages are not counted, see [context occupancy](../spec-decisions.md#claude-code-context-occupancy-extension-m3-08). |
 | `sandbox` | false | The generated deny rules are a guardrail, not a sandbox (plan 11.1). |
+
+Since bl-209 the runner also reports Claude Code's rate limits, as the Codex runner does (m3-21). Each `rate_limit_event` line of the stream gives a `rate_limit` event, right after its line, with the limit id `claude` and no name. Its unified windows, `five_hour` and `seven_day` for example, are ordered by length, shortest first: the first is the primary window, the second the secondary, each with its used percent (the window's `utilization` times 100), its length in minutes read from its name and its reset time (`resetsAt`, Unix seconds). A window a line leaves out keeps what an earlier line of the session said of it. `reached` is the line's `status` when it is not `allowed`, such as `allowed_warning` or `rejected`. A line that changes nothing records nothing. `loop trace` prints it as the Codex one, for example `rate_limit  limit=claude primary=74%/10080m primary_resets_at=2026-11-17T09:00:00Z`. The decisions are in [Claude Code rate limits](../spec-decisions.md#claude-code-rate-limits-extension-bl-209).
 
 ## MCP servers
 
