@@ -328,7 +328,7 @@ class ChangesRequestedReactionTest {
     }
 
     @Test
-    fun `a change request on the current head resumes the workspace with retry kind reaction and the review findings, then verifies again`() =
+    fun `a change request on the current head resumes the workspace with retry kind reaction and the findings, then verifies again`() =
         runTest {
             val setup = Setup()
             val read = recordedReviews()
