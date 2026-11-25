@@ -61,6 +61,17 @@ fun interface AskHandler {
 }
 
 /**
+ * Handles a `file_followup` call (m4-33): the [title] and [body] of a follow up issue as the agent wrote them, not yet
+ * redacted or trimmed. Queued like `comment`, it is filed when the turn ends.
+ */
+fun interface FollowupHandler {
+    suspend fun followup(
+        title: String,
+        body: String,
+    ): ToolReply
+}
+
+/**
  * Handles the resource tools (m4-25): `request_resource` and `release_resource`, whose `name` is the id of a resource
  * of `resources:` as the agent wrote it. Unlike the other tools, both are answered inside the turn.
  */
@@ -98,7 +109,8 @@ fun interface ReplyTrimmer {
  * reply, a refusal included, goes through a [ReplyTrimmer] before it is sent. Since m4-25 a server given a
  * [ResourceHandler], which `loop tool mcp` gives when the workflow declares `resources:`, also serves
  * `request_resource` and `release_resource`. Since m4-31 a server given an [AskHandler], which `loop tool mcp` always
- * gives, also serves `ask`, for a question a human must answer.
+ * gives, also serves `ask`, for a question a human must answer. Since m4-33 a server given a [FollowupHandler], which
+ * `loop tool mcp` always gives, also serves `file_followup`.
  */
 object LoopMcpServer {
     /** The server name in the runtime's MCP config; Claude Code names the tool `mcp__loop__submit_result`. */
@@ -118,6 +130,18 @@ object LoopMcpServer {
 
     /** The values of `ask`'s `kind` (PLAN 6.10). In M4 every question goes to a human, whatever its kind (m4-31). */
     val ASK_KINDS: List<String> = listOf("engineering", "design", "product", "human")
+
+    const val FILE_FOLLOWUP = "file_followup"
+
+    /** The most follow ups one attempt files (m4-33), as `loop.core.trackers.Followups.MAX_PER_ATTEMPT` sets it. */
+    const val FOLLOWUPS_PER_ATTEMPT = 3
+
+    /** The description of `file_followup`; the Codex client tools (`LoopClientTools`) carry the same text. */
+    const val FILE_FOLLOWUP_DESCRIPTION =
+        "File a follow up issue for work you found that is outside your issue, such as a bug next to your change or a " +
+            "missing test elsewhere. Do not use it for your own issue's work. Loop queues it and, when this turn ends, " +
+            "creates the issue labelled needs-triage, so a human triages it, with a last line naming your issue and " +
+            "attempt, and comments its id on your issue. You may file at most $FOLLOWUPS_PER_ATTEMPT per attempt."
 
     /** The description of `ask`; the Codex client tools (`LoopClientTools`) carry the same text. */
     const val ASK_DESCRIPTION =
@@ -173,6 +197,7 @@ object LoopMcpServer {
         trimmer: ReplyTrimmer = ReplyTrimmer.NONE,
         resources: ResourceHandler? = null,
         ask: AskHandler? = null,
+        followup: FollowupHandler? = null,
     ): Server {
         val server =
             Server(
@@ -194,6 +219,7 @@ object LoopMcpServer {
             comment.comment(it)
         }
         if (ask != null) server.addAskTool(ask, trimmer)
+        if (followup != null) server.addFollowupTool(followup, trimmer)
         // m4-25: only for a workflow that declares resources.
         if (resources != null) {
             val names = "The name of a resource of the workflow: ${resources.names.joinToString(", ")}."
@@ -256,6 +282,43 @@ object LoopMcpServer {
         }
     }
 
+    /**
+     * Adds `file_followup` (m4-33): `title` and `body` required strings. A call without one, or with another JSON type,
+     * is a tool error that reaches no handler, so nothing is queued.
+     */
+    private fun Server.addFollowupTool(
+        followup: FollowupHandler,
+        trimmer: ReplyTrimmer,
+    ) {
+        addTool(name = FILE_FOLLOWUP, description = FILE_FOLLOWUP_DESCRIPTION, inputSchema = ToolSchema(properties = followupProperties, required = listOf(TITLE, BODY))) {
+            request ->
+            val arguments = request.arguments ?: JsonObject(emptyMap())
+
+            fun string(key: String): String? = (arguments[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+            val title = string(TITLE)
+            val body = string(BODY)
+            val reply =
+                when {
+                    title == null -> ToolReply("$TITLE is required, a string. $NOTHING_QUEUED", isError = true)
+                    body == null -> ToolReply("$BODY is required, a string. $NOTHING_QUEUED", isError = true)
+                    else -> followup.followup(title, body)
+                }
+            trimmer.trim(FILE_FOLLOWUP, reply).toResult()
+        }
+    }
+
+    private val followupProperties: JsonObject =
+        buildJsonObject {
+            putJsonObject(TITLE) {
+                put("type", "string")
+                put("description", "The title of the follow up issue, one short sentence.")
+            }
+            putJsonObject(BODY) {
+                put("type", "string")
+                put("description", "What you found and where, in full sentences a human can triage without reading your session.")
+            }
+        }
+
     /** The [AskCall] of [arguments], or why they break the schema. */
     private fun askCall(arguments: JsonObject): kotlin.Result<AskCall> {
         fun string(key: String): String? = (arguments[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
@@ -313,14 +376,16 @@ object LoopMcpServer {
     private const val QUESTION = "question"
     private const val OPTIONS = "options"
     private const val RECOMMENDATION = "recommendation"
+    private const val TITLE = "title"
+    private const val BODY = "body"
     private const val OPTIONS_TYPE = "options must be a list of strings."
 
     /**
      * Serves one session over newline delimited JSON-RPC on [input] and [output], the stdio transport an MCP
      * runtime spawns its servers with, until [input] ends, every reply trimmed by [trimmer] (m3-14), with the resource
-     * tools when [resources] is given (m4-25) and `ask` when [ask] is given (m4-31). Nothing else may
-     * write to [output], so kotlin-logging's startup line, which goes to stdout, is turned off. The SDK's own log goes
-     * to SLF4J's no-op provider.
+     * tools when [resources] is given (m4-25), `ask` when [ask] is given (m4-31) and `file_followup` when [followup] is
+     * given (m4-33). Nothing else may write to [output], so kotlin-logging's startup line, which goes to stdout, is turned
+     * off. The SDK's own log goes to SLF4J's no-op provider.
      */
     suspend fun serve(
         input: InputStream,
@@ -332,9 +397,10 @@ object LoopMcpServer {
         trimmer: ReplyTrimmer = ReplyTrimmer.NONE,
         resources: ResourceHandler? = null,
         ask: AskHandler? = null,
+        followup: FollowupHandler? = null,
     ) {
         quietLogging()
-        val server = create(version, submitResult, move, comment, trimmer, resources, ask)
+        val server = create(version, submitResult, move, comment, trimmer, resources, ask, followup)
         val transport = StdioServerTransport(input.asSource().buffered(), output.asSink().buffered())
         val closed = CompletableDeferred<Unit>()
         val session = server.createSession(transport)
