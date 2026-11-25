@@ -6,20 +6,30 @@ import loop.api.ProjectId
 import loop.api.RecordedEvent
 import loop.api.Redactor
 import loop.core.orchestrator.attemptFile
+import loop.core.replay.ReplaySites
+import loop.core.verify.WorkspaceFingerprint
 import loop.store.GzipAttemptRecords
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.TimeUnit
+import kotlin.io.path.createDirectories
+import kotlin.io.path.exists
 import kotlin.io.path.readText
 import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.test.fail
 import kotlin.time.Clock
 
-/** m4-40: `loop replay <attempt> --prompt` renders the turn 1 prompt again with the current template and diffs it. */
+/**
+ * m4-40: `loop replay <attempt> --prompt` renders the turn 1 prompt again with the current template and diffs it. m4-41:
+ * `--verify` runs the checks of the current workflow again on the state the attempt's verdict recorded.
+ */
 class ReplayCommandTest {
     @TempDir
     lateinit var root: Path
@@ -165,6 +175,163 @@ class ReplayCommandTest {
 
         assertEquals(2, result.exitCode, result.toString())
         assertContains(result.stderr, "pick a mode: --prompt")
+    }
+
+    @Test
+    fun `a kept workspace at the recorded fingerprint is verified on a copy, the new verdict next to the recorded one`() {
+        writeCheckedWorkflow()
+        fixture.issue("t-1")
+        val workspace = fixture.workspace("t-1").createDirectories()
+        workspace.resolve("hello.txt").writeText("hello\n")
+        val fingerprint = WorkspaceFingerprint.of(workspace).getOrThrow()
+        seedVerdict("verified", fingerprint)
+        val issue = fixture.issueFile("t-1").readText()
+        val events = fixture.query("SELECT kind, attempt_id, data FROM events")
+
+        val result = fixture.inProcess("replay", A1, "--verify")
+
+        assertEquals(0, result.exitCode, result.toString())
+        assertContains(result.stdout, "Replay of the verification of attempt $A1, issue t-1.\n")
+        assertContains(result.stdout, "The checks run on a copy of the workspace ${workspace.toRealPath()}, removed afterwards: ")
+        assertContains(result.stdout, "check 0 passed")
+        assertContains(result.stdout, ": test -f hello.txt\n")
+        assertContains(result.stdout, "check 1 failed with exit code 1")
+        assertContains(result.stdout, "check 1 rerun failed with exit code 1")
+        assertContains(result.stdout, "Recorded verdict: verified, on $fingerprint.\nNew verdict: refuted, on $fingerprint.\n")
+        assertEquals("", result.stderr)
+        assertFalse(workspace.resolve("written.txt").exists(), "the checks ran on a copy")
+        assertEquals(fingerprint, WorkspaceFingerprint.of(workspace).getOrThrow(), "the workspace is unchanged")
+        assertEquals(issue, fixture.issueFile("t-1").readText(), "the tracker is not written")
+        assertFalse(attemptFile(fixture.loopHome, ProjectId(fixture.projectId()), AttemptId(A1)).exists(), "no attempt record")
+        val after = fixture.query("SELECT kind, attempt_id, data FROM events")
+        assertEquals(events, after.dropLast(1), "the attempt's events are left as they were")
+        val replay = after.last()
+        assertEquals("replay_verdict", replay["kind"])
+        assertNull(replay["attempt_id"])
+        assertContains(replay["data"]!!, "\"recorded_fingerprint\":\"$fingerprint\"")
+        assertContains(replay["data"]!!, "\"verdict\":\"refuted\"")
+        assertContains(replay["data"]!!, "\"site\":\"workspace_copy\"")
+    }
+
+    @Test
+    fun `a gone workspace with a clean git fingerprint is verified on a temporary worktree, removed afterwards`() {
+        writeCheckedWorkflow(second = "test -f hello.txt")
+        fixture.issue("t-1")
+        git("init", "-q", "-b", "main")
+        git("add", ".")
+        git("commit", "-q", "-m", "first")
+        git("checkout", "-q", "-b", "loop/t-1")
+        fixture.projectDir.resolve("hello.txt").writeText("hello\n")
+        git("add", "hello.txt")
+        git("commit", "-q", "-m", "agent")
+        val head = git("rev-parse", "HEAD").trim()
+        git("checkout", "-q", "main")
+        val fingerprint = "git:$head:${WorkspaceFingerprint.EMPTY_HASH}:${WorkspaceFingerprint.EMPTY_HASH}"
+        seedVerdict("refuted", fingerprint)
+        val worktrees = git("worktree", "list", "--porcelain")
+
+        val result = fixture.inProcess("replay", A1, "--verify")
+
+        assertEquals(0, result.exitCode, result.toString())
+        assertContains(
+            result.stdout,
+            "The workspace is gone, so the checks run on a temporary git worktree at $head of ${fixture.projectDir.toRealPath()}, removed afterwards: ",
+        )
+        assertContains(result.stdout, "Recorded verdict: refuted, on $fingerprint.\nNew verdict: verified, on $fingerprint.\n")
+        val dir = Regex("removed afterwards: (.+)\\.\n").find(result.stdout)?.groupValues?.get(1) ?: fail(result.stdout)
+        assertFalse(Path.of(dir).exists(), "the worktree folder is removed")
+        assertEquals(worktrees, git("worktree", "list", "--porcelain"), "the worktree is removed from the repository")
+        val replay = fixture.query("SELECT data FROM events WHERE kind = 'replay_verdict'").single()["data"]!!
+        assertContains(replay, "\"site\":\"worktree\"")
+    }
+
+    @Test
+    fun `a changed workspace whose state cannot be rebuilt exits 4 naming both fingerprints, with no verdict`() {
+        writeCheckedWorkflow()
+        fixture.issue("t-1")
+        val workspace = fixture.workspace("t-1").createDirectories()
+        workspace.resolve("hello.txt").writeText("hello\n")
+        val recorded = "git:0123456789abcdef0123456789abcdef01234567:0011223344556677:${WorkspaceFingerprint.EMPTY_HASH}"
+        seedVerdict("verified", recorded)
+        val store = Files.readAllBytes(fixture.storeFile)
+
+        val result = fixture.inProcess("replay", A1, "--verify")
+
+        assertEquals(4, result.exitCode, result.toString())
+        val current = WorkspaceFingerprint.of(workspace).getOrThrow()
+        assertContains(result.stderr, "the workspace changed since the verdict")
+        assertContains(result.stderr, "recorded fingerprint $recorded, current fingerprint $current")
+        assertFalse("New verdict" in result.stdout, result.stdout)
+        assertTrue(store.contentEquals(Files.readAllBytes(fixture.storeFile)), "nothing is recorded")
+    }
+
+    @Test
+    fun `a tree fingerprint whose folder is gone exits 4 the same way`() {
+        writeCheckedWorkflow()
+        fixture.issue("t-1")
+        val recorded = "tree:0011223344556677"
+        seedVerdict("verified", recorded)
+
+        val result = fixture.inProcess("replay", A1, "--verify")
+
+        assertEquals(4, result.exitCode, result.toString())
+        assertContains(result.stderr, "the workspace is gone")
+        assertContains(result.stderr, "recorded fingerprint $recorded, current fingerprint ${ReplaySites.GONE}")
+        assertFalse("New verdict" in result.stdout, result.stdout)
+        assertTrue(fixture.query("SELECT kind FROM events WHERE kind = 'replay_verdict'").isEmpty())
+    }
+
+    @Test
+    fun `an attempt with no verdict says so, exit 4`() {
+        writeCheckedWorkflow()
+        fixture.issue("t-1")
+        fixture.seed(fixture.attemptStarted(A1, "t-1"))
+
+        val result = fixture.inProcess("replay", A1, "--verify")
+
+        assertEquals(4, result.exitCode, result.toString())
+        assertContains(result.stderr, "loop replay: no verdict recorded for attempt $A1, nothing to replay.")
+    }
+
+    @Test
+    fun `both modes at once is a usage error, exit 2`() {
+        val result = fixture.inProcess("replay", A1, "--prompt", "--verify")
+
+        assertEquals(2, result.exitCode, result.toString())
+        assertContains(result.stderr, "pick one mode")
+    }
+
+    private fun writeCheckedWorkflow(second: String = "echo written > written.txt && false") =
+        fixture.writeWorkflow(
+            extra =
+                """
+                |kinds:
+                |  code:
+                |    verify:
+                |      checks:
+                |        - { type: command, run: "test -f hello.txt" }
+                |        - { type: command, run: "$second" }
+                """.trimMargin(),
+        )
+
+    private fun seedVerdict(
+        verdict: String,
+        fingerprint: String,
+    ) = fixture.seed(
+        fixture.attemptStarted(A1, "t-1"),
+        fixture.attemptStarted(A1, "t-1").copy(kind = "verdict", data = mapOf("verdict" to verdict, "fingerprint" to fingerprint, "checks" to "2")),
+        fixture.attemptFinished(A1, "t-1"),
+    )
+
+    private fun git(vararg args: String): String {
+        val process =
+            ProcessBuilder(listOf("git", "-c", "user.name=t", "-c", "user.email=t@example.com") + args)
+                .directory(fixture.projectDir.toFile())
+                .redirectErrorStream(true)
+                .start()
+        val output = process.inputStream.bufferedReader().readText()
+        check(process.waitFor(30, TimeUnit.SECONDS) && process.exitValue() == 0) { "git ${args.toList()}: $output" }
+        return output
     }
 
     private fun onlyAttempt(): String =

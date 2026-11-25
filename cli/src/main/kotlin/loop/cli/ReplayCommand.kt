@@ -19,14 +19,27 @@ import loop.core.kinds.KindLookup
 import loop.core.kinds.KindPrompt
 import loop.core.kinds.PinnedKind
 import loop.core.orchestrator.attemptFile
+import loop.core.replay.Placement
 import loop.core.replay.RecordedPromptVariables
+import loop.core.replay.RecordedVerdict
 import loop.core.replay.RecoveredVariables
+import loop.core.replay.ReplaySite
+import loop.core.replay.ReplaySites
+import loop.core.replay.ReplayTarget
 import loop.core.replay.UnifiedDiff
+import loop.core.replay.VerificationReplay
 import loop.core.template.TemplateEngine
+import loop.core.trackers.NamespacedId
+import loop.core.verify.CheckRunner
+import loop.core.verify.CoreCheckRunner
 import loop.core.workflow.PromptVariables
 import loop.core.workflow.WorkflowFile
 import loop.core.workflow.workflowHash
+import loop.core.workspace.Workspaces
+import loop.runner.process.agentEnvironment
 import loop.store.GzipAttemptRecords
+import java.nio.file.Path
+import kotlin.time.Clock
 
 /**
  * `loop replay <attempt> --prompt [--workflow WORKFLOW.md]` (m4-40, story 137, PLAN 10.4): the turn 1 prompt of a
@@ -36,6 +49,14 @@ import loop.store.GzipAttemptRecords
  * project's redactor before it is diffed. Read only: nothing is written to the store, the tracker or the workspace.
  * Exit 0 printed, 1 startup failure, 2 usage or an unknown attempt, 3 store or Attempt file failure, 4 no recorded
  * prompt, 5 the issue cannot be read or the template does not render.
+ *
+ * `loop replay <attempt> --verify [--workflow WORKFLOW.md]` (m4-41, story 138): the checks of the current `WORKFLOW.md`
+ * for the issue's kind run again, through the verification of `loop.core.verify` and the check runner of `loop run`, on
+ * the state the attempt's last verdict recorded ([ReplaySites]): a copy of the kept workspace while it is still at that
+ * fingerprint, else a temporary git worktree at its commit, else nothing. Each check prints with its result, then the
+ * new verdict under the recorded one. Nothing is written to the tracker, the issue or the attempt's records; one
+ * `replay_verdict` event records the replay. Exit 0 printed whatever the new verdict, 1, 2, 3 and 5 as `--prompt`, 4 no
+ * recorded verdict, or a recorded state that is gone or changed and cannot be rebuilt.
  */
 class ReplayCommand(
     private val host: Host,
@@ -45,12 +66,18 @@ class ReplayCommand(
         "--prompt",
         help = "Render the turn 1 prompt again with the current template and diff it with the recorded one",
     ).flag()
+    private val verify by option(
+        "--verify",
+        help = "Run the checks of the current workflow again on the workspace state the attempt's verdict recorded",
+    ).flag()
     private val workflowPath by option("--workflow", help = "The workflow file, default ./WORKFLOW.md").default("WORKFLOW.md")
 
     override fun help(context: Context): String = "Replay a recorded attempt with the current config"
 
     override fun body(scope: RedactorScope) {
-        if (!prompt) throw UsageError("pick a mode: --prompt, the only mode so far")
+        if (prompt && verify) throw UsageError("pick one mode: --prompt or --verify")
+        if (!prompt && !verify) throw UsageError("pick a mode: --prompt or --verify")
+        if (verify) return replayVerification(scope)
         // As `loop show`: the store is read only and keeps Redactor.NONE, the messages and the render go through the redactor.
         val project = host.openProject(workflowPath, Access.READ, scope)
         val projectId = project.projectId
@@ -79,7 +106,7 @@ class ReplayCommand(
         val name = own.issueIdentifier?.let { project.ids.name(issueId, it) } ?: project.ids.id(issueId)
         val issue = currentIssue(project, issueId, name)
         val workflow = project.workflow
-        val (kind, kindNote) = kindOf(workflow, started?.data?.get(AttemptStarted.KIND), issue)
+        val (kind, kindNote) = kindOf(workflow, started?.data?.get(AttemptStarted.KIND), issue, "rendered")
         val template = KindPrompt.template(workflow, kind)
         val variables =
             RecordedPromptVariables.recover(
@@ -111,6 +138,105 @@ class ReplayCommand(
         echo(redact(header.joinToString("\n")))
         echo("")
         echo(UnifiedDiff.of(recorded, redact(rendered), "recorded prompt", "rendered prompt") ?: "No difference: the same prompt.")
+    }
+
+    /**
+     * `--verify` (m4-41): the checks of the current workflow run again on the state the attempt's last verdict recorded,
+     * then the new verdict prints under the recorded one and one `replay_verdict` event records the replay.
+     */
+    private fun replayVerification(scope: RedactorScope) {
+        // The store records the replay, so it opens as a writer, every write through the project's redactor.
+        val project = host.openProject(workflowPath, Access.WRITE, scope)
+        val projectId = project.projectId
+        val storeFile = project.storeFile
+        val opened = project.store().getOrElse { fail(it.sentence(), EXIT_STORE) }
+        val (attemptId, own, frozen) =
+            opened.use { store ->
+                val attemptId = resolveAttempt(store, projectId, attempt, storeFile, ::fail)
+                val own =
+                    runBlocking { store.eventsForAttempt(attemptId) }
+                        .getOrElse { fail("cannot read the store at $storeFile: ${it.sentence()}", EXIT_STORE) }
+                        .map { it.event }
+                        .filter { it.projectId == projectId }
+                val issueId = own.firstNotNullOfOrNull { it.issueId } ?: fail("attempt ${attemptId.value} names no issue", EXIT_STORE)
+                // Read once here: the checks run with the store closed, and the frozen list is never written.
+                Triple(attemptId, own, runBlocking { store.frozen(projectId, issueId) })
+            }
+        val recorded =
+            RecordedVerdict.of(own) ?: fail("no verdict recorded for attempt ${attemptId.value}, nothing to replay", EXIT_NOT_REPLAYABLE)
+        val first = own.first { it.issueId != null }
+        val issueId = first.issueId!!
+        val name = first.issueIdentifier?.let { project.ids.name(issueId, it) } ?: project.ids.id(issueId)
+        val issue = currentIssue(project, issueId, name)
+        val workflow = project.workflow
+        val started = own.firstOrNull { it.kind == AttemptStarted.name }
+        val (kind, kindNote) = kindOf(workflow, started?.data?.get(AttemptStarted.KIND), issue, "checked")
+        val identifier = first.issueIdentifier ?: issue.identifier
+        val located = Workspaces(workflow.workspaceRoot).locate(NamespacedId.workspaceKey(issueId, identifier, workflow.trackerId))
+        val site =
+            when (val placed = ReplaySites().place(recorded.fingerprint, located, workflow.path.parent)) {
+                is Placement.Ready -> placed.site
+                is Placement.Refused ->
+                    fail(
+                        "cannot replay the verification of attempt ${attemptId.value}: ${placed.reason}, " +
+                            "recorded fingerprint ${placed.recorded}, current fingerprint ${placed.current}",
+                        EXIT_NOT_REPLAYABLE,
+                    )
+            }
+        val target = ReplayTarget(attemptId, issueId, identifier, issue.description, workflow, kind)
+        val replay = VerificationReplay(projectId, host.loopHome, project.redactor, checkRunner(workflow), frozen = { frozen })
+        val replayed =
+            site.use {
+                val header =
+                    listOfNotNull(
+                        "Replay of the verification of attempt ${attemptId.value}, issue $name.",
+                        "Checks of ${kind?.let { "the kind ${it.name} in " }.orEmpty()}${workflow.path}, with the issue as the tracker " +
+                            "returns it now, its text may have changed since the attempt.",
+                        kindNote,
+                        siteLine(site, located),
+                    )
+                echo(redact(header.joinToString("\n")))
+                echo("")
+                runBlocking { replay.run(target, recorded, site) }
+            }
+        replayed.checks.forEach { echo(redact(it.line())) }
+        if (replayed.checks.isEmpty()) echo("No check ran.")
+        echo("")
+        echo(redact("Recorded verdict: ${recorded.verdict}, on ${recorded.fingerprint}."))
+        echo(redact("New verdict: ${replayed.verdict}, on ${replayed.fingerprint}${replayed.reason?.let { ", $it" }.orEmpty()}."))
+        val event = VerificationReplay.event(Clock.System.now(), projectId, target, recorded, site, replayed)
+        project
+            .store()
+            .mapCatching { store -> store.use { runBlocking { it.record(event) }.getOrThrow() } }
+            .getOrElse { fail("cannot record the replay in the store at $storeFile: ${it.sentence()}", EXIT_STORE) }
+    }
+
+    /** Where the checks run, as the header says it. */
+    private fun siteLine(
+        site: ReplaySite,
+        located: Result<Path?>,
+    ): String =
+        when (site) {
+            is ReplaySite.WorkspaceCopy -> "The checks run on a copy of the workspace ${site.workspace}, removed afterwards: ${site.dir}."
+            is ReplaySite.Worktree -> {
+                val why =
+                    located.fold(
+                        onSuccess = { if (it == null) "The workspace is gone" else "The workspace changed since the verdict" },
+                        onFailure = { "The workspace cannot be located" },
+                    )
+                "$why, so the checks run on a temporary git worktree at ${site.head} of ${site.repository}, removed afterwards: ${site.dir}."
+            }
+        }
+
+    /**
+     * The check runner of `loop run` (m2-03): a check runs code the agent wrote, so it gets the agent env policy, never
+     * the full host env, plus the ids the verification adds. A check that declares `resource:` runs without holding a
+     * resource: a resource lock is a store write, and a replay records only its `replay_verdict`.
+     */
+    private fun checkRunner(workflow: WorkflowFile): CheckRunner {
+        val removed = agentEnvRemovedNames(workflow)
+        val runner = CoreCheckRunner()
+        return CheckRunner { check, cwd, env -> runner.run(check, cwd, agentEnvironment(overrides = env, removed = removed, host = host.rawEnv)) }
     }
 
     /** The turn 1 prompt of the Attempt file, as written, redacted then; null when none was recorded. */
@@ -147,7 +273,7 @@ class ReplayCommand(
             runBlocking { tracker.fetchIssuesByIds(listOf(issueId)) }
                 .getOrElse { fail("cannot read $name in $where: ${it.sentence()}", EXIT_RENDER) }
                 .firstOrNull()
-                ?: fail("$where has no issue $name now, nothing to render", EXIT_RENDER)
+                ?: fail("$where has no issue $name now, nothing to replay", EXIT_RENDER)
         return runBlocking { tracker.completeIssue(issue) }
             .getOrElse { fail("cannot read $name in $where: ${it.sentence()}", EXIT_RENDER) }
     }
@@ -160,12 +286,13 @@ class ReplayCommand(
         workflow: WorkflowFile,
         recorded: String?,
         issue: Issue,
+        done: String,
     ): Pair<IssueKind?, String?> =
         when (val pinned = KindLookup.pinned(workflow, recorded, issue)) {
             is PinnedKind.Found -> pinned.kind to null
             is PinnedKind.Gone -> {
                 val now = KindLookup.of(workflow, issue)
-                now to "The kind ${pinned.name} is no longer in the workflow, rendered with the kind ${now?.name} the issue matches now."
+                now to "The kind ${pinned.name} is no longer in the workflow, $done with the kind ${now?.name} the issue matches now."
             }
         }
 
@@ -207,6 +334,9 @@ class ReplayCommand(
 
     private companion object {
         const val EXIT_NO_PROMPT = 4
+
+        /** No verdict to replay, or a recorded state that is gone or changed and cannot be rebuilt (m4-41). */
+        const val EXIT_NOT_REPLAYABLE = 4
         const val EXIT_RENDER = 5
         const val VERSION_CHARS = 12
     }
