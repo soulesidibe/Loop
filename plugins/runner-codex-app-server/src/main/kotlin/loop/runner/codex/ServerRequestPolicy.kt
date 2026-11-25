@@ -44,12 +44,18 @@ import java.nio.file.Path
  * - Any other request: a JSON-RPC error, method not found, and the turn goes on.
  *
  * A request whose params do not have the shape its rule reads is declined or refused, never accepted.
+ *
+ * With [readOnly], the merge risk reviewer's posture (bl-214), every command and file change approval, in both forms, is
+ * declined: when no rule above refuses it, with the reason that the reviewer runs read only. An accepted command would
+ * run outside the read-only sandbox.
  */
 internal class ServerRequestPolicy(
     private val workspace: Path,
     private val holdout: HoldoutFolder?,
     /** The client tools the thread declared (m3-22), Loop's tools by name; empty when it declared none. */
     private val tools: List<String> = emptyList(),
+    /** bl-214: decline every command and file change approval, see [ServerRequestPolicy]. */
+    private val readOnly: Boolean = false,
 ) {
     /** What the runner does with one request. */
     sealed interface Answer {
@@ -242,8 +248,9 @@ internal class ServerRequestPolicy(
         yes: JsonElement,
         no: (String) -> JsonElement,
     ): Answer.Write {
-        val decision = if (refusal == null) yes else no(refusal)
-        val note = if (refusal == null) "${LOOP}accepted the $what $id" else "${LOOP}declined the $what $id: $refusal"
+        val reason = refusal ?: READ_ONLY.takeIf { readOnly }
+        val decision = if (reason == null) yes else no(reason)
+        val note = if (reason == null) "${LOOP}accepted the $what $id" else "${LOOP}declined the $what $id: $reason"
         return Answer.Write(result(id, buildJsonObject { put("decision", decision) }), note)
     }
 
@@ -318,5 +325,6 @@ internal class ServerRequestPolicy(
         const val UNREADABLE = "its params are not the shape the rule reads"
         const val NO_COMMAND = "it has no command, so the rules cannot read what would run"
         const val OTHER_KIND = "its kind is not a plain command, so the rules cannot read what would run"
+        const val READ_ONLY = "the merge risk reviewer runs read only"
     }
 }
