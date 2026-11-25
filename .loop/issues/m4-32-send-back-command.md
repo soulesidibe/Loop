@@ -48,3 +48,17 @@ Carries the manual half of bl-89. Since m3-15, a red CI ends the CI wait with a 
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-25 16:16Z agent db8478da: The full build of turn 2 failed on two tests outside m4-32's change: WorktreeHooksTest (after_create survives two parallel workspaces, round 5, git failed to read .git/worktrees/p-2/commondir) and IosSimulatorProviderTest (a hanging wait for the boot fails once the prepare timeout passed, NullPointerException at line 300). m4-32 touches neither the worktree hooks nor plugins/resource-ios. Both pass when run alone, so they look like timing flakes under the parallel build. Worth a backlog issue each.
+
+2026-11-25 16:20Z loop: Loop opened pull request #71 for this issue: https://github.com/soulesidibe/Loop/pull/71
+
+2026-11-25 16:24Z loop: Loop did not merge pull request #71 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.27.
+  - alignment: aligned, The diff implements the command, the exit codes, the no-slot rule, the new retry kind and the docs the issue asks for, with changes kept to call sites in the orchestrator.
+  - impact: medium, It adds a CLI command and touches the shared wait model, the store, the dispatch hold logic and the prompt variables, but it adds an opt-in path and changes no existing flow by default.
+  - verification: strong, Each acceptance criterion has its own test: CLI end-to-end tests, the refusal cases, the no-slot case, the red-CI case, and unit tests for the store and the waits.
+  - rollback_cost: two_way, A revert removes the command and code. The sent_back keys in the wait data and the new events are additive and cause no schema change, so only existing events and comments remain.
+  - error_detection: loud, Each refusal exits with its own code and a message, and a store failure fails the command. A comment or event write failure only warns on stderr, though the reason still reaches the agent through the store.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 15 of 23 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
