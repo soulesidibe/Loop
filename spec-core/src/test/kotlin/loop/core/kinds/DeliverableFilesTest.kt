@@ -144,7 +144,7 @@ class DeliverableFilesTest {
     // Preflight.
 
     @Test
-    fun `policy auto is refused on a kind with deliverable files without the attach opt in, and human or no deliverable is accepted`() {
+    fun `policy auto is refused on a kind with deliverable files, and human or no deliverable is accepted`() {
         // m4-22: the rule moved to the attach delivery, which defines what auto means for such a kind.
         assertEquals(
             "kinds.posts.delivery.policy is auto, which a kind with deliverable.files supports only with " +

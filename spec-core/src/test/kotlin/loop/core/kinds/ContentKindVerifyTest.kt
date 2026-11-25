@@ -363,7 +363,7 @@ class ContentKindVerifyTest {
         """.trimMargin()
 
     @Test
-    fun `preflight refuses policy auto on a kind with deliverable files without the attach opt in, whatever the kind is called`() {
+    fun `preflight refuses policy auto on a kind with deliverable files, whatever the kind is called`() {
         // m4-22: auto is defined by the attach delivery and its own opt in, auto_merge.enabled does not count.
         for (name in listOf("content", "posts")) {
             val expected =
