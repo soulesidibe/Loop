@@ -59,11 +59,12 @@ class FakeXcrun(
             Simulator(file.name, name, state)
         }
 
-    /** The simulator the provider of [pid] made for the resource [id], or null. */
+    /** The simulator the provider of [pid] made for the resource [id] and the [attempt], or null. */
     internal fun loop(
         id: String,
         pid: Long = OWN_PID,
-    ): Simulator? = named("loop-sim-$id-$pid")
+        attempt: String = "a-1",
+    ): Simulator? = named("loop-sim-$id-$pid@$attempt")
 
     /** The simulator named [name], or null. */
     internal fun named(name: String): Simulator? = simulators().firstOrNull { it.name == name }

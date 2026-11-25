@@ -17,15 +17,26 @@ public interface ResourceProvider {
     public val kinds: Set<String>
 
     /**
-     * Makes [resource], just granted, usable, booting it when needed, and returns what the agent needs to use it, such
-     * as `udid` or `serial`: a small map of non blank keys and values, empty when it needs nothing. Throws
+     * Makes [resource], just granted to [attemptId], usable, booting it when needed, and returns what the agent needs to
+     * use it, such as `udid` or `serial`: a small map of non blank keys and values, empty when it needs nothing. Throws
      * [ResourceException] when the resource cannot be made usable.
+     *
+     * [attemptId] is the holder of the lock (bl-208): an attempt id, or `check-<uuid>` and `recheck-<uuid>` for the
+     * checks of Loop. A provider uses it where it names what it creates, such as a simulator or a boot record.
+     *
+     * A prepare must be idempotent (bl-208): Loop can call it again for the same holder when the outcome of a first
+     * call was lost, canceled on shutdown or not written, and the second call reuses or cleans what the first made, so
+     * one [release] gives everything back. Loop gives each call a timeout of its own, interrupts the thread when it
+     * passes and moves on, so a provider stops on an interrupt.
      */
-    public fun prepare(resource: ResourceDeclaration): Map<String, String>
+    public fun prepare(
+        resource: ResourceDeclaration,
+        attemptId: AttemptId,
+    ): Map<String, String>
 
     /**
      * Gives back [resource] after its holder released it, undoing what [prepare] started, so the next holder can
-     * prepare it again. Throws [ResourceException] when it cannot.
+     * prepare it again. Throws [ResourceException] when it cannot. It has the same timeout as [prepare].
      */
     public fun release(resource: ResourceDeclaration)
 

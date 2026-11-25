@@ -517,7 +517,8 @@ class RunCommand(
      * m4-25: runs [block] while the resource grants tick every [RESOURCE_TICK_MS], in both modes, so a lock an agent
      * took with `request_resource` is prepared, and one it released is given back and granted to the next in its
      * queue, while its turn goes on. A tick reads the store only while the workflow declares resources. A failed tick
-     * logs a warning and the next one tries again. The ticks stop when [block] returns or is canceled.
+     * logs a warning and the next one tries again. The ticks stop when [block] returns or is canceled, and the grants
+     * close, which interrupts the provider calls still in flight.
      */
     private suspend fun withResourceTicks(
         grants: ResourceGrants,
@@ -541,6 +542,8 @@ class RunCommand(
             block()
         } finally {
             ticks.cancel()
+            // bl-208: the provider calls the ticks started in the background stop with the run.
+            grants.close()
         }
     }
 

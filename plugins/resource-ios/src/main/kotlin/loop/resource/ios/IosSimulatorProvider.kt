@@ -1,5 +1,6 @@
 package loop.resource.ios
 
+import loop.api.AttemptId
 import loop.api.ResourceDeclaration
 import loop.api.ResourceException
 import loop.api.ResourceHolder
@@ -15,8 +16,10 @@ import kotlin.time.TimeSource
  * has a timeout: the create or clone, the boot and the wait share the prepare timeout, every other call has
  * [commandTimeout].
  *
- * The simulator is named [PREFIX], the resource id, a dash and [pid], the process that prepared it, `loop run`. The
- * lock is keyed by kind and id across the machine, so one resource has at most one live holder. The provider only
+ * The simulator is named [PREFIX], the resource id, a dash, [pid], the process that prepared it, `loop run`, then `@`
+ * and the attempt that holds the lock (bl-208), made safe for a name. The attempt never holds an `@`, so the last one
+ * ends the resource id and the pid, whatever the resource id holds. The lock is keyed by kind and id across the machine,
+ * so one resource has at most one live holder. The provider only
  * ever shuts down or deletes a simulator of that shape whose process is this one or no longer [alive]: so a Loop run
  * on another Loop home of the machine, such as the one of a test, never removes the simulator of a live run, and a
  * simulator a person named never matches. [recover] also keeps those whose resource a live `ios-simulator` holder has.
@@ -32,14 +35,18 @@ public class IosSimulatorProvider internal constructor(
 
     override val kinds: Set<String> = setOf(KIND)
 
-    override fun prepare(resource: ResourceDeclaration): Map<String, String> {
+    override fun prepare(
+        resource: ResourceDeclaration,
+        attemptId: AttemptId,
+    ): Map<String, String> {
         val settings = SimulatorSettings.of(resource)
         val started = TimeSource.Monotonic.markNow()
 
         fun left() = settings.prepareTimeout - started.elapsedNow()
-        val name = PREFIX + resource.id + "-" + pid
+        val name = PREFIX + resource.id + "-" + pid + "@" + safe(attemptId.value)
         val devices = xcrun.devices(commandTimeout)
-        // The lock is the caller's, so a removable simulator of the resource is stale: a failed release or a crash left it.
+        // The lock is the caller's, so a removable simulator of the resource is stale: a failed release, a crash or a
+        // prepare of the same attempt whose outcome was lost left it (bl-208).
         ofResource(devices, resource).forEach(::remove)
         val output =
             if (settings.base != null) {
@@ -115,12 +122,15 @@ public class IosSimulatorProvider internal constructor(
         /** The key of the UDID in what [prepare] returns. */
         public const val UDID: String = "udid"
 
-        /** The start of the name of every simulator the provider creates, then the resource id, a dash and a pid. */
+        /** The start of the name of every simulator the provider creates, then the resource id, a dash, a pid, `@` and an attempt. */
         public const val PREFIX: String = "loop-sim-"
 
         /** The timeout of each `xcrun` call outside the create or clone, the boot and the wait. */
         public val COMMAND_TIMEOUT: Duration = 60.seconds
 
-        private val NAME = Regex(Regex.escape(PREFIX) + "(.+)-([0-9]+)")
+        private val NAME = Regex(Regex.escape(PREFIX) + "(.+)-([0-9]+)@([A-Za-z0-9._-]+)")
+
+        /** [attempt] with each character but a letter, a digit, `.`, `_` and `-` replaced by `_`. */
+        internal fun safe(attempt: String): String = attempt.replace(Regex("[^A-Za-z0-9._-]"), "_")
     }
 }

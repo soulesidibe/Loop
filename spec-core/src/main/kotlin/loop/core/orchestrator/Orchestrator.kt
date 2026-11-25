@@ -1500,11 +1500,19 @@ class Orchestrator(
                     try {
                         // m4-50: every lock and queue row of the attempt goes at its end, whatever the end.
                         // m4-25: through the grants of loop run when it has them, so each provider releases first.
-                        (
-                            resourceGrants?.endAttempt(attempt.attemptId, ResourceReleased.ATTEMPT_ENDED)
-                                ?: resourceLocks.freeAttempt(attempt.attemptId, ResourceReleased.ATTEMPT_ENDED)
-                        ).onFailure {
-                            log.log(LogLevel.WARN, "resource", LogOutcome.FAILED, attempt.logContext(), reason = it.describe())
+                        // bl-208: in a try of its own, so whatever it throws, an Error of a plugin too, the requests
+                        // are still dropped and the directory deleted.
+                        try {
+                            (
+                                resourceGrants?.endAttempt(attempt.attemptId, ResourceReleased.ATTEMPT_ENDED)
+                                    ?: resourceLocks.freeAttempt(attempt.attemptId, ResourceReleased.ATTEMPT_ENDED)
+                            ).onFailure {
+                                log.log(LogLevel.WARN, "resource", LogOutcome.FAILED, attempt.logContext(), reason = it.describe())
+                            }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Throwable) {
+                            log.log(LogLevel.WARN, "resource", LogOutcome.FAILED, attempt.logContext(), reason = e.describe())
                         }
                         // Whatever a canceled or failed turn queued is never applied (m1-23).
                         attempt.dropRequests()
