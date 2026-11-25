@@ -37,9 +37,16 @@ class ResourceGrantsTest {
     private class MemoryStore : ResourceLockStore {
         var rows = ResourceLockRows()
 
+        /** The number of the next changes refused, as a busy store would. */
+        var refuse = 0
+
         override suspend fun resourceLockRows() = Result.success(rows)
 
         override suspend fun <T> updateResourceLocks(change: (ResourceLockRows) -> ResourceLockUpdate<T>): Result<T> {
+            if (refuse > 0) {
+                refuse--
+                return Result.failure(IllegalStateException("the store is busy"))
+            }
             val update = change(rows)
             rows = update.rows
             return Result.success(update.value)
@@ -85,10 +92,16 @@ class ResourceGrantsTest {
     private val declarations =
         listOf(ResourceDeclaration("ios-simulator", "iphone", can = listOf("ui tests")), ResourceDeclaration("display", "main"))
 
+    private val peeked = mutableListOf<ProjectId>()
+
     private fun grants(
         provider: ResourceProvider = Provider(calls),
         project: ProjectId = p1,
-    ) = ResourceGrants(project, locks, listOf(provider), { declarations }) { lock, reason -> warnings += "${lock.resourceId}: $reason" }
+        live: (ProjectId) -> Boolean = { true },
+    ) = ResourceGrants(project, locks, listOf(provider), { declarations }, live = {
+        peeked += it
+        live(it)
+    }) { lock, reason -> warnings += "${lock.resourceId}: $reason" }
 
     private suspend fun ask(
         attempt: String,
@@ -180,5 +193,58 @@ class ResourceGrantsTest {
 
             assertEquals(emptyList(), calls)
             assertEquals(emptyList(), store.rows.locks)
+        }
+
+    @Test
+    fun `bl-204 a tick frees the rows of a project with no live run as abandoned, and the next in the queue is granted`() =
+        runTest {
+            ask("a1", project = p2)
+            ask("a2", project = p2, id = "other")
+            ask("b1")
+
+            grants(live = { it != p2 }).tick().getOrThrow()
+
+            assertEquals(listOf(AttemptId("b1")), store.rows.locks.map { it.attemptId })
+            assertEquals(emptyList(), store.rows.queue)
+            assertEquals(listOf(p2), peeked, "its own project is never peeked, the other once")
+            assertEquals(
+                listOf("a1 abandoned", "a2 abandoned"),
+                sink.events.filter { it.kind == "resource_released" }.map { "${it.attemptId?.value} ${it.data["reason"]}" },
+            )
+            assertEquals(listOf("prepare iphone"), calls, "b1's lock is prepared on the same tick")
+        }
+
+    @Test
+    fun `bl-204 a tick keeps the rows of a project whose run is live or unreadable`() =
+        runTest {
+            ask("a1", project = p2)
+            ask("b1")
+
+            grants(live = { true }).tick().getOrThrow()
+
+            assertEquals(listOf(AttemptId("a1")), store.rows.locks.map { it.attemptId })
+            assertEquals(listOf(AttemptId("b1")), store.rows.queue.map { it.attemptId })
+        }
+
+    @Test
+    fun `bl-204 a free that failed at the attempt end is retried on the next tick, without a second release`() =
+        runTest {
+            ask("a1")
+            ask("a2")
+            val grants = grants()
+            grants.tick().getOrThrow()
+            store.refuse = 1
+
+            val ended = grants.endAttempt(AttemptId("a1"), "attempt_ended")
+            assertEquals(true, ended.isFailure)
+            assertEquals(AttemptId("a1"), lock("iphone").attemptId)
+            grants.tick().getOrThrow()
+
+            assertEquals(AttemptId("a2"), lock("iphone").attemptId)
+            assertEquals(listOf("prepare iphone", "release iphone", "prepare iphone"), calls)
+            assertEquals(
+                listOf("a1 attempt_ended"),
+                sink.events.filter { it.kind == "resource_released" }.map { "${it.attemptId?.value} ${it.data["reason"]}" },
+            )
         }
 }

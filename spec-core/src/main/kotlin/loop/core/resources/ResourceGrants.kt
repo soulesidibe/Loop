@@ -21,21 +21,39 @@ import loop.api.ResourceProvider
  * at the end of an attempt. A provider gets the entry of [declarations], the current `resources:` of the workflow, or
  * its kind and id alone when a reload removed it. A provider that fails goes to [failed] and the free goes on.
  * Locks of other projects are their own runs' to prepare. One call at a time.
+ *
+ * Since bl-204 a tick also frees as abandoned the rows of every other project that [live] says has no live run, so a
+ * killed run never keeps a resource from the others, and frees again the rows of each attempt whose free at its end
+ * failed. [live] is never asked about [projectId], whose run is this one.
  */
 class ResourceGrants(
     private val projectId: ProjectId,
     private val locks: ResourceLocks,
     providers: List<ResourceProvider>,
     private val declarations: () -> List<ResourceDeclaration>,
+    private val live: (ProjectId) -> Boolean = { true },
     private val failed: (ResourceLock, String) -> Unit = { _, _ -> },
 ) {
     private val providers: Map<String, ResourceProvider> = providers.flatMap { provider -> provider.kinds.map { it to provider } }.toMap()
 
     private val mutex = Mutex()
 
-    /** One pass over the locks of the project: the releases, then the prepares. A failed read of the rows is the failure. */
+    /** The attempts whose free at their end failed, with its reason, freed again on the next tick (bl-204). */
+    private val unfreed = mutableMapOf<AttemptId, String>()
+
+    /** The locks whose provider `release` ran already, so a free tried again never releases twice (bl-204). */
+    private val givenBack = mutableSetOf<ResourceLock>()
+
+    /**
+     * One pass over the locks: the abandoned rows of other projects and the frees that failed, then the releases and the
+     * prepares of the project. A failed read or change of the rows is the failure; the next tick tries again.
+     */
     suspend fun tick(): Result<Unit> =
         mutex.withLock {
+            locks.freeAbandoned(projectId, live).onFailure { return@withLock Result.failure(it) }
+            for ((attemptId, reason) in unfreed.toMap()) {
+                free(attemptId, reason).onFailure { return@withLock Result.failure(it) }
+            }
             val released = mine().getOrElse { return@withLock Result.failure(it) }.filter { it.releaseRequestedAt != null }
             for (lock in released) {
                 giveBack(lock)
@@ -55,16 +73,35 @@ class ResourceGrants(
 
     /**
      * Frees every lock and queue row of the attempt [attemptId], each freed lock recorded with [reason], after the
-     * provider's `release` of each lock it prepared, so the next holder is prepared only once the resource is back.
+     * provider's `release` of each lock it prepared, so the next holder is prepared only once the resource is back. A
+     * free that fails is the failure, and the next [tick] tries it again (bl-204).
      */
     suspend fun endAttempt(
         attemptId: AttemptId,
         reason: String,
-    ): Result<ResourceChange> =
-        mutex.withLock {
-            locks.rows().getOrNull()?.locks.orEmpty().filter { it.attemptId == attemptId }.forEach { giveBack(it) }
-            locks.freeAttempt(attemptId, reason)
+    ): Result<ResourceChange> = mutex.withLock { free(attemptId, reason) }
+
+    /** Gives back each lock of [attemptId] not given back yet, then frees its rows, or keeps it for the next tick. */
+    private suspend fun free(
+        attemptId: AttemptId,
+        reason: String,
+    ): Result<ResourceChange> {
+        val rows =
+            locks.rows().getOrElse { error ->
+                unfreed[attemptId] = reason
+                return Result.failure(error)
+            }
+        rows.locks.filter { it.attemptId == attemptId && it !in givenBack }.forEach { lock ->
+            giveBack(lock)
+            givenBack += lock
         }
+        return locks
+            .freeAttempt(attemptId, reason)
+            .onSuccess {
+                unfreed -= attemptId
+                givenBack.removeAll { it.attemptId == attemptId }
+            }.onFailure { unfreed[attemptId] = reason }
+    }
 
     private suspend fun mine(): Result<List<ResourceLock>> = locks.rows().map { rows -> rows.locks.filter { it.projectId == projectId } }
 

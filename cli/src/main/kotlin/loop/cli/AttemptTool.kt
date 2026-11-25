@@ -77,6 +77,9 @@ internal class AttemptTool(
 
     fun redact(text: String): String = scope.redactor.redact(text)
 
+    /** The Loop home of the machine, where the store and the run files are (m4-25). */
+    val loopHome: Path get() = host.loopHome
+
     /** Prints one redacted warning line to stderr, which fails nothing (m4-25). */
     fun warn(message: String) {
         echoErr(redact("loop tool $name: $message"))

@@ -52,7 +52,9 @@ class ResourceLocks(
     /**
      * `request_resource` (m4-25): the attempt [attemptId] of the issue [issueId] in [projectId] asks for the resource of
      * [kind] and [resourceId], or checks a request it made before, by the rules of [ResourceAnswers.ask]. A new request
-     * records `resource_requested`, then `resource_granted` or `resource_queued` with its position.
+     * records `resource_requested`, then `resource_granted` or `resource_queued` with its position. First, in the same
+     * change, the rows of every other project that [live] says has no live run are freed as abandoned (bl-204), so a
+     * request never waits behind a dead holder.
      */
     suspend fun ask(
         projectId: ProjectId,
@@ -61,12 +63,13 @@ class ResourceLocks(
         attemptId: AttemptId,
         kind: String,
         resourceId: String,
+        live: (ProjectId) -> Boolean = { true },
     ): Result<ResourceAnswer> {
         val request = ResourceRequest(kind, resourceId, projectId, issueId, issueIdentifier, attemptId, clock.now())
         val ids = mapOf(ResourceRequested.KIND to kind, ResourceRequested.RESOURCE_ID to resourceId)
         val subject = request.granted()
         return change(
-            reason = ResourceReleased.RELEASED,
+            reason = ResourceReleased.ABANDONED,
             first = { answer -> if (answer.requested) listOf(event(ResourceRequested.event(clock.now(), projectId, ids), subject)) else emptyList() },
             last = { answer ->
                 if (answer is ResourceAnswer.Queued && answer.requested) {
@@ -76,7 +79,30 @@ class ResourceLocks(
                     emptyList()
                 }
             },
-        ) { rows -> ResourceAnswers.ask(rows, request, clock.now()).let { it.change to it.answer } }
+        ) { rows ->
+            val swept = ResourceQueue.freeAbandoned(rows, projectId, live, clock.now())
+            val asked = ResourceAnswers.ask(swept.rows, request, clock.now())
+            val change =
+                asked.change.copy(
+                    released = swept.released + asked.change.released,
+                    granted = swept.granted + asked.change.granted,
+                )
+            change to asked.answer
+        }
+    }
+
+    /**
+     * Frees the rows of every project other than [own] that [live] says has no live run (bl-204), each freed lock
+     * recorded with the reason `abandoned` and granted to the oldest request of its queue left. Rows of [own] alone
+     * change nothing, so they are only read.
+     */
+    suspend fun freeAbandoned(
+        own: ProjectId,
+        live: (ProjectId) -> Boolean,
+    ): Result<ResourceChange> {
+        val rows = rows().getOrElse { return Result.failure(it) }
+        if (rows.locks.all { it.projectId == own } && rows.queue.all { it.projectId == own }) return Result.success(ResourceChange(rows))
+        return change(ResourceReleased.ABANDONED) { current -> ResourceQueue.freeAbandoned(current, own, live, clock.now()).let { it to it } }
     }
 
     /**
@@ -123,8 +149,8 @@ class ResourceLocks(
     ): Result<ResourceChange> = change(reason) { rows -> ResourceQueue.freeProject(rows, projectId, clock.now()).let { it to it } }
 
     /**
-     * Applies [apply] to the rows in one store change, then records the events [first] gives for its value, what it
-     * released, with [reason], what it granted, and the events [last] gives.
+     * Applies [apply] to the rows in one store change, then records what it released, with [reason], the events
+     * [first] gives for its value, what it granted, and the events [last] gives.
      */
     private suspend fun <T> change(
         reason: String,
@@ -141,8 +167,8 @@ class ResourceLocks(
             }
         result.onSuccess { value ->
             val change = checkNotNull(applied)
-            first(value).forEach { record(it) }
             change.released.forEach { record(released(it, reason)) }
+            first(value).forEach { record(it) }
             change.granted.forEach { record(granted(it)) }
             last(value).forEach { record(it) }
         }

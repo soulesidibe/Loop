@@ -86,3 +86,25 @@ internal fun slotLive(
         RunFiles.Peek.Nothing, is RunFiles.Peek.Gone -> false
     }
 }
+
+/**
+ * True unless the run file of [projectId] shows no live run (bl-204): a resource lock or queue row of a project with
+ * no live run was left by a dead process and is freed as abandoned. Read once, with no wait, since the free reads
+ * under the store's write lock, and a run file Loop cannot read counts as live. Never call it for the caller's own
+ * project: a `loop run` holds that run file's lock, which reading the file would drop.
+ */
+internal fun projectRunLive(
+    loopHome: Path,
+    projectId: ProjectId,
+): Boolean {
+    val peek =
+        try {
+            RunFiles(loopHome, projectId).peek(retry = false)
+        } catch (e: IOException) {
+            RunFiles.Peek.Unreadable(e)
+        }
+    return when (peek) {
+        is RunFiles.Peek.Live, is RunFiles.Peek.Unreadable -> true
+        RunFiles.Peek.Nothing, is RunFiles.Peek.Gone -> false
+    }
+}

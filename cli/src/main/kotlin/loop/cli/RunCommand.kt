@@ -300,6 +300,8 @@ class RunCommand(
                 },
                 resourcePlugins?.providers.orEmpty(),
                 resourcesAt::get,
+                // bl-204: the rows of a project whose run died are freed on the tick, its own project never peeked.
+                live = { project -> projectRunLive(host.loopHome, project) },
             ) { lock, reason ->
                 val fields = mapOf("kind" to lock.kind, "resource_id" to lock.resourceId)
                 log.log(LogLevel.WARN, "resource", LogOutcome.FAILED, context.copy(attemptId = lock.attemptId), fields = fields, reason = reason)

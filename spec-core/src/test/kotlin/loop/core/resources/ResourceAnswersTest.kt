@@ -146,4 +146,29 @@ class ResourceAnswersTest {
             assertEquals(false, locks.prepared(second, Result.success(mapOf("serial" to "again"))).getOrThrow())
             assertEquals(emptyMap(), store.rows.locks.single().prepared)
         }
+
+    @Test
+    fun `bl-204 a request frees the rows of another project with no live run before it answers, never peeking its own`() =
+        runTest {
+            val p2 = ProjectId("p2")
+            locks.ask(p2, "i-a1", "t-a1", AttemptId("a1"), "avd", "api35").getOrThrow()
+            locks.ask(p2, "i-a2", "t-a2", AttemptId("a2"), "avd", "api35").getOrThrow()
+            val peeked = mutableListOf<ProjectId>()
+
+            val answer =
+                locks
+                    .ask(p1, "i-b1", "t-b1", AttemptId("b1"), "avd", "api35") {
+                        peeked += it
+                        it != p2
+                    }.getOrThrow()
+
+            assertIs<ResourceAnswer.Preparing>(answer, "the dead holder and its queue are gone, so b1 is granted")
+            assertEquals(listOf(p2), peeked)
+            assertEquals(listOf(AttemptId("b1")), store.rows.locks.map { it.attemptId })
+            assertEquals(emptyList(), store.rows.queue)
+            assertEquals(
+                listOf("resource_released a1 avd api35 abandoned", "resource_requested b1 avd api35", "resource_granted b1 avd api35"),
+                lines().drop(4),
+            )
+        }
 }

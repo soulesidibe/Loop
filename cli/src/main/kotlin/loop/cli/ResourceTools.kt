@@ -40,7 +40,10 @@ internal class ResourceTools(
             val identifier = started.issueIdentifier ?: env.issueName
             val answer =
                 locks
-                    .ask(env.projectId, issueId, identifier, env.attemptId, resource.kind, resource.id)
+                    .ask(env.projectId, issueId, identifier, env.attemptId, resource.kind, resource.id) { project ->
+                        // bl-204: a dead holder of another project is freed before this request answers queued.
+                        projectRunLive(tool.loopHome, project)
+                    }
                     .getOrElse { return@withLocks storeFailure(resource, it) }
             answer(resource, answer)
         }
