@@ -2,14 +2,24 @@ package loop.cli
 
 import loop.api.LedgerRow
 import loop.api.ProjectId
+import loop.core.merge.RiskReviewRow
 import java.util.Locale
 import kotlin.time.Instant
 
-/** A delivered issue of `loop report` (m4-38): its [name] as shown and every ledger row of it, in order. */
+/**
+ * A delivered issue of `loop report` (m4-38): its [name] as shown and every ledger row of it, in order, its merge risk
+ * reviews included. A review's spend is part of the issue's cost, but the issue's [last] attempt is never a review.
+ */
 internal data class DeliveredIssue(
     val name: String,
     val rows: List<LedgerRow>,
-)
+) {
+    /** The last row of the issue that is not a merge risk review, else its last row. */
+    val last: LedgerRow? get() = rows.lastOrNull { !isReview(it) } ?: rows.lastOrNull()
+}
+
+/** True for the ledger row of a merge risk review (m2-28), which the risk reviewer writes, not an attempt. */
+internal fun isReview(row: LedgerRow): Boolean = row.attempt.setup.runner == RiskReviewRow.RUNNER
 
 /**
  * What `loop report` prints (m4-38, PLAN 6.8) for the window that starts at [start], typed as [label]: the [delivered]
@@ -52,11 +62,12 @@ internal class LedgerReport(
         val full = delivered.filter { issue -> issue.rows.isNotEmpty() && issue.rows.all { it.attempt.costUsd != null } }
         if (full.isEmpty()) return "Cost per delivered issue: $NOT_REPORTED, no delivered issue has a reported cost"
         val total = full.sumOf { issue -> issue.rows.sumOf { it.attempt.costUsd!! } }
-        val rows = full.sumOf { it.rows.size }
+        val rows = full.flatMap { it.rows }
+        val issues = count(full.size, "issue")
+        val over = if (rows.any(::isReview)) "$issues, ${rowsText(rows)}" else "$issues and ${rowsText(rows)}"
         val left = delivered.size - full.size
         val leftOut = if (left == 0) "" else ", ${count(left, "issue")} left out, ${if (left == 1) "its" else "their"} cost $NOT_REPORTED"
-        return "Cost per delivered issue: ${usd(total / full.size)} on average over ${count(full.size, "issue")} and " +
-            "${count(rows, "attempt")}$leftOut"
+        return "Cost per delivered issue: ${usd(total / full.size)} on average over $over$leftOut"
     }
 
     private fun issueCost(issue: DeliveredIssue): String {
@@ -64,9 +75,9 @@ internal class LedgerReport(
         if (rows.isEmpty()) return "$NOT_REPORTED, no attempt recorded"
         val reported = rows.mapNotNull { it.attempt.costUsd }
         return when (reported.size) {
-            0 -> "$NOT_REPORTED, ${count(rows.size, "attempt")}"
-            rows.size -> "${usd(reported.sum())} over ${count(rows.size, "attempt")}"
-            else -> "${usd(reported.sum())} over ${reported.size} of ${rows.size} attempts, ${rows.size - reported.size} $NOT_REPORTED"
+            0 -> "$NOT_REPORTED, ${rowsText(rows)}"
+            rows.size -> "${usd(reported.sum())} over ${rowsText(rows)}"
+            else -> "${usd(reported.sum())} over ${reported.size} of ${rowsText(rows)}, ${rows.size - reported.size} $NOT_REPORTED"
         }
     }
 
@@ -87,7 +98,7 @@ internal class LedgerReport(
      * attempt ran with it, and its average cost per attempt over the attempts that reported one.
      */
     private fun comparisonLines(): List<String> {
-        val lastSetups = delivered.mapNotNull { issue -> issue.rows.lastOrNull()?.let(::setupOf) }
+        val lastSetups = delivered.mapNotNull { issue -> issue.last?.let(::setupOf) }
         val groups = (attempts.map(::setupOf) + lastSetups).distinct().sortedWith(SETUP_ORDER)
         if (groups.isEmpty()) return listOf("Comparison by runner, model and template: no attempt finished since the start of the window")
         val lines =
@@ -129,18 +140,23 @@ internal class LedgerReport(
         fun setupOf(row: LedgerRow): Setup = row.attempt.setup.let { Setup(it.runner, it.model, it.templateVersion) }
 
         fun kindOf(issue: DeliveredIssue): String =
-            issue.rows
-                .lastOrNull()
+            issue.last
                 ?.attempt
                 ?.setup
                 ?.kind ?: "kind not recorded"
 
         fun trackerOf(issue: DeliveredIssue): String =
-            issue.rows
-                .lastOrNull()
+            issue.last
                 ?.attempt
                 ?.setup
                 ?.tracker ?: "tracker not recorded"
+
+        /** How many attempts [rows] hold, then how many merge risk reviews when there are any. */
+        fun rowsText(rows: List<LedgerRow>): String {
+            val reviews = rows.count(::isReview)
+            val attempts = count(rows.size - reviews, "attempt")
+            return if (reviews == 0) attempts else "$attempts and ${count(reviews, "merge risk review")}"
+        }
 
         fun usd(amount: Double): String = String.format(Locale.ROOT, "%.2f usd", amount)
 

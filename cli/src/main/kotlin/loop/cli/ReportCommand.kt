@@ -173,7 +173,18 @@ private fun failedCheck(data: Map<String, String>): String? =
     when {
         data[CheckEvent.CANCELED] == "true" -> null
         data[CheckEvent.HOLDOUT] == "true" -> "a hidden check failed".takeIf { data[CheckEvent.RESULT] == "failed" }
-        data[CheckEvent.TIMED_OUT] == "true" -> "check ${data[CheckEvent.COMMAND]} timed out"
-        data[CheckEvent.EXIT_CODE].let { it != null && it != "0" } -> "check ${data[CheckEvent.COMMAND]} failed"
+        data[CheckEvent.TIMED_OUT] == "true" -> "check ${checkLabel(data)} timed out"
+        data[CheckEvent.EXIT_CODE].let { it != null && it != "0" } -> "check ${checkLabel(data)} failed"
         else -> null
     }
+
+/**
+ * The command of a `check_finished` [data] as a reason names it: a `diff_policy` check's label carries its base, which
+ * changes from run to run, and its protected paths, so it is grouped as `diff_policy` alone.
+ */
+private fun checkLabel(data: Map<String, String>): String? {
+    val command = data[CheckEvent.COMMAND]
+    return if (command == DIFF_POLICY || command?.startsWith("$DIFF_POLICY ") == true) DIFF_POLICY else command
+}
+
+private const val DIFF_POLICY = "diff_policy"

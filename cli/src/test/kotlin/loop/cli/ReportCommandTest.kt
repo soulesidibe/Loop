@@ -39,6 +39,7 @@ class ReportCommandTest {
 
     private val opus = Setup("claude-code", "claude-opus-5-5", "a".repeat(64))
     private val codex = Setup("codex", null, "b".repeat(64))
+    private val reviewer = Setup("risk_reviewer", "claude-sonnet-5-5", "a".repeat(64))
 
     private data class Setup(
         val runner: String,
@@ -63,13 +64,14 @@ class ReportCommandTest {
               code, files: 2
               content, files: 1
             Delivered with zero human touches: 2 of 3 (not reliable, see bl-64)
-            Cost per delivered issue: 2.00 usd on average over 2 issues and 4 attempts, 1 issue left out, its cost not reported
+            Cost per delivered issue: 2.10 usd on average over 2 issues, 4 attempts and 1 merge risk review, 1 issue left out, its cost not reported
               t-1, code, files: 1.50 usd over 2 attempts
               t-2, content, files: not reported, 1 attempt
-              t-3, code, files: 2.50 usd over 2 attempts
+              t-3, code, files: 2.70 usd over 2 attempts and 1 merge risk review
 
-            Refutation reasons: 5 refuted verdicts
+            Refutation reasons: 7 refuted verdicts
               check ./gradlew test failed: 2
+              check diff_policy failed: 2
               2 files not committed: 1
               a hidden check failed: 1
               check ./gradlew test failed in a merge check: 1
@@ -77,6 +79,7 @@ class ReportCommandTest {
             Comparison by runner, model and template, attempts finished since the start of the window:
               claude-code, claude-opus-5-5, template aaaaaaaa: 4 attempts, 3 verified, 1 refuted, 2 delivered, 0.60 usd per attempt on average over 4 attempts
               codex, model not recorded, template bbbbbbbb: 2 attempts, 1 verified, 0 refuted, 1 delivered, 0.30 usd per attempt on average over 1 attempt, 1 not reported
+              risk_reviewer, claude-sonnet-5-5, template aaaaaaaa: 1 attempt, 0 verified, 0 refuted, 0 delivered, 0.20 usd per attempt on average over 1 attempt
             """.trimIndent(),
             body,
         )
@@ -93,8 +96,8 @@ class ReportCommandTest {
         assertEquals(listOf("t-1", "t-2", "t-3"), delivered.map { it.trim().substringBefore(",") }, result.stdout)
         // t-4 has a verified attempt, a host move that was not verified and a verified move not by host: not delivered.
         // t-5 was delivered nine days ago, before the window.
-        assertFalse(result.stdout.contains("t-4"), result.stdout)
-        assertFalse(result.stdout.contains("t-5"), result.stdout)
+        assertFalse(result.stdout.contains("  t-4,"), result.stdout)
+        assertFalse(result.stdout.contains("  t-5,"), result.stdout)
     }
 
     @Test
@@ -248,6 +251,8 @@ class ReportCommandTest {
         attempt("t-3", "c2", opus, finished = now - 1.days, cost = 0.5, verdict = "verified")
         checks("c2", "t-3", now - 20.hours, "./gradlew test" to "1")
         verdict("c2", "t-3", now - 20.hours, "refuted", mapOf("merge_check" to "true"))
+        // Its merge risk review is a ledger row too: its spend counts in the issue's cost, never as its last attempt.
+        attempt("t-3", "c3", reviewer, finished = now - 2.hours, cost = 0.2, verdict = null, reason = "merge_risk_review")
         moved("t-3", at = now - 1.hours)
         // t-4: verified, moved by host without verification and by a turn with it, never delivered.
         checks("d0", "t-4", now - 2.days, "./gradlew test" to "0")
@@ -266,6 +271,11 @@ class ReportCommandTest {
         // j1: one more refuted verdict on a plain check failure.
         checks("j1", "t-6", now - 12.hours, "./gradlew test" to "1")
         verdict("j1", "t-6", now - 12.hours, "refuted")
+        // k1 and k2: diff_policy refuted twice, its label carrying a base that changes from run to run.
+        checks("k1", "t-6", now - 6.hours, "diff_policy base=abc123 protect=scripts/" to "1")
+        verdict("k1", "t-6", now - 6.hours, "refuted")
+        checks("k2", "t-6", now - 5.hours, "diff_policy base=def456 protect=scripts/,WORKFLOW.md" to "1")
+        verdict("k2", "t-6", now - 5.hours, "refuted")
         // t-5: delivered nine days ago.
         attempt("t-5", "e1", opus, finished = now - 9.days, cost = 3.0, verdict = "verified")
         moved("t-5", at = now - 9.days)
@@ -279,6 +289,7 @@ class ReportCommandTest {
         cost: Double?,
         verdict: String?,
         kind: String = "code",
+        reason: String? = null,
     ) = withStore { store ->
         store
             .recordAttempt(
@@ -292,7 +303,7 @@ class ReportCommandTest {
                     startedAt = finished - 1.hours,
                     finishedAt = finished,
                     outcome = if (verdict == null) "failed" else "succeeded",
-                    reason = null,
+                    reason = reason,
                     turns = 1,
                     issueState = "todo",
                     tokens = LedgerTokens(1000, 100, 0, 0),
