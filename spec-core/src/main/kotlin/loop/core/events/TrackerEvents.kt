@@ -88,6 +88,9 @@ object IssueCommented : EventDefinition("issue_commented") {
     const val AUTO_MERGE_FALLBACK = "auto_merge_fallback"
     const val CI = "ci"
 
+    /** m4-22: the comment of the attach delivery, the deliverable files of a verified result. */
+    const val DELIVERABLE = "deliverable"
+
     /** m3-12: the comment of a `split_issue` park. */
     const val SPLIT_ISSUE = IssueParked.SPLIT_ISSUE
 
@@ -110,6 +113,7 @@ object IssueCommented : EventDefinition("issue_commented") {
         MERGE_CHECK -> "commented the outcome of its merge check"
         AUTO_MERGE_FALLBACK -> "commented why it did not merge on its own"
         CI -> "commented why CI did not let it merge"
+        DELIVERABLE -> "commented the deliverable files of its verified result"
         SPLIT_ISSUE -> "commented that it should be split"
         else -> "commented${Tracker.humanBy(data)}"
     }
