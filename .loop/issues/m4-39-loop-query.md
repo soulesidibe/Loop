@@ -1,7 +1,7 @@
 ---
 id: m4-39
 title: "loop query runs read only SQL over the store"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-38]
@@ -42,3 +42,12 @@ Out of this issue: saved queries, a query over the JSONL ledger, and an HTTP API
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-25 19:20Z agent 03b01075: Turn 2: the refuted build failed on one test outside this issue, spec-core OrchestratorStallTest "turns fed from other threads always finish with the stall timer on", a 60s JUnit timeout while the test was starting a git process (WorkspaceGit through SessionBrief). The test runs 300 orchestrator rounds that each spawn git, so under the load of the full build it can pass 60s. This branch changes nothing under spec-core, conformance or plugin-api. Rerun alone with --rerun three times, it passed each time in about 35s. The test is not changed or skipped. Moving to review again so the build reruns. A follow up for the flake belongs in the backlog: the 300 git spawns against a 60s timeout.
+
+2026-11-25 19:23Z loop: Loop opened pull request #76 for this issue: https://github.com/soulesidibe/Loop/pull/76
+
+2026-11-25 19:26Z loop: Loop did not merge pull request #76, ci: Actions runs did not pass: build (failure). The pull request stays open and the result waits for a new approval.
+  Failed runs:
+  - build (failure): https://github.com/soulesidibe/Loop/actions/runs/45684771762
+  Rerun the runs on GitHub or fix the branch, then approve again with loop approve.
