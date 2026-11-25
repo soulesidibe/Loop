@@ -12,10 +12,16 @@ import kotlin.time.Duration.Companion.seconds
  * `emulator` boots it. A holder that leaves the emulator up is played by an `emu kill` that answers OK and kills nothing.
  */
 class AndroidAvdContractTest : ResourceProviderContract() {
-    private val android = FakeAndroid(Files.createTempDirectory("loop-android-avd"))
+    private val root = Files.createTempDirectory("loop-android-avd")
+    private val android = FakeAndroid(root)
 
     @AfterEach
-    fun stopFakeEmulators() = android.shutdown()
+    fun stopFakeEmulators() {
+        android.shutdown()
+        // The fake emulators see their device gone within 20 ms and exit before the folder goes.
+        Thread.sleep(200)
+        root.toFile().deleteRecursively()
+    }
 
     override fun provider(): ResourceProvider = android.provider(stop = 1.seconds)
 
@@ -31,7 +37,13 @@ class AndroidAvdContractTest : ResourceProviderContract() {
 
 /** m4-28: [ResourceProviderContract] against the Android provider for a connected `android-device`, which leaves nothing behind. */
 class AndroidDeviceContractTest : ResourceProviderContract() {
-    private val android = FakeAndroid(Files.createTempDirectory("loop-android-device")).apply { connect("R58M123") }
+    private val root = Files.createTempDirectory("loop-android-device")
+    private val android = FakeAndroid(root).apply { connect("R58M123") }
+
+    @AfterEach
+    fun removeMachine() {
+        root.toFile().deleteRecursively()
+    }
 
     override fun provider(): ResourceProvider = android.provider()
 

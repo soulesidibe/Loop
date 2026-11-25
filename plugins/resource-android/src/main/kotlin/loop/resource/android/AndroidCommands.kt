@@ -95,8 +95,17 @@ internal class AndroidCommands(
         name: String,
         sdkFolder: String,
     ): Path {
-        val onPath = environment["PATH"].orEmpty().split(File.pathSeparator).filter { it.isNotBlank() }.map { Path.of(it, name) }
-        val inSdk = listOf("ANDROID_HOME", "ANDROID_SDK_ROOT").mapNotNull { environment[it]?.takeIf(String::isNotBlank) }.map { Path.of(it, sdkFolder, name) }
+        val onPath =
+            environment["PATH"]
+                .orEmpty()
+                .split(File.pathSeparator)
+                .filter { it.isNotBlank() }
+                .map { Path.of(it, name) }
+        val inSdk =
+            listOf("ANDROID_HOME", "ANDROID_SDK_ROOT")
+                .mapNotNull {
+                    environment[it]?.takeIf(String::isNotBlank)
+                }.map { Path.of(it, sdkFolder, name) }
         return (onPath + inSdk).firstOrNull { it.isExecutable() }
             ?: throw ResourceException("$name is not on the PATH, nor under ANDROID_HOME or ANDROID_SDK_ROOT in $sdkFolder/")
     }
@@ -116,7 +125,12 @@ internal class AndroidCommands(
             exitCode: Int,
             output: String,
         ): String {
-            val last = output.lines().lastOrNull { it.isNotBlank() }?.trim()?.take(QUOTED_CHARS)
+            val last =
+                output
+                    .lines()
+                    .lastOrNull { it.isNotBlank() }
+                    ?.trim()
+                    ?.take(QUOTED_CHARS)
             return "$command exited with code $exitCode" + (last?.let { ": $it" } ?: "")
         }
     }

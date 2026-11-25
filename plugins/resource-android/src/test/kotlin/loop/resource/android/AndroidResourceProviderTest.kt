@@ -82,7 +82,8 @@ class AndroidResourceProviderTest {
         assertTrue("emulator -avd pixel_api35 -no-snapshot-save -port 5556" in calls, "$calls")
         assertTrue("adb -s emulator-5556 wait-for-device" in calls, "$calls")
         assertTrue("adb -s emulator-5556 shell getprop sys.boot_completed" in calls, "$calls")
-        assertTrue(calls.indexOf("adb -s emulator-5556 wait-for-device") < calls.indexOf("adb -s emulator-5556 shell getprop sys.boot_completed"))
+        val waited = calls.indexOf("adb -s emulator-5556 wait-for-device")
+        assertTrue(waited < calls.indexOf("adb -s emulator-5556 shell getprop sys.boot_completed"), "$calls")
 
         provider.release(AVD)
 

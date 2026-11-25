@@ -111,7 +111,11 @@ class FakeAndroid(
     ) {
         val file = bin.resolve(name)
         file.writeText(text)
-        Files.setPosixFilePermissions(file, java.nio.file.attribute.PosixFilePermissions.fromString("rwxr-xr-x"))
+        Files.setPosixFilePermissions(
+            file,
+            java.nio.file.attribute.PosixFilePermissions
+                .fromString("rwxr-xr-x"),
+        )
     }
 
     private companion object {

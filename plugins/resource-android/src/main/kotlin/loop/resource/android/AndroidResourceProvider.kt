@@ -107,7 +107,8 @@ class AndroidResourceProvider internal constructor(
         val failures =
             orphans.mapNotNull { record ->
                 try {
-                    if (stop(record)) null else "avd ${record.avd}: the emulator ${record.serial} is still running after ${killCommand(record)}"
+                    val gone = stop(record)
+                    if (gone) null else "avd ${record.avd}: the emulator ${record.serial} is still running after ${killCommand(record)}"
                 } catch (e: ResourceException) {
                     "avd ${record.avd}: ${e.message}"
                 }
@@ -119,14 +120,17 @@ class AndroidResourceProvider internal constructor(
         val devices = devices()
         val state =
             devices[serial]
-                ?: throw ResourceException("the device is not connected, adb devices lists ${devices.keys.joinToString().ifEmpty { "none" }}")
+                ?: throw ResourceException(
+                    "the device is not connected, adb devices lists ${devices.keys.joinToString().ifEmpty { "none" }}",
+                )
         if (state != READY) throw ResourceException("the device is $state, not ready")
         return serial
     }
 
     private fun prepareAvd(avd: String): String {
         val devices = devices()
-        val running = devices.filter { (serial, state) -> state == READY && serial.startsWith(EMULATOR_PREFIX) }.keys.firstOrNull { avdName(it) == avd }
+        val emulators = devices.filter { (serial, state) -> state == READY && serial.startsWith(EMULATOR_PREFIX) }.keys
+        val running = emulators.firstOrNull { avdName(it) == avd }
         if (running != null) {
             waitBooted(running, TimeSource.Monotonic.markNow() + timeouts.boot, emulator = null)
             return running
@@ -188,7 +192,13 @@ class AndroidResourceProvider internal constructor(
             val waited = commands.adb(listOf("-s", serial, "wait-for-device"), minOf(-deadline.elapsedNow(), waitSlice))
             if (waited.timedOut) continue
             if (waited.exitCode != 0) {
-                throw ResourceException(AndroidCommands.failed(AndroidCommands.display("adb", listOf("-s", serial, "wait-for-device")), waited.exitCode, waited.output))
+                throw ResourceException(
+                    AndroidCommands.failed(
+                        AndroidCommands.display("adb", listOf("-s", serial, "wait-for-device")),
+                        waited.exitCode,
+                        waited.output,
+                    ),
+                )
             }
             break
         }
@@ -229,7 +239,9 @@ class AndroidResourceProvider internal constructor(
     private fun failIfExited(emulator: Started) {
         if (emulator.process.isAlive) return
         val log = if (emulator.log.exists()) emulator.log.readText() else ""
-        throw ResourceException(AndroidCommands.failed(AndroidCommands.display("emulator", emulator.args), emulator.process.exitValue(), log))
+        throw ResourceException(
+            AndroidCommands.failed(AndroidCommands.display("emulator", emulator.args), emulator.process.exitValue(), log),
+        )
     }
 
     /**
@@ -253,7 +265,8 @@ class AndroidResourceProvider internal constructor(
             }
         var gone = failure == null && awaitGone(record.serial)
         if (!gone) {
-            (started[record.avd]?.toHandle() ?: ProcessHandle.of(record.pid).orElse(null)?.takeIf { record.pid > 0 })?.let(::kill)
+            val process = started[record.avd]?.toHandle() ?: record.pid.takeIf { it > 0 }?.let { ProcessHandle.of(it).orElse(null) }
+            process?.let(::kill)
             gone = awaitGone(record.serial)
         }
         if (gone) {
@@ -312,7 +325,15 @@ class AndroidResourceProvider internal constructor(
     /** The first even port from 5554 to 5584 that no connected emulator, no record and no other process uses, with its next port. */
     private fun freePort(devices: Map<String, String>): Int {
         val serials = devices.keys + records.all().map { it.serial }
-        val taken = serials.mapNotNull { it.removePrefix(EMULATOR_PREFIX).takeIf { _ -> it.startsWith(EMULATOR_PREFIX) }?.toIntOrNull() }.toSet()
+        val taken =
+            serials
+                .mapNotNull {
+                    EMULATOR_SERIAL
+                        .matchEntire(it)
+                        ?.groupValues
+                        ?.get(1)
+                        ?.toInt()
+                }.toSet()
         return (FIRST_PORT..LAST_PORT step 2).firstOrNull { it !in taken && portFree(it) && portFree(it + 1) }
             ?: throw ResourceException("no emulator port is free from $FIRST_PORT to $LAST_PORT")
     }
@@ -340,6 +361,7 @@ class AndroidResourceProvider internal constructor(
         const val FIRST_PORT = 5554
         const val LAST_PORT = 5584
         const val WAIT_SLICE_POLLS = 5
+        val EMULATOR_SERIAL = Regex("emulator-(\\d+)")
 
         fun emulatorArgs(
             avd: String,
@@ -353,7 +375,11 @@ class AndroidResourceProvider internal constructor(
             val loopHome =
                 environment["LOOP_HOME"]?.takeIf { it.isNotBlank() }?.let { Path.of(it) }
                     ?: Path.of(environment["HOME"]?.takeIf { it.isNotBlank() } ?: System.getProperty("user.home"), ".loop")
-            return loopHome.resolve("resources").resolve("android").toAbsolutePath().normalize()
+            return loopHome
+                .resolve("resources")
+                .resolve("android")
+                .toAbsolutePath()
+                .normalize()
         }
 
         /** This process, as `<pid>@<start in epoch milliseconds>`, so a reused pid is never taken for it. */

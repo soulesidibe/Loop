@@ -207,7 +207,10 @@ class ResourceLocksTest {
         assertEquals(1, released.size, "$released\n$output")
         assertEquals(attempt, released.single()["attempt_id"], output)
         val data = released.single()["data"]!!
-        assertTrue("\"reason\":\"$reason\"" in data && "\"resource_id\":\"api35\"" in data && "\"kind\":\"phone\"" in data, "$data\n$output")
+        assertTrue(
+            "\"reason\":\"$reason\"" in data && "\"resource_id\":\"api35\"" in data && "\"kind\":\"phone\"" in data,
+            "$data\n$output",
+        )
     }
 
     private fun kill9(pid: Long) {
