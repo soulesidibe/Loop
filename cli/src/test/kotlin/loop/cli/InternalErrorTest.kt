@@ -109,6 +109,7 @@ class InternalErrorTest {
                 "approve",
                 "answer",
                 "send-back",
+                "report",
                 "move",
                 "comment",
                 "mcp",
