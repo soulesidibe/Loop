@@ -9,6 +9,7 @@ import loop.api.ActionsJob
 import loop.api.ActionsJobs
 import loop.api.ActionsRun
 import loop.api.ActionsRuns
+import loop.api.ActionsStep
 import loop.api.Mergeability
 import loop.api.PullRequest
 import loop.api.PullRequestState
@@ -241,15 +242,25 @@ class GitHubPullRequests(
             )
         }
 
-    /** [job] as an Actions job, null when a field the verdict needs is missing, its steps first. */
-    private fun readJob(job: JsonObject): ActionsJob? =
-        ActionsJob(
+    /**
+     * [job] as an Actions job, null when a field the verdict needs is missing, its steps first. Since m4-35 each step
+     * with a name keeps its name and conclusion; a step without a name is counted and not named.
+     */
+    private fun readJob(job: JsonObject): ActionsJob? {
+        val steps = job["steps"] as? JsonArray ?: return null
+        return ActionsJob(
             id = job.long("id") ?: return null,
             name = job.string("name") ?: return null,
             status = job.string("status") ?: return null,
             conclusion = job.string("conclusion"),
-            steps = (job["steps"] as? JsonArray)?.size ?: return null,
+            steps = steps.size,
+            stepList =
+                steps.mapNotNull { step ->
+                    val obj = step as? JsonObject ?: return@mapNotNull null
+                    ActionsStep(obj.string("name") ?: return@mapNotNull null, obj.string("conclusion"))
+                },
         )
+    }
 
     /** [run] as an Actions run, null when a field the verdict or the comment needs is missing; a missing attempt is 1. */
     private fun readRun(run: JsonObject): ActionsRun? =

@@ -21,6 +21,7 @@ import loop.api.RunId
 import loop.api.SecretRedactor
 import loop.core.channel.TerminalChannel
 import loop.core.events.DeliveryQueuePaused
+import loop.core.events.ReactionTriggered
 import loop.core.events.RunStopped
 import loop.core.ledger.JsonlTurnLedger
 import loop.core.log.HumanLog
@@ -440,6 +441,8 @@ class RunCommand(
                         DeliveryQueuePaused.openIn(stored.map { it.event })
                     }
                 },
+                // m4-35: the ci_failed reactions of every run, so the retries of an issue are counted across a restart.
+                reactionsBefore = { store.eventsOfKinds(projectId, setOf(ReactionTriggered.name)).map { stored -> stored.map { it.event } } },
             )
         log.log(
             LogLevel.INFO,

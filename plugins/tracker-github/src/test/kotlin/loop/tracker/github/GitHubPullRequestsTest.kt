@@ -11,6 +11,7 @@ import loop.api.ActionsJob
 import loop.api.ActionsJobs
 import loop.api.ActionsRun
 import loop.api.ActionsRuns
+import loop.api.ActionsStep
 import loop.api.DeliveryError
 import loop.api.MergeMethod
 import loop.api.Mergeability
@@ -703,10 +704,38 @@ class GitHubPullRequestsTest {
             assertEquals(
                 ActionsJobs(
                     120,
-                    listOf(ActionsJob(1, "build", "completed", "failure", 2), ActionsJob(2, "lint", "completed", null, 0)),
+                    listOf(
+                        ActionsJob(1, "build", "completed", "failure", 2, listOf(ActionsStep("a", null), ActionsStep("b", null))),
+                        ActionsJob(2, "lint", "completed", null, 0),
+                    ),
                 ),
                 delivery().actionsJobs(5).getOrThrow(),
             )
+        }
+
+    @Test
+    fun `m4-35, the jobs read keeps the name and conclusion of each step, in order, from the hand written red run`() =
+        runTest {
+            github.on(jobsUrl(30433700), FakeGitHub.recorded("actions-run-30433700-jobs"))
+
+            val jobs = delivery().actionsJobs(30433700).getOrThrow()
+
+            assertEquals(2, jobs.totalCount)
+            val test = jobs.jobs.first()
+            assertEquals("test" to "failure", test.name to test.conclusion)
+            assertEquals(6, test.steps)
+            assertEquals(
+                listOf(
+                    ActionsStep("Set up job", "success"),
+                    ActionsStep("Run actions/checkout@v4", "success"),
+                    ActionsStep("Run ./gradlew test", "failure"),
+                    ActionsStep("Run ./gradlew ktlintCheck", "skipped"),
+                    ActionsStep("Post Run actions/checkout@v4", "success"),
+                    ActionsStep("Complete job", "success"),
+                ),
+                test.stepList,
+            )
+            assertEquals(listOf("success"), jobs.jobs[1].stepList.map { it.conclusion }.distinct())
         }
 
     @Test

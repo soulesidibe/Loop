@@ -1,0 +1,67 @@
+{
+  "total_count": 2,
+  "workflow_runs": [
+    {
+      "id": 30433700,
+      "name": "build",
+      "node_id": "WFR_kwLOA30433700",
+      "head_branch": "loop/t-1",
+      "head_sha": "0123456789abcdef0123456789abcdef01234567",
+      "path": ".github/workflows/build.yml",
+      "display_title": "build",
+      "run_number": 42,
+      "event": "push",
+      "status": "completed",
+      "conclusion": "failure",
+      "workflow_id": 161335,
+      "check_suite_id": 30434700,
+      "url": "https://api.github.com/repos/octocat/Hello-World/actions/runs/30433700",
+      "html_url": "https://github.com/octocat/Hello-World/actions/runs/30433700",
+      "pull_requests": [],
+      "created_at": "2026-11-15T09:00:00Z",
+      "updated_at": "2026-11-15T09:12:00Z",
+      "run_attempt": 1,
+      "run_started_at": "2026-11-15T09:00:05Z",
+      "jobs_url": "https://api.github.com/repos/octocat/Hello-World/actions/runs/30433700/jobs",
+      "head_commit": {
+        "id": "0123456789abcdef0123456789abcdef01234567",
+        "message": "k1: merge main for the merge check"
+      },
+      "repository": {
+        "id": 1296269,
+        "full_name": "octocat/Hello-World"
+      }
+    },
+    {
+      "id": 30433701,
+      "name": "lint",
+      "node_id": "WFR_kwLOA30433701",
+      "head_branch": "loop/t-1",
+      "head_sha": "0123456789abcdef0123456789abcdef01234567",
+      "path": ".github/workflows/build.yml",
+      "display_title": "lint",
+      "run_number": 13,
+      "event": "pull_request",
+      "status": "completed",
+      "conclusion": "success",
+      "workflow_id": 161336,
+      "check_suite_id": 30434701,
+      "url": "https://api.github.com/repos/octocat/Hello-World/actions/runs/30433701",
+      "html_url": "https://github.com/octocat/Hello-World/actions/runs/30433701",
+      "pull_requests": [],
+      "created_at": "2026-11-15T09:00:00Z",
+      "updated_at": "2026-11-15T09:12:00Z",
+      "run_attempt": 1,
+      "run_started_at": "2026-11-15T09:00:05Z",
+      "jobs_url": "https://api.github.com/repos/octocat/Hello-World/actions/runs/30433701/jobs",
+      "head_commit": {
+        "id": "0123456789abcdef0123456789abcdef01234567",
+        "message": "k1: merge main for the merge check"
+      },
+      "repository": {
+        "id": 1296269,
+        "full_name": "octocat/Hello-World"
+      }
+    }
+  ]
+}

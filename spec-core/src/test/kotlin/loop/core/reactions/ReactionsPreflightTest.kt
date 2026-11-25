@@ -36,7 +36,11 @@ class ReactionsPreflightTest {
                     """.trimMargin(),
                 )
             }
-        return runBlocking { Preflight(WorkflowLoader(env = emptyMap()), path, TemplateEngine()) { null }.check() }
+        return runBlocking {
+            Preflight(WorkflowLoader(env = mapOf("LOOP_PR_TOKEN" to "ghp_pullRequestToken0123456789abcdefgh")), path, TemplateEngine()) {
+                null
+            }.check()
+        }
     }
 
     private fun refused(extra: String): String {
@@ -113,5 +117,50 @@ class ReactionsPreflightTest {
         )
         assertEquals("reactions must be a map", refused("reactions: [merge_conflict]"))
         assertEquals("reactions.merge_conflict must be a map", refused("reactions:\n  merge_conflict: send_to_agent"))
+    }
+
+    /** A `kinds.code` delivery that merges with [ci], and `reactions:` as [reactions]. */
+    private fun merging(
+        ci: String,
+        reactions: String,
+    ): String =
+        """
+        |kinds:
+        |  code:
+        |    delivery:
+        |      pull_request:
+        |        repo: acme/widgets
+        |        token: ${'$'}LOOP_PR_TOKEN
+        |        merge: { ci: $ci }
+        |      on_delivered: { move_to: done }
+        |    verify:
+        |      checks: []
+        |$reactions
+        """.trimMargin()
+
+    private fun warnings(extra: String): List<String> {
+        val result = check(extra)
+        assertIs<PreflightResult.Ok>(result, result.toString())
+        return result.workflow.configWarnings
+    }
+
+    @Test
+    fun `m4-35 under ci none preflight logs one warning naming ci_failed, which never fires`() {
+        val sendBack = "reactions:\n  ci_failed: { action: send_to_agent, retries: 2 }"
+
+        assertEquals(
+            listOf(
+                "reactions.ci_failed never fires: kinds.code.delivery.pull_request.merge.ci is none, so Loop reads no Actions run",
+            ),
+            warnings(merging("none", sendBack)),
+        )
+        assertEquals(emptyList(), warnings(merging("actions", sendBack)), "under ci actions it fires")
+        assertEquals(emptyList(), warnings(merging("none", "reactions:\n  merge_conflict: { action: send_to_agent }")))
+        assertEquals(
+            listOf(
+                "reactions.ci_failed never fires: kinds.code.delivery.pull_request.merge is not set, so Loop waits for no Actions run",
+            ),
+            warnings(sendBack),
+        )
     }
 }
