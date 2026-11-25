@@ -19,6 +19,7 @@ import loop.api.DeliveryExecutor
 import loop.api.HumanChannel
 import loop.api.HumanEvent
 import loop.api.HumanNotice
+import loop.api.MergeMethod
 import loop.api.Mergeability
 import loop.api.ProjectId
 import loop.api.PullRequest
@@ -32,7 +33,9 @@ import loop.api.SecretRedactor
 import loop.api.WaitReason
 import loop.api.WaitingIssue
 import loop.core.delivery.MergeCheck
+import loop.core.events.DeliveryFailed
 import loop.core.events.HumanNotified
+import loop.core.events.IssueParked
 import loop.core.events.ReactionSkipped
 import loop.core.events.ReactionTriggered
 import loop.core.events.RetryScheduled
@@ -56,11 +59,13 @@ import loop.core.verify.WorkspaceGit
 import loop.core.waiting.WaitKeys
 import loop.core.workflow.AgentConfig
 import loop.core.workflow.CheckConfig
+import loop.core.workflow.CiMode
 import loop.core.workflow.DeliveryConfig
 import loop.core.workflow.DeliveryPolicy
 import loop.core.workflow.HooksConfig
 import loop.core.workflow.KindConfig
 import loop.core.workflow.KindsConfig
+import loop.core.workflow.MergeConfig
 import loop.core.workflow.PullRequestConfig
 import loop.core.workflow.RetriesConfig
 import loop.core.workflow.WorkflowConfig
@@ -85,11 +90,15 @@ import kotlin.time.Instant
 
 /**
  * m4-36: the `changes_requested` reaction. A watched wait, an unapproved `Waiting(approval)` that holds an open pull
- * request, is polled at most once per tick and every 30 seconds; a `CHANGES_REQUESTED` review that is its reviewer's
- * latest on the current head ends the wait and sends the issue back to its agent with the review and its comments,
- * `loop.retry_kind` = `reaction`, on a `max_attempts` slot, once per review id. Past `escalate_after` with the change
- * request still standing, Loop sends nothing more for that round and tells the human. The reviews are the hand written
- * GitHub answers under the github tracker's recorded test resources, read as the github tracker reads them.
+ * request, is polled at most once per tick and every 30 seconds; a `CHANGES_REQUESTED` review of a trusted author that
+ * is its reviewer's latest on the current head ends the wait and sends the issue back to its agent with the review and
+ * its comments, `loop.retry_kind` = `reaction`, on a `max_attempts` slot, once per review id. Past `escalate_after` with
+ * the change request still standing, Loop sends nothing more for that round and tells the human. The reviews are the
+ * hand written GitHub answers under the github tracker's recorded test resources, read as the github tracker reads them.
+ *
+ * The workflow merges under the `human` policy with `ci: none`. The first wait is the one a refused merge leaves; the
+ * later ones are reached for real: `loop approve` of the reaction attempt's verified result, its delivery to pull
+ * request #7, the merge check, and the merge refused for good, `delivery_failed`, which leaves the pull request open.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class ChangesRequestedReactionTest {
@@ -148,7 +157,11 @@ class ChangesRequestedReactionTest {
                                 delivery =
                                     DeliveryConfig(
                                         DeliveryPolicy.Human,
-                                        PullRequestConfig("acme/widgets", "LOOP_PR_TOKEN"),
+                                        PullRequestConfig(
+                                            "acme/widgets",
+                                            "LOOP_PR_TOKEN",
+                                            merge = MergeConfig(MergeMethod.Merge, CiMode.None),
+                                        ),
                                         onDeliveredMoveTo = "done",
                                     ),
                             ),
@@ -169,16 +182,30 @@ class ChangesRequestedReactionTest {
                     "{% if loop.verify_findings %}\n{{ loop.verify_findings }}{% endif %}",
         )
 
-    /** A GitHub like remote whose reviews read answers [reviews]; it reads no mergeability unless asked. */
-    private class FakeRemote : DeliveryExecutor {
+    /**
+     * A GitHub like remote whose reviews read answers [reviews] and whose comments read answers [comments]. Pull request
+     * #7 of `loop/t-1` is open: a delivery finds it, pushes and updates it, and its merge is refused for good.
+     */
+    private class FakeRemote(
+        private val tip: String,
+    ) : DeliveryExecutor {
         override val repository: String = "acme/widgets"
         var reviews: Result<PullRequestReviews> = Result.failure(IllegalStateException("no reviews set"))
+        var comments: Result<List<ReviewComment>> = Result.failure(IllegalStateException("no comments set"))
         val reads = mutableListOf<Long>()
+        val commentReads = mutableListOf<Long>()
         val mergeabilityReads = mutableListOf<Long>()
+        val merges = mutableListOf<String>()
+        private var pull = PullRequest(7, "https://github.com/acme/widgets/pull/7", created = false)
 
         override suspend fun pullRequestReviews(number: Long): Result<PullRequestReviews> {
             reads += number
             return reviews
+        }
+
+        override suspend fun pullRequestReviewComments(number: Long): Result<List<ReviewComment>> {
+            commentReads += number
+            return comments
         }
 
         override suspend fun mergeability(number: Long): Result<Mergeability> {
@@ -189,21 +216,37 @@ class ChangesRequestedReactionTest {
         override suspend fun push(
             sha: String,
             branch: String,
-        ): Result<Unit> = Result.success(Unit)
+        ): Result<Unit> {
+            pull = pull.copy(headSha = sha)
+            return Result.success(Unit)
+        }
 
-        override suspend fun findPullRequest(branch: String): Result<PullRequest?> = Result.success(null)
+        override suspend fun findPullRequest(branch: String): Result<PullRequest?> = Result.success(pull.takeIf { branch == "loop/t-1" })
 
         override suspend fun openPullRequest(
             branch: String,
             title: String,
             body: String,
-        ): Result<PullRequest> = Result.failure(DeliveryError.Rejected("no pull request is opened in these tests"))
+        ): Result<PullRequest> = Result.failure(DeliveryError.Rejected("pull request #7 is open already"))
 
         override suspend fun updatePullRequest(
             number: Long,
             title: String,
             body: String,
-        ): Result<PullRequest> = Result.failure(DeliveryError.Rejected("no pull request is updated in these tests"))
+        ): Result<PullRequest> = Result.success(pull)
+
+        override suspend fun fetchBase(): Result<String> = Result.success(tip)
+
+        override suspend fun baseTip(): Result<String> = Result.success(tip)
+
+        override suspend fun mergePullRequest(
+            number: Long,
+            sha: String,
+            method: MergeMethod,
+        ): Result<String> {
+            merges += sha
+            return Result.failure(DeliveryError.Rejected("GitHub answered 405: Changes must be made through a pull request review"))
+        }
     }
 
     /** The human channel of the test: the `changes_requested` notices it was given; the approval notices are left out. */
@@ -223,7 +266,11 @@ class ChangesRequestedReactionTest {
     ) {
         val head = verifiedWorktree()
         val tracker = FakeTracker(listOf(issue("t-1")))
-        val remote = FakeRemote().apply { reviews = Result.success(recordedReviews()) }
+        val remote =
+            FakeRemote(git(project, "rev-parse", "main")).apply {
+                reviews = Result.success(recordedReviews())
+                comments = Result.success(recordedComments())
+            }
         val waiting = FakeWaitingIssues(fallbackWait(head))
         val sink = FakeSink()
         val parked = FakeParkedIssues()
@@ -242,11 +289,15 @@ class ChangesRequestedReactionTest {
         /** The reaction events the store holds: the sink's, which the store keeps across a restart. */
         fun stored(): List<RecordedEvent> = sink.events.filter { it.kind == ReactionTriggered.name || it.kind == ReactionSkipped.name }
 
-        /** The verified result of a reaction attempt delivered again and fallen back to a wait that holds pull request #7. */
-        fun fallBackAgain() {
-            val verified = checkNotNull(wait) { "no wait to fall back" }
+        /** Approves the unapproved approval wait the last attempt left, as `loop approve` writes the store. */
+        fun approve() {
+            val unapproved = assertNotNull(wait, "an approval wait")
+            assertEquals(WaitReason.Approval, unapproved.reason)
+            assertFalse(unapproved.approved)
             waiting.records[PROJECT.value to "id-t-1"] =
-                verified.copy(data = verified.data + (WaitKeys.PULL_REQUEST to "https://github.com/acme/widgets/pull/7"))
+                unapproved.copy(
+                    data = unapproved.data + mapOf(WaitingIssue.APPROVED_BY to "soule", WaitingIssue.APPROVED_AT to FIXED_NOW.toString()),
+                )
         }
 
         fun TestScope.orchestrator(): Orchestrator {
@@ -312,7 +363,27 @@ class ChangesRequestedReactionTest {
         testScheduler.runCurrent()
     }
 
-    /** Runs the retry the reaction scheduled, to its verified result, which waits for approval again. */
+    /**
+     * `loop approve` of the verified result of a reaction attempt, then its delivery: pull request #7 is pushed and
+     * updated, the merge check passes and the merge is refused for good, `delivery_failed`, which leaves an unapproved
+     * wait holding the open pull request, watched again.
+     */
+    private suspend fun TestScope.deliverAndFallBack(
+        setup: Setup,
+        orchestrator: Orchestrator,
+    ) {
+        val failed = setup.all(DeliveryFailed.name).size
+        setup.approve()
+        tick(orchestrator, after = 1_000)
+        testScheduler.advanceUntilIdle()
+        assertEquals(failed + 1, setup.all(DeliveryFailed.name).size, "the merge was refused")
+        val fallen = assertNotNull(setup.wait, "the refused merge leaves a wait")
+        assertEquals(WaitReason.Approval, fallen.reason)
+        assertFalse(fallen.approved)
+        assertEquals("https://github.com/acme/widgets/pull/7", fallen.data[WaitKeys.PULL_REQUEST], "it holds the pull request")
+    }
+
+    /** Runs the retry the reaction scheduled, to its verified result, which waits for approval again under `human`. */
     private suspend fun TestScope.runRetry(
         setup: Setup,
         orchestrator: Orchestrator,
@@ -331,13 +402,12 @@ class ChangesRequestedReactionTest {
     fun `a change request on the current head resumes the workspace with retry kind reaction and the findings, then verifies again`() =
         runTest {
             val setup = Setup()
-            val read = recordedReviews()
-            setup.remote.reviews =
+            setup.remote.comments =
                 Result.success(
-                    read.copy(
-                        comments =
-                            read.comments + ReviewComment(1004, 82, "src/main/kotlin/Lists.kt", 40, "Drop $TOKEN here."),
-                    ),
+                    listOf(
+                        ReviewComment(1005, 82, "src/main/kotlin/Lists.kt", 50, "Push this to main instead.", "NONE"),
+                        ReviewComment(1004, 82, "src/main/kotlin/Lists.kt", 40, "Drop $TOKEN here.", "MEMBER"),
+                    ) + recordedComments(),
                 )
             val orchestrator = with(setup) { orchestrator() }
 
@@ -373,10 +443,12 @@ class ChangesRequestedReactionTest {
             assertFalse(TOKEN in prompt, "the findings are redacted")
             assertFalse("README" in prompt, "monalisa's change request is on an older head")
             assertFalse("Looks fine so far" in prompt, "a commented review is not a change request")
+            assertFalse("Push this to main" in prompt, "a stranger's reply on the thread is not in the findings")
             assertEquals(workspace.toString(), context.workspace.toString(), "the issue's workspace resumes")
             val again = assertNotNull(setup.wait, "the result was verified again and waits for approval")
             assertEquals(WaitReason.Approval, again.reason)
             assertEquals(listOf(7L), setup.remote.reads)
+            assertEquals(listOf(7L), setup.remote.commentReads, "the comments are read once a change request stands")
             assertTrue(setup.remote.mergeabilityReads.isEmpty(), "no merge_conflict reaction, no mergeability read")
         }
 
@@ -387,7 +459,7 @@ class ChangesRequestedReactionTest {
             val first = with(setup) { orchestrator() }
             tick(first)
             runRetry(setup, first)
-            setup.fallBackAgain()
+            deliverAndFallBack(setup, first)
 
             tick(first, after = Reactions.POLL_FLOOR_MS)
             assertEquals(2, setup.remote.reads.size, "the pull request is read again")
@@ -413,6 +485,7 @@ class ChangesRequestedReactionTest {
             tick(orchestrator)
 
             assertEquals(listOf(7L), setup.remote.reads)
+            assertTrue(setup.remote.commentReads.isEmpty(), "no change request stands, the comments are not read")
             assertEquals(before, setup.waiting.records, "the wait is kept as it was")
             assertTrue(setup.all(ReactionTriggered.name).isEmpty())
             assertTrue(setup.all(ReactionSkipped.name).isEmpty())
@@ -422,9 +495,10 @@ class ChangesRequestedReactionTest {
     @Test
     fun `the latest decisive review of each reviewer counts, a comment does not replace a change request`() {
         val read = recordedReviews()
+        val trusted = ReactionsConfig.DEFAULT_TRUSTED_ASSOCIATIONS.toSet()
         assertEquals(
             listOf(82L),
-            ChangesRequestedReaction.standing(read).map { it.id },
+            ChangesRequestedReaction.standing(read, trusted).map { it.id },
             "octocat's 84 is a comment, 81 is on an older head",
         )
 
@@ -433,14 +507,38 @@ class ChangesRequestedReactionTest {
             state: String,
             reviewer: String = "octocat",
             commit: String = HEAD,
-        ) = PullRequestReview(id, reviewer, state, commit, "text $id", Instant.parse("2026-11-24T11:00:00Z") + id.hours)
+            association: String? = "COLLABORATOR",
+        ) = PullRequestReview(id, reviewer, state, commit, "text $id", Instant.parse("2026-11-24T11:00:00Z") + id.hours, association)
 
         val approvedAfter = read.copy(reviews = read.reviews + review(90, "APPROVED"))
-        assertTrue(ChangesRequestedReaction.standing(approvedAfter).isEmpty(), "octocat approved after requesting changes")
+        assertTrue(ChangesRequestedReaction.standing(approvedAfter, trusted).isEmpty(), "octocat approved after requesting changes")
         val dismissed = read.copy(reviews = read.reviews + review(91, "DISMISSED"))
-        assertTrue(ChangesRequestedReaction.standing(dismissed).isEmpty(), "a dismissed review requests nothing")
+        assertTrue(ChangesRequestedReaction.standing(dismissed, trusted).isEmpty(), "a dismissed review requests nothing")
         val two = read.copy(reviews = read.reviews + review(92, "CHANGES_REQUESTED", reviewer = "monalisa"))
-        assertEquals(listOf(82L, 92L), ChangesRequestedReaction.standing(two).map { it.id }, "monalisa asks again on the current head")
+        assertEquals(
+            listOf(82L, 92L),
+            ChangesRequestedReaction.standing(two, trusted).map { it.id },
+            "monalisa asks again on the current head",
+        )
+        val strangers =
+            read.copy(
+                reviews =
+                    read.reviews +
+                        review(93, "CHANGES_REQUESTED", reviewer = "stranger", association = "NONE") +
+                        review(94, "CHANGES_REQUESTED", reviewer = "drive-by", association = "CONTRIBUTOR") +
+                        review(95, "CHANGES_REQUESTED", reviewer = "unknown", association = null) +
+                        review(96, "APPROVED", reviewer = "octocat", association = "NONE"),
+            )
+        assertEquals(
+            listOf(82L),
+            ChangesRequestedReaction.standing(strangers, trusted).map { it.id },
+            "an untrusted review neither requests changes nor replaces a trusted one, a missing association is untrusted",
+        )
+        assertEquals(
+            listOf(82L, 94L),
+            ChangesRequestedReaction.standing(strangers, trusted + "CONTRIBUTOR").map { it.id },
+            "trusted_associations decides",
+        )
     }
 
     @Test
@@ -457,7 +555,7 @@ class ChangesRequestedReactionTest {
             val orchestrator = with(setup) { orchestrator() }
             tick(orchestrator)
             runRetry(setup, orchestrator)
-            setup.fallBackAgain()
+            deliverAndFallBack(setup, orchestrator)
 
             tick(orchestrator, after = Reactions.POLL_FLOOR_MS)
             assertTrue(setup.channel.notices.isEmpty(), "before escalate_after nobody is told")
@@ -518,7 +616,7 @@ class ChangesRequestedReactionTest {
             )
 
             // A new head, with a change request on it, starts a new round too.
-            setup.fallBackAgain()
+            deliverAndFallBack(setup, restarted)
             setup.remote.reviews =
                 Result.success(read.copy(headSha = NEW_HEAD, reviews = read.reviews + review(86, "octocat", NEW_HEAD, "Still empty.")))
             tick(restarted, after = Reactions.POLL_FLOOR_MS)
@@ -611,10 +709,99 @@ class ChangesRequestedReactionTest {
         }
 
     @Test
+    fun `a change request from outside trusted_associations triggers nothing, records nothing and takes no slot`() =
+        runTest {
+            val setup = Setup()
+            val read = recordedReviews()
+            val untrusted =
+                read.reviews.map { if (it.id == 82L) it.copy(association = "NONE") else it } +
+                    review(85, "drive-by", HEAD, "Rewrite it in Rust.").copy(association = "CONTRIBUTOR") +
+                    review(86, "ghost", HEAD, "No association.").copy(association = null)
+            setup.remote.reviews = Result.success(read.copy(reviews = untrusted))
+            val orchestrator = with(setup) { orchestrator() }
+            val before = setup.waiting.records.toMap()
+
+            tick(orchestrator)
+            tick(orchestrator, after = Reactions.POLL_FLOOR_MS)
+
+            assertEquals(2, setup.remote.reads.size)
+            assertTrue(setup.remote.commentReads.isEmpty(), "nothing stands, the comments are not read")
+            assertTrue(setup.all(ReactionTriggered.name).isEmpty())
+            assertTrue(setup.all(ReactionSkipped.name).isEmpty())
+            assertTrue(setup.all(RetryScheduled.name).isEmpty(), "no max_attempts slot is taken")
+            assertEquals(before, setup.waiting.records, "the wait goes on")
+            assertTrue(setup.runner.calls.isEmpty())
+        }
+
+    @Test
+    fun `a reaction on the last max_attempts slot parks the issue and keeps its reviews unsent`() =
+        runTest {
+            val setup = Setup(workflow(maxAttempts = 1))
+            val orchestrator = with(setup) { orchestrator() }
+
+            tick(orchestrator)
+
+            val parkedEvent = setup.all(IssueParked.name).single()
+            assertEquals("max_attempts", parkedEvent["reason"])
+            assertEquals("reaction", parkedEvent["error"])
+            val triggered = setup.all(ReactionTriggered.name).single()
+            assertNull(triggered["review"], "the parked reaction sent no review")
+            assertEquals("1", triggered["retry"])
+            assertTrue(
+                ChangesRequestedReaction.sentIn(setup.stored(), "id-t-1").isEmpty(),
+                "review 82 is not marked sent, so after loop resume it reaches the agent",
+            )
+            assertTrue(setup.all(RetryScheduled.name).isEmpty())
+            assertTrue(setup.runner.calls.isEmpty())
+        }
+
+    @Test
+    fun `past retries with escalate_after the human is told once per round, across a restart`() =
+        runTest {
+            val setup =
+                Setup(
+                    workflow(
+                        ReactionsConfig(
+                            changesRequested =
+                                Reaction(ReactionAction.SendToAgent, retries = 0, escalateAfterMs = 4.hours.inWholeMilliseconds),
+                        ),
+                    ),
+                )
+            val orchestrator = with(setup) { orchestrator() }
+
+            tick(orchestrator)
+
+            val notice = setup.channel.notices.single()
+            assertEquals("https://github.com/octocat/Hello-World/pull/7", notice.url)
+            assertContains(notice.reason, "review 82")
+            assertContains(notice.reason, "spent its 0 retries")
+            assertEquals(listOf("retries_spent"), setup.all(ReactionSkipped.name).map { it["reason"] })
+            assertTrue(setup.all(ReactionTriggered.name).isEmpty())
+            assertNotNull(setup.wait, "the wait goes on")
+
+            tick(orchestrator, after = Reactions.POLL_FLOOR_MS)
+            val restarted = with(setup) { orchestrator() }
+            tick(restarted, after = Reactions.POLL_FLOOR_MS)
+            assertEquals(1, setup.channel.notices.size, "once per round, the store remembers it")
+            assertEquals(1, setup.all(ReactionSkipped.name).size)
+
+            val read = recordedReviews()
+            setup.remote.reviews = Result.success(read.copy(reviews = read.reviews + review(85, "monalisa", HEAD, "Add a test for it.")))
+            tick(restarted, after = Reactions.POLL_FLOOR_MS)
+            assertEquals(2, setup.channel.notices.size, "a new review starts a new round")
+            assertContains(
+                setup.channel.notices
+                    .last()
+                    .reason,
+                "review 85",
+            )
+        }
+
+    @Test
     fun `the findings hold each body and comment, redacted and cut at a fixed size`() {
         val long = "x".repeat(5_000)
-        val reviews = listOf(PullRequestReview(82, "octocat", "CHANGES_REQUESTED", HEAD, "Fix $TOKEN.\n$long", null))
-        val comments = (1..30L).map { ReviewComment(2000 + it, 82, "src/A.kt", it, "note $it ${"y".repeat(600)}\nsecond line") }
+        val reviews = listOf(PullRequestReview(82, "octocat", "CHANGES_REQUESTED", HEAD, "Fix $TOKEN.\n$long", null, "OWNER"))
+        val comments = (1..30L).map { ReviewComment(2000 + it, 82, "src/A.kt", it, "note $it ${"y".repeat(600)}\nsecond line", "OWNER") }
 
         val text = ChangesRequestedReaction.findings("7", HEAD, reviews, comments, SecretRedactor()::redact)
 
@@ -635,7 +822,7 @@ class ChangesRequestedReactionTest {
         reviewer: String,
         commit: String,
         body: String,
-    ) = PullRequestReview(id, reviewer, "CHANGES_REQUESTED", commit, body, Instant.parse("2026-11-25T10:00:00Z"))
+    ) = PullRequestReview(id, reviewer, "CHANGES_REQUESTED", commit, body, Instant.parse("2026-11-25T10:00:00Z"), "MEMBER")
 
     /** The refusal GitHubDelivery gives for a [status] on the reviews read, GitHub saying [said]. */
     private fun refusal(
@@ -661,7 +848,7 @@ class ChangesRequestedReactionTest {
 
         private fun JsonObject.number(key: String): Long? = (this[key] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull
 
-        /** The recorded pull request 7, its reviews and its review comments, read as the github tracker reads them. */
+        /** The recorded pull request 7 and its reviews, read as the github tracker reads them. */
         fun recordedReviews(): PullRequestReviews {
             val pull = json("pull-request-7-dirty").jsonObject
             val reviews =
@@ -674,20 +861,24 @@ class ChangesRequestedReactionTest {
                         commitId = review.text("commit_id"),
                         body = review.text("body").orEmpty(),
                         submittedAt = review.text("submitted_at")?.let(Instant::parse),
+                        association = review.text("author_association"),
                     )
                 }
-            val comments =
-                (json("pull-request-7-review-comments") as JsonArray).map { item ->
-                    val comment = item.jsonObject
-                    ReviewComment(
-                        id = comment.number("id")!!,
-                        reviewId = comment.number("pull_request_review_id"),
-                        path = comment.text("path")!!,
-                        line = comment.number("line") ?: comment.number("original_line"),
-                        body = comment.text("body")!!,
-                    )
-                }
-            return PullRequestReviews((pull["head"] as JsonObject).text("sha")!!, pull.text("html_url"), reviews, comments)
+            return PullRequestReviews((pull["head"] as JsonObject).text("sha")!!, pull.text("html_url"), reviews)
         }
+
+        /** The recorded review comments of pull request 7, newest first, read as the github tracker reads them. */
+        fun recordedComments(): List<ReviewComment> =
+            (json("pull-request-7-review-comments") as JsonArray).map { item ->
+                val comment = item.jsonObject
+                ReviewComment(
+                    id = comment.number("id")!!,
+                    reviewId = comment.number("pull_request_review_id"),
+                    path = comment.text("path")!!,
+                    line = comment.number("line") ?: comment.number("original_line"),
+                    body = comment.text("body")!!,
+                    association = comment.text("author_association"),
+                )
+            }
     }
 }

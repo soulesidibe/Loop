@@ -46,8 +46,11 @@ class Reactions(
     private val executorFor: (WorkflowFile) -> DeliveryExecutor,
     /** Records an event of [Wait]'s issue and attempt. */
     private val record: suspend (Wait, EventDefinition, Map<String, String>) -> Unit,
-    /** Ends the wait and sends its issue back to its agent with the findings, on a `max_attempts` slot. */
-    private val sendBack: suspend (Wait.Approval, Issue, String) -> Unit,
+    /**
+     * Ends the wait and sends its issue back to its agent with the findings, on a `max_attempts` slot. True when the
+     * retry is scheduled, false when that slot was the last one and the issue parked.
+     */
+    private val sendBack: suspend (Wait.Approval, Issue, String) -> Boolean,
     /** The log context of a wait. */
     private val contextOf: (Wait) -> LogContext,
     private val log: KeyValueLog,

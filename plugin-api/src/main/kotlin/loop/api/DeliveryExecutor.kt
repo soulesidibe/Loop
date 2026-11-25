@@ -101,30 +101,40 @@ public interface DeliveryExecutor {
         Result.failure(DeliveryError.Rejected("this delivery cannot read the jobs of an Actions run"))
 
     /**
-     * The reviews of the pull request [number] and their review comments (m4-36), with the commit its head is at now,
-     * read by the `changes_requested` reaction. One page of each, at most 100. A refusal (401, 403, 404) is
-     * [DeliveryError.Rejected], a 403 or 404 naming the "Pull requests: read" permission; a network error, a 5xx answer
-     * or a rate limit hold is [DeliveryError.Unavailable]. Not supported by default, which no reaction passes.
+     * The reviews of the pull request [number] (m4-36), with the commit its head is at now, read by the
+     * `changes_requested` reaction. Every page of the listing, in the provider's order, oldest first. A refusal (401,
+     * 403, 404) is [DeliveryError.Rejected], a 403 or 404 naming the "Pull requests: read" permission; a network error,
+     * a 5xx answer or a rate limit hold is [DeliveryError.Unavailable]. Not supported by default, which no reaction
+     * passes.
      */
     public suspend fun pullRequestReviews(number: Long): Result<PullRequestReviews> =
         Result.failure(DeliveryError.Rejected("this delivery cannot read the reviews of a pull request"))
+
+    /**
+     * The review comments left on the diff of the pull request [number] (m4-36), newest first, one page of at most 100,
+     * read by the `changes_requested` reaction only when a change request stands. A comment the provider gives without
+     * its id, path or body is left out. Its failures are those of [pullRequestReviews]. Not supported by default.
+     */
+    public suspend fun pullRequestReviewComments(number: Long): Result<List<ReviewComment>> =
+        Result.failure(DeliveryError.Rejected("this delivery cannot read the review comments of a pull request"))
 }
 
 /**
  * The reviews of one pull request as the provider listed them (m4-36): the commit its head is at now, [headSha], its
- * web [url], its [reviews] in the provider's order, oldest first, and the review [comments] left on its diff.
+ * web [url] and its [reviews] in the provider's order, oldest first.
  */
 public data class PullRequestReviews(
     public val headSha: String,
     public val url: String?,
     public val reviews: List<PullRequestReview>,
-    public val comments: List<ReviewComment>,
 )
 
 /**
  * One review of a pull request (m4-36): its [id], the login of its [reviewer], its [state] as the provider names it,
  * such as `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED` or `DISMISSED`, the commit it was left on, [commitId], its
- * [body], empty when it has none, and when it was submitted, null for a pending one.
+ * [body], empty when it has none, when it was submitted, null for a pending one, and how its author is associated
+ * with the repository, [association], such as `OWNER`, `MEMBER`, `COLLABORATOR` or `NONE`, null when the provider did
+ * not say.
  */
 public data class PullRequestReview(
     public val id: Long,
@@ -133,11 +143,13 @@ public data class PullRequestReview(
     public val commitId: String?,
     public val body: String,
     public val submittedAt: Instant?,
+    public val association: String?,
 )
 
 /**
  * One review comment on the diff of a pull request (m4-36): its [id], the review it belongs to, [reviewId], null when
- * the provider did not say, the file [path], the [line] it is on, null when the provider gives none, and its [body].
+ * the provider did not say, the file [path], the [line] it is on, null when the provider gives none, its [body], and
+ * how its author is associated with the repository, [association], null when the provider did not say.
  */
 public data class ReviewComment(
     public val id: Long,
@@ -145,6 +157,7 @@ public data class ReviewComment(
     public val path: String,
     public val line: Long?,
     public val body: String,
+    public val association: String?,
 )
 
 /**

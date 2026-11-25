@@ -513,7 +513,7 @@ class Orchestrator(
             record = ::recordWaitEvent,
             sendBack = { wait, issue, findings ->
                 endWaiting(wait)
-                if (retries.onReaction(issue, wait.attemptId, effective)) verifyFindings[wait.issueId] = findings
+                retries.onReaction(issue, wait.attemptId, effective).also { if (it) verifyFindings[wait.issueId] = findings }
             },
             contextOf = ::waitContext,
             log = log,

@@ -119,6 +119,35 @@ class ReactionsPreflightTest {
         assertEquals("reactions.merge_conflict must be a map", refused("reactions:\n  merge_conflict: send_to_agent"))
     }
 
+    @Test
+    fun `m4-36, changes_requested takes trusted_associations, a list of known author associations kept upper case`() {
+        val result = check("reactions:\n  changes_requested: { action: send_to_agent, trusted_associations: [owner, ' MEMBER', owner] }")
+        assertIs<PreflightResult.Ok>(result, result.toString())
+        assertEquals(
+            listOf("OWNER", "MEMBER"),
+            result.workflow.config.reactions.changesRequested
+                ?.trustedAssociations,
+        )
+
+        assertEquals(
+            "reactions.changes_requested.trusted_associations has \"STRANGER\", which is not a GitHub author association, use " +
+                "OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, FIRST_TIMER, MANNEQUIN or NONE",
+            refused("reactions:\n  changes_requested: { action: send_to_agent, trusted_associations: [OWNER, STRANGER] }"),
+        )
+        assertEquals(
+            "reactions.changes_requested.trusted_associations must not be empty, list the author associations to trust",
+            refused("reactions:\n  changes_requested: { action: send_to_agent, trusted_associations: [] }"),
+        )
+        assertEquals(
+            "reactions.changes_requested.trusted_associations must be a list of author associations",
+            refused("reactions:\n  changes_requested: { action: send_to_agent, trusted_associations: OWNER }"),
+        )
+        assertEquals(
+            "reactions.ci_failed.trusted_associations is not an option of ci_failed, it takes action, retries, escalate_after",
+            refused("reactions:\n  ci_failed: { action: send_to_agent, trusted_associations: [OWNER] }"),
+        )
+    }
+
     /** A `kinds.code` delivery that merges with [ci], and `reactions:` as [reactions]. */
     private fun merging(
         ci: String,

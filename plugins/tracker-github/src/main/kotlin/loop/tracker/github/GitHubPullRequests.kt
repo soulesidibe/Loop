@@ -233,11 +233,12 @@ class GitHubPullRequests(
 
     /**
      * The reviews of the pull request [number] (m4-36): its current head, `head.sha` of `GET /repos/<owner>/<repo>/pulls/<n>`,
-     * its reviews, `GET .../pulls/<n>/reviews?per_page=100`, and its review comments, `GET .../pulls/<n>/comments?per_page=100`,
-     * one page of each, in GitHub's order. A comment GitHub marks outdated has a null `line` and keeps its `original_line`.
-     * A 403 or a 404 on any of the three names the "Pull requests: read" permission. An answer that cannot be read, a
-     * pull request without its head, a review without its id or state, or a comment without its id, path or body, fails
-     * with [TrackerError.Malformed]; other failures, a rate limit included, are those of [GitHubClient.send].
+     * and its reviews, `GET .../pulls/<n>/reviews?per_page=100`, every page, following the `Link` header up to
+     * [MAX_REVIEW_PAGES] pages, in GitHub's order, oldest first, so the newest reviews of a long thread are read. A 403 or
+     * a 404 on any of them names the "Pull requests: read" permission. An answer that cannot be read, a pull request
+     * without its head or a review without its id or state fails with [TrackerError.Malformed], too many pages or a
+     * link that repeats or leaves the API with [TrackerError.Pagination]; other failures, a rate limit included, are
+     * those of [GitHubClient.send].
      */
     suspend fun reviews(number: Long): PullRequestReviews {
         val pullUrl = URI("$pullsPath/$number")
@@ -246,28 +247,34 @@ class GitHubPullRequests(
                 as? JsonObject ?: throw TrackerError.Malformed(pullUrl.toString())
         val head =
             (pull["head"] as? JsonObject)?.string("sha")?.takeIf { it.isNotBlank() } ?: throw TrackerError.Malformed(pullUrl.toString())
-        val reviewsUrl = URI("$pullsPath/$number/reviews?per_page=$PER_PAGE")
-        val reviews =
-            listing(reviewsUrl, "read the reviews of pull request #$number of $owner/$repo").mapIndexed { index, item ->
-                readReview(item) ?: throw TrackerError.Malformed("$reviewsUrl, item $index")
+        val reviews = mutableListOf<PullRequestReview>()
+        val seen = mutableSetOf<String>()
+        var url: URI? = URI("$pullsPath/$number/reviews?per_page=$PER_PAGE")
+        while (url != null) {
+            if (seen.size == MAX_REVIEW_PAGES) throw TrackerError.Pagination("more than $MAX_REVIEW_PAGES pages of reviews")
+            if (!seen.add(url.toString())) throw TrackerError.Pagination("the next page link repeats $url")
+            val response = permissionRead(url, PULL_REQUESTS_READ, "read the reviews of pull request #$number of $owner/$repo")
+            val items = GitHubClient.parse(response.body, url) as? JsonArray ?: throw TrackerError.Malformed(url.toString())
+            items.forEachIndexed { index, item ->
+                reviews += readReview(item as? JsonObject) ?: throw TrackerError.Malformed("$url, item $index")
             }
-        val commentsUrl = URI("$pullsPath/$number/comments?per_page=$PER_PAGE")
-        val comments =
-            listing(commentsUrl, "read the review comments of pull request #$number of $owner/$repo").mapIndexed { index, item ->
-                readComment(item) ?: throw TrackerError.Malformed("$commentsUrl, item $index")
-            }
-        return PullRequestReviews(head, pull.string("html_url"), reviews, comments)
+            url = GitHubClient.nextPage(response, url, client.apiUrl)
+        }
+        return PullRequestReviews(head, pull.string("html_url"), reviews)
     }
 
-    /** The objects of the JSON array GitHub answers at [url], read under the "Pull requests: read" permission to [what]. */
-    private suspend fun listing(
-        url: URI,
-        what: String,
-    ): List<JsonObject?> {
-        val items =
-            GitHubClient.parse(permissionRead(url, PULL_REQUESTS_READ, what).body, url) as? JsonArray
-                ?: throw TrackerError.Malformed(url.toString())
-        return items.map { it as? JsonObject }
+    /**
+     * The review comments of the pull request [number] (m4-36), `GET .../pulls/<n>/comments?sort=created&direction=desc&per_page=100`,
+     * one page, newest first, so the comments of the latest reviews are read. A comment GitHub marks outdated has a
+     * null `line` and keeps its `original_line`. A comment without its id, path or body is left out, so one bad item
+     * does not hide the others. A 403 or a 404 names the "Pull requests: read" permission; an answer that is not a JSON
+     * array fails with [TrackerError.Malformed]; other failures are those of [GitHubClient.send].
+     */
+    suspend fun reviewComments(number: Long): List<ReviewComment> {
+        val url = URI("$pullsPath/$number/comments?sort=created&direction=desc&per_page=$PER_PAGE")
+        val response = permissionRead(url, PULL_REQUESTS_READ, "read the review comments of pull request #$number of $owner/$repo")
+        val items = GitHubClient.parse(response.body, url) as? JsonArray ?: throw TrackerError.Malformed(url.toString())
+        return items.mapNotNull { readComment(it as? JsonObject) }
     }
 
     /** [item] as a review, null when its id or state is missing; a review whose author is gone is `ghost`, as GitHub shows it. */
@@ -280,6 +287,7 @@ class GitHubPullRequests(
             commitId = item.string("commit_id"),
             body = item.string("body").orEmpty(),
             submittedAt = item.string("submitted_at")?.let { runCatching { Instant.parse(it) }.getOrNull() },
+            association = item.string("author_association"),
         )
     }
 
@@ -292,6 +300,7 @@ class GitHubPullRequests(
             path = item.string("path") ?: return null,
             line = item.long("line") ?: item.long("original_line"),
             body = item.string("body") ?: return null,
+            association = item.string("author_association"),
         )
     }
 
@@ -405,6 +414,9 @@ class GitHubPullRequests(
 
         /** The permission the reviews read needs (m4-36), named by a 403 or a 404 on it. */
         const val PULL_REQUESTS_READ: String = "Pull requests: read"
+
+        /** The most pages of reviews one read follows (m4-36), 1000 reviews at 100 a page. */
+        const val MAX_REVIEW_PAGES: Int = 10
 
         /** The login GitHub shows for an author whose account is gone. */
         private const val GHOST = "ghost"
