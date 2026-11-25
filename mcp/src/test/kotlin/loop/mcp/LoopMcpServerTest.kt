@@ -50,7 +50,20 @@ class LoopMcpServerTest {
         val serving =
             Thread {
                 try {
-                    runBlocking { LoopMcpServer.serve(serverIn, serverOut, "test", handler, move, comment, trimmer, resources, ask, followup) }
+                    runBlocking {
+                        LoopMcpServer.serve(
+                            serverIn,
+                            serverOut,
+                            "test",
+                            handler,
+                            move,
+                            comment,
+                            trimmer,
+                            resources,
+                            ask,
+                            followup,
+                        )
+                    }
                 } finally {
                     serverOut.close()
                 }
@@ -610,7 +623,13 @@ class LoopMcpServerTest {
             val properties = schema.getValue("properties").jsonObject
             assertEquals(listOf("title", "body"), properties.keys.toList())
             properties.values.forEach {
-                assertEquals("string", it.jsonObject.getValue("type").jsonPrimitive.content, "$it")
+                assertEquals(
+                    "string",
+                    it.jsonObject
+                        .getValue("type")
+                        .jsonPrimitive.content,
+                    "$it",
+                )
                 assertTrue(
                     it.jsonObject
                         .getValue("description")
@@ -642,7 +661,9 @@ class LoopMcpServerTest {
                     .jsonObject
             val refusals =
                 listOf("""{"title":"Archived items"}""", """{"body":"They are dropped."}""", """{"title":1,"body":"b"}""")
-                    .map { arguments -> request("tools/call", """{"name":"file_followup","arguments":$arguments}""").getValue("result").jsonObject }
+                    .map { arguments ->
+                        request("tools/call", """{"name":"file_followup","arguments":$arguments}""").getValue("result").jsonObject
+                    }
 
             assertEquals("queued", call.text())
             assertEquals(listOf("Archived items" to "They are dropped."), received)

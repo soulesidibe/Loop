@@ -76,7 +76,10 @@ class FollowupsTest {
             "The export drops archived items.\n\nFollow up of m4-33 (local:m4-33), filed by Loop from attempt a1b2c3d4.",
             body,
         )
-        assertEquals("Follow up of m4-33 (local:m4-33), filed by Loop from attempt a1b2c3d4.", Followups.body("  ", "m4-33", "local:m4-33", "a1b2c3d4"))
+        assertEquals(
+            "Follow up of m4-33 (local:m4-33), filed by Loop from attempt a1b2c3d4.",
+            Followups.body("  ", "m4-33", "local:m4-33", "a1b2c3d4"),
+        )
     }
 
     @Test

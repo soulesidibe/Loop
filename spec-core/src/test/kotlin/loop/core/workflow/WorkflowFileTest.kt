@@ -423,7 +423,10 @@ class WorkflowFileTest {
     fun `m4-33 kinds kind followup tracker sends the follow ups of the kind to that tracker, none by default`() {
         val kinds =
             load(
-                withKinds(codeKind + "  research:\n    match: { label: research }\n    followup: { tracker: notes }\n    verify:\n      checks: []\n"),
+                withKinds(
+                    codeKind +
+                        "  research:\n    match: { label: research }\n    followup: { tracker: notes }\n    verify:\n      checks: []\n",
+                ),
             ).config.kinds!!
 
         assertEquals("notes", kinds.named.getValue("research").followupTracker)

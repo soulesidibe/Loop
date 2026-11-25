@@ -95,7 +95,9 @@ class FileFollowupTest {
                     .jsonObject
                     .getValue("text")
                     .jsonPrimitive.content
-            val answer = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrElse { JsonObject(mapOf("text" to JsonPrimitive(text))) }
+            val answer =
+                runCatching { Json.parseToJsonElement(text).jsonObject }
+                    .getOrElse { JsonObject(mapOf("text" to JsonPrimitive(text))) }
             JsonObject(answer + ("isError" to (result["isError"] ?: JsonPrimitive(false))))
         }
 
@@ -114,7 +116,7 @@ class FileFollowupTest {
     private fun comments(id: String): String = fixture.issueFile(id).readText().substringAfter("## Comments")
 
     @Test
-    fun `a file_followup over loop tool mcp is queued, then filed needs-triage in the parent's files tracker, named in followup_filed and on the parent`() {
+    fun `a file_followup over loop tool mcp is queued, then filed needs-triage in the parent's files tracker and named`() {
         fixture.writeWorkflow(activeStates = listOf("todo", "in_progress"))
         fixture.issue("t-1")
         agent(
@@ -144,7 +146,12 @@ class FileFollowupTest {
         assertEquals(listOf("needs-triage"), parsed.labels)
         assertEquals(emptyList(), parsed.blockedBy)
         val attempt = attemptIds().single()
-        val lastLine = parsed.description.orEmpty().trimEnd().lines().last()
+        val lastLine =
+            parsed.description
+                .orEmpty()
+                .trimEnd()
+                .lines()
+                .last()
         assertEquals("Follow up of t-1 (default:t-1), filed by Loop from attempt $attempt.", lastLine)
         assertContains(parsed.description.orEmpty(), "The export skips archived items in src/export.kt.")
 

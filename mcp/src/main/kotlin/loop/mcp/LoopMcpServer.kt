@@ -290,8 +290,11 @@ object LoopMcpServer {
         followup: FollowupHandler,
         trimmer: ReplyTrimmer,
     ) {
-        addTool(name = FILE_FOLLOWUP, description = FILE_FOLLOWUP_DESCRIPTION, inputSchema = ToolSchema(properties = followupProperties, required = listOf(TITLE, BODY))) {
-            request ->
+        addTool(
+            name = FILE_FOLLOWUP,
+            description = FILE_FOLLOWUP_DESCRIPTION,
+            inputSchema = ToolSchema(properties = followupProperties, required = listOf(TITLE, BODY)),
+        ) { request ->
             val arguments = request.arguments ?: JsonObject(emptyMap())
 
             fun string(key: String): String? = (arguments[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
