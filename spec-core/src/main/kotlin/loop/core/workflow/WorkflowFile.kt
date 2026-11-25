@@ -13,6 +13,7 @@ import loop.api.ProfileProblem
 import loop.api.ResourceDeclaration
 import loop.core.delivery.AttachDelivery
 import loop.core.kinds.KindWorkspaces
+import loop.core.reactions.CiFailedReaction
 import loop.core.reactions.ReactionsParser
 import loop.core.resources.ResourceCheck
 import loop.core.resources.ResourcesParser
@@ -274,6 +275,17 @@ class WorkflowLoader(
 
         val terminalStates = tracker.terminalStates
         checkResourcesDeclared(kinds, resources)
+        // m4-35: a ci_failed reaction reads the CI wait's verdict, so without one it never fires.
+        CiFailedReaction
+            .neverFires(
+                reactions,
+                kinds
+                    ?.code
+                    ?.delivery
+                    ?.pullRequest
+                    ?.merge
+                    ?.ci,
+            )?.let { configWarnings += it }
         // m2-26: a merged pull request is done, so its issue leaves the tracker's work for good. Checked for every kind
         // since m4-18.
         kinds?.named?.forEach { (name, kind) ->

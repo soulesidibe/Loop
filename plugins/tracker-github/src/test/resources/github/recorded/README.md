@@ -59,3 +59,10 @@ Written by hand for the `merge_conflict` reaction (m4-34), after the shape GitHu
 |---|---|
 | `pull-request-7-dirty` | pull request 7, open, `mergeable` `false` and `mergeable_state` `dirty`: it conflicts with its base |
 | `pull-request-7-unknown` | the same pull request while GitHub computes it: `mergeable` `null` and `mergeable_state` `unknown` |
+
+Written by hand for the `ci_failed` reaction (m4-35), after the shapes GitHub documents in "REST API endpoints for workflow runs" and "for workflow jobs", because GitHub Actions refuses every job of Loop's repositories for billing since 2026-11-16, so no red run with steps can be recorded:
+
+| Name | Response |
+|---|---|
+| `actions-runs-red` | `GET /repos/octocat/Hello-World/actions/runs?head_sha=<sha>&per_page=100`: 200 with two completed runs of one head, `build` on `push` (run 30433700, `failure`) and `lint` on `pull_request` (run 30433701, `success`) |
+| `actions-run-30433700-jobs` | `GET /repos/octocat/Hello-World/actions/runs/30433700/jobs?per_page=100`: 200 with two jobs, `test` (`failure`, its step `Run ./gradlew test` failed and the next one skipped) and `assemble` (`success`) |

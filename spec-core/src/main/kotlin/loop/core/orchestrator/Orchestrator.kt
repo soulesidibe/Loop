@@ -152,6 +152,7 @@ import loop.core.merge.Merges
 import loop.core.merge.Recheck
 import loop.core.merge.RecheckOutcome
 import loop.core.merge.WorkspaceMergeGit
+import loop.core.reactions.CiFailedReaction
 import loop.core.reactions.Reactions
 import loop.core.resources.ResourceGrants
 import loop.core.resources.ResourceLocks
@@ -435,6 +436,11 @@ class Orchestrator(
      * first tick, which records the resume by the restart; null when none, or when this host cannot read it.
      */
     private val queuePausedBefore: suspend () -> RecordedEvent? = { null },
+    /**
+     * m4-35: the `reaction_triggered` events of the project in the run store, every run, which count the `ci_failed`
+     * reactions of an issue across a restart; the default has none, so the count is this process's.
+     */
+    private val reactionsBefore: suspend () -> Result<List<RecordedEvent>> = { Result.success(emptyList()) },
     /** m4-10: true once `loop drain` asked this run to drain, read at each dispatch. */
     private val drainRequested: () -> Boolean = { false },
     /** m4-50: the resource locks of the shared store, freed at the end of each attempt. */
@@ -484,6 +490,7 @@ class Orchestrator(
             wake = { attemptEnded.trySend(Unit) },
             onCiTimeout = { pauseQueue(it) },
             notices = notices,
+            ciFailed = ciFailed,
             sink = this.sink,
             sinkName = sinkName,
             log = log,
@@ -512,6 +519,21 @@ class Orchestrator(
             redactor = redactor,
             clock = clock,
             io = io,
+        )
+    }
+
+    /** m4-35: the `ci_failed` reaction to a red verdict of the CI wait; its send back goes through the retry coordinator. */
+    private val ciFailed: CiFailedReaction by lazy {
+        CiFailedReaction(
+            reactionsBefore = reactionsBefore,
+            record = ::recordWaitEvent,
+            sendBack = { wait, issue, findings ->
+                endWaiting(wait)
+                if (retries.onReaction(issue, wait.attemptId, effective)) verifyFindings[wait.issueId] = findings
+            },
+            contextOf = ::waitContext,
+            log = log,
+            redactor = redactor,
         )
     }
 
@@ -675,8 +697,8 @@ class Orchestrator(
     private val bounced = mutableSetOf<String>()
 
     /**
-     * Issue ids whose merge wait the early conflict check of this tick ended as a merged delivery (bl-182): the tick read
-     * them active before, so they are not dispatched in it.
+     * Issue ids whose merge wait the early conflict check of this tick ended as a merged delivery (bl-182), or the CI
+     * poll before a `ci_failed` send back (m4-35): the tick read them active before, so they are not dispatched in it.
      */
     private val settledEarly = mutableSetOf<String>()
 
@@ -5560,7 +5582,7 @@ class Orchestrator(
             }
             headFound = true
             // m3-15: a CI wait is polled here, with no slot; once CI allows the merge, the merge phase starts below.
-            val wait = merges.advance(stored) ?: continue
+            val wait = merges.advance(stored, candidate) { settledEarly += stored.issueId } ?: continue
             // bl-173: only phase check builds in the workspace and holds an agent slot; phase merge holds none.
             val checks = wait.phase == MergePhase.Check
             // bl-175: while the queue is paused after a CI timeout, no merge check starts.

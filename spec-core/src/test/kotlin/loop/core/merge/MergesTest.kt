@@ -864,12 +864,12 @@ class MergesTest {
             setup.remote.runs = listed(actionsRun("in_progress", null))
 
             advanceTimeBy(30_000)
-            assertNull(merges.advance(setup.current()), "pending runs keep the wait")
+            assertNull(merges.advance(setup.current(), issue("t-1")), "pending runs keep the wait")
             assertTrue(setup.kinds.none { it == CiFinished.name })
 
             setup.remote.runs = listed(actionsRun("completed", "success"))
             advanceTimeBy(30_000)
-            val next = merges.advance(setup.current())
+            val next = merges.advance(setup.current(), issue("t-1"))
 
             assertEquals(MergePhase.Merge, next?.phase)
             assertEquals(CiFinished.GREEN, setup.one(CiFinished.name)["outcome"])
@@ -888,7 +888,7 @@ class MergesTest {
             setup.remote.runs = listed(actionsRun("completed", "failure"))
 
             advanceTimeBy(30_000)
-            assertNull(merges.advance(setup.current()))
+            assertNull(merges.advance(setup.current(), issue("t-1")))
 
             assertEquals(CiFinished.RED, setup.one(CiFinished.name)["outcome"])
             assertEquals("ci", setup.one(DeliveryFailed.name)["step"])
@@ -911,7 +911,7 @@ class MergesTest {
             setup.remote.runs = listed(actionsRun("completed", "success"))
 
             advanceTimeBy(10_000)
-            assertNull(merges.advance(setup.current()), "a poll 10 seconds after the push lists nothing")
+            assertNull(merges.advance(setup.current(), issue("t-1")), "a poll 10 seconds after the push lists nothing")
             assertTrue(setup.kinds.none { it == CiFinished.name })
         }
 
@@ -922,7 +922,7 @@ class MergesTest {
             val merges = with(setup) { module() }
             val wait = setup.current()
 
-            assertEquals(wait, merges.advance(wait))
+            assertEquals(wait, merges.advance(wait, issue("t-1")))
             assertTrue(setup.sink.events.isEmpty())
         }
 
