@@ -5,6 +5,7 @@ import loop.api.SessionId
 import loop.api.TurnId
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.time.Instant
 
@@ -15,7 +16,8 @@ class ClaudeRateLimitsTest {
 
     @Test
     fun `bl-209 the recorded rate limit line maps to a rate_limit event of the claude limit`() {
-        val line = Fixtures.lines("real_two_turns_one_process").map(StreamJsonMapper::parse).filterIsInstance<StreamLine.RateLimit>().single()
+        val parsed = Fixtures.lines("real_two_turns_one_process").map(StreamJsonMapper::parse)
+        val line = parsed.filterIsInstance<StreamLine.RateLimit>().single()
 
         val event = ClaudeRateLimits().read(line, session, turn)
 
@@ -54,9 +56,9 @@ class ClaudeRateLimitsTest {
         assertEquals(RunnerEvent.RateLimit.Window(100, 300, Instant.fromEpochSeconds(1794906000)), both?.primary)
         assertEquals(RunnerEvent.RateLimit.Window(50, 10080, Instant.fromEpochSeconds(1795510800)), both?.secondary)
         assertEquals("rejected", both?.reached)
-        val cleared = limits.read(rateLimit("allowed"), session, turn)
-        assertNull(cleared?.reached)
-        assertEquals(both?.primary, cleared?.primary)
+        val cleared = assertNotNull(limits.read(rateLimit("allowed"), session, turn), "a cleared status is a change")
+        assertNull(cleared.reached)
+        assertEquals(both?.primary, cleared.primary)
     }
 
     @Test
@@ -65,7 +67,12 @@ class ClaudeRateLimitsTest {
 
         val event =
             limits.read(
-                rateLimit("allowed_warning", "seven_day_opus" to window(0.255, null), "seven_day" to window(null, 1795510800), "overage" to window(0.9, null)),
+                rateLimit(
+                    "allowed_warning",
+                    "seven_day_opus" to window(0.255, null),
+                    "seven_day" to window(null, 1795510800),
+                    "overage" to window(0.9, null),
+                ),
                 session,
                 turn,
             )
