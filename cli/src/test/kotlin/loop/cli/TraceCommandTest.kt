@@ -1290,6 +1290,55 @@ class TraceCommandTest {
     }
 
     @Test
+    fun `bl-209 a Claude Code rate limit shows in the same format as the Codex one`() {
+        // The data the Claude Code runner's events record: the recorded seven day window, then a five hour one that is reached.
+        val lines =
+            trace(
+                event("attempt_started", "13:48:40", "a1"),
+                event(
+                    "rate_limit",
+                    "13:48:50",
+                    "a1",
+                    data =
+                        mapOf(
+                            "limit_id" to "claude",
+                            "primary_used_percent" to "74",
+                            "primary_window_minutes" to "10080",
+                            "primary_resets_at" to "2026-11-17T09:00:00Z",
+                        ),
+                ),
+                event(
+                    "rate_limit",
+                    "13:49:10",
+                    "a1",
+                    data =
+                        mapOf(
+                            "limit_id" to "claude",
+                            "primary_used_percent" to "100",
+                            "primary_window_minutes" to "300",
+                            "primary_resets_at" to "2026-11-16T14:00:00Z",
+                            "secondary_used_percent" to "74",
+                            "secondary_window_minutes" to "10080",
+                            "secondary_resets_at" to "2026-11-17T09:00:00Z",
+                            "reached" to "rejected",
+                        ),
+                ),
+            )
+
+        val out = lines.joinToString("\n")
+        assertTrue(line("13:48:50", "rate_limit", "limit=claude primary=74%/10080m primary_resets_at=2026-11-17T09:00:00Z") in lines, out)
+        assertTrue(
+            line(
+                "13:49:10",
+                "rate_limit",
+                "limit=claude primary=100%/300m primary_resets_at=2026-11-16T14:00:00Z secondary=74%/10080m " +
+                    "secondary_resets_at=2026-11-17T09:00:00Z reached=rejected",
+            ) in lines,
+            out,
+        )
+    }
+
+    @Test
     fun `m3-11 session_rotated shows its reason, the rotation of the cap, the occupancy and both threads`() {
         val lines =
             trace(

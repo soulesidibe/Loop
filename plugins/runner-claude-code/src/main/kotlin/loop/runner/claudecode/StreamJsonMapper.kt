@@ -98,6 +98,21 @@ internal sealed interface StreamLine {
         val usage: UsageTotals?,
     ) : StreamLine
 
+    /**
+     * A `rate_limit_event` line (bl-209): the `status` of its `rate_limit_info`, such as `allowed` or `rejected`, and
+     * its `unifiedWindows` by name, such as `five_hour` or `seven_day`. A window that is not an object is left out.
+     */
+    data class RateLimit(
+        val status: String?,
+        val windows: Map<String, Window>,
+    ) : StreamLine {
+        /** One unified window: its [utilization], 0 to 1, and the Unix second it [resetsAt], each null when not given. */
+        data class Window(
+            val utilization: Double?,
+            val resetsAt: Long?,
+        )
+    }
+
     /** A line that is not a JSON object. It is kept as output and never fails the turn. */
     data object Malformed : StreamLine
 
@@ -182,6 +197,7 @@ internal object StreamJsonMapper {
                     wake = (event["origin"] as? JsonObject)?.string("kind") == WAKE_ORIGIN,
                     apiError = event.string("api_error"),
                 )
+            type == RATE_LIMIT_EVENT -> rateLimitOf(event)
             type == "system" && subtype == "task_started" -> StreamLine.TaskStarted(taskRun(event))
             type == "system" && subtype == "task_notification" -> StreamLine.TaskNotification(taskRun(event))
             type == "assistant" -> {
@@ -319,6 +335,20 @@ internal object StreamJsonMapper {
             totalCostUsd = totalCostUsd,
         )
 
+    private fun rateLimitOf(event: JsonObject): StreamLine.RateLimit {
+        val info = event["rate_limit_info"] as? JsonObject
+        val windows = info?.get("unifiedWindows") as? JsonObject
+        return StreamLine.RateLimit(
+            status = info?.string("status"),
+            windows =
+                windows
+                    .orEmpty()
+                    .mapNotNull { (name, window) ->
+                        (window as? JsonObject)?.let { name to StreamLine.RateLimit.Window(it.number("utilization"), it.long("resetsAt")) }
+                    }.toMap(),
+        )
+    }
+
     private fun denialsOf(result: JsonObject): List<StreamLine.Denial> {
         val denials = result["permission_denials"] as? JsonArray ?: return emptyList()
         return denials.filterIsInstance<JsonObject>().map { denial ->
@@ -348,6 +378,7 @@ internal object StreamJsonMapper {
     }
 
     private const val SUCCESS = "success"
+    private const val RATE_LIMIT_EVENT = "rate_limit_event"
 
     /** The `origin.kind` Claude Code gives the result of a wake it ran for a background task's notification. */
     private const val WAKE_ORIGIN = "task-notification"
