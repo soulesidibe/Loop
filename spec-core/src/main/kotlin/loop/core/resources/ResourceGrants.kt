@@ -194,7 +194,9 @@ class ResourceGrants(
         if (current.releaseRequestedAt != null || current.prepared != null || current.prepareError != null) return
         prepareAndWrite(current)
         val after = current(current).getOrElse { return }
-        if (after == null) giveBackOnce(current)
+        if (after != null) return
+        giveBackOnce(current)
+        forget(listOf(current.key))
     }
 
     /** The row of [lock] as it is now, by attempt, kind and resource id; null when it was freed. */
