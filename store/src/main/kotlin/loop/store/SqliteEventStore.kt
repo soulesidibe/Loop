@@ -177,6 +177,38 @@ class SqliteEventStore private constructor(
         }
     }
 
+    /**
+     * Every event of [projectId] whose kind is in [kinds], recorded after [since], in recording order (m4-38, read by
+     * `loop report`). Narrowed in SQL a second early and compared exactly on the parsed instants, like
+     * [attemptRowsSince]. No kinds means no events.
+     */
+    suspend fun eventsOfKindsSince(
+        projectId: ProjectId,
+        kinds: Set<String>,
+        since: Instant,
+    ): Result<List<StoredEvent>> {
+        if (kinds.isEmpty()) return Result.success(emptyList())
+        val ordered = kinds.toList()
+        return withContext(Dispatchers.IO) {
+            sql {
+                val from = Instant.fromEpochSeconds(since.epochSeconds - 1).toString()
+                val marks = ordered.joinToString(", ") { "?" }
+                val events =
+                    synchronized(connection) {
+                        connection.prepareStatement("$SELECT_BY_PROJECT AND kind IN ($marks) AND ts >= ? ORDER BY seq").use { st ->
+                            st.setString(1, projectId.value)
+                            ordered.forEachIndexed { index, kind -> st.setString(index + 2, kind) }
+                            st.setString(ordered.size + 2, from)
+                            st.executeQuery().use { rs ->
+                                buildList { while (rs.next()) add(rs.toStoredEvent(ids)) }
+                            }
+                        }
+                    }
+                events.filter { it.event.ts > since }
+            }
+        }
+    }
+
     /** Every event of [attemptId], whatever its project, in recording order. */
     suspend fun eventsForAttempt(attemptId: AttemptId): Result<List<StoredEvent>> =
         withContext(Dispatchers.IO) {
