@@ -66,7 +66,7 @@ data class KindsConfig(
  * (m2-24), `human` by default. [match] says which issues the kind takes (m4-18), the default kind by default.
  * [context] holds the kind's context sources and [template] its own prompt template, null to render the
  * `WORKFLOW.md` body (m4-19). [workspace] says whether Loop reads the workspace with git, and [populate] who fills it
- * (m4-20).
+ * (m4-20). [deliverable] names the files the work produces (m4-21), none by default.
  */
 data class KindConfig(
     val checks: List<CheckConfig>,
@@ -79,6 +79,16 @@ data class KindConfig(
     val template: KindTemplate? = null,
     val workspace: KindWorkspace = KindWorkspace.Git,
     val populate: KindPopulate = KindPopulate.Hooks,
+    val deliverable: KindDeliverable = KindDeliverable(),
+)
+
+/**
+ * A kind's `deliverable` (m4-21): [files], globs relative to the workspace and anchored at its root like the globs of
+ * `guards.protect`. When it holds any, verification lists the files that match and records them with the verdict, and
+ * no match refutes the result. Behavior follows this key, never the kind's name. Empty when the kind declares none.
+ */
+data class KindDeliverable(
+    val files: List<String> = emptyList(),
 )
 
 /**
