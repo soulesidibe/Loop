@@ -27,8 +27,9 @@ import kotlin.time.Duration.Companion.seconds
  * configures (m2-16, m2-17): [launcher] `tool mcp` in the workspace with the agent env, the MCP handshake
  * (`initialize`, `notifications/initialized`), one `tools/call`, then stdin closes and the server ends. So a call gets
  * exactly what an MCP call gets: the same validation, the same request queued in the attempt directory and applied by
- * Loop's tracker adapter at the drain when the turn ends (m1-23), the same events and the same reply. The runner holds
- * no credential and writes nothing to the tracker.
+ * Loop's tracker adapter at the drain when the turn ends (m1-23), the same events and the same reply. The resource
+ * tools (m4-51) are answered by `loop tool mcp` inside the call instead, from the store (m4-25). The runner holds no
+ * credential and writes nothing to the tracker.
  *
  * The reply is [Reply.text], the text of the tool result, and [Reply.success], false when the result is a tool error,
  * a refusal of `loop tool mcp` that queued nothing. A server that cannot start, exits before answering, answers with a

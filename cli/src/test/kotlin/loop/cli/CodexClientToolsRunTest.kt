@@ -24,6 +24,7 @@ import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.fail
 
 /**
@@ -31,7 +32,8 @@ import kotlin.test.fail
  * server that calls Loop's client tools. Each call goes through the real `loop tool mcp` of the installed launcher, so
  * it is queued, recorded and applied at the drain with the `files` tracker exactly like the Claude Code runner's MCP
  * calls ([ClaudeCodeTrackerToolsTest], [ClaudeCodeSubmitResultTest]), and the session gets the server's reply. The
- * last test checks that the client tools take the arguments `loop tool mcp` declares.
+ * last tests check that the client tools take the arguments `loop tool mcp` declares, with the resource tools of
+ * m4-51 when the workflow declares `resources:`.
  */
 class CodexClientToolsRunTest {
     @TempDir
@@ -216,6 +218,43 @@ class CodexClientToolsRunTest {
                 .getValue("state")
                 .jsonObject
         assertEquals(states, state.getValue("enum").jsonArray.map { it.jsonPrimitive.content })
+    }
+
+    @Test
+    fun `m4-51 with resources the client tools add request_resource and release_resource, as loop tool mcp lists them`() {
+        fixture.writeWorkflow(
+            extra =
+                """
+                |resources:
+                |  - kind: android-device
+                |    id: pixel-7
+                |    can: [ui tests]
+                |    cannot: [push]
+                |  - kind: ios-simulator
+                |    id: iphone-16
+                """.trimMargin(),
+        )
+        fixture.issue("t-1")
+        fixture.seed(fixture.attemptStarted(ATTEMPT, "t-1"))
+        val env = fixture.toolEnv(ATTEMPT, "t-1")
+        val listed = listTools(env)
+        // The tools of the snapshot `loop run` wrote, read the way the Codex runner reads them.
+        val loaded = LoopClientTools.load(mapOf("LOOP_LAUNCHER" to "loop", "LOOP_TOOL_CONFIG" to env.getValue("LOOP_TOOL_CONFIG")!!))
+        val tools = assertIs<LoopClientTools.Loaded.Ready>(loaded, "$loaded").tools
+        val specs = tools.specs.map { it.jsonObject }
+
+        assertEquals(listOf("pixel-7", "iphone-16"), tools.resources)
+        assertEquals(listed.map { it.getValue("name") }, specs.map { it.getValue("name") })
+        assertEquals(tools.names, specs.map { it.getValue("name").jsonPrimitive.content })
+        assertEquals(LoopClientTools.NAMES + LoopClientTools.RESOURCE_NAMES, tools.names)
+        listed.zip(specs).drop(LoopClientTools.NAMES.size).forEach { (mcp, codex) ->
+            val name = mcp.getValue("name").jsonPrimitive.content
+            assertEquals(mcp["description"], codex["description"], name)
+            val mcpSchema = mcp.getValue("inputSchema").jsonObject
+            val codexSchema = codex.getValue("inputSchema").jsonObject
+            assertEquals(mcpSchema["required"], codexSchema["required"], name)
+            assertEquals(mcpSchema["properties"], codexSchema["properties"], name)
+        }
     }
 
     // Helpers.
