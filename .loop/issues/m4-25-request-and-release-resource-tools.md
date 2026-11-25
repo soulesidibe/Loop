@@ -48,3 +48,15 @@ Story 122, tools part (PLAN 6.9 and 6.10). Lane A, runs on the claude-code runne
   - A lock or queue row whose project has no live run file is freed with reason `abandoned`, on the tick of `loop run` and before a `request` answers `queued`. Use `RunFiles(loopHome, projectId).peek(retry = false)` like `slotLive` in `StoreMachine.kt`: never peek the caller's own project (that drops its POSIX run lock), and treat `Unreadable` as live. No schema change.
   - A failed free at attempt end (`freeAttempt`, `Orchestrator.kt` around line 1455) is retried on the tick, or rows whose attempt is not running in this run are swept.
   - Acceptance test: project A killed while holding a lock, project B's queued request is granted without A restarting.
+
+2026-11-25 06:13Z loop: Loop opened pull request #60 for this issue: https://github.com/soulesidibe/Loop/pull/60
+
+2026-11-25 06:23Z loop: Loop did not merge pull request #60 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.40.
+  - alignment: aligned, The diff adds both in-turn tools, the `loop run` tick, the snapshot resources, the four events, the docs and the bl-204 abandoned-holder sweep, and the Orchestrator edit is small (+8 -1).
+  - impact: medium (floor medium: the diff changes 973 lines outside tests and docs, over half the limit of 1000), It adds a new in-turn tool path, a 500ms grant tick in every `loop run` and cross-project lock freeing in the shared machine store, with no schema change and nothing sensitive touched.
+  - verification: strong, Every criterion has a test: two attempts over real stdio, provider pid checks, the snapshot with no WORKFLOW.md, one test for each structured failure, the four events in `loop trace`, and a kill -9 test for the bl-204 sweep, plus unit tests in spec-core, store and mcp.
+  - rollback_cost: two_way, There is no schema change and the snapshot key is optional, so a revert is clean. Lock rows and events already written are only inert data.
+  - error_detection: partial, Structured failures are loud, but a failed grant tick and an unrecorded event are only logged as warnings and retried, and an unreadable run file counts as live, so a stuck lock could go unnoticed for a while.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 15 of 24 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
