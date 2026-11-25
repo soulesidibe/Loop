@@ -1,0 +1,46 @@
+package loop.core.reactions
+
+/**
+ * The `reactions:` key of `WORKFLOW.md` (m4-34, PLAN 6.7): what Loop does when something happens to a pull request it
+ * opened while the issue waits. Each key is null when it is absent, and absent means no reaction. Only [mergeConflict]
+ * acts so far; the other keys parse and do nothing until their issue (m4-35 to m4-37).
+ */
+data class ReactionsConfig(
+    val ciFailed: Reaction? = null,
+    val changesRequested: Reaction? = null,
+    val mergeConflict: Reaction? = null,
+    val approvedGreen: Reaction? = null,
+) {
+    /** True when no reaction is configured, as with no `reactions:` key. */
+    val none: Boolean get() = ciFailed == null && changesRequested == null && mergeConflict == null && approvedGreen == null
+
+    companion object {
+        const val CI_FAILED: String = "ci_failed"
+        const val CHANGES_REQUESTED: String = "changes_requested"
+        const val MERGE_CONFLICT: String = "merge_conflict"
+        const val APPROVED_GREEN: String = "approved_green"
+
+        /** Every reaction Loop knows, in the order of PLAN 6.7. */
+        val KEYS: List<String> = listOf(CI_FAILED, CHANGES_REQUESTED, MERGE_CONFLICT, APPROVED_GREEN)
+    }
+}
+
+/** One reaction: its [action], and the options its key takes, null when not written. */
+data class Reaction(
+    val action: ReactionAction,
+    /** How many times `send_to_agent` may send the issue back for this reaction (`ci_failed`, `changes_requested`). */
+    val retries: Int? = null,
+    /** How long the reaction waits before it escalates to a human, in milliseconds (`ci_failed`, `changes_requested`). */
+    val escalateAfterMs: Long? = null,
+)
+
+/** What a reaction does. */
+enum class ReactionAction(
+    val wire: String,
+) {
+    /** The wait ends and the issue's workspace resumes with a continuation turn, then the result is verified again. */
+    SendToAgent("send_to_agent"),
+
+    /** A human is told. In M4 nothing is sent for a reaction: Loop records `reaction_skipped`. */
+    NotifyHuman("notify_human"),
+}

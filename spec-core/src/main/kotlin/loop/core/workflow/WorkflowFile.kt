@@ -13,6 +13,7 @@ import loop.api.ProfileProblem
 import loop.api.ResourceDeclaration
 import loop.core.delivery.AttachDelivery
 import loop.core.kinds.KindWorkspaces
+import loop.core.reactions.ReactionsParser
 import loop.core.resources.ResourceCheck
 import loop.core.resources.ResourcesParser
 import loop.core.trackers.TrackerEntry
@@ -261,6 +262,7 @@ class WorkflowLoader(
         val context = parseContext(config.child("context"))
         val observability = parseObservability(config.child("observability"))
         val channel = parseChannel(config.child("channel"))
+        val reactions = ReactionsParser.parse(config.node("reactions")?.toPlain())
         val kinds = parseKinds(config, folder, tracker.kind, listOf(tracker.id) + extraTrackers.map { it.id }, deferred)
 
         val workspaceRoot =
@@ -310,6 +312,7 @@ class WorkflowLoader(
                     referencedEnvNames = config?.referencedEnvNames().orEmpty(),
                     resources = resources,
                     channel = channel,
+                    reactions = reactions,
                 ),
             sourceHash = workflowHash(text),
             sourceText = text,
