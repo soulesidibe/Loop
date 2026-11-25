@@ -2,6 +2,9 @@ package loop.core.kinds
 
 import loop.core.verify.ProtectedPaths
 import java.io.IOException
+import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
 import java.nio.file.FileVisitResult
 import java.nio.file.Files
 import java.nio.file.LinkOption
@@ -24,13 +27,22 @@ sealed interface DeliverableListing {
     /** The globs of `deliverable.files`, as written. */
     val globs: List<String>
 
-    /** The [files] that match, in path order. */
+    /**
+     * The [files] that match, in path order. For a kind with `deliverable.report` (m4-23), [report] is its path, [files]
+     * holds the report when it is there, and [problems] what reading it found: an empty report, one that is not UTF-8
+     * text or too large, or each required section it misses, one sentence each, naming the report.
+     */
     data class Listed(
         override val globs: List<String>,
         val files: List<DeliverableFile>,
+        val report: String? = null,
+        val problems: List<String> = emptyList(),
     ) : DeliverableListing {
-        /** True when no file matches: the result is refuted with the finding "no deliverable file". */
+        /** True when no file matches: the result is refuted with the finding "no deliverable file", or a missing report. */
         val missing: Boolean get() = files.isEmpty()
+
+        /** True when the deliverable refutes the result: [missing], or a report with [problems] (m4-23). */
+        val refuted: Boolean get() = missing || problems.isNotEmpty()
     }
 
     /** The workspace could not be listed, for the [reason] given. */
@@ -93,22 +105,59 @@ object DeliverableFiles {
     }
 
     /**
+     * The report of [workspace] at [report] (m4-23), listed like a deliverable file and read once, so its size, digest and
+     * text come from the same bytes, never through a symlink: missing, it lists no file; present, it is checked for
+     * being UTF-8 text under [REPORT_MAX_BYTES], not blank, and holding each of the [sections] (`verify.require_sections`).
+     * Throws when [workspace] or the report cannot be read.
+     */
+    fun report(
+        workspace: Path,
+        report: String,
+        sections: List<String>,
+    ): DeliverableListing.Listed {
+        val globs = listOf(report)
+        val file = list(workspace, globs).singleOrNull() ?: return DeliverableListing.Listed(globs, emptyList(), report)
+        val bytes =
+            Files
+                .newInputStream(
+                    workspace.resolve(file.path),
+                    LinkOption.NOFOLLOW_LINKS,
+                ).use { it.readNBytes(REPORT_MAX_BYTES + 1) }
+        val read =
+            DeliverableFile(file.path, bytes.size.toLong(), HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)))
+        val listed = { problem: String -> DeliverableListing.Listed(globs, listOf(read), report, listOf("$report $problem")) }
+        if (bytes.size > REPORT_MAX_BYTES) return listed("is over $REPORT_MAX_BYTES bytes, too large to read")
+        val text =
+            try {
+                Charsets.UTF_8
+                    .newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(bytes))
+                    .toString()
+            } catch (e: CharacterCodingException) {
+                return listed("is not UTF-8 text")
+            }
+        if (text.isBlank()) return listed("is empty")
+        val problems = RequiredSections.missing(text, sections).map { "$report misses the section $it" }
+        return DeliverableListing.Listed(globs, listOf(read), report, problems)
+    }
+
+    /**
      * The listing verification records with the verdict of an issue of [kind] worked in [workspace], null when the kind
-     * declares no `deliverable.files`. A workspace that cannot be read is [DeliverableListing.Failed], never a throw.
+     * declares no `deliverable.files` and no `deliverable.report`; for a report, the [report] read. A workspace or a
+     * report that cannot be read is [DeliverableListing.Failed], never a throw.
      */
     fun listing(
         kind: IssueKind?,
         workspace: Path,
     ): DeliverableListing? {
-        val globs =
-            kind
-                ?.config
-                ?.deliverable
-                ?.files
-                .orEmpty()
+        val deliverable = kind?.config?.deliverable ?: return null
+        val globs = deliverable.globs
         if (globs.isEmpty()) return null
         return try {
-            DeliverableListing.Listed(globs, list(workspace, globs))
+            deliverable.report?.let { report(workspace, it, kind.config.requireSections) }
+                ?: DeliverableListing.Listed(globs, list(workspace, globs))
         } catch (e: IOException) {
             DeliverableListing.Failed(globs, "cannot list the deliverable files: ${e.describe()}")
         } catch (e: SecurityException) {
@@ -158,6 +207,9 @@ object DeliverableFiles {
     }
 
     private fun Throwable.describe(): String = message ?: this::class.simpleName ?: "unknown error"
+
+    /** The largest report verification reads (m4-23), 8 MiB; a larger one refutes the result. */
+    const val REPORT_MAX_BYTES: Int = 8 * 1024 * 1024
 
     private const val GIT = ".git"
     private const val BUFFER = 64 * 1024

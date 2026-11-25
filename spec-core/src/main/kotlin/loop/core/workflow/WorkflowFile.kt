@@ -496,6 +496,7 @@ class WorkflowLoader(
             )
         }
         val deliverable = parseDeliverable(kindKey, kind)
+        val requireSections = parseRequireSections(kindKey, verify, deliverable)
         val delivery = parseDelivery(kindKey, kind, trackerKind, deferred, deliverable)
         val match = parseMatch(kindKey, kind, trackerIds) ?: if (name == KindsConfig.CODE) KindMatch.DEFAULT else null
         return KindConfig(
@@ -510,13 +511,15 @@ class WorkflowLoader(
             workspace = workspace,
             populate = populate,
             deliverable = deliverable,
+            requireSections = requireSections,
         )
     }
 
     /**
      * m4-21: `kinds.<kind>.deliverable`, none when absent. Present, a map whose only key is `files`, a list of at least
-     * one non blank glob relative to the workspace: never absolute, never through `..`. `report` is refused until the
-     * report deliverable lands, and any other key is refused, so a misspelled key never drops the deliverable silently.
+     * one non blank glob relative to the workspace: never absolute, never through `..`. m4-23: or whose only key is
+     * `report`, one path relative to the workspace, which names a file: no `*` or `?`, no trailing `/`. Any other key is
+     * refused, so a misspelled key never drops the deliverable silently.
      */
     private fun parseDeliverable(
         kindKey: String,
@@ -524,13 +527,12 @@ class WorkflowLoader(
     ): KindDeliverable {
         val name = "$kindKey.deliverable"
         val deliverable = kind.child("deliverable", name) ?: return KindDeliverable()
-        deliverable.entries.keys
-            .map { it.content }
-            .firstOrNull { it != "files" }
-            ?.let { key ->
-                if (key == "report") throw WorkflowError.InvalidConfig("$name.report is not supported yet, use files")
-                throw WorkflowError.InvalidConfig("$name.$key is not supported, use files")
-            }
+        val keys = deliverable.entries.keys.map { it.content }
+        keys
+            .firstOrNull { it != "files" && it != "report" }
+            ?.let { key -> throw WorkflowError.InvalidConfig("$name.$key is not supported, use files or report") }
+        if ("files" in keys && "report" in keys) throw WorkflowError.InvalidConfig("$name holds files and report, use one of them")
+        if ("report" in keys) return KindDeliverable(report = parseReport(name, deliverable))
         val files = deliverable.strings("$name.files", "files").orEmpty()
         if (files.isEmpty()) throw WorkflowError.InvalidConfig("$name.files must hold at least one glob")
         if (files.any { it.isBlank() }) throw WorkflowError.InvalidConfig("$name.files must not hold a blank glob")
@@ -541,6 +543,41 @@ class WorkflowLoader(
             }
         }
         return KindDeliverable(globs)
+    }
+
+    /** m4-23: `deliverable.report` of the deliverable map named [name], one path to a file relative to the workspace. */
+    private fun parseReport(
+        name: String,
+        deliverable: YamlMap,
+    ): String {
+        val key = "$name.report"
+        val report = deliverable.string(key, "report")?.trim()
+        if (report.isNullOrEmpty()) throw WorkflowError.InvalidConfig("$key must not be blank")
+        if (report.startsWith("/") || Path(report).isAbsolute || report.split('/', '\\').any { it == ".." }) {
+            throw WorkflowError.InvalidConfig("$key is $report, use a path relative to the workspace")
+        }
+        if ('*' in report || '?' in report) throw WorkflowError.InvalidConfig("$key is $report, name one file, without * or ?")
+        if (report.endsWith("/")) throw WorkflowError.InvalidConfig("$key is $report, name one file, not a folder")
+        return report
+    }
+
+    /**
+     * m4-23: `kinds.<kind>.verify.require_sections`, none when absent. Present, a non empty list of non blank section
+     * names, and only on a kind whose [deliverable] is a report, the text they are read in.
+     */
+    private fun parseRequireSections(
+        kindKey: String,
+        verify: YamlMap,
+        deliverable: KindDeliverable,
+    ): List<String> {
+        val name = "$kindKey.verify.require_sections"
+        val sections = verify.strings(name, "require_sections") ?: return emptyList()
+        if (deliverable.report == null) {
+            throw WorkflowError.InvalidConfig("$name needs $kindKey.deliverable.report, the report it reads")
+        }
+        if (sections.isEmpty()) throw WorkflowError.InvalidConfig("$name must list at least one section")
+        if (sections.any { it.isBlank() }) throw WorkflowError.InvalidConfig("$name must not hold a blank name")
+        return sections.map { it.trim() }
     }
 
     /**
@@ -839,8 +876,15 @@ class WorkflowLoader(
             delivery.mapEntry("attach_auto", "$kindKey.delivery.attach_auto")?.boolean("$kindKey.delivery.attach_auto.enabled", "enabled")
                 ?: false
         AttachDelivery
-            .refusal(kindKey, deliverable.files, attach, attachAuto, pullRequest != null, policy == DeliveryPolicy.Auto)
-            ?.let { throw WorkflowError.InvalidConfig(it) }
+            .refusal(
+                kindKey,
+                deliverable.globs,
+                attach,
+                attachAuto,
+                pullRequest != null,
+                policy == DeliveryPolicy.Auto,
+                deliverable.report != null,
+            )?.let { throw WorkflowError.InvalidConfig(it) }
         // m2-28: off unless the project opts in, so `auto` alone never delivers without a human. m4-22: an attach kind
         // opts in with attach_auto, which the refusal above already required.
         if (policy == DeliveryPolicy.Auto && !autoMerge.enabled && !attach) {
