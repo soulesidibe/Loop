@@ -100,6 +100,12 @@ object Verdict : EventDefinition("verdict") {
     /** m2-25: the files a pull request would not carry. */
     const val UNCOMMITTED = "uncommitted"
 
+    /** m4-21: how many files matched the kind's `deliverable.files`, absent when the kind declares none. */
+    const val DELIVERABLE = "deliverable"
+
+    /** m4-21: the evidence file that lists them, each with its size and sha256 digest. */
+    const val DELIVERABLE_EVIDENCE = "deliverable_evidence"
+
     override val trace = TraceShow.TIMELINE
     override val human = HumanShow.ISSUE
     override val sample = mapOf(VERDICT to "verified", CHECKS to "1", FINGERPRINT to "git:abc:def:0", EVIDENCE to "1")
@@ -119,6 +125,8 @@ object Verdict : EventDefinition("verdict") {
         add(REASON, data[REASON])
         add(JUDGMENT_CALLS, data[JUDGMENT_CALLS])
         add(UNCOMMITTED, data[UNCOMMITTED])
+        add(DELIVERABLE, data[DELIVERABLE])
+        add(DELIVERABLE_EVIDENCE, data[DELIVERABLE_EVIDENCE])
     }
 
     /** The verdict and how many check outputs were saved as evidence. */
@@ -132,10 +140,17 @@ object Verdict : EventDefinition("verdict") {
                 1 -> "evidence of 1 check saved"
                 else -> "evidence of $saved checks saved"
             }
-        // m2-25: a verified work tree refuted for files a pull request would not carry.
+        // m2-25: a verified work tree refuted for files a pull request would not carry. m4-21: or with no deliverable file.
         val reason =
             data[REASON]?.let { " ($it)" }
-                ?: data[UNCOMMITTED]?.let { " (${if (it == "1") "1 file is" else "$it files are"} not committed)" }.orEmpty()
+                ?: data[UNCOMMITTED]?.let { " (${if (it == "1") "1 file is" else "$it files are"} not committed)" }
+                ?: " (no deliverable file)".takeIf { data[DELIVERABLE] == "0" }.orEmpty()
+        val deliverable =
+            when (val count = data[DELIVERABLE]) {
+                null, "0" -> ""
+                "1" -> ", 1 deliverable file listed"
+                else -> ", $count deliverable files listed"
+            }
         val judgment =
             when (val count = data[JUDGMENT_CALLS]) {
                 null -> ""
@@ -143,7 +158,7 @@ object Verdict : EventDefinition("verdict") {
                 else -> ", $count judgment calls left to a human"
             }
         val mergeCheck = if (data[MERGE_CHECK] == "true") " of the merge check" else ""
-        return "verdict ${data[VERDICT]}$mergeCheck$reason, $evidence$judgment"
+        return "verdict ${data[VERDICT]}$mergeCheck$reason, $evidence$judgment$deliverable"
     }
 }
 

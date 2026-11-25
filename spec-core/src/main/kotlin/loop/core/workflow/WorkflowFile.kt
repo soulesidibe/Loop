@@ -10,6 +10,7 @@ import com.charleskorn.kaml.YamlTaggedNode
 import loop.api.MergeMethod
 import loop.api.PluginProfile
 import loop.api.ProfileProblem
+import loop.core.kinds.DeliverableFiles
 import loop.core.kinds.KindWorkspaces
 import loop.core.trackers.TrackerEntry
 import loop.core.trackers.TrackerParser
@@ -494,6 +495,10 @@ class WorkflowLoader(
                 "$kindKey.delivery.pull_request is not supported yet, only the code kind delivers a pull request",
             )
         }
+        // m4-21: refused before the auto_merge opt in, so the message names the real reason.
+        val deliverable = parseDeliverable(kindKey, kind)
+        val auto = kind.child("delivery", "$kindKey.delivery").string("$kindKey.delivery.policy", "policy")?.trim()?.lowercase() == "auto"
+        DeliverableFiles.refusal(kindKey, deliverable.files, auto)?.let { throw WorkflowError.InvalidConfig(it) }
         val delivery = parseDelivery(kindKey, kind, trackerKind, deferred)
         val match = parseMatch(kindKey, kind, trackerIds) ?: if (name == KindsConfig.CODE) KindMatch.DEFAULT else null
         return KindConfig(
@@ -507,7 +512,38 @@ class WorkflowLoader(
             template = parseKindTemplate(kindKey, kind, folder),
             workspace = workspace,
             populate = populate,
+            deliverable = deliverable,
         )
+    }
+
+    /**
+     * m4-21: `kinds.<kind>.deliverable`, none when absent. Present, a map whose only key is `files`, a list of at least
+     * one non blank glob relative to the workspace: never absolute, never through `..`. `report` is refused until the
+     * report deliverable lands, and any other key is refused, so a misspelled key never drops the deliverable silently.
+     */
+    private fun parseDeliverable(
+        kindKey: String,
+        kind: YamlMap?,
+    ): KindDeliverable {
+        val name = "$kindKey.deliverable"
+        val deliverable = kind.child("deliverable", name) ?: return KindDeliverable()
+        deliverable.entries.keys
+            .map { it.content }
+            .firstOrNull { it != "files" }
+            ?.let { key ->
+                if (key == "report") throw WorkflowError.InvalidConfig("$name.report is not supported yet, use files")
+                throw WorkflowError.InvalidConfig("$name.$key is not supported, use files")
+            }
+        val files = deliverable.strings("$name.files", "files").orEmpty()
+        if (files.isEmpty()) throw WorkflowError.InvalidConfig("$name.files must hold at least one glob")
+        if (files.any { it.isBlank() }) throw WorkflowError.InvalidConfig("$name.files must not hold a blank glob")
+        val globs = files.map { it.trim() }
+        globs.forEachIndexed { index, glob ->
+            if (glob.startsWith("/") || Path(glob).isAbsolute || glob.split('/', '\\').any { it == ".." }) {
+                throw WorkflowError.InvalidConfig("$name.files[$index] is $glob, use a glob relative to the workspace")
+            }
+        }
+        return KindDeliverable(globs)
     }
 
     /**
