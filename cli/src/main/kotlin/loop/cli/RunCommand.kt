@@ -304,7 +304,14 @@ class RunCommand(
                 live = { project -> projectRunLive(host.loopHome, project) },
             ) { lock, reason ->
                 val fields = mapOf("kind" to lock.kind, "resource_id" to lock.resourceId)
-                log.log(LogLevel.WARN, "resource", LogOutcome.FAILED, context.copy(attemptId = lock.attemptId), fields = fields, reason = reason)
+                log.log(
+                    LogLevel.WARN,
+                    "resource",
+                    LogOutcome.FAILED,
+                    context.copy(attemptId = lock.attemptId),
+                    fields = fields,
+                    reason = reason,
+                )
             }
         val runner = runnerOf(workflow)
         // m3-09: a runner that declares no occupancy gets only the prompt limit and the turn cap (plan 8.3), said once

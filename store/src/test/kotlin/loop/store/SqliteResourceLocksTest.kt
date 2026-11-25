@@ -182,7 +182,13 @@ class SqliteResourceLocksTest {
                         .locks
                         .single()
                 assertEquals(false, secret in read.issueIdentifier)
-                assertEquals(false, read.prepared.orEmpty().values.any { secret in it })
+                assertEquals(
+                    false,
+                    read.prepared
+                        .orEmpty()
+                        .values
+                        .any { secret in it },
+                )
                 assertContains(read.issueIdentifier, "T-")
             }
         }
@@ -237,7 +243,8 @@ class SqliteResourceLocksTest {
     @Test
     fun `m4-25 a version eight store gains the lock columns, its locks unprepared and kept`() =
         runTest {
-            DriverManager.getConnection("jdbc:sqlite:${Files.createDirectories(loopHome).resolve(SqliteEventStore.FILE_NAME)}").use { conn ->
+            val file = Files.createDirectories(loopHome).resolve(SqliteEventStore.FILE_NAME)
+            DriverManager.getConnection("jdbc:sqlite:$file").use { conn ->
                 conn.createStatement().use { st ->
                     // The version 8 table of the m4-50 build, with one lock and no prepare result.
                     st.execute(
@@ -245,7 +252,9 @@ class SqliteResourceLocksTest {
                             "issue_id TEXT NOT NULL, identifier TEXT NOT NULL, attempt_id TEXT NOT NULL, granted_at TEXT NOT NULL, " +
                             "prepared TEXT, PRIMARY KEY (kind, resource_id))",
                     )
-                    st.execute("INSERT INTO resource_locks VALUES ('avd', 'api35', '${first.value}', 'issue-a1', 'T-a1', 'a1', '$at', NULL)")
+                    st.execute(
+                        "INSERT INTO resource_locks VALUES ('avd', 'api35', '${first.value}', 'issue-a1', 'T-a1', 'a1', '$at', NULL)",
+                    )
                     st.execute("PRAGMA user_version = 8")
                 }
             }

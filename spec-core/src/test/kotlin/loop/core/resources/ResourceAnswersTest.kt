@@ -72,7 +72,12 @@ class ResourceAnswersTest {
             assertEquals(true, locks.prepared(lock, Result.success(mapOf("serial" to "emulator-5554"))).getOrThrow())
             val granted = assertIs<ResourceAnswer.Granted>(ask("a1"))
             assertEquals(mapOf("serial" to "emulator-5554"), granted.lock.prepared)
-            assertEquals(true, store.rows.locks.single().answered)
+            assertEquals(
+                true,
+                store.rows.locks
+                    .single()
+                    .answered,
+            )
             assertIs<ResourceAnswer.AlreadyHeld>(ask("a1"), "a request once answered granted is a double request")
 
             assertEquals(listOf("resource_requested a1 avd api35", "resource_granted a1 avd api35"), lines())
@@ -112,7 +117,13 @@ class ResourceAnswersTest {
 
             val marked = assertIs<ReleaseAnswer.Marked>(release("a1"))
             assertEquals(now, marked.lock.releaseRequestedAt)
-            assertEquals(AttemptId("a1"), store.rows.locks.single().attemptId, "the lock stays until loop run frees it")
+            assertEquals(
+                AttemptId("a1"),
+                store.rows.locks
+                    .single()
+                    .attemptId,
+                "the lock stays until loop run frees it",
+            )
             assertIs<ReleaseAnswer.NotHeld>(release("a1"), "a lock already released is not held")
             assertIs<ResourceAnswer.Releasing>(ask("a1"))
             assertIs<ReleaseAnswer.NotHeld>(release("a9"))
@@ -127,7 +138,11 @@ class ResourceAnswersTest {
 
             val failed = assertIs<ResourceAnswer.PrepareFailed>(ask("a1"))
             assertEquals("no runtime", failed.lock.prepareError)
-            assertNotNull(store.rows.locks.single().releaseRequestedAt)
+            assertNotNull(
+                store.rows.locks
+                    .single()
+                    .releaseRequestedAt,
+            )
             assertIs<ResourceAnswer.Releasing>(ask("a1"))
         }
 
@@ -140,11 +155,20 @@ class ResourceAnswersTest {
             ask("a2")
 
             assertEquals(false, locks.prepared(first, Result.success(mapOf("serial" to "old"))).getOrThrow())
-            assertNull(store.rows.locks.single().prepared)
+            assertNull(
+                store.rows.locks
+                    .single()
+                    .prepared,
+            )
             val second = store.rows.locks.single()
             assertEquals(true, locks.prepared(second, Result.success(emptyMap())).getOrThrow())
             assertEquals(false, locks.prepared(second, Result.success(mapOf("serial" to "again"))).getOrThrow())
-            assertEquals(emptyMap(), store.rows.locks.single().prepared)
+            assertEquals(
+                emptyMap(),
+                store.rows.locks
+                    .single()
+                    .prepared,
+            )
         }
 
     @Test

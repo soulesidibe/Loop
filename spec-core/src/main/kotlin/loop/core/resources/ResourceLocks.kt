@@ -70,7 +70,9 @@ class ResourceLocks(
         val subject = request.granted()
         return change(
             reason = ResourceReleased.ABANDONED,
-            first = { answer -> if (answer.requested) listOf(event(ResourceRequested.event(clock.now(), projectId, ids), subject)) else emptyList() },
+            first = { answer ->
+                if (answer.requested) listOf(event(ResourceRequested.event(clock.now(), projectId, ids), subject)) else emptyList()
+            },
             last = { answer ->
                 if (answer is ResourceAnswer.Queued && answer.requested) {
                     val data = ids + (ResourceQueued.POSITION to answer.position.toString())
@@ -102,7 +104,9 @@ class ResourceLocks(
     ): Result<ResourceChange> {
         val rows = rows().getOrElse { return Result.failure(it) }
         if (rows.locks.all { it.projectId == own } && rows.queue.all { it.projectId == own }) return Result.success(ResourceChange(rows))
-        return change(ResourceReleased.ABANDONED) { current -> ResourceQueue.freeAbandoned(current, own, live, clock.now()).let { it to it } }
+        return change(
+            ResourceReleased.ABANDONED,
+        ) { current -> ResourceQueue.freeAbandoned(current, own, live, clock.now()).let { it to it } }
     }
 
     /**

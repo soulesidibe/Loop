@@ -50,7 +50,7 @@ class ResourceToolsTest {
     private val initialized = """{"jsonrpc":"2.0","method":"notifications/initialized"}"""
 
     @Test
-    fun `two attempts over loop tool mcp, the first preparing then granted, the second queued then granted, and loop trace prints the four events`() {
+    fun `two attempts over loop tool mcp, preparing then granted, queued then granted, and loop trace prints the four events`() {
         fixture.issue("t-1")
         fixture.issue("t-2")
         resourcesWorkflow(fixture)
@@ -103,6 +103,7 @@ class ResourceToolsTest {
         )
 
         val events = fixture.query("SELECT kind, issue_identifier, data FROM events WHERE kind LIKE 'resource_%' ORDER BY seq")
+
         fun kinds(issue: String) = events.filter { it["issue_identifier"] == issue }.map { it["kind"] }
         assertEquals(listOf("resource_requested", "resource_granted", "resource_released"), kinds("t-1"))
         assertEquals(listOf("resource_requested", "resource_queued", "resource_granted", "resource_released"), kinds("t-2"))
@@ -126,7 +127,7 @@ class ResourceToolsTest {
             |until_granted $resource
             |call release_resource $resource
             |n=0
-            |until grep -q released "${D}transcript"; do n=${D}((n + 1)); [ ${D}n -lt 100 ] || exit 6; sleep 0.1; done
+            |until grep -q released "${D}transcript"; do n=$D((n + 1)); [ ${D}n -lt 100 ] || exit 6; sleep 0.1; done
             |finish
             """.trimMargin(),
         )
@@ -135,7 +136,12 @@ class ResourceToolsTest {
 
         assertEquals(0, run.exitCode, "$run\n${transcripts(fixture)}")
         val loopRun = ProcessHandle.current().pid()
-        val toolProcess = root.resolve("b/mcp-t-1.pid").readText().trim().toLong()
+        val toolProcess =
+            root
+                .resolve("b/mcp-t-1.pid")
+                .readText()
+                .trim()
+                .toLong()
         assertNotEquals(loopRun, toolProcess, "loop tool mcp is its own process")
         val calls = FakeResourceProvider.calls.filter { it.id == resource }
         assertEquals(listOf("prepare", "release"), calls.map { it.op })
@@ -189,7 +195,10 @@ class ResourceToolsTest {
         val answer = replies[0].answer()
         assertEquals("error", answer.status())
         assertEquals(JsonPrimitive("unknown_resource"), answer["error"])
-        assertContains(answer.getValue("message").jsonPrimitive.content, "\"nope\" is not a resource of the workflow. The resources are: $resource.")
+        assertContains(
+            answer.getValue("message").jsonPrimitive.content,
+            "\"nope\" is not a resource of the workflow. The resources are: $resource.",
+        )
         assertEquals("preparing", replies[1].answer().status(), "the next call is served")
         assertEquals(0, fixture.query("SELECT 1 FROM events WHERE kind = 'resource_requested' AND data LIKE '%nope%'").size)
     }
@@ -203,7 +212,12 @@ class ResourceToolsTest {
         assertEquals("preparing", session(env, request(resource)).single().answer().status())
         // What loop run writes on its tick: the prepare result.
         withLocks { locks ->
-            val lock = locks.rows().getOrThrow().locks.single()
+            val lock =
+                locks
+                    .rows()
+                    .getOrThrow()
+                    .locks
+                    .single()
             locks.prepared(lock, Result.success(mapOf("serial" to "fake-$resource"))).getOrThrow()
         }
 
@@ -211,7 +225,14 @@ class ResourceToolsTest {
 
         assertGranted(replies[0].answer())
         val double = replies[1].answer()
-        assertEquals(true, replies[1].getValue("result").jsonObject["isError"]?.jsonPrimitive?.boolean)
+        assertEquals(
+            true,
+            replies[1]
+                .getValue("result")
+                .jsonObject["isError"]
+                ?.jsonPrimitive
+                ?.boolean,
+        )
         assertEquals(JsonPrimitive("already_held"), double["error"], "$double")
         assertContains(double.getValue("message").jsonPrimitive.content, "You already hold $resource, granted with serial fake-$resource.")
         assertEquals("released", replies[2].answer().status(), "the next call is served")
@@ -227,7 +248,14 @@ class ResourceToolsTest {
         val replies = session(fixture.toolEnv(ATTEMPT, "t-1"), release(resource), request(resource))
 
         val failure = replies[0].answer()
-        assertEquals(true, replies[0].getValue("result").jsonObject["isError"]?.jsonPrimitive?.boolean)
+        assertEquals(
+            true,
+            replies[0]
+                .getValue("result")
+                .jsonObject["isError"]
+                ?.jsonPrimitive
+                ?.boolean,
+        )
         assertEquals(JsonPrimitive("not_held"), failure["error"], "$failure")
         assertContains(failure.getValue("message").jsonPrimitive.content, "You do not hold $resource")
         assertEquals("preparing", replies[1].answer().status(), "the next call is served")
@@ -246,7 +274,7 @@ class ResourceToolsTest {
         agent(
             dead,
             """
-            |echo ${D}${D} > '$deadAgentPid'
+            |echo ${D}$D > '$deadAgentPid'
             |call request_resource $resource
             |until_granted $resource
             |touch "$root/a-granted"
@@ -257,9 +285,9 @@ class ResourceToolsTest {
         agent(
             live,
             """
-            |n=0; until [ -f "$root/a-granted" ]; do n=${D}((n + 1)); [ ${D}n -lt 900 ] || exit 8; sleep 0.1; done
+            |n=0; until [ -f "$root/a-granted" ]; do n=$D((n + 1)); [ ${D}n -lt 900 ] || exit 8; sleep 0.1; done
             |call request_resource $resource
-            |kill -9 "${D}(cat '$deadRunPid')"
+            |kill -9 "$D(cat '$deadRunPid')"
             |until_granted $resource
             |call release_resource $resource
             |finish
@@ -326,30 +354,30 @@ class ResourceToolsTest {
             |replies="${D}R/replies-${D}LOOP_ISSUE_IDENTIFIER.jsonl"
             |transcript="${D}R/transcript-${D}LOOP_ISSUE_IDENTIFIER.txt"
             |: > "${D}replies"
-            |rpc=${D}(mktemp -d)
+            |rpc=$D(mktemp -d)
             |mkfifo "${D}rpc/in"
             |loop tool mcp < "${D}rpc/in" > "${D}replies" &
-            |echo ${D}! > "${D}R/mcp-${D}LOOP_ISSUE_IDENTIFIER.pid"
+            |echo $D! > "${D}R/mcp-${D}LOOP_ISSUE_IDENTIFIER.pid"
             |exec 3> "${D}rpc/in"
             |printf '%s\n' '$initialize' '$initialized' >&3
             |id=1
             |reply=
             |call() {
-            |  id=${D}((id + 1))
+            |  id=$D((id + 1))
             |  printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"%s","arguments":{"name":"%s"}}}\n' "${D}id" "${D}1" "${D}2" >&3
             |  n=0
-            |  until grep -Eq "\"id\":${D}id[,}]" "${D}replies"; do n=${D}((n + 1)); [ ${D}n -lt 600 ] || exit 9; sleep 0.1; done
-            |  reply=${D}(grep -E "\"id\":${D}id[,}]" "${D}replies")
+            |  until grep -Eq "\"id\":${D}id[,}]" "${D}replies"; do n=$D((n + 1)); [ ${D}n -lt 600 ] || exit 9; sleep 0.1; done
+            |  reply=$D(grep -E "\"id\":${D}id[,}]" "${D}replies")
             |  echo "${D}1 ${D}reply" >> "${D}transcript"
             |}
             |granted='\"status\":\"granted\"'
             |until_granted() {
             |  n=0
             |  until printf '%s' "${D}reply" | grep -Fq "${D}granted"; do
-            |    n=${D}((n + 1)); [ ${D}n -lt 300 ] || exit 7; sleep 0.2; call request_resource "${D}1"
+            |    n=$D((n + 1)); [ ${D}n -lt 300 ] || exit 7; sleep 0.2; call request_resource "${D}1"
             |  done
             |}
-            |await() { n=0; until [ -f "${D}R/${D}1" ]; do n=${D}((n + 1)); [ ${D}n -lt 600 ] || exit 8; sleep 0.1; done; }
+            |await() { n=0; until [ -f "${D}R/${D}1" ]; do n=$D((n + 1)); [ ${D}n -lt 600 ] || exit 8; sleep 0.1; done; }
             |finish() { exec 3>&-; wait; loop tool move review; }
             |$body
             |
@@ -373,9 +401,10 @@ class ResourceToolsTest {
 
     private fun transcripts(project: LoopFixture): String {
         val dir = project.agentScript.parent.parent
-        return listOf("t-1", "t-2").mapNotNull { issue ->
-            dir.resolve("transcript-$issue.txt").takeIf { it.exists() }?.let { "--- $issue\n${it.readText()}" }
-        }.joinToString("\n")
+        return listOf("t-1", "t-2")
+            .mapNotNull { issue ->
+                dir.resolve("transcript-$issue.txt").takeIf { it.exists() }?.let { "--- $issue\n${it.readText()}" }
+            }.joinToString("\n")
     }
 
     private fun assertGranted(answer: JsonObject) {

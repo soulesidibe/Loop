@@ -136,8 +136,11 @@ private fun resources(value: JsonElement): List<ResourceDeclaration> {
 }
 
 private fun JsonObject.strings(key: String): List<String> =
-    (this[key] as? JsonArray)?.map { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content ?: throw ToolConfigError.Unreadable("its $key is not a list of strings") }
-        .orEmpty()
+    (this[key] as? JsonArray)
+        ?.map {
+            (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content
+                ?: throw ToolConfigError.Unreadable("its $key is not a list of strings")
+        }.orEmpty()
 
 private fun JsonObject.string(key: String): String =
     (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: throw ToolConfigError.Unreadable("it has no $key")

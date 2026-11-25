@@ -136,7 +136,8 @@ object ResourceAnswers {
         outcome: Result<Map<String, String>>,
     ): Answered<Boolean> {
         val current =
-            rows.locks.firstOrNull { it.isOf(lock.kind, lock.resourceId) && it.attemptId == lock.attemptId }
+            rows.locks
+                .firstOrNull { it.isOf(lock.kind, lock.resourceId) && it.attemptId == lock.attemptId }
                 ?.takeIf { it.prepared == null && it.prepareError == null }
                 ?: return Answered(ResourceChange(rows), false)
         val written =

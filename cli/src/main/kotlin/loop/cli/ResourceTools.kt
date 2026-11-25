@@ -43,8 +43,7 @@ internal class ResourceTools(
                     .ask(env.projectId, issueId, identifier, env.attemptId, resource.kind, resource.id) { project ->
                         // bl-204: a dead holder of another project is freed before this request answers queued.
                         projectRunLive(tool.loopHome, project)
-                    }
-                    .getOrElse { return@withLocks storeFailure(resource, it) }
+                    }.getOrElse { return@withLocks storeFailure(resource, it) }
             answer(resource, answer)
         }
     }
@@ -65,7 +64,10 @@ internal class ResourceTools(
                         "Released ${resource.id}. Stop using it now: Loop gives it back and grants it to the next attempt in its queue.",
                     )
                 is ReleaseAnswer.NotHeld -> {
-                    val waits = answer.position?.let { " Your request waits at position $it of its queue; Loop drops it when your attempt ends." }
+                    val waits =
+                        answer.position?.let {
+                            " Your request waits at position $it of its queue; Loop drops it when your attempt ends."
+                        }
                     failure(
                         "not_held",
                         resource,
@@ -97,7 +99,12 @@ internal class ResourceTools(
                     STATUS_GRANTED,
                     resource,
                     "Granted ${resource.id}, ready: it is yours until you call release_resource or your attempt ends.",
-                    "prepared" to JsonObject(answer.lock.prepared.orEmpty().mapValues { JsonPrimitive(it.value) }),
+                    "prepared" to
+                        JsonObject(
+                            answer.lock.prepared
+                                .orEmpty()
+                                .mapValues { JsonPrimitive(it.value) },
+                        ),
                     "can" to JsonArray(resource.can.map(::JsonPrimitive)),
                     "cannot" to JsonArray(resource.cannot.map(::JsonPrimitive)),
                 )

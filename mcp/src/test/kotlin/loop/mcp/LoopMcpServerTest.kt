@@ -404,7 +404,13 @@ class LoopMcpServerTest {
             initialize()
             assertEquals(listOf("submit_result", "move", "comment"), tools().map { it.getValue("name").jsonPrimitive.content })
             val call = request("tools/call", """{"name":"request_resource","arguments":{"name":"api35"}}""")
-            val refused = call["error"] != null || call["result"]?.jsonObject?.get("isError")?.jsonPrimitive?.boolean == true
+            val refused =
+                call["error"] != null ||
+                    call["result"]
+                        ?.jsonObject
+                        ?.get("isError")
+                        ?.jsonPrimitive
+                        ?.boolean == true
             assertTrue(refused, "an unlisted tool is refused: $call")
         }
 
@@ -443,8 +449,16 @@ class LoopMcpServerTest {
         val resources = Resources()
         withClient(resources = resources) {
             initialize()
-            val granted = request("tools/call", """{"name":"request_resource","arguments":{"name":"api35"}}""").getValue("result").jsonObject
-            val released = request("tools/call", """{"name":"release_resource","arguments":{"name":"api35"}}""").getValue("result").jsonObject
+            val granted =
+                request(
+                    "tools/call",
+                    """{"name":"request_resource","arguments":{"name":"api35"}}""",
+                ).getValue("result").jsonObject
+            val released =
+                request(
+                    "tools/call",
+                    """{"name":"release_resource","arguments":{"name":"api35"}}""",
+                ).getValue("result").jsonObject
             val missing = request("tools/call", """{"name":"request_resource","arguments":{}}""").getValue("result").jsonObject
 
             assertEquals(listOf("request api35", "release api35"), resources.calls)
