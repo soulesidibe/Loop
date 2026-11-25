@@ -86,7 +86,10 @@ class FakeHumanChannelContractTest : HumanChannelContract() {
                 contract {
                     object : FakeChannel() {
                         override fun notify(notice: HumanNotice): Result<Unit> {
-                            notice.reason.lines().filter { it.isNotBlank() }.forEach { messages += "${notice.identifier}: $it" }
+                            notice.reason
+                                .lines()
+                                .filter { it.isNotBlank() }
+                                .forEach { messages += "${notice.identifier}: $it" }
                             return Result.success(Unit)
                         }
                     }

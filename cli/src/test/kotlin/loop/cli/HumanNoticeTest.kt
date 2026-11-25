@@ -36,8 +36,7 @@ class HumanNoticeTest {
     private fun hooks(
         hook: String = recordingHook,
         timeoutMs: Long? = null,
-    ): String =
-        "hooks:\n  on_human_needed: \"$hook\"" + timeoutMs?.let { "\n  timeout_ms: $it" }.orEmpty()
+    ): String = "hooks:\n  on_human_needed: \"$hook\"" + timeoutMs?.let { "\n  timeout_ms: $it" }.orEmpty()
 
     /** A failing agent and `retries.max_attempts: 1`, so the first failure parks the issue, with [hooks]. */
     private fun parkOnFirstFailure(hooks: String = hooks()) {
@@ -73,13 +72,21 @@ class HumanNoticeTest {
         if (!notices.exists()) {
             emptyList()
         } else {
-            notices.readText().lines().filter { it.isNotBlank() }.map { Json.parseToJsonElement(it).jsonObject }
+            notices
+                .readText()
+                .lines()
+                .filter { it.isNotBlank() }
+                .map { Json.parseToJsonElement(it).jsonObject }
         }
 
     /** The notice lines the terminal channel printed on stderr. */
-    private fun terminalLines(result: LoopResult): List<String> = result.stderr.lines().filter { it.startsWith("loop run: ") && " needs you, " in it }
+    private fun terminalLines(result: LoopResult): List<String> =
+        result.stderr.lines().filter { it.startsWith("loop run: ") && " needs you, " in it }
 
-    private fun events(kind: String): List<String> = fixture.query("SELECT data FROM events WHERE kind = '$kind' ORDER BY seq").map { it["data"].orEmpty() }
+    private fun events(kind: String): List<String> =
+        fixture.query("SELECT data FROM events WHERE kind = '$kind' ORDER BY seq").map {
+            it["data"].orEmpty()
+        }
 
     private fun JsonObject.text(key: String): String? = this[key]?.jsonPrimitive?.takeIf { it.isString }?.content
 
