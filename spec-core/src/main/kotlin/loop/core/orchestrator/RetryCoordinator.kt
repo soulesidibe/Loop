@@ -76,6 +76,8 @@ internal class RetryCoordinator(
     /** Runs when a retry is dropped because its issue is terminal (plan D8 revised). */
     private val onTerminalRetryDropped: suspend (Issue) -> Unit,
     private val retryStates: RetryStates = RetryStates.NONE,
+    /** m4-30: runs once per park, with the park and why, to tell a human; a restart reads parks and never calls it. */
+    private val onParked: suspend (ParkedIssue, String) -> Unit = { _, _ -> },
 ) {
     private val queue = RetryQueue()
 
@@ -592,6 +594,7 @@ internal class RetryCoordinator(
             reason = data["error"] ?: reason.wire,
         )
         if (reason == ParkReason.SplitIssue) commentSplit(issue, data, attemptId, now)
+        onParked(record, data["error"]?.let { "${reason.wire}: $it" } ?: reason.wire)
     }
 
     /**

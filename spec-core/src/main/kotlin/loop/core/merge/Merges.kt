@@ -5,6 +5,7 @@ import kotlinx.coroutines.withContext
 import loop.api.DeliveryError
 import loop.api.DeliveryExecutor
 import loop.api.EventSink
+import loop.api.HumanEvent
 import loop.api.HumanTouch
 import loop.api.Issue
 import loop.api.IssueComment
@@ -16,6 +17,7 @@ import loop.api.RunId
 import loop.api.SecretRedactor
 import loop.api.TrackerAdapter
 import loop.api.WaitReason
+import loop.core.channel.HumanNotices
 import loop.core.delivery.AutoMerge
 import loop.core.delivery.CiDecision
 import loop.core.delivery.CiVerdict
@@ -106,6 +108,8 @@ internal class Merges(
     private val wake: () -> Unit,
     /** Told once a CI wait ended in `timeout` and fell back to approval, so the orchestrator pauses the queue (bl-175). */
     private val onCiTimeout: suspend (Wait.Merge) -> Unit = {},
+    /** m4-30: the notices to a human, told when a merge falls back to an approval wait; none tells nobody. */
+    private val notices: HumanNotices? = null,
     private val sink: EventSink,
     private val sinkName: String,
     private val log: KeyValueLog,
@@ -1197,7 +1201,7 @@ internal class Merges(
             comment?.invoke(redacted)
                 ?: (MergeCheck.failedComment(wait.numberText, step, redacted) to MergeCheck.COMMENT_REASON)
         commentMerge(wait, text, commentReason)
-        storeWait(wait.refused(clock.now()), waitContext(wait))
+        fallBack(wait, HumanEvent.DeliveryFailed, "$step: $redacted")
         ciPolls.remove(wait.issueId)
         return null
     }
@@ -1226,8 +1230,22 @@ internal class Merges(
             AutoMerge.fallbackComment(number, outcome.failures, outcome.risk, outcome.riskSkipped, outcome.stopped),
             AutoMerge.COMMENT_REASON,
         )
-        storeWait(wait.refused(clock.now()), waitContext(wait))
+        fallBack(wait, HumanEvent.ApprovalWaiting, "no auto merge, ${outcome.reason}")
         return null
+    }
+
+    /**
+     * Writes [wait] back as the unapproved `Waiting(approval)` a refused or fallen back merge leaves, and tells the human
+     * about [event] for [reason] (m4-30): the wait drops the key of its earlier notice, so this one is sent.
+     */
+    private suspend fun fallBack(
+        wait: Wait.Merge,
+        event: HumanEvent,
+        reason: String,
+    ) {
+        val approval = wait.refused(clock.now())
+        val save: suspend (Wait.Approval) -> Unit = { storeWait(it, waitContext(wait)) }
+        if (notices == null) save(approval) else notices.waiting(approval, event, reason, save)
     }
 
     /** Comments [text], redacted, on the issue of [wait] as `loop`, recorded with [reason]; a failure is logged at warn. */

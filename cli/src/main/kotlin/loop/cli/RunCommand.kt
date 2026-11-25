@@ -19,6 +19,7 @@ import loop.api.Redactor
 import loop.api.ResourceDeclaration
 import loop.api.RunId
 import loop.api.SecretRedactor
+import loop.core.channel.TerminalChannel
 import loop.core.events.DeliveryQueuePaused
 import loop.core.events.RunStopped
 import loop.core.ledger.JsonlTurnLedger
@@ -79,6 +80,9 @@ class RunCommand(
     private var operatorLog: KeyValueLog? = null
     private var logContext = LogContext()
 
+    /** Background threads log too, so the log's lines and the notices of the terminal channel are written under one lock. */
+    private val sinkLock = Any()
+
     /** The first exception no code of the run handled (m1-26); once set, the run is canceled for it. */
     private val failure = AtomicReference<Throwable?>()
 
@@ -124,8 +128,6 @@ class RunCommand(
             }
         val workflow = project.workflow
         val redactor = project.redactor
-        // Background threads log too, so the lines are written under one lock and do not mix.
-        val sinkLock = Any()
         // m4-47: the logs show bare ids with no `trackers:`, namespaced ids with it.
         val log = KeyValueLog({ line -> synchronized(sinkLock) { echo(line, err = true) } }, clock, redactor, project.ids::id)
         operatorLog = log
@@ -430,6 +432,9 @@ class RunCommand(
                 resourceLockStore = store,
                 // m4-25: and each provider gives back what an attempt prepared before its locks go.
                 resourceGrants = resourceGrants,
+                // m4-30: a human is told on this terminal when a run needs them, one line per notice, under the log's lock.
+                // `terminal` is the only channel kind in M4, so a reload never changes the channel.
+                channel = TerminalChannel { line -> synchronized(sinkLock) { echo(line, err = true) } },
                 queuePausedBefore = {
                     store.eventsOfKinds(projectId, DeliveryQueuePaused.QUEUE_KINDS).getOrNull()?.let { stored ->
                         DeliveryQueuePaused.openIn(stored.map { it.event })
