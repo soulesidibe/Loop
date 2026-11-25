@@ -112,6 +112,16 @@ class StoreQueryTest {
     }
 
     @Test
+    fun `an empty text or a comment alone is invalid`() {
+        seed()
+
+        assertEquals(QueryOutcome.Invalid("the text holds no SQL statement"), run(""))
+        assertEquals(QueryOutcome.Invalid("the text holds no SQL statement"), run("-- only a comment"))
+        assertEquals(QueryOutcome.Invalid("the text holds no SQL statement"), run(" ; /* a comment */\n-- another\n;"))
+        assertIs<QueryOutcome.Rows>(run("-- a comment\nselect 1 /* unclosed"))
+    }
+
+    @Test
     fun `the backup and restore commands of the driver are not run`() {
         seed()
         val before = storeFile.readBytes()

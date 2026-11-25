@@ -55,6 +55,8 @@ class StoreQuery private constructor(
         timeout: Duration,
     ): QueryOutcome {
         require(limit >= 1) { "limit must be at least 1, got $limit" }
+        // SQLite prepares such a text into no statement, which the driver then fails on, even when it closes.
+        if (holdsNoStatement(sql)) return QueryOutcome.Invalid(NO_STATEMENT)
         val deadline = System.nanoTime() + timeout.inWholeNanoseconds
         ProgressHandler.setHandler(
             connection,
@@ -152,6 +154,21 @@ class StoreQuery private constructor(
                 Result.failure(StoreError.Unavailable(e))
             }
 
+        /** True when [sql] holds only white space, `;` and comments, `-- ...` to the end of a line or `/* ... */`. */
+        private fun holdsNoStatement(sql: String): Boolean {
+            var i = 0
+            while (i < sql.length) {
+                i =
+                    when {
+                        sql[i].isWhitespace() || sql[i] == ';' -> i + 1
+                        sql.startsWith("--", i) -> sql.indexOf('\n', i).let { if (it < 0) sql.length else it + 1 }
+                        sql.startsWith("/*", i) -> sql.indexOf("*/", i + 2).let { if (it < 0) sql.length else it + 2 }
+                        else -> return false
+                    }
+            }
+            return true
+        }
+
         /** SQLite's own message in [error], without the driver's `[SQLITE_ERROR] ...` prefix when it has one. */
         private fun sqliteMessage(
             error: SQLException,
@@ -166,6 +183,7 @@ class StoreQuery private constructor(
             }
         }
 
+        private const val NO_STATEMENT = "the text holds no SQL statement"
         private const val SELECT_TABLES =
             "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name"
         private const val SELECT_COLUMNS = "SELECT name FROM pragma_table_info(?) ORDER BY cid"
