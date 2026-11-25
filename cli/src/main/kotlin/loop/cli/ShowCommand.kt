@@ -27,7 +27,6 @@ import loop.core.trackers.IssueIdDisplay
 import loop.core.verify.EvidenceFiles
 import loop.store.AttemptRecordLine
 import loop.store.GzipAttemptRecords
-import loop.store.SqliteEventStore
 import loop.store.StoredEvent
 
 /**
@@ -62,7 +61,7 @@ class ShowCommand(
         val store = project.store().getOrElse { fail(it.sentence(), EXIT_STORE) }
         val (attemptId, events) =
             store.use {
-                val attemptId = resolve(store, projectId)
+                val attemptId = resolveAttempt(store, projectId, attempt, storeFile, ::fail)
                 attemptId to
                     runBlocking { store.eventsForAttempt(attemptId) }
                         .getOrElse { fail("cannot read the store at $storeFile: ${it.sentence()}", EXIT_STORE) }
@@ -155,24 +154,6 @@ class ShowCommand(
             echo(redact("loop show: the attempt file at $file has $parts, $damagedNote."), err = true)
         }
         return read.records
-    }
-
-    /** The one attempt id of [projectId] that is [attempt] or starts with it; fails when none or several match. */
-    private fun resolve(
-        store: SqliteEventStore,
-        projectId: ProjectId,
-    ): AttemptId {
-        val storeFile = host.loopHome.resolve(SqliteEventStore.FILE_NAME)
-        val matches =
-            runBlocking { store.attemptIdsStartingWith(projectId, attempt) }
-                .getOrElse { fail("cannot read the store at $storeFile: ${it.sentence()}", EXIT_STORE) }
-        // A full id wins over longer ids it happens to prefix.
-        matches.firstOrNull { it.value == attempt }?.let { return it }
-        return when (matches.size) {
-            0 -> fail("no attempt \"$attempt\" in project ${projectId.value}", EXIT_ATTEMPT)
-            1 -> matches.single()
-            else -> fail("\"$attempt\" matches ${matches.size} attempts in project ${projectId.value}, give more of the id", EXIT_ATTEMPT)
-        }
     }
 
     /**
@@ -274,7 +255,5 @@ class ShowCommand(
     private companion object {
         const val NOT_REPORTED = "not reported"
         const val LABEL_WIDTH = 16
-        const val EXIT_ATTEMPT = 2
-        const val EXIT_STORE = 3
     }
 }
