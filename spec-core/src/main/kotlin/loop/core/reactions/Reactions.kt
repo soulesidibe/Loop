@@ -4,6 +4,7 @@ import kotlinx.coroutines.withContext
 import loop.api.DeliveryExecutor
 import loop.api.Issue
 import loop.api.Mergeability
+import loop.api.RecordedEvent
 import loop.api.SecretRedactor
 import loop.core.delivery.MergeCheck
 import loop.core.events.EventDefinition
@@ -25,13 +26,15 @@ import kotlin.time.Instant
 
 /**
  * The reactions of `reactions:` (m4-34, PLAN 6.7): what Loop does when something happens to a pull request it opened
- * while the issue waits. This class polls for `merge_conflict`; `ci_failed` is [CiFailedReaction], asked by the CI wait (m4-35).
+ * while the issue waits. This class polls for `merge_conflict` and, since m4-36, for `changes_requested`, which
+ * [ChangesRequestedReaction] decides; `ci_failed` is [CiFailedReaction], asked by the CI wait (m4-35).
  *
  * The watched set is every unapproved `Waiting(approval)` that holds a pull request, not sent back, whose issue the tick
  * read active and that runs no attempt. Under the `human` policy the pull request opens after the approval, so these are
  * the fallback waits: after a `delivery_failed` that left the pull request open, or after a fallen back auto merge.
  * Each tick [poll] reads the mergeability of each watched pull request at most once, at most once every [POLL_FLOOR_MS],
- * through the run's delivery client, so a rate limit hold lasts across ticks. `mergeable_state` `dirty` with a known
+ * through the run's delivery client, so a rate limit hold lasts across ticks; on the same poll, unless the conflict sent
+ * the issue back, `changes_requested` reads its reviews. `mergeable_state` `dirty` with a known
  * `mergeable` is a conflict; anything else, a failed read included, keeps the wait and records nothing.
  *
  * A conflict under `send_to_agent` records `reaction_triggered` and hands the wait to [sendBack] with the conflict
@@ -51,7 +54,15 @@ class Reactions(
     private val redactor: SecretRedactor,
     private val clock: Clock,
     private val io: CoroutineContext,
+    /** m4-36: the reaction events of the project in the run store, every run, for `changes_requested`. */
+    reactionsBefore: suspend () -> Result<List<RecordedEvent>> = { Result.success(emptyList()) },
+    /** m4-36: tells the human that changes are still requested past `escalate_after`. */
+    escalate: suspend (Wait.Approval, String, String?, Instant) -> Unit = { _, _, _, _ -> },
 ) {
+    /** m4-36: the `changes_requested` reaction, polled with the same floor and the same client. */
+    private val changesRequested =
+        ChangesRequestedReaction(reactionsBefore, record, sendBack, escalate, contextOf, log, redactor, clock, io)
+
     /** When each watched pull request was last polled in this process, by issue id. */
     private val polls = mutableMapOf<String, Instant>()
 
@@ -76,28 +87,41 @@ class Reactions(
         busy: Set<String>,
     ) {
         val reaction = workflow.config.reactions.mergeConflict
-        val watched = if (reaction == null) emptyList() else watched(approvals, active, busy)
+        val review = workflow.config.reactions.changesRequested
+        val watched = if (reaction == null && review == null) emptyList() else watched(approvals, active, busy)
         polls.keys.retainAll(watched.map { it.issue.id }.toSet())
         skipped.retainAll { (issueId, since) -> watched.any { it.issue.id == issueId && it.wait.since == since } }
-        if (reaction == null) return
+        if (reaction == null && review == null) return
         val executor = executorFor(workflow)
         for (one in watched) {
             val now = clock.now()
             val last = polls[one.issue.id]
             if (last != null && now - last < POLL_FLOOR_MS.milliseconds) continue
             polls[one.issue.id] = now
-            val mergeability = read(one, "read the mergeability of pull request #${one.number}") { executor.mergeability(one.number) }
-            if (mergeability == null || !conflicts(mergeability)) continue
-            react(one, reaction, workflow, executor)
+            if (reaction != null && conflictSentBack(one, reaction, workflow, executor)) continue
+            if (review != null && changesRequested.poll(one, review, executor)) polls -= one.issue.id
         }
     }
 
+    /** Reads the mergeability of [one]'s pull request and reacts to a conflict. True when the issue was sent back. */
+    private suspend fun conflictSentBack(
+        one: Watched,
+        reaction: Reaction,
+        workflow: WorkflowFile,
+        executor: DeliveryExecutor,
+    ): Boolean {
+        val mergeability = read(one, "read the mergeability of pull request #${one.number}") { executor.mergeability(one.number) }
+        if (mergeability == null || !conflicts(mergeability)) return false
+        return react(one, reaction, workflow, executor)
+    }
+
+    /** Reacts to the conflict of [one]'s pull request as [reaction] says. True when the issue was sent back. */
     private suspend fun react(
         one: Watched,
         reaction: Reaction,
         workflow: WorkflowFile,
         executor: DeliveryExecutor,
-    ) {
+    ): Boolean {
         val data =
             mapOf(
                 ReactionKeys.REACTION to ReactionsConfig.MERGE_CONFLICT,
@@ -110,9 +134,10 @@ class Reactions(
                 if (skipped.add(one.issue.id to one.wait.since)) {
                     record(one.wait, ReactionSkipped, data + (ReactionKeys.REASON to ReactionSkipped.NOTIFY_HUMAN))
                 }
+                return false
             }
             ReactionAction.SendToAgent -> {
-                val tip = read(one, "read the base before the merge_conflict reaction") { executor.baseTip() } ?: return
+                val tip = read(one, "read the base before the merge_conflict reaction") { executor.baseTip() } ?: return false
                 val base = baseOf(workflow)
                 val detail = "GitHub reports pull request #${one.number} as dirty, it conflicts with $base"
                 record(one.wait, ReactionTriggered, data)
@@ -126,6 +151,7 @@ class Reactions(
                 )
                 polls -= one.issue.id
                 sendBack(one.wait, one.issue, redactor.redact(MergeCheck.conflictFindings(base, tip, detail)))
+                return true
             }
         }
     }

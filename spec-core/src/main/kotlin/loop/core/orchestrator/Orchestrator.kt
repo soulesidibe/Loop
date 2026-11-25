@@ -437,8 +437,9 @@ class Orchestrator(
      */
     private val queuePausedBefore: suspend () -> RecordedEvent? = { null },
     /**
-     * m4-35: the `reaction_triggered` events of the project in the run store, every run, which count the `ci_failed`
-     * reactions of an issue across a restart; the default has none, so the count is this process's.
+     * m4-35: the reaction events of the project in the run store, every run, which count the `ci_failed` reactions of
+     * an issue across a restart and, since m4-36, hold the reviews `changes_requested` sent and escalated; the default
+     * has none, so the count is this process's.
      */
     private val reactionsBefore: suspend () -> Result<List<RecordedEvent>> = { Result.success(emptyList()) },
     /** m4-10: true once `loop drain` asked this run to drain, read at each dispatch. */
@@ -519,6 +520,8 @@ class Orchestrator(
             redactor = redactor,
             clock = clock,
             io = io,
+            reactionsBefore = reactionsBefore,
+            escalate = notices::changesRequested,
         )
     }
 

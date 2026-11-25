@@ -88,6 +88,19 @@ class HumanNotices(
         tell(wait.issueId, wait.identifier, HumanEvent.Question, reason, url = null, at = wait.since)
     }
 
+    /**
+     * Tells the human that changes are still requested on the pull request at [url] of [wait]'s issue (m4-36), for
+     * [reason], at [at]. Called once per review round, where the `changes_requested` reaction records its escalation.
+     */
+    suspend fun changesRequested(
+        wait: Wait.Approval,
+        reason: String,
+        url: String?,
+        at: Instant,
+    ) {
+        tell(wait.issueId, wait.identifier, HumanEvent.ChangesRequested, reason, url, at)
+    }
+
     /** Tells the human that [park] parked its issue, for [reason]. Called once per park, where the park is recorded. */
     suspend fun parked(
         park: ParkedIssue,

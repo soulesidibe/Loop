@@ -21,6 +21,7 @@ import loop.api.RunId
 import loop.api.SecretRedactor
 import loop.core.channel.TerminalChannel
 import loop.core.events.DeliveryQueuePaused
+import loop.core.events.ReactionSkipped
 import loop.core.events.ReactionTriggered
 import loop.core.events.RunStopped
 import loop.core.ledger.JsonlTurnLedger
@@ -442,8 +443,9 @@ class RunCommand(
                     }
                 },
                 // m4-35: the ci_failed reactions of every run, so the retries of an issue are counted across a restart.
+                // m4-36: and the changes_requested ones, sent and escalated, so no review is sent twice nor told twice.
                 reactionsBefore = {
-                    store.eventsOfKinds(projectId, setOf(ReactionTriggered.name)).map { stored ->
+                    store.eventsOfKinds(projectId, setOf(ReactionTriggered.name, ReactionSkipped.name)).map { stored ->
                         stored.map { it.event }
                     }
                 },
