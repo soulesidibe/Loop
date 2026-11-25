@@ -43,3 +43,10 @@ Premise, checked before the first edit: no Gradle edit needed. m4-01 created the
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-25 10:51Z soule: scope added by the operator from bl-208 (low findings of the m4-25 review), checked at the merge risk review; the issue is sent back if any is missing:
+  - bl-208 finding 2: provider `prepare` and `release` get a core side timeout, and run outside the `ResourceGrants` mutex (or the mutex is not held across them), so a hung or slow provider does not stall every grant and attempt end of the run. Test with a provider that hangs.
+  - bl-208 finding 4: `prepare` is idempotent, so a prepare whose outcome was lost (canceled on shutdown, or a failed `locks.prepared` write) and runs again on the next tick reuses or cleans what the first call made instead of leaking it.
+  - bl-208 finding 5: `guarded` in `ResourceGrants.kt` catches `Throwable` except `CancellationException`, so a plugin `Error` (a `LinkageError` from a provider jar) cannot kill the run, and in `endAttempt` the free gets its own try so `dropRequests` and `deleteDirectory` still run.
+  - bl-208 finding 12: `ResourceProvider.prepare` receives the attempt id (plugin-api change, documented), and the provider uses it where it names what it creates.
+  If m4-27 and m4-28 both change the shared core (findings 2, 5 and 12), the second to merge rebases on the first; the core change is made once.
