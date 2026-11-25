@@ -9,10 +9,8 @@ import kotlin.time.Instant
 /**
  * The behavior every [HumanChannel] must show (m4-30): each notice reaches the human as one message that names the
  * issue, the event, the reason, the URL when there is one and the next command to type. A channel's test extends this
- * class and supplies a channel and what the human was shown through it.
- *
- * `spec-core` tests do not see these fixtures, so `loop.core.channel.TerminalChannelTest` repeats these cases against
- * the terminal channel; a case added here is added there too.
+ * class and supplies a channel and what the human was shown through it, as
+ * `loop.core.channel.TerminalChannelContractTest` does for the terminal channel.
  */
 public abstract class HumanChannelContract {
     /** A new channel. [shown] reads what the human was shown through the last channel built. */

@@ -14,6 +14,8 @@ hooks:
   after_create: sh "$(dirname "$LOOP_WORKFLOW")/scripts/hooks/worktree-after-create.sh"
   before_run: sh "$(dirname "$LOOP_WORKFLOW")/scripts/hooks/worktree-before-run.sh"
   before_remove: sh "$(dirname "$LOOP_WORKFLOW")/scripts/hooks/worktree-before-remove.sh"
+  # m4-30: a macOS notification once per notice. Only the identifier, the event and the command are used, always quoted.
+  on_human_needed: 'terminal-notifier -title Loop -message "$LOOP_NOTICE_IDENTIFIER needs you, $LOOP_NOTICE_EVENT. Next: $LOOP_NOTICE_COMMAND"'
   timeout_ms: 60000
 agent:
   max_concurrent_agents: 2

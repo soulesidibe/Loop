@@ -32,6 +32,10 @@ _Avoid_: Attempt folder, attempt workspace
 The gzip compressed JSONL file Loop keeps for one attempt beside its attempt directory, `<LOOP_HOME>/attempts/<project_id>/<attempt_id>.jsonl.gz`, one record per line with its `type`, sequence number and timestamp, redacted before writing. It holds the turn 1 rendered prompt that `loop show --prompt` prints and every runner line in full, which `loop show --events` prints in place of the cut previews of the store. Kept when the attempt ends, until `observability.retention_days` (90 by default) after its last write.
 _Avoid_: Attempt log, transcript
 
+**Human channel**:
+The way Loop tells an operator that a run needs them. A notice names the issue, the event (parked, approval_waiting, delivery_failed or question), the reason, the pull request URL when there is one, and the next command to type. The terminal channel, the default, prints one line on the `loop run` terminal; `hooks.on_human_needed` runs a host command once per notice. One notice per wait or park, never twice.
+_Avoid_: Notification channel, alert
+
 **Human log**:
 The plain sentence log of a Project, `<LOOP_HOME>/logs/<project_id>.log`, appended by every run next to the `key=value` operator log on stderr: one line per thing a person wants to follow (run start and end, polls that change something, attempts, turns with tokens and spend, moves, parks, retries, failed hooks, token thresholds, and the agent's reads, edits and commands). Redacted before writing. `loop log` prints it.
 _Avoid_: Run log (the operator log is a log of the run too), activity log, transcript
