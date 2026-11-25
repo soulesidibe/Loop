@@ -30,6 +30,7 @@ class LoopCommand(
             SendBackCommand(host),
             ReportCommand(host),
             QueryCommand(host),
+            ReplayCommand(host),
             ToolCommand(host),
             InstallCommand(host),
         )
@@ -133,6 +134,7 @@ internal val SUBCOMMAND_NAMES =
         "send-back",
         "report",
         "query",
+        "replay",
         "tool",
         "install",
     )
