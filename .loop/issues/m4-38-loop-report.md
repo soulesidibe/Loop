@@ -1,7 +1,7 @@
 ---
 id: m4-38
 title: "loop report --since, with touches marked not reliable and no cost shown as not reported"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [bl-147, m4-01, m4-13, m4-18, m4-33]
@@ -46,3 +46,14 @@ Out of this issue: `loop query` (m4-39), a machine wide report across projects, 
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-25 18:23Z loop: Loop opened pull request #73 for this issue: https://github.com/soulesidibe/Loop/pull/73
+
+2026-11-25 18:26Z loop: Loop did not merge pull request #73, ci: Actions runs did not pass: build (failure). The pull request stays open and the result waits for a new approval.
+  Failed runs:
+  - build (failure): https://github.com/soulesidibe/Loop/actions/runs/45674627002
+  Rerun the runs on GitHub or fix the branch, then approve again with loop approve.
+
+2026-11-25 18:42Z loop: Loop could not merge pull request #73: merging main at 83541dcffa9acfafb99a5e745d3e266b44f7fcab into loop/m4-38 conflicts (conflict in docs/spec-decisions.md). The merge was aborted and the branch is unchanged. The next attempt merges refs/loop/base/main into its branch, resolves the conflict and submits the result again.
+
+2026-11-25 18:48Z loop: Loop updated pull request #73 for this issue: https://github.com/soulesidibe/Loop/pull/73
