@@ -311,7 +311,8 @@ class AttachDelivery(
          * Why the delivery of the kind at [kindKey] cannot run, as a sentence for preflight, or null when it can, from
          * the kind's deliverable [files], [attach], [attachAuto] (`delivery.attach_auto.enabled`), [pullRequest] and
          * [auto] (`policy: auto`). `attach` needs a deliverable and is not combined with a pull request; `policy: auto`
-         * on a kind with a deliverable needs `attach` and its own opt in, as `auto_merge.enabled` is for code.
+         * on a kind with a deliverable needs `attach` and its own opt in, as `auto_merge.enabled` is for code. [report]
+         * is true when [files] holds the path of `deliverable.report` (m4-23), which the messages then name.
          */
         fun refusal(
             kindKey: String,
@@ -320,15 +321,17 @@ class AttachDelivery(
             attachAuto: Boolean,
             pullRequest: Boolean,
             auto: Boolean,
+            report: Boolean = false,
         ): String? {
             val delivery = "$kindKey.delivery"
+            val deliverable = if (report) "deliverable.report" else "deliverable.files"
             return when {
                 attach && files.isEmpty() -> "$delivery.attach needs $kindKey.deliverable.files, the files it posts"
                 attachAuto && !attach -> "$delivery.attach_auto.enabled needs $delivery.attach: true"
                 attach && pullRequest -> "$delivery.attach and $delivery.pull_request cannot both deliver a kind, use one of them"
                 files.isEmpty() || !auto -> null
                 !attach ->
-                    "$delivery.policy is auto, which a kind with deliverable.files supports only with $delivery.attach: true " +
+                    "$delivery.policy is auto, which a kind with $deliverable supports only with $delivery.attach: true " +
                         "and the opt in $delivery.attach_auto.enabled: true, or use policy: human"
                 !attachAuto -> "$delivery.policy is auto, which needs the opt in $delivery.attach_auto.enabled: true"
                 else -> null

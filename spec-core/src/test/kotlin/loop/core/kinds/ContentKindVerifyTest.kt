@@ -399,8 +399,9 @@ class ContentKindVerifyTest {
                 "{ files: [\" \"] }" to "kinds.posts.deliverable.files must not hold a blank glob",
                 "{ files: [/etc/*.md] }" to "kinds.posts.deliverable.files[0] is /etc/*.md, use a glob relative to the workspace",
                 "{ files: [out/../../*.md] }" to "kinds.posts.deliverable.files[0] is out/../../*.md, use a glob relative to the workspace",
-                "{ report: report.md }" to "kinds.posts.deliverable.report is not supported yet, use files",
-                "{ files: [out/*.md], fiels: [x] }" to "kinds.posts.deliverable.fiels is not supported, use files",
+                // m4-23: report is supported, alone.
+                "{ files: [out/*.md], report: report.md }" to "kinds.posts.deliverable holds files and report, use one of them",
+                "{ files: [out/*.md], fiels: [x] }" to "kinds.posts.deliverable.fiels is not supported, use files or report",
                 "{}" to "kinds.posts.deliverable.files must hold at least one glob",
             )
         for ((deliverable, expected) in cases) {

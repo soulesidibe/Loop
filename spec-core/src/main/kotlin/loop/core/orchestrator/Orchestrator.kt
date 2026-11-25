@@ -4124,11 +4124,11 @@ class Orchestrator(
                 verdict = REFUTED
                 findings = VerifyFindings.uncommitted(uncommitted, redactor)
             }
-            // m4-21: a kind with deliverable.files proves nothing without one.
-            val missing = (deliverable as? DeliverableListing.Listed)?.takeIf { it.missing && verdict == VERIFIED }
+            // m4-21: a kind with deliverable.files proves nothing without one. m4-23: nor a report kind without its whole report.
+            val missing = (deliverable as? DeliverableListing.Listed)?.takeIf { it.refuted && verdict == VERIFIED }
             if (missing != null) {
                 verdict = REFUTED
-                findings = VerifyFindings.noDeliverable(missing.globs, redactor)
+                findings = VerifyFindings.deliverable(missing, redactor)
             }
             if (verdict == VERIFIED && deliverable is DeliverableListing.Failed) {
                 verdict = UNVERIFIED
@@ -4152,6 +4152,7 @@ class Orchestrator(
                     Verdict.UNCOMMITTED to uncommitted?.let { (it.changed.size + it.untracked.size).toString() },
                     Verdict.DELIVERABLE to listedFiles?.size?.toString(),
                     Verdict.DELIVERABLE_EVIDENCE to deliverableEvidence,
+                    Verdict.REPORT_FINDINGS to missing?.problems?.size?.takeIf { it > 0 }?.toString(),
                 ),
             )
             log.log(

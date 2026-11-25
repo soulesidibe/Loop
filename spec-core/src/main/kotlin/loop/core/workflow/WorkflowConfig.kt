@@ -66,7 +66,8 @@ data class KindsConfig(
  * (m2-24), `human` by default. [match] says which issues the kind takes (m4-18), the default kind by default.
  * [context] holds the kind's context sources and [template] its own prompt template, null to render the
  * `WORKFLOW.md` body (m4-19). [workspace] says whether Loop reads the workspace with git, and [populate] who fills it
- * (m4-20). [deliverable] names the files the work produces (m4-21), none by default.
+ * (m4-20). [deliverable] names the files the work produces (m4-21) or its report (m4-23), none by default.
+ * [requireSections] is `verify.require_sections`, the sections the report must hold (m4-23), none by default.
  */
 data class KindConfig(
     val checks: List<CheckConfig>,
@@ -80,16 +81,24 @@ data class KindConfig(
     val workspace: KindWorkspace = KindWorkspace.Git,
     val populate: KindPopulate = KindPopulate.Hooks,
     val deliverable: KindDeliverable = KindDeliverable(),
+    val requireSections: List<String> = emptyList(),
 )
 
 /**
  * A kind's `deliverable` (m4-21): [files], globs relative to the workspace and anchored at its root like the globs of
  * `guards.protect`. When it holds any, verification lists the files that match and records them with the verdict, and
  * no match refutes the result. Behavior follows this key, never the kind's name. Empty when the kind declares none.
+ * [report] is `deliverable.report` instead (m4-23): one file, a path relative to the workspace, listed like a file of
+ * [files] and read, so a missing or empty report, or one missing a required section, refutes the result. A kind
+ * declares one of the two.
  */
 data class KindDeliverable(
     val files: List<String> = emptyList(),
-)
+    val report: String? = null,
+) {
+    /** What verification lists: the [report] path alone, which holds no wildcard, else the globs of [files]. */
+    val globs: List<String> get() = report?.let { listOf(it) } ?: files
+}
 
 /**
  * A kind's `workspace` (m4-20), decided by the declaration, never by looking at the folder. [Git], the default, is a git
