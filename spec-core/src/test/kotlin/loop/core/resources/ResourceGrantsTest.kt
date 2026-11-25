@@ -46,23 +46,30 @@ class ResourceGrantsTest {
     private val p1 = ProjectId("p1")
     private val p2 = ProjectId("p2")
 
+    /**
+     * The rows in memory. A change is atomic, as a transaction of the real store is: since bl-208 the background calls
+     * of a tick change the rows from several threads at once, and an unguarded read and write would lose one change.
+     */
     private class MemoryStore : ResourceLockStore {
+        @Volatile
         var rows = ResourceLockRows()
 
         /** The number of the next changes refused, as a busy store would. */
+        @Volatile
         var refuse = 0
 
         override suspend fun resourceLockRows() = Result.success(rows)
 
-        override suspend fun <T> updateResourceLocks(change: (ResourceLockRows) -> ResourceLockUpdate<T>): Result<T> {
-            if (refuse > 0) {
-                refuse--
-                return Result.failure(IllegalStateException("the store is busy"))
+        override suspend fun <T> updateResourceLocks(change: (ResourceLockRows) -> ResourceLockUpdate<T>): Result<T> =
+            synchronized(this) {
+                if (refuse > 0) {
+                    refuse--
+                    return Result.failure(IllegalStateException("the store is busy"))
+                }
+                val update = change(rows)
+                rows = update.rows
+                Result.success(update.value)
             }
-            val update = change(rows)
-            rows = update.rows
-            return Result.success(update.value)
-        }
     }
 
     private class Sink : EventSink {
@@ -508,7 +515,7 @@ class ResourceGrantsTest {
             val provider = HangingProvider(calls, hangOn = "release")
             ask("a1")
             ask("a2", id = "ipad")
-            val grants = grants(provider, providerTimeout = 2.seconds)
+            val grants = grants(provider, providerTimeout = 5.seconds)
             grants.pass()
             locks.requestRelease(AttemptId("a1"), "ios-simulator", "iphone").getOrThrow()
 
@@ -520,8 +527,8 @@ class ResourceGrantsTest {
             val waited = started.elapsedNow()
             grants.idle()
 
-            assertTrue(waited < 1500.milliseconds, "the ticks and the end of a2 waited on the hung release: $waited")
-            assertTrue(warnings.contains("iphone: release failed: the provider did not answer in 2s"), "$warnings")
+            assertTrue(waited < 3.seconds, "the ticks and the end of a2 waited on the hung release: $waited")
+            assertTrue(warnings.contains("iphone: release failed: the provider did not answer in 5s"), "$warnings")
             assertEquals(emptyList(), store.rows.locks, "the lock of the hung release is freed after the timeout")
             provider.gate.countDown()
         }

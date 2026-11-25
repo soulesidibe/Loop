@@ -155,7 +155,9 @@ class ResourceGrants(
 
     /** Waits until no background call of a tick runs (bl-208). */
     suspend fun idle() {
-        while (running.isNotEmpty()) running.toList().joinAll()
+        // A copy through toArray, which a concurrent set answers safely while the calls remove themselves: toList reads
+        // the size first, then the first element, which a call that just ended may have taken away.
+        while (running.isNotEmpty()) ArrayList(running).joinAll()
     }
 
     /**
