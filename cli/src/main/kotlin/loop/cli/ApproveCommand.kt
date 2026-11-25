@@ -85,7 +85,7 @@ class ApproveCommand(
             val waiting = record ?: fail("$identifier is not waiting for approval. Nothing changed", EXIT_NOT_WAITING)
             val current = checkApproval(identifier, waiting)
             // bl-69: under `merge` the issue never stops at the wait's handoff state, it ends in `on_delivered.move_to`.
-            val mergeTo = mergeMoveTo(workflow, Wait.of(waiting).kind, found)
+            val mergeTo = mergeMoveTo(workflow, waiting.kind, found)
             if (current.approved) {
                 echo("$identifier is already approved, ${outcome(current.to.orEmpty(), mergeTo)}. Nothing changed.")
                 return

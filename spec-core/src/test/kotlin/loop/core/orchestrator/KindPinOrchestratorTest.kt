@@ -89,7 +89,13 @@ class KindPinOrchestratorTest {
     /** The checks run, by their command, each passing. */
     private val ran = mutableListOf<String>()
 
-    private val checks = CheckRunner { check, _, _ -> CheckResult(0, timedOut = false, durationMs = 1).also { ran += (check as CheckConfig.Command).run } }
+    private val checks =
+        CheckRunner { check, _, _ ->
+            CheckResult(0, timedOut = false, durationMs = 1).also {
+                ran +=
+                    (check as CheckConfig.Command).run
+            }
+        }
 
     private fun tracker(state: String) =
         FakeTracker(listOf(issue("t-1", state = state))).apply {
@@ -146,7 +152,8 @@ class KindPinOrchestratorTest {
     private fun FakeWaitingIssues.approve() {
         val key = PROJECT.value to "id-t-1"
         val record = records.getValue(key)
-        records[key] = record.copy(data = record.data + mapOf(WaitingIssue.APPROVED_BY to "soule", WaitingIssue.APPROVED_AT to FIXED_NOW.toString()))
+        records[key] =
+            record.copy(data = record.data + mapOf(WaitingIssue.APPROVED_BY to "soule", WaitingIssue.APPROVED_AT to FIXED_NOW.toString()))
     }
 
     private fun stored(
@@ -189,7 +196,12 @@ class KindPinOrchestratorTest {
             orchestrator.tick()
 
             assertEquals(listOf("quick-check"), ran)
-            assertEquals("quick", waiting.records.values.single().data[WaitKeys.KIND])
+            assertEquals(
+                "quick",
+                waiting.records.values
+                    .single()
+                    .data[WaitKeys.KIND],
+            )
 
             waiting.approve()
             orchestrator.tick()

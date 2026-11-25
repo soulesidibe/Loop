@@ -130,11 +130,12 @@ class ApproveCommandTest {
 
     /**
      * A github workflow on octocat/Hello-World at [apiUrl], delivery under policy human, and with [merge] the merge of
-     * the pull request then the move to `closed`.
+     * the pull request then the move to `closed`. [extraKinds] are `kinds:` lines written after `code` (m4-18).
      */
     private fun githubWorkflow(
         apiUrl: String,
         merge: Boolean = false,
+        extraKinds: String = "",
     ) {
         val pullRequest =
             if (merge) {
@@ -167,13 +168,17 @@ class ApproveCommandTest {
                 "    verify:\n" +
                 "      checks:\n" +
                 "        - { type: command, run: \"test -f hello.txt\" }\n" +
+                extraKinds +
                 "---\n" +
                 "Work on {{ issue.identifier }}\n",
         )
     }
 
-    /** Issue 26 of the github tracker waits for approval to move to review, as the store holds it since m4-12. */
-    private fun waitOnGitHub() {
+    /**
+     * Issue 26 of the github tracker waits for approval to move to review, as the store holds it since m4-12, under the
+     * [kind] it was dispatched under when set (m4-18).
+     */
+    private fun waitOnGitHub(kind: String? = null) {
         SqliteEventStore.open(fixture.loopHome, fixture.projectDir, Redactor.NONE).getOrThrow().use {
             val wait =
                 WaitingIssue(
@@ -184,7 +189,7 @@ class ApproveCommandTest {
                     AttemptId("a-1"),
                     null,
                     Clock.System.now(),
-                    mapOf(WaitKeys.TO to "review"),
+                    mapOf(WaitKeys.TO to "review") + listOfNotNull(kind?.let { WaitKeys.KIND to it }),
                 )
             runBlocking { it.startWaiting(wait) }.getOrThrow()
         }
@@ -403,6 +408,44 @@ class ApproveCommandTest {
                 approved.toString(),
             )
             assertFalse("to review" in approved.stdout, approved.toString())
+        }
+    }
+
+    /** m4-18: a second kind that takes every issue of the github tracker, `default`, and delivers by a plain move. */
+    private val quickKind =
+        "  quick:\n" +
+            "    match: { tracker: default }\n" +
+            "    verify:\n" +
+            "      checks: []\n"
+
+    @Test
+    fun `m4-18 loop approve follows the kind the wait was dispatched under, not the one the issue matches now`() {
+        github().use { api ->
+            githubWorkflow(api.url, merge = true, extraKinds = quickKind)
+            waitOnGitHub(kind = "code")
+
+            val approved = approveOnGitHub("26")
+
+            assertEquals(0, approved.exitCode, approved.toString())
+            assertContains(approved.stdout, "runs the merge check and merges it, then moves it to closed.")
+        }
+    }
+
+    @Test
+    fun `m4-18 loop approve warns when the kind of the wait left the workflow and still approves`() {
+        github().use { api ->
+            githubWorkflow(api.url, merge = true)
+            waitOnGitHub(kind = "content")
+
+            val approved = approveOnGitHub("26")
+
+            assertEquals(0, approved.exitCode, approved.toString())
+            assertContains(
+                approved.stderr,
+                "loop approve: the kind content the issue was dispatched under is no longer in the workflow, " +
+                    "Loop delivers it once the kind is back.",
+            )
+            assertEquals(1, events("approval_given").size)
         }
     }
 
