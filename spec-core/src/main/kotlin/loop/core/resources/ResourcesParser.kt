@@ -6,7 +6,7 @@ import loop.core.workflow.WorkflowError
 /**
  * Reads `resources:` of a `WORKFLOW.md` (m4-24, PLAN 6.9) from its front matter value as written (strings, lists, maps
  * or null): a list of entries, each with a `kind` and an `id`, unique in the workflow, and the optional `can`,
- * `cannot`, `restore` and `read_only_check`. Every failure is a [WorkflowError.InvalidConfig] naming the entry,
+ * `cannot`, `restore`, `read_only_check` and, since m4-27, `provider`, a map of scalars the provider reads as text. Every failure is a [WorkflowError.InvalidConfig] naming the entry,
  * `resources[<index>]`, so the preflight names it. [check] tells which kinds a resource plugin serves: a kind none
  * serves is a plain lock, named once in [warnings], so a typo shows, as is an unknown key of an entry.
  */
@@ -39,6 +39,7 @@ internal class ResourcesParser(
                     cannot = map.strings(name, "cannot"),
                     restore = map.strings(name, "restore"),
                     readOnlyCheck = map.string(name, "read_only_check"),
+                    provider = map.provider(name),
                 )
             }
         declared.map { it.kind }.distinct().forEach { kind ->
@@ -54,7 +55,7 @@ internal class ResourcesParser(
 
     private companion object {
         const val KEY = "resources"
-        val ENTRY_KEYS = setOf("kind", "id", "can", "cannot", "restore", "read_only_check")
+        val ENTRY_KEYS = setOf("kind", "id", "can", "cannot", "restore", "read_only_check", "provider")
 
         fun Any?.asMap(): Map<String, Any?>? = (this as? Map<*, *>)?.entries?.associate { (key, value) -> key.toString() to value }
 
@@ -72,6 +73,18 @@ internal class ResourcesParser(
             name: String,
             key: String,
         ): String = string(name, key)?.trim()?.takeIf { it.isNotEmpty() } ?: throw WorkflowError.InvalidConfig("$name.$key is required")
+
+        /** The `provider` map of an entry, each value a scalar, as text, since the front matter keeps scalars as written. */
+        fun Map<String, Any?>.provider(name: String): Map<String, String> {
+            val settings =
+                when (val value = this["provider"]) {
+                    null -> return emptyMap()
+                    else -> value.asMap() ?: throw WorkflowError.InvalidConfig("$name.provider must be a map")
+                }
+            return settings.mapValues { (key, value) ->
+                value as? String ?: throw WorkflowError.InvalidConfig("$name.provider.$key must be a string")
+            }
+        }
 
         fun Map<String, Any?>.strings(
             name: String,
