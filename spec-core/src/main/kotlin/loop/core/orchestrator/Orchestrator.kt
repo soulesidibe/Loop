@@ -179,6 +179,7 @@ import loop.core.verify.WorkspaceFingerprint
 import loop.core.verify.WorkspaceGit
 import loop.core.verify.commands
 import loop.core.verify.judgmentCalls
+import loop.core.waiting.Answers
 import loop.core.waiting.Asks
 import loop.core.waiting.MergePhase
 import loop.core.waiting.MergeQueue
@@ -609,6 +610,9 @@ class Orchestrator(
     /** The `loop.retry_kind` of each issue dispatched by a retry (m3-11), absent on a first dispatch. */
     private val dispatchRetryKinds = mutableMapOf<String, String>()
 
+    /** The answered ask wait of each issue dispatched after `loop answer` (m4-52), for `loop.answer`. */
+    private val dispatchAnswers = mutableMapOf<String, Wait.Ask>()
+
     /**
      * The findings of the refutation that ended an issue's last attempt or restored check, by issue id, for the
      * `loop.verify_findings` of its next attempt (m2-06). Taken by the next render; kept in memory only.
@@ -851,6 +855,7 @@ class Orchestrator(
             executions[issue.id] = Execution(issue)
             retryAttempts[issue.id]?.let { dispatchAttempts[issue.id] = it }
             retryKinds[issue.id]?.let { dispatchRetryKinds[issue.id] = it }
+            waits.answered(issue.id)?.let { dispatchAnswers[issue.id] = it }
             if (gate == RunnerHold.Gate.Probe) {
                 hold.probeStarted(issue.id)
                 probing = true
@@ -1074,6 +1079,7 @@ class Orchestrator(
     private fun releaseInMemory(issue: Issue) {
         dispatchAttempts -= issue.id
         dispatchRetryKinds -= issue.id
+        dispatchAnswers -= issue.id
         executions -= issue.id
         running -= issue.id
         claimed -= issue.id
@@ -2728,8 +2734,11 @@ class Orchestrator(
                     recordPhase(AttemptPhase.BuildingPrompt)
                     return Executed(AttemptOutcome.Failed, "tracker error: ${error.describe()}")
                 }
+            // m4-52: the dispatch after `loop answer` shows the question and the answer, with the retry kind `answer`.
+            val answered = dispatchAnswers[issue.id]
+            val answer = answered?.let(Answers::prompt)
             // m3-11: continuation, error or refuted on a retry, null on a first dispatch.
-            val retryKind = dispatchRetryKinds[issue.id]
+            val retryKind = if (answer != null) PromptVariables.RETRY_ANSWER else dispatchRetryKinds[issue.id]
             // m3-10: a retry or a reused workspace gets a session brief built from facts, a fresh first dispatch none.
             val brief = if (attempt != null || workspaceReused) sessionBrief(issue, workspace.path, fetchedBase, findings) else null
             // m4-19: the kind's own template or the body, and its context sources as the workspace holds them now.
@@ -2739,12 +2748,17 @@ class Orchestrator(
                     .parse(KindPrompt.template(workflow, kind))
                     .mapCatching {
                         it to
-                            it.render(PromptVariables.of(issue, attempt, findings, workspaceReused, brief, retryKind, sources)).getOrThrow()
+                            it
+                                .render(
+                                    PromptVariables.of(issue, attempt, findings, workspaceReused, brief, retryKind, sources, answer),
+                                ).getOrThrow()
                     }.getOrElse { error ->
                         recordPhase(AttemptPhase.BuildingPrompt)
                         return Executed(AttemptOutcome.Failed, "template error: ${error.describe()}")
                     }
             verifyFindings -= issue.id
+            // m4-52: the answer is in the prompt, so the wait ends; a failure before the render left it for the next dispatch.
+            answered?.let { endWaiting(it) }
             promptInputs = PromptInputs(attempt, findings, workspaceReused, workspace.path, fetchedBase)
             // m3-12: only a session that can rotate needs the commit, and the working tree (bl-136), its progress starts from.
             if (runner.capabilities.occupancy) {
@@ -2752,7 +2766,8 @@ class Orchestrator(
                 progress = RotationProgress(head, tree)
             }
             // m3-14: over its limit the prompt is filled slot by slot, each slot cut by its rule.
-            val filled = fillPrompt(template, rendered, PromptContent(issue, findings, brief, sources), attempt, workspaceReused, retryKind)
+            val filled =
+                fillPrompt(template, rendered, PromptContent(issue, findings, brief, sources, answer), attempt, workspaceReused, retryKind)
             val prompt = filled.prompt
             val promptRecordError = recordPrompt(prompt)
             val promptData =
@@ -3019,6 +3034,7 @@ class Orchestrator(
                     retryKind,
                     counter,
                     content.contextSources,
+                    content.answer,
                 )
             if (slots == null) {
                 val reason = "the template does not render without the issue"

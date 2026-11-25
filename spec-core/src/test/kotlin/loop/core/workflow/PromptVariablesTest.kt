@@ -104,7 +104,21 @@ class PromptVariablesTest {
             assertEquals("Work on SAMPLE-1. Kind: $kind.", rendered)
         }
         assertEquals("Work on SAMPLE-1.", template.render(PromptVariables.of(issue, null)).getOrThrow())
-        assertEquals(listOf("continuation", "rotation", "error", "refuted"), PromptVariables.RETRY_KINDS)
+        assertEquals(listOf("continuation", "rotation", "error", "refuted", "answer"), PromptVariables.RETRY_KINDS)
+    }
+
+    @Test
+    fun `m4-52 loop answer renders the question and the answer after loop answer and nothing otherwise`() {
+        val source = "Work on {{ issue.identifier }}.{% if loop.answer %}\n\n{{ loop.answer }}{% endif %}"
+        val template = engine.parse(source, PromptVariables.schema).getOrThrow()
+        val answer = "Question for a human (product): Archived items?\n\nAnswer from soule: leave them out."
+
+        val answered =
+            template.render(PromptVariables.of(issue, null, retryKind = PromptVariables.RETRY_ANSWER, answer = answer)).getOrThrow()
+
+        assertEquals("Work on SAMPLE-1.\n\n$answer", answered)
+        assertEquals("Work on SAMPLE-1.", template.render(PromptVariables.of(issue, null)).getOrThrow())
+        assertEquals("answer", PromptVariables.RETRY_ANSWER)
     }
 
     @Test

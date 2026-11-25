@@ -5,13 +5,15 @@ import loop.core.template.Template
 
 /**
  * What a prompt renders from that the fill may cut (m3-14): the issue, the verify findings, the session brief, and since
- * m4-19 the list of the kind's context sources.
+ * m4-19 the list of the kind's context sources. Since m4-52 also [answer], `loop.answer`, which the fill never cuts: it
+ * counts in the template slot, like `loop.retry_kind`.
  */
 data class PromptContent(
     val issue: Issue,
     val verifyFindings: String?,
     val sessionBrief: String?,
     val contextSources: String? = null,
+    val answer: String? = null,
 )
 
 /**
@@ -95,6 +97,7 @@ object PromptFill {
                         of.sessionBrief,
                         retryKind,
                         of.contextSources,
+                        content.answer,
                     ),
                 ).getOrNull()
 
@@ -154,7 +157,7 @@ object PromptFill {
                 }
             }
 
-        val filled = PromptContent(issue, findings, brief, sources)
+        val filled = PromptContent(issue, findings, brief, sources, content.answer)
         val prompt = render(filled) ?: return null
         val before = measure(template, content, rendered, attempt, workspaceReused, retryKind, counter) ?: return null
         val after = measure(template, filled, prompt, attempt, workspaceReused, retryKind, counter) ?: return null
@@ -182,6 +185,7 @@ object PromptFill {
                 retryKind,
                 counter,
                 content.contextSources,
+                content.answer,
             )?.tokens
 
     /** The tokens each slot of this measure has more than [other], 0 for a slot that has no more. */

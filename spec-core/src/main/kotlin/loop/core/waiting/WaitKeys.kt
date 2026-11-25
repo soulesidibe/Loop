@@ -103,6 +103,12 @@ object WaitKeys {
      */
     const val QUESTION_KIND: String = "question_kind"
 
+    /**
+     * The data key of an agent's question as Loop posted it on the issue, redacted (m4-52), so the attempt after the
+     * answer is shown the question with its answer.
+     */
+    const val QUESTION: String = "question"
+
     /** The merge check runs: fetch the base, merge it, run the checks again (m2-26). */
     const val PHASE_CHECK: String = "check"
 

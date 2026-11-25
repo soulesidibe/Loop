@@ -79,7 +79,9 @@ class AsksTest {
             assertEquals(listOf(IssueCommented, QuestionAsked), recorded.map { it.first })
             assertEquals(mapOf("chars" to text.length.toString(), "by" to "host", "reason" to "question"), recorded[0].second)
             assertEquals(mapOf("question_kind" to "product", "options" to "2", "chars" to text.length.toString()), recorded[1].second)
-            assertEquals(listOf(wait), saved)
+            // m4-52: the wait holds the question as posted, so the attempt after the answer can show it.
+            assertEquals(listOf(wait.asking(text)), saved)
+            assertEquals(text, saved.single().question)
         }
 
     @Test

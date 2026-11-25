@@ -44,8 +44,8 @@ object Asks {
 
     /**
      * Applies one queued `ask` host side at the drain: posts its [comment], [redact]ed, through [post], records
-     * `issue_commented` and `question_asked` through [record], then saves [wait] through [save], which also tells the
-     * human. The reason it failed, null once the wait is saved. A comment that cannot be posted records and saves
+     * `issue_commented` and `question_asked` through [record], then saves [wait] holding the posted text (m4-52) through
+     * [save], which also tells the human. The reason it failed, null once the wait is saved. A comment that cannot be posted records and saves
      * nothing, so the issue does not wait for a question nobody can read.
      */
     suspend fun start(
@@ -77,7 +77,7 @@ object Asks {
                 Tracker.CHARS to chars,
             ),
         )
-        save(wait)
+        save(wait.asking(text))
         return null
     }
 

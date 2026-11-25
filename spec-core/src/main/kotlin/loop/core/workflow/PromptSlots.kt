@@ -104,8 +104,8 @@ object PromptBudget {
 object PromptSlots {
     /**
      * The slots of [rendered], the render of [template] for [issue], [attempt], [verifyFindings], [workspaceReused],
-     * [sessionBrief] and [contextSources]; null when a render without them fails. Every render keeps [attempt], [workspaceReused] and
-     * [retryKind], so what they show counts in the template slot (bl-19, m3-11).
+     * [sessionBrief] and [contextSources]; null when a render without them fails. Every render keeps [attempt], [workspaceReused],
+     * [retryKind] and [answer], so what they show counts in the template slot (bl-19, m3-11, m4-52).
      */
     fun measure(
         template: Template,
@@ -117,8 +117,9 @@ object PromptSlots {
         sessionBrief: String? = null,
         retryKind: String? = null,
         contextSources: String? = null,
+        answer: String? = null,
     ): PromptSlotSizes? =
-        renders(template, issue, attempt, rendered, verifyFindings, workspaceReused, sessionBrief, retryKind, contextSources)
+        renders(template, issue, attempt, rendered, verifyFindings, workspaceReused, sessionBrief, retryKind, contextSources, answer)
             ?.sizes(String::length)
 
     /**
@@ -136,9 +137,10 @@ object PromptSlots {
         retryKind: String? = null,
         counter: TokenCounter,
         contextSources: String? = null,
+        answer: String? = null,
     ): PromptMeasure? {
         val renders =
-            renders(template, issue, attempt, rendered, verifyFindings, workspaceReused, sessionBrief, retryKind, contextSources)
+            renders(template, issue, attempt, rendered, verifyFindings, workspaceReused, sessionBrief, retryKind, contextSources, answer)
                 ?: return null
         return PromptMeasure(renders.sizes(String::length), renders.sizes(counter::count))
     }
@@ -180,12 +182,14 @@ object PromptSlots {
         sessionBrief: String?,
         retryKind: String?,
         contextSources: String?,
+        answer: String?,
     ): Renders? {
         fun render(
             of: Issue,
             findings: String?,
             brief: String? = null,
-        ): String? = template.render(PromptVariables.of(of, attempt, findings, workspaceReused, brief, retryKind)).getOrNull()
+        ): String? =
+            template.render(PromptVariables.of(of, attempt, findings, workspaceReused, brief, retryKind, answer = answer)).getOrNull()
 
         val withoutSources = if (contextSources == null) rendered else render(issue, verifyFindings, sessionBrief) ?: return null
         val withoutBrief = if (sessionBrief == null) withoutSources else render(issue, verifyFindings) ?: return null

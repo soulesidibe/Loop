@@ -530,4 +530,61 @@ class WaitsTest {
             assertTrue(restarted.isBusy("id-1"))
             assertEquals(listOf<Wait>(ask), restarted.current(WaitReason.Ask))
         }
+
+    @Test
+    fun `m4-52 an answer goes through the store's own answer, and the answered wait holds the answer and who gave it`() =
+        runTest {
+            val calls = mutableListOf<String>()
+            val asked =
+                Wait
+                    .ask(project, "id-1", "t-1", AttemptId("a1"), RunId("r1"), since, state = "todo", questionKind = "product")
+                    .asking("Question for a human (product): Archived items?")
+            val fake = FakeWaitingIssues(asked.toRecord())
+            val store =
+                object : WaitingIssues by fake {
+                    override suspend fun answer(
+                        projectId: ProjectId,
+                        issueId: String,
+                        by: String,
+                        answer: String,
+                        at: Instant,
+                    ): Result<WaitingIssue?> {
+                        calls += "answer"
+                        return fake.answer(projectId, issueId, by, answer, at)
+                    }
+                }
+            val waits = Waits(store, project)
+
+            val answered = assertIs<Wait.Ask>(waits.answer("id-1", "soule", "Leave them out.", later).getOrThrow())
+
+            assertTrue(answered.answered)
+            assertEquals("Leave them out.", answered.answer)
+            assertEquals("soule", answered.answeredBy)
+            assertEquals("Question for a human (product): Archived items?", answered.question)
+            assertEquals(listOf("answer"), calls)
+            assertNull(Waits(FakeWaitingIssues(), project).answer("id-9", "soule", "Yes.", later).getOrThrow())
+        }
+
+    @Test
+    fun `m4-52 an answered ask wait is no longer held, so its issue dispatches again, and it is found as answered`() =
+        runTest {
+            val store = FakeWaitingIssues()
+            val waits = Waits(store, project)
+            val ask = Wait.ask(project, "id-1", "t-1", AttemptId("a1"), RunId("r1"), since, state = "todo", questionKind = "human")
+            waits.save(ask)
+            assertTrue(waits.isBusy("id-1"))
+            assertNull(waits.answered("id-1"))
+
+            // `loop answer`, another process, answers it in the store; the next read of this process sees it.
+            store.answer(project, "id-1", "soule", "Yes.", later).getOrThrow()
+            waits.read()
+
+            assertFalse(waits.isBusy("id-1"))
+            assertEquals("Yes.", waits.answered("id-1")?.answer)
+            // A restart, whose resume holds every wait that is not a verify, does not hold it either.
+            val restarted = Waits(store, project)
+            restarted.read()
+            restarted.current().forEach(restarted::hold)
+            assertFalse(restarted.isBusy("id-1"))
+        }
 }

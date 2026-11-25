@@ -175,6 +175,19 @@ object QuestionAsked : KeyedEvent("question_asked", QuestionAsked.QUESTION_KIND,
     ) = "asked a human a question (${data[QUESTION_KIND]}) on the issue and waits for the answer"
 }
 
+/**
+ * m4-52: `loop answer` answered the question of an issue waiting as `Waiting(ask)`, the answer given [Tracker.BY] an
+ * operator, [Tracker.CHARS] characters long. Never the text: an answer can hold a secret.
+ */
+object QuestionAnswered : KeyedEvent("question_answered", Tracker.BY, Tracker.CHARS) {
+    override val sample = mapOf(Tracker.BY to "alice", Tracker.CHARS to "42")
+
+    override fun humanSentence(
+        data: Map<String, String>,
+        facts: HumanFacts,
+    ) = "got the answer to its question from ${data[Tracker.BY]}, Loop dispatches it again"
+}
+
 /** The fields of a queued agent request Loop could not apply or dropped. */
 abstract class ToolRequestEvent(
     name: String,

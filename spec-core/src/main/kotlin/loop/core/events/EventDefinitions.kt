@@ -45,6 +45,7 @@ object EventDefinitions {
             ToolRequestDropped,
             HumanTouched,
             QuestionAsked,
+            QuestionAnswered,
             // Results and their verification.
             ResultSubmitted,
             ResultInvalid,

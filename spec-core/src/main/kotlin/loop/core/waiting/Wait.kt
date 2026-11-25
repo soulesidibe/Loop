@@ -9,7 +9,7 @@ import loop.core.delivery.MergeCheck
 import kotlin.time.Instant
 
 /**
- * One wait of an issue, `Waiting(verify | approval | merge | ask)` (m2-04, m2-24, m2-26, m4-31), typed. It is read from and
+ * One wait of an issue, `Waiting(verify | approval | merge | ask)` (m2-04, m2-24, m2-26, m4-31, m4-52), typed. It is read from and
  * written to the store as a [WaitingIssue] whose data stays an opaque map: [of] translates a record, a record
  * written by an earlier Loop included, and [toRecord] gives it back with every key it was read with, so a wait
  * that goes through this type writes back exactly what it read plus what its transition changed.
@@ -288,7 +288,9 @@ sealed class Wait(
 
     /**
      * An agent asked a human a question with `ask` (m4-31): the attempt ended without verification, its workspace kept,
-     * and the issue waits until a human moves it. [state] is the state it was in when the question was asked.
+     * and the issue waits until a human moves it or answers it with `loop answer` (m4-52). [state] is the state it was in
+     * when the question was asked. Answered, it no longer waits for a human: its issue dispatches again, and the attempt
+     * that renders the answer ends the wait.
      */
     class Ask internal constructor(
         record: WaitingIssue,
@@ -304,6 +306,21 @@ sealed class Wait(
 
         /** This wait holding [key], the key of the notice a human was sent for it (m4-30). */
         fun noticed(key: String): Ask = Ask(with(data = data + (WaitKeys.HUMAN_NOTICE to key)))
+
+        /** The question as Loop posted it on the issue (m4-52), null for a wait stored before m4-52. */
+        val question: String? get() = data[WaitKeys.QUESTION]
+
+        /** This wait holding [question], the text Loop posted on the issue (m4-52). */
+        fun asking(question: String): Ask = Ask(with(data = data + (WaitKeys.QUESTION to question)))
+
+        /** The answer `loop answer` gave (m4-52), null before. */
+        val answer: String? get() = data[WaitingIssue.ANSWER]
+
+        /** Who answered (m4-52), null before `loop answer`. */
+        val answeredBy: String? get() = data[WaitingIssue.ANSWERED_BY]
+
+        /** True once `loop answer` answered it (m4-52). */
+        val answered: Boolean get() = data[WaitingIssue.ANSWERED_AT] != null
 
         /**
          * True when a human moved the issue since the ask, which ends the wait, as for an approval: the issue is gone
