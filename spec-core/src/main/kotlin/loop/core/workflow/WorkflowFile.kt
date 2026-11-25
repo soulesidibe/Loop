@@ -248,7 +248,7 @@ class WorkflowLoader(
         val budgets = parseBudgets(config.child("budgets"))
         val context = parseContext(config.child("context"))
         val observability = parseObservability(config.child("observability"))
-        val kinds = parseKinds(config, tracker.kind, listOf(tracker.id) + extraTrackers.map { it.id }, deferred)
+        val kinds = parseKinds(config, folder, tracker.kind, listOf(tracker.id) + extraTrackers.map { it.id }, deferred)
 
         val workspaceRoot =
             config
@@ -408,6 +408,7 @@ class WorkflowLoader(
      */
     private fun parseKinds(
         config: YamlMap?,
+        folder: Path,
         trackerKind: String,
         trackerIds: List<String>,
         deferred: MutableList<DeferredSecret>,
@@ -429,7 +430,7 @@ class WorkflowLoader(
         names.firstOrNull { !KIND_NAME.matches(it) }?.let {
             throw WorkflowError.InvalidConfig("kinds.$it is not a kind name, use lowercase letters, digits and -, starting with a letter")
         }
-        val named = names.associateWith { name -> parseKind(name, kinds, trackerKind, trackerIds, deferred) }
+        val named = names.associateWith { name -> parseKind(name, kinds, folder, trackerKind, trackerIds, deferred) }
         val defaults = named.filterValues { it.match.default }.keys.toList()
         when {
             defaults.isEmpty() -> throw WorkflowError.InvalidConfig("kinds has no default kind, give one kind match: { default: true }")
@@ -445,6 +446,7 @@ class WorkflowLoader(
     private fun parseKind(
         name: String,
         kinds: YamlMap?,
+        folder: Path,
         trackerKind: String,
         trackerIds: List<String>,
         deferred: MutableList<DeferredSecret>,
@@ -493,7 +495,59 @@ class WorkflowLoader(
             holdout,
             delivery,
             match ?: throw WorkflowError.InvalidConfig("$kindKey.match is required, only the code kind is the default without one"),
+            context = parseContextSources(kindKey, kind),
+            template = parseKindTemplate(kindKey, kind, folder),
         )
+    }
+
+    /**
+     * m4-19: `kinds.<kind>.context`, no sources when absent. Present, a map whose only key is `files`, a list of non
+     * blank paths relative to the workspace: never absolute, never through `..`, so a pointer stays in the workspace. Any
+     * other key is refused, so a misspelled key never drops the sources silently.
+     */
+    private fun parseContextSources(
+        kindKey: String,
+        kind: YamlMap?,
+    ): KindContext {
+        val name = "$kindKey.context"
+        val context = kind.child("context", name) ?: return KindContext()
+        context.entries.keys
+            .map { it.content }
+            .firstOrNull { it != "files" }
+            ?.let { throw WorkflowError.InvalidConfig("$name.$it is not supported, use files") }
+        val files = context.strings("$name.files", "files") ?: return KindContext()
+        if (files.any { it.isBlank() }) throw WorkflowError.InvalidConfig("$name.files must not hold a blank path")
+        val paths = files.map { it.trim() }
+        paths.forEachIndexed { index, path ->
+            if (path.startsWith("/") || Path(path).isAbsolute || path.split('/', '\\').any { it == ".." }) {
+                throw WorkflowError.InvalidConfig("$name.files[$index] is $path, use a path relative to the workspace")
+            }
+        }
+        return KindContext(paths)
+    }
+
+    /**
+     * m4-19: `kinds.<kind>.template`, null when absent, so the kind renders the `WORKFLOW.md` body. Present, a non blank
+     * path relative to the folder of `WORKFLOW.md` (or absolute, or under `~`), read now, with the workflow, and trimmed
+     * like the body. A path that does not exist or cannot be read is refused.
+     */
+    private fun parseKindTemplate(
+        kindKey: String,
+        kind: YamlMap?,
+        folder: Path,
+    ): KindTemplate? {
+        val name = "$kindKey.template"
+        val written = kind.string(name, "template") ?: return null
+        val path = written.trim().takeIf { it.isNotEmpty() } ?: throw WorkflowError.InvalidConfig("$name must not be blank")
+        val file = resolve(folder, path)
+        if (!Files.isRegularFile(file)) throw WorkflowError.InvalidConfig("$name is $path, which does not exist")
+        val text =
+            try {
+                Files.readString(file)
+            } catch (e: IOException) {
+                throw WorkflowError.InvalidConfig("$name is $path, which cannot be read: ${e.message}")
+            }
+        return KindTemplate(path, text.trim())
     }
 
     /**

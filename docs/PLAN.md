@@ -455,7 +455,7 @@ The slot sizes are recorded from M1 (m1-17), in characters, on the `BuildingProm
 | Verify findings | The head (the check and its exit code) and the newest lines stay, the older lines are summarized in one line. With no room for the head, one line says the findings are left out. |
 | Session brief | Every part keeps its heading and its newest lines, each part cut to the same share: the first lines of a part listed newest first, marked `(cut to fit the prompt limit)`, and the first line and the last lines of the checks and the agent's notes, whose newest facts come last, marked `(older lines cut to fit the prompt limit)`. |
 | Lessons | Empty until M6, size 0. |
-| Context sources of the kind | Empty until M4, size 0. |
+| Context sources of the kind | Since m4-19: the first sources, one per line, then a line saying how many are left out; left out whole when not even that line fits. |
 
 - **Recorded.** `prompt_chars`, the slot sizes and `prompt_tokens` are those of the prompt sent, `over_limit` says whether it is still over, and a prompt that was over adds `cut_<slot>_tokens` for each slot, which `loop trace` prints last. A rotated session's prompt that was over records its budget and cuts on its `session_rotated` event. The human log names what each slot lost.
 
@@ -466,12 +466,19 @@ Each kind declares where its context comes from, so non-code issues get what the
 ```yaml
 kinds:
   content:
+    match: { label: content }
+    template: .loop/templates/content.md               # rendered instead of the WORKFLOW.md body
     context:
       files: [docs/brand/voice.md, posts/published/]   # pointers, read on demand
-  code:
-    context:
-      files: [ARCHITECTURE.md, docs/technical/patterns/]
 ```
+
+**Since m4-19.** Details in [spec decisions](spec-decisions.md#context-sources-and-per-kind-templates-extension-m4-19).
+
+- **`context.files`** is a list of paths relative to the workspace, never absolute and never through `..`. Loop renders them as a short list, one `- <path>` line each, never their text, and the list counts in the `context_sources` slot of the prompt budget (8.5). An empty or absent list renders nothing.
+- **A missing path.** A path that is not in the workspace when the prompt renders is listed with `(missing from the workspace)` after it, and a `context_source_missing` event names it. It never fails the attempt.
+- **Only where the template places it.** The list is the prompt variable `loop.context_sources` (8.9). Loop never inserts it by itself: the sources appear only where the template uses the variable. Preflight refuses a kind that declares `context.files` with a template that never uses `loop.context_sources`, and renders every kind's template with the variable null and set.
+- **A per kind template.** A kind may set `template`, a path relative to the folder of `WORKFLOW.md`, rendered instead of the `WORKFLOW.md` body for the issues of that kind, so a content or research issue does not get the code prompt. Without it the body is used. Preflight refuses a template path that does not exist. The file is read with `WORKFLOW.md`, so an edit of it alone reaches attempts at the next reload of `WORKFLOW.md` or the next start.
+- **`code` unchanged.** Loop's own `code` kind declares no `context.files` and no `template`, so its `WORKFLOW.md` needs no edit.
 
 ### 8.7 Tool outputs and manager agents
 
@@ -497,7 +504,7 @@ The template is rendered with the spec's strict rules. Loop adds variables under
 | `issue`, `attempt` (S) | As in the spec |
 | `loop.kind` | The matched kind and its deliverable |
 | `loop.checks` | The visible checks, so the agent can run them first |
-| `loop.context_files` | The kind's context sources |
+| `loop.context_sources` | Since m4-19: the kind's context sources as a short list of paths, one `- <path>` line each, a path missing from the workspace marked so; null when the kind declares none. Preflight renders it null and set for every kind (8.6) |
 | `loop.lessons` | Active lessons relevant to this issue's area |
 | `loop.session_brief` | On a retry, on a reused workspace and after a rotation (m3-11); null on a fresh first dispatch. Built from facts in five bounded parts (section 9.2, m3-10) |
 | `loop.verify_findings` | After a refutation: what failed and why |

@@ -140,7 +140,8 @@ internal class LedgerMeter {
          * [model], the model of the attempt's runner (m3-04: its settings belong to its plugin). Since m4-13 `tracker`
          * is the id of the tracker of [issueId], the primary one's when it is null, so `loop report` groups by tracker.
          * Since m4-18 `kind` is [kind], the kind the issue matched; it defaults to `code` in Loop mode, for the code
-         * only paths, and is null in Symphony mode.
+         * only paths, and is null in Symphony mode. Since m4-19 `template_version` is the hash of the template that kind
+         * renders, its own `template` or the body.
          */
         fun setupOf(
             workflow: WorkflowFile,
@@ -153,7 +154,14 @@ internal class LedgerMeter {
                 kind = kind,
                 runner = workflow.runner.kind,
                 model = model,
-                templateVersion = workflowHash(workflow.promptTemplate),
+                templateVersion =
+                    workflowHash(
+                        workflow.config.kinds
+                            ?.named
+                            ?.get(kind)
+                            ?.template
+                            ?.text ?: workflow.promptTemplate,
+                    ),
                 configVersion = workflow.sourceHash.ifEmpty { null },
             )
     }
