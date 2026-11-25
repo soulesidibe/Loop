@@ -1,0 +1,30 @@
+{
+  "url": "https://api.github.com/repos/octocat/Hello-World/pulls/7",
+  "id": 2100000007,
+  "html_url": "https://github.com/octocat/Hello-World/pull/7",
+  "number": 7,
+  "state": "open",
+  "locked": false,
+  "title": "t-1: the verified result",
+  "draft": false,
+  "head": {
+    "label": "octocat:loop/t-1",
+    "ref": "loop/t-1",
+    "sha": "6dcb09b5b57875f334f61aebed695e2e4193db5e"
+  },
+  "base": {
+    "label": "octocat:main",
+    "ref": "main",
+    "sha": "7fd1a60b01f91b314f59955a4e4d4e80d8edf11d"
+  },
+  "merged": false,
+  "mergeable": false,
+  "rebaseable": false,
+  "mergeable_state": "dirty",
+  "merged_by": null,
+  "comments": 0,
+  "commits": 1,
+  "additions": 1,
+  "deletions": 0,
+  "changed_files": 1
+}

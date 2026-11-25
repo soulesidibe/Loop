@@ -104,7 +104,7 @@ class PromptVariablesTest {
             assertEquals("Work on SAMPLE-1. Kind: $kind.", rendered)
         }
         assertEquals("Work on SAMPLE-1.", template.render(PromptVariables.of(issue, null)).getOrThrow())
-        assertEquals(listOf("continuation", "rotation", "error", "refuted", "answer", "sent_back"), PromptVariables.RETRY_KINDS)
+        assertEquals(listOf("continuation", "rotation", "error", "refuted", "answer", "sent_back", "reaction"), PromptVariables.RETRY_KINDS)
     }
 
     @Test
@@ -134,6 +134,21 @@ class PromptVariablesTest {
 
         assertEquals("Work on SAMPLE-1. Kind: sent_back.\n$reason", sent)
         assertEquals("sent_back", PromptVariables.RETRY_SENT_BACK)
+    }
+
+    @Test
+    fun `m4-34 after a reaction the findings render as loop verify_findings with retry kind reaction`() {
+        val source =
+            "Work on {{ issue.identifier }}.{% if loop.retry_kind %} Kind: {{ loop.retry_kind }}.{% endif %}" +
+                "{% if loop.verify_findings %}\n{{ loop.verify_findings }}{% endif %}"
+        val template = engine.parse(source, PromptVariables.schema).getOrThrow()
+        val findings = "Your last result was verified and approved, but merging main at 0123abc into your branch conflicts."
+
+        val reacted =
+            template.render(PromptVariables.of(issue, 1, findings, retryKind = PromptVariables.RETRY_REACTION)).getOrThrow()
+
+        assertEquals("Work on SAMPLE-1. Kind: reaction.\n$findings", reacted)
+        assertEquals("reaction", PromptVariables.RETRY_REACTION)
     }
 
     @Test

@@ -87,6 +87,12 @@ internal class RetryCoordinator(
     /** Issues whose retry state changed and is not in [retryStates] yet. */
     private val unsaved = mutableSetOf<String>()
 
+    /**
+     * m4-34: the issues a reaction sent back since their counter was last reset, so the approval exit of a reaction
+     * attempt keeps the failure counter. In memory: a restart forgets it, and the next approval exit resets the counter.
+     */
+    private val reacted = mutableSetOf<String>()
+
     /** Parks whose store write failed, by issue id: parked for this process, written again every tick. */
     private val pendingParks = mutableMapOf<String, ParkedIssue>()
 
@@ -315,6 +321,7 @@ internal class RetryCoordinator(
         when {
             entry.kind == RetryKind.Continuation -> PromptVariables.RETRY_CONTINUATION
             entry.error == PromptVariables.RETRY_REFUTED -> PromptVariables.RETRY_REFUTED
+            entry.error == PromptVariables.RETRY_REACTION -> PromptVariables.RETRY_REACTION
             else -> PromptVariables.RETRY_ERROR
         }
 
@@ -412,8 +419,9 @@ internal class RetryCoordinator(
                     return
                 }
                 if (summary.exitReason == ExitReason.WAITING_APPROVAL) {
-                    // m2-24: a verified result waiting for approval is progress and needs no continuation.
-                    queue.drop(issue.id, resetCounter = true)
+                    // m2-24: a verified result waiting for approval is progress and needs no continuation. m4-34: after a
+                    // reaction it keeps the failure counter, so a base that keeps moving cannot send the issue back forever.
+                    queue.drop(issue.id, resetCounter = issue.id !in reacted)
                     return
                 }
                 if (summary.handedOff) {
@@ -478,6 +486,52 @@ internal class RetryCoordinator(
     }
 
     /**
+     * m4-34: a reaction of `reactions:` ended the approval wait of [issue], started by [attemptId], to send it back to its
+     * agent. It takes a `max_attempts` slot like a failure, error `reaction`, so its retry renders `loop.retry_kind` =
+     * `reaction`; the reaction that takes the last slot parks the issue with `max_attempts` instead. True when the retry
+     * is scheduled, false when the issue parked.
+     */
+    suspend fun onReaction(
+        issue: Issue,
+        attemptId: AttemptId?,
+        workflow: WorkflowFile,
+    ): Boolean {
+        try {
+            val now = clock.now()
+            val decision =
+                queue.onFailure(
+                    issueId = issue.id,
+                    identifier = issue.identifier,
+                    error = PromptVariables.RETRY_REACTION,
+                    now = now,
+                    maxAttempts = workflow.config.retries.maxAttempts,
+                    maxBackoffMs = workflow.config.agent.maxRetryBackoffMs,
+                )
+            return when (decision) {
+                is FailureDecision.Retry -> {
+                    reacted += issue.id
+                    scheduled(decision.entry, decision.delayMs, decision.failures, attemptId)
+                    true
+                }
+                is FailureDecision.Park -> {
+                    park(
+                        issue,
+                        issue,
+                        attemptId,
+                        ParkReason.MaxAttempts,
+                        mapOf(IssueParked.FAILURES to decision.failures.toString(), IssueParked.ERROR to decision.error),
+                        now,
+                    )
+                    false
+                }
+            }
+        } finally {
+            unsaved += issue.id
+            save()
+        }
+    }
+
+    /**
      * Reconciliation stopped the attempt of [issueId] for [reason], an [ExitReason] value (m1-16): no retry
      * follows, so its entry is dropped. Like the retry refresh, a terminal or not active issue resets its
      * counters, a not eligible or vanished one keeps them.
@@ -486,7 +540,9 @@ internal class RetryCoordinator(
         issueId: String,
         reason: String,
     ) {
-        queue.drop(issueId, resetCounter = reason == ExitReason.TERMINAL || reason == ExitReason.NOT_ACTIVE)
+        val reset = reason == ExitReason.TERMINAL || reason == ExitReason.NOT_ACTIVE
+        queue.drop(issueId, resetCounter = reset)
+        if (reset) reacted -= issueId
         unsaved += issueId
         save()
     }
@@ -600,6 +656,7 @@ internal class RetryCoordinator(
             reason = data["error"] ?: reason.wire,
         )
         if (reason == ParkReason.SplitIssue) commentSplit(issue, data, attemptId, now)
+        reacted -= issue.id
         onParked(record, data["error"]?.let { "${reason.wire}: $it" } ?: reason.wire)
     }
 
