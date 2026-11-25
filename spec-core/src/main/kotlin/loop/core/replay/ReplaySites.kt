@@ -78,7 +78,10 @@ class ReplaySites(
         projectDir: Path,
     ): Placement {
         val tree = recorded.startsWith(TREE)
-        val located = workspace.getOrElse { error -> return Placement.Refused("cannot locate the workspace: ${describe(error)}", recorded, UNKNOWN) }
+        val located =
+            workspace.getOrElse { error ->
+                return Placement.Refused("cannot locate the workspace: ${describe(error)}", recorded, UNKNOWN)
+            }
         val kept = located?.takeIf { Files.isDirectory(it) }
         val current =
             when {
@@ -108,14 +111,15 @@ class ReplaySites(
         workspace: Path,
         tree: Boolean,
     ): Placement {
-        val parent = tempParent()
+        val (parent, source) =
+            try {
+                tempParent().toRealPath() to workspace.toRealPath()
+            } catch (e: Exception) {
+                return Placement.Refused("cannot copy the workspace: ${describe(e)}", recorded, UNKNOWN)
+            }
         val dir = parent.resolve(SITE)
-        val source = workspace.toRealPath()
         var registered = false
-        val cleanup = {
-            if (registered) git.run(source, "worktree", "remove", "--force", "--force", dir.toString())
-            deleteAll(parent)
-        }
+        val cleanup = { removeSite(source.takeIf { registered }, parent, dir) }
         return try {
             if (tree) {
                 Files.createDirectories(dir)
@@ -131,7 +135,7 @@ class ReplaySites(
             if (copied != recorded) throw IOException("the copy of the workspace is at $copied")
             Placement.Ready(ReplaySite.WorkspaceCopy(workspace, dir, cleanup))
         } catch (e: Exception) {
-            runCatching(cleanup)
+            cleanup()
             Placement.Refused("cannot copy the workspace: ${describe(e)}", recorded, UNKNOWN)
         }
     }
@@ -144,19 +148,20 @@ class ReplaySites(
         state: String,
         current: String,
     ): Placement {
-        val top = git.run(projectDir, "rev-parse", "--show-toplevel")
-        if (top.code != 0) return Placement.Refused("$state, and the project folder is not in a git repository", recorded, current)
-        val repository = Path.of(top.stdout.trim()).toRealPath()
-        if (!git.hasCommit(repository, head)) {
-            return Placement.Refused("$state, and the commit $head is not in the project repository", recorded, current)
-        }
-        val parent = tempParent()
+        val refused = { why: String -> Placement.Refused("$state, and $why", recorded, current) }
+        val (repository, parent) =
+            try {
+                val top = git.run(projectDir, "rev-parse", "--show-toplevel")
+                if (top.code != 0) return refused("the project folder is not in a git repository")
+                val repository = Path.of(top.stdout.trim()).toRealPath()
+                if (!git.hasCommit(repository, head)) return refused("the commit $head is not in the project repository")
+                repository to tempParent().toRealPath()
+            } catch (e: Exception) {
+                return refused("cannot rebuild it: ${describe(e)}")
+            }
         val dir = parent.resolve(SITE)
         var registered = false
-        val cleanup = {
-            if (registered) git.run(repository, "worktree", "remove", "--force", "--force", dir.toString())
-            deleteAll(parent)
-        }
+        val cleanup = { removeSite(repository.takeIf { registered }, parent, dir) }
         return try {
             add(repository, head, dir)
             registered = true
@@ -164,9 +169,22 @@ class ReplaySites(
             if (rebuilt != recorded) throw IOException("the worktree at $head is at $rebuilt")
             Placement.Ready(ReplaySite.Worktree(repository, head, dir, cleanup))
         } catch (e: Exception) {
-            runCatching(cleanup)
-            Placement.Refused("$state, and cannot rebuild it: ${describe(e)}", recorded, current)
+            cleanup()
+            refused("cannot rebuild it: ${describe(e)}")
         }
+    }
+
+    /**
+     * Removes the site in [dir], its worktree from [repository] first when it has one, then its temporary [parent]. A
+     * failure is left behind, never thrown: the verdict stands, and `git worktree prune` forgets a worktree whose folder is gone.
+     */
+    private fun removeSite(
+        repository: Path?,
+        parent: Path,
+        dir: Path,
+    ) {
+        if (repository != null) runCatching { git.run(repository, "worktree", "remove", "--force", "--force", dir.toString()) }
+        runCatching { deleteAll(parent) }
     }
 
     /** Adds a detached worktree of the repository of [repository] at [head] in [dir]. */

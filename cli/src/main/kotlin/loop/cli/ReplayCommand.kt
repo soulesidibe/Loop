@@ -236,7 +236,13 @@ class ReplayCommand(
     private fun checkRunner(workflow: WorkflowFile): CheckRunner {
         val removed = agentEnvRemovedNames(workflow)
         val runner = CoreCheckRunner()
-        return CheckRunner { check, cwd, env -> runner.run(check, cwd, agentEnvironment(overrides = env, removed = removed, host = host.rawEnv)) }
+        return CheckRunner {
+            check,
+            cwd,
+            env,
+            ->
+            runner.run(check, cwd, agentEnvironment(overrides = env, removed = removed, host = host.rawEnv))
+        }
     }
 
     /** The turn 1 prompt of the Attempt file, as written, redacted then; null when none was recorded. */

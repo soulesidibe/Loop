@@ -72,7 +72,11 @@ class ReplaySitesTest {
         gitWorkspace()
         workspace.resolve("a.txt").writeText("changed\n")
         workspace.resolve("new.txt").writeText("untracked\n")
-        workspace.resolve("build").createDirectories().resolve("out.txt").writeText("ignored\n")
+        workspace
+            .resolve("build")
+            .createDirectories()
+            .resolve("out.txt")
+            .writeText("ignored\n")
         val recorded = fingerprint(workspace)
         val before = files(workspace)
         val listed = worktrees()
@@ -178,7 +182,8 @@ class ReplaySitesTest {
         workspace.resolve(".git").writeText("gitdir: /somewhere\n")
         val recorded = WorkspaceFingerprint.tree(workspace).getOrThrow()
 
-        val site = assertIs<ReplaySite.WorkspaceCopy>(assertIs<Placement.Ready>(sites.place(recorded, Result.success(workspace), project)).site)
+        val site =
+            assertIs<ReplaySite.WorkspaceCopy>(assertIs<Placement.Ready>(sites.place(recorded, Result.success(workspace), project)).site)
         site.use {
             assertEquals(recorded, WorkspaceFingerprint.tree(site.dir).getOrThrow())
             assertFalse(site.dir.resolve(".git").exists())

@@ -3325,7 +3325,7 @@ Tests: `spec-core/src/test/kotlin/loop/core/reactions/ApprovedGreenReactionTest.
 
 Story 137, PLAN 10.4. Lane C, not gating the M4 exit. No Gradle change: `cli` already depends on `spec-core` and `store`. Verification replay is m4-41; a later turn, a rotation prompt and the prompt fill and trimming of M3 are out. The decisions:
 
-- **The command.** `loop replay <attempt> --prompt [--workflow WORKFLOW.md]` (`ReplayCommand`), the attempt a full id or a unique prefix as in `loop show` (`resolveAttempt`, shared). With no mode it is a usage error naming `--prompt`, the only mode so far. The workflow is loaded read only, as `loop show` loads it.
+- **The command.** `loop replay <attempt> --prompt [--workflow WORKFLOW.md]` (`ReplayCommand`), the attempt a full id or a unique prefix as in `loop show` (`resolveAttempt`, shared). With no mode it is a usage error naming `--prompt` and `--verify` (m4-41), and both at once is one too. The workflow is loaded read only, as `loop show` loads it.
 - **The original.** The turn 1 `prompt` record of the Attempt file, as `loop show --prompt` prints it. It was redacted when written.
 - **The render.** The prompt template of the kind `attempt_started` names, through `KindLookup.pinned`; a kind gone from the workflow falls back to the kind the issue matches now, and the header says so. The issue is the one the tracker returns now, completed as a dispatch completes it; the header says its text may have changed since the attempt.
 - **The variables** (`loop.core.replay.RecordedPromptVariables`), read from the issue's events between the `attempt_started` of the attempt before and this attempt, nothing guessed:
@@ -3349,9 +3349,37 @@ Story 137, PLAN 10.4. Lane C, not gating the M4 exit. No Gradle change: `cli` al
 | Usage, no or several attempts match | 2 | the usage line, or `loop replay: no attempt "<typed>" in project <id>.` |
 | Store or Attempt file | 3 | `loop replay: cannot read the store at <path>: <reason>.` or `cannot read the attempt file at <path>: <reason>.` |
 | No recorded prompt | 4 | `loop replay: no prompt recorded for attempt <id>, nothing to replay.` |
-| Issue or render | 5 | `loop replay: cannot read <issue> in <tracker>: <reason>.`, `<tracker> has no issue <issue> now, nothing to render.` or `the prompt template of <path> does not render: <reason>.` |
+| Issue or render | 5 | `loop replay: cannot read <issue> in <tracker>: <reason>.`, `<tracker> has no issue <issue> now, nothing to replay.` or `the prompt template of <path> does not render: <reason>.` |
 
 Tests: `cli/src/test/kotlin/loop/cli/ReplayCommandTest.kt` (a real `loop run --once` replayed with the template unchanged, the store and the issue file compared before and after; a changed template, its diff and both versions; a sent back retry and a refuted retry on a seeded store, the latter naming what it cannot recover; a token in the issue body redacted; an unknown attempt; no recorded prompt; no mode), `spec-core/src/test/kotlin/loop/core/replay/RecordedPromptVariablesTest.kt` and `UnifiedDiffTest.kt`.
+
+### loop replay --verify runs the checks again on the recorded fingerprint (extension, m4-41)
+
+Story 138, PLAN 10.4. Lane A, not gating the M4 exit. It calls the verification m4-54 extracted to `loop.core.verify` and edits no orchestrator code. Replaying holdouts the attempt never saw, replaying the merge check and rebuilding a workspace with uncommitted changes are out. The decisions:
+
+- **The command.** `loop replay <attempt> --verify [--workflow WORKFLOW.md]`, beside `--prompt`, the attempt resolved as there. The workflow is loaded as a writer, since the store records the replay, so every secret it names must be set.
+- **The recorded state** (`loop.core.replay.RecordedVerdict`). The last `verdict` of the attempt that is not a merge check rerun (`merge_check` = `true`): its `verdict`, its `fingerprint`, its run, and the sha of the last `base_fetched` after the verdict before it, given to the verification as its diff base so `diff_policy` reads the base the attempt read. No such verdict is exit 4.
+- **Where the checks run** (`loop.core.replay.ReplaySites`). The workspace is located as `loop run` locates it. A fingerprint is compared in the form recorded, `tree:` through `Fingerprinter.tree`, `git:` through `Fingerprinter.of`.
+  - The kept workspace while its fingerprint equals the recorded one, never in place: a `git:` workspace is copied onto a detached worktree of its own repository at the recorded commit, emptied but for its `.git`, so the copy has its own index and HEAD; a `tree:` workspace is copied as a folder. The top `.git` entry is never copied, links stay links and attributes are kept.
+  - Otherwise, for a `git:` fingerprint with no uncommitted part (`WorkspaceFingerprint.committedHead`), a detached worktree at that commit of the git repository of the folder of `WORKFLOW.md`, after checking the commit is there.
+  - Otherwise exit 4, naming why, the recorded fingerprint and the current one (`none, the workspace is gone` when it is gone). Never a verdict on another state.
+  - A site is used only when its own fingerprint equals the recorded one. It lives in a temporary folder, removed afterwards with its worktree (`git worktree remove --force`), whatever the checks did. Git runs through `WorkspaceGit`, with Loop's pins and a minimal environment.
+- **The checks** (`loop.core.replay.VerificationReplay`). The `Verification` of `loop.core.verify`, with the issue as the tracker returns it now, the kind `attempt_started` names (the kind the issue matches now when the workflow no longer has it, and the header says so), the checks and holdouts of the current `WORKFLOW.md` for that kind, and the check runner of `loop run`: the agent env policy plus the ids the verification adds. A check that declares `resource:` runs without holding the resource, since a resource lock is a store write. The checks see the run id of the recorded verdict and no attempt id.
+- **Nothing written but the replay.** The verification runs with no attempt id, so no evidence file is written, and its host reads only: every event it records stays in memory and is read for the output, the tracker refuses every call, no base is fetched, nothing is delivered and no wait starts. The frozen acceptance command list is read once, and a missing one stands for the list the issue holds now; a list that differs gives `unverified`, `acceptance commands changed`, and nothing is marked in the store.
+- **The output.** A header (the attempt, the issue, the workflow and kind, the tracker note, the kind note, where the checks run and the temporary folder), each check run on its own line (`check 0 passed in 12 ms: <command>`, `check 1 rerun failed with exit code 1 in 9 ms: <command>`; a hidden check says only `hidden check 2 failed`), then `Recorded verdict: <verdict>, on <fingerprint>.` and `New verdict: <verdict>, on <fingerprint>[, <reason>].` Everything goes through the project's redactor.
+- **The `replay_verdict` event.** Issue level: the issue id and identifier, no attempt id and no run id, so a reader of the attempt's events never sees it. Its data: `attempt`, `verdict`, `recorded_verdict`, `fingerprint`, `recorded_fingerprint`, `site` (`workspace_copy` or `worktree`), `checks` (the checks run, reruns not counted, as `verdict` counts them) and `reason` when `unverified`. `loop trace` shows it on the issue's line; the human log has no sentence for it, only a run writes that log.
+- **Exit codes.**
+
+| Case | Exit | Output |
+|------|------|--------|
+| Printed | 0 | the header, each check, both verdicts, whatever the new verdict |
+| Startup | 1 | the startup failure |
+| Usage, no or several attempts match | 2 | the usage line, or `loop replay: no attempt "<typed>" in project <id>.` |
+| Store | 3 | `loop replay: cannot read the store at <path>: <reason>.` or `cannot record the replay in the store at <path>: <reason>.` |
+| Nothing to replay | 4 | `loop replay: no verdict recorded for attempt <id>, nothing to replay.` or `loop replay: cannot replay the verification of attempt <id>: <why>, recorded fingerprint <recorded>, current fingerprint <current>.` |
+| Issue | 5 | `loop replay: cannot read <issue> in <tracker>: <reason>.` or `<tracker> has no issue <issue> now, nothing to replay.` |
+
+Tests: `cli/src/test/kotlin/loop/cli/ReplayCommandTest.kt` (a kept workspace verified on a copy, unchanged afterwards, with the store's events compared before and after; a gone workspace rebuilt as a worktree and removed; a changed workspace with uncommitted changes and a gone `tree:` folder, exit 4 naming both fingerprints; no verdict; both modes), `spec-core/src/test/kotlin/loop/core/replay/ReplaySitesTest.kt`, `VerificationReplayTest.kt` and `RecordedVerdictTest.kt`.
 
 ## Spec changes log
 

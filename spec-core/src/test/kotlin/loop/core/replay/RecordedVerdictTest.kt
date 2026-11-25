@@ -88,7 +88,8 @@ class RecordedVerdictTest {
             )
         assertEquals("2222", RecordedVerdict.of(events)!!.diffBase)
 
-        val noFetch = listOf(event(BaseFetched, mapOf(Delivery.SHA to "1111")), verdict("refuted", "git:a:x:y"), verdict("verified", "git:b:x:y"))
+        val noFetch =
+            listOf(event(BaseFetched, mapOf(Delivery.SHA to "1111")), verdict("refuted", "git:a:x:y"), verdict("verified", "git:b:x:y"))
         assertNull(RecordedVerdict.of(noFetch)!!.diffBase)
     }
 

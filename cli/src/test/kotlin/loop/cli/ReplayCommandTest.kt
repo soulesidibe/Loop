@@ -319,7 +319,15 @@ class ReplayCommandTest {
         fingerprint: String,
     ) = fixture.seed(
         fixture.attemptStarted(A1, "t-1"),
-        fixture.attemptStarted(A1, "t-1").copy(kind = "verdict", data = mapOf("verdict" to verdict, "fingerprint" to fingerprint, "checks" to "2")),
+        fixture.attemptStarted(A1, "t-1").copy(
+            kind = "verdict",
+            data =
+                mapOf(
+                    "verdict" to verdict,
+                    "fingerprint" to fingerprint,
+                    "checks" to "2",
+                ),
+        ),
         fixture.attemptFinished(A1, "t-1"),
     )
 
