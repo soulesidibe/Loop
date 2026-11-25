@@ -138,6 +138,19 @@ sealed interface ToolRequest {
     ) : ToolRequest {
         override val kind: String get() = "ask"
     }
+
+    /**
+     * A follow up the agent filed with the `file_followup` MCP tool (m4-33): its [title] and [body], redacted and
+     * trimmed. The drain creates it labelled `needs-triage`, see [loop.core.trackers.Followups].
+     */
+    @Serializable
+    @SerialName("followup")
+    data class Followup(
+        val title: String,
+        val body: String,
+    ) : ToolRequest {
+        override val kind: String get() = "followup"
+    }
 }
 
 /** One file of the queue: decoded, or unreadable with the reason. */

@@ -188,6 +188,34 @@ object QuestionAnswered : KeyedEvent("question_answered", Tracker.BY, Tracker.CH
     ) = "got the answer to its question from ${data[Tracker.BY]}, Loop dispatches it again"
 }
 
+/** m4-33: a follow up the agent queued with `file_followup`, filed when its turn ends; its title is [Tracker.CHARS] long. */
+object FollowupRequested : EventDefinition("followup_requested") {
+    override val trace = TraceShow.TIMELINE
+    override val sample = mapOf(Tracker.CHARS to "24")
+
+    override fun traceDetails(
+        event: RecordedEvent,
+        context: TraceContext,
+    ) = traceDetails(context) { add(Tracker.CHARS, event.data[Tracker.CHARS]) }
+}
+
+/**
+ * m4-33: Loop filed an agent's follow up of the issue [PARENT] as the issue [FOLLOWUP], a namespaced id, in the tracker
+ * [TRACKER], labelled `needs-triage`, and named it in a comment on the parent.
+ */
+object FollowupFiled : KeyedEvent("followup_filed", FollowupFiled.PARENT, FollowupFiled.FOLLOWUP, FollowupFiled.TRACKER) {
+    const val PARENT = "parent"
+    const val FOLLOWUP = "followup"
+    const val TRACKER = "tracker"
+
+    override val sample = mapOf(PARENT to "local:m4-33", FOLLOWUP to "local:bl-12", TRACKER to "local")
+
+    override fun humanSentence(
+        data: Map<String, String>,
+        facts: HumanFacts,
+    ) = "filed the follow up ${data[FOLLOWUP]} in the tracker ${data[TRACKER]}, it waits for triage"
+}
+
 /** The fields of a queued agent request Loop could not apply or dropped. */
 abstract class ToolRequestEvent(
     name: String,
@@ -214,6 +242,7 @@ abstract class ToolRequestEvent(
             RESULT if data[SOURCE] == Tracker.MCP || data[Tracker.TO] == null ->
                 "the agent's submit_result" + data[Tracker.TO]?.let { ", a move to $it" }.orEmpty()
             RESULT -> "the agent's result file, a move to ${data[Tracker.TO]}"
+            FOLLOWUP -> "the agent's follow up"
             else -> "an agent request"
         }
 
@@ -223,6 +252,7 @@ abstract class ToolRequestEvent(
         const val MOVE = "move"
         const val COMMENT = "comment"
         const val RESULT = "result"
+        const val FOLLOWUP = "followup"
 
         /** The request of a queued file that could not be read. */
         const val UNKNOWN = "unknown"

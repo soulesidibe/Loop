@@ -96,6 +96,7 @@ import loop.core.events.DeliveryQueueResumed
 import loop.core.events.DiffBaseUnpinned
 import loop.core.events.EventDefinition
 import loop.core.events.EvidenceRecordFailed
+import loop.core.events.FollowupFiled
 import loop.core.events.HookFinished
 import loop.core.events.HumanTouched
 import loop.core.events.InterruptGraceExpired
@@ -156,6 +157,7 @@ import loop.core.resources.ResourceLocks
 import loop.core.template.Template
 import loop.core.template.TemplateEngine
 import loop.core.trackers.AreaLock
+import loop.core.trackers.Followups
 import loop.core.trackers.IssueIdDisplay
 import loop.core.trackers.NamespacedId
 import loop.core.trackers.TrackerPoll
@@ -2139,6 +2141,7 @@ class Orchestrator(
                         is ToolRequest.Comment -> applyComment(request)
                         is ToolRequest.Result -> if (asked) WAITS_FOR_ANSWER else applyQueuedResult(request)
                         is ToolRequest.Ask -> applyAsk(request)
+                        is ToolRequest.Followup -> applyFollowup(request)
                     }
                 } catch (e: CancellationException) {
                     throw e
@@ -2498,6 +2501,27 @@ class Orchestrator(
             return null
         }
 
+        /** How many follow ups this attempt filed (m4-33), for [Followups.MAX_PER_ATTEMPT]. */
+        private var followupsFiled = 0
+
+        /**
+         * A queued follow up (m4-33), filed and named on the parent by [Followups], in the tracker of the issue or the one
+         * its kind names. The failure's reason, null once it is filed.
+         */
+        private suspend fun applyFollowup(request: ToolRequest.Followup): String? {
+            Followups.refusal(followupsFiled)?.let { return it }
+            val title = redactor.redact(request.title).trim()
+            val body = Followups.body(redactor.redact(request.body), issue.identifier, issue.id, attemptId.value)
+            val target = Followups.trackerOf(issue.id, kind?.config?.followupTracker, workflow.trackerId)
+            val filed = withContext(io) { Followups.file(trackers, target, title, body) }.getOrElse { return it.describe() }
+            followupsFiled++
+            record(
+                FollowupFiled,
+                data = mapOf(FollowupFiled.PARENT to issue.id, FollowupFiled.FOLLOWUP to filed.id, FollowupFiled.TRACKER to filed.tracker),
+            )
+            return applyComment(ToolRequest.Comment(Followups.parentComment(filed, title)))
+        }
+
         /** The author of the agent's comments, `agent <short attempt id>`. */
         private fun agentAuthor(): String = "agent ${attemptId.value.take(SHORT_ID)}"
 
@@ -2511,6 +2535,7 @@ class Orchestrator(
                 }
                 is ToolRequest.Result -> mapOf(ToolRequestEvent.REQUEST to request.kind, ToolRequestEvent.SOURCE to RESULT_MCP_SOURCE)
                 is ToolRequest.Ask -> mapOf(ToolRequestEvent.REQUEST to request.kind, QuestionAsked.QUESTION_KIND to request.questionKind)
+                is ToolRequest.Followup -> mapOf(ToolRequestEvent.REQUEST to request.kind)
             }
 
         private val toolOutputs = ToolOutputQueue(directory)
@@ -6086,6 +6111,7 @@ class Orchestrator(
                 RESULT_REQUEST if data[Tracker.TO] == null -> SUBMIT_RESULT_TOOL
                 ToolRequestEvent.MOVE, RESULT_REQUEST -> "move to ${data[Tracker.TO].orEmpty().oneLine().take(NOTICE_TARGET_MAX).trimEnd()}"
                 ToolRequestEvent.COMMENT -> "comment"
+                ToolRequestEvent.FOLLOWUP -> "file_followup"
                 else -> "unknown request"
             }
 

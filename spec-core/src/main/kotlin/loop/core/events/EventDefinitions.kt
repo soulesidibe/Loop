@@ -45,6 +45,8 @@ object EventDefinitions {
             ToolRequestDropped,
             HumanTouched,
             QuestionAsked,
+            FollowupRequested,
+            FollowupFiled,
             QuestionAnswered,
             // Results and their verification.
             ResultSubmitted,

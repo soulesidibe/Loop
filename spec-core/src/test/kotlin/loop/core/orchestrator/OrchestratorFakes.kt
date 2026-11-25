@@ -305,6 +305,22 @@ class FakeTracker(
         comment: IssueComment,
     ): Result<Unit> = addComment(issue.id, comment).also { writtenIssues += issue }
 
+    /** Every issue [createIssue] created, in order (m4-33). */
+    val created = mutableListOf<Issue>()
+
+    /** Creates the issue `bl-<n>` in `todo` with the labels given and adds it to [issues] (m4-33). */
+    override suspend fun createIssue(
+        title: String,
+        body: String,
+        labels: List<String>,
+    ): Result<Issue> {
+        val id = "bl-${created.size + 1}"
+        val issue = Issue(id, id, title, "todo", null, labels, emptyList(), body, null)
+        created += issue
+        issues += issue
+        return Result.success(issue)
+    }
+
     /** Every issue given to [completeIssue], in order (bl-06). */
     val completions = mutableListOf<Issue>()
 

@@ -210,6 +210,53 @@ class ToolRequestDrainTest {
         }
 
     @Test
+    fun `m4-33 a queued follow up is filed needs-triage in the parent's tracker, named in followup_filed and on the parent`() =
+        runTest {
+            val tracker = FakeTracker(listOf(issue("m1-02")))
+            val sink = FakeSink()
+            val runner = queueingRunner(1, ToolRequest.Followup("Archived items", "The export drops them."), ToolRequest.Move("review"))
+
+            val summary = orchestrator(tracker, runner, sink = sink).tick().attempts.single()
+
+            val attempt = checkNotNull(summary.attemptId).value
+            val filed = tracker.created.single()
+            assertEquals("Archived items", filed.title)
+            assertEquals(listOf("needs-triage"), filed.labels)
+            assertEquals("The export drops them.\n\nFollow up of m1-02 (id-m1-02), filed by Loop from attempt $attempt.", filed.description)
+            val event = sink.events.single { it.kind == "followup_filed" }
+            assertEquals(mapOf("parent" to "id-m1-02", "followup" to "default:bl-1", "tracker" to "default"), event.data)
+            assertEquals(summary.attemptId, event.attemptId)
+            assertEquals(
+                listOf("id-m1-02" to "Filed the follow up default:bl-1 in the tracker default: Archived items"),
+                tracker.comments.map { (id, comment) -> id to comment.text },
+            )
+            assertEquals(listOf("id-m1-02" to "review"), tracker.moves)
+        }
+
+    @Test
+    fun `m4-33 past the limit per attempt a follow up is a failed request and the others still apply`() =
+        runTest {
+            val tracker = FakeTracker(listOf(issue("m1-02")))
+            val sink = FakeSink()
+            val followups = (1..4).map { ToolRequest.Followup("f$it", "b") }.toTypedArray()
+            val runner = queueingRunner(1, *followups, ToolRequest.Move("review"))
+
+            orchestrator(tracker, runner, sink = sink).tick()
+
+            assertEquals(listOf("f1", "f2", "f3"), tracker.created.map { it.title })
+            assertEquals(
+                listOf(
+                    mapOf(
+                        "request" to "followup",
+                        "reason" to "this attempt already filed 3 follow ups, the most Loop files per attempt",
+                    ),
+                ),
+                sink.events.filter { it.kind == "tool_request_failed" }.map { it.data },
+            )
+            assertEquals(listOf("id-m1-02" to "review"), tracker.moves)
+        }
+
+    @Test
     fun `a host side move counts as progress for the no progress counter`() =
         runTest {
             // Regression (no red: the drain landed earlier). One turn, and the first exit without
