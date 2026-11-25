@@ -7,6 +7,7 @@ import loop.api.DeliveryExecutor
 import loop.api.MergeMethod
 import loop.api.Mergeability
 import loop.api.PullRequest
+import loop.api.PullRequestReviews
 import loop.api.TrackerError
 import java.net.URI
 import java.nio.file.Path
@@ -120,6 +121,10 @@ class GitHubDelivery(
     /** Reads through [GitHubPullRequests.actionsJobs] (m4-07). */
     override suspend fun actionsJobs(runId: Long): Result<ActionsJobs> =
         github("Cannot read the jobs of Actions run $runId on $repository") { pullRequests.actionsJobs(runId) }
+
+    /** Reads through [GitHubPullRequests.reviews] (m4-36). */
+    override suspend fun pullRequestReviews(number: Long): Result<PullRequestReviews> =
+        github("Cannot read the reviews of pull request #$number on $repository") { pullRequests.reviews(number) }
 
     /** The result of [call], a GitHub failure as a [DeliveryError] whose message starts with [context]. */
     private suspend fun <T> github(

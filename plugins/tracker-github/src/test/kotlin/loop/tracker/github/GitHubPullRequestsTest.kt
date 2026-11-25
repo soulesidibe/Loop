@@ -16,7 +16,9 @@ import loop.api.DeliveryError
 import loop.api.MergeMethod
 import loop.api.Mergeability
 import loop.api.PullRequest
+import loop.api.PullRequestReview
 import loop.api.PullRequestState
+import loop.api.ReviewComment
 import org.junit.jupiter.api.io.TempDir
 import java.io.IOException
 import java.net.URI
@@ -768,5 +770,95 @@ class GitHubPullRequestsTest {
             assertIs<DeliveryError.Unavailable>(delivery().actionsJobs(5).exceptionOrNull())
             github.unreachable = true
             assertIs<DeliveryError.Unavailable>(delivery().actionsJobs(5).exceptionOrNull())
+        }
+
+    private val reviewsUrl = "${pullUrl(7)}/reviews?per_page=100"
+    private val reviewCommentsUrl = "${pullUrl(7)}/comments?per_page=100"
+
+    @Test
+    fun `m4-36, the reviews read gives the head, each review and each review comment of the recorded pull request 7`() =
+        runTest {
+            github.on(pullUrl(7), FakeGitHub.recorded("pull-request-7-dirty"))
+            github.on(reviewsUrl, FakeGitHub.recorded("pull-request-7-reviews"))
+            github.on(reviewCommentsUrl, FakeGitHub.recorded("pull-request-7-review-comments"))
+
+            val read = delivery().pullRequestReviews(7).getOrThrow()
+
+            assertEquals(
+                listOf("GET" to pullUrl(7), "GET" to reviewsUrl, "GET" to reviewCommentsUrl),
+                github.requests.map { it.method to it.url },
+            )
+            assertEquals("6dcb09b5b57875f334f61aebed695e2e4193db5e", read.headSha)
+            assertEquals("https://github.com/octocat/Hello-World/pull/7", read.url)
+            assertEquals(listOf(80L, 81L, 82L, 83L, 84L), read.reviews.map { it.id })
+            assertEquals(
+                PullRequestReview(
+                    id = 82,
+                    reviewer = "octocat",
+                    state = "CHANGES_REQUESTED",
+                    commitId = "6dcb09b5b57875f334f61aebed695e2e4193db5e",
+                    body = "Please handle the empty list before this ships.",
+                    submittedAt = Instant.parse("2026-11-24T10:00:00Z"),
+                ),
+                read.reviews[2],
+            )
+            assertEquals("", read.reviews[3].body, "an approval with no text")
+            assertEquals(
+                listOf(
+                    ReviewComment(1001, 81, "README.md", 3, "Name the flag here."),
+                    ReviewComment(1002, 82, "src/main/kotlin/Lists.kt", 12, "This throws on an empty list."),
+                    ReviewComment(1003, 82, "src/main/kotlin/Lists.kt", 30, "Rename the helper to firstOrNull."),
+                ),
+                read.comments,
+                "an outdated comment with no line keeps its original line",
+            )
+        }
+
+    @Test
+    fun `m4-36, a 403 or a 404 on the reviews read is permanent and names Pull requests read`() =
+        runTest {
+            github.on(pullUrl(7), FakeGitHub.recorded("pull-request-7-dirty"))
+            github.on(reviewCommentsUrl, FakeGitHub.recorded("pull-request-7-review-comments"))
+            github.on(reviewsUrl, FakeGitHub.recorded("reviews-forbidden"))
+            val forbidden = assertIs<DeliveryError.Rejected>(delivery().pullRequestReviews(7).exceptionOrNull())
+            assertContains(forbidden.message.orEmpty(), "Pull requests: read")
+            assertContains(forbidden.message.orEmpty(), "Resource not accessible by personal access token")
+
+            github.on(reviewsUrl, FakeGitHub.response(404, """{"message":"Not Found"}"""))
+            val missing = assertIs<DeliveryError.Rejected>(delivery().pullRequestReviews(7).exceptionOrNull())
+            assertContains(missing.message.orEmpty(), "Pull requests: read")
+
+            github.on(reviewsUrl, FakeGitHub.recorded("pull-request-7-reviews"))
+            github.on(reviewCommentsUrl, FakeGitHub.response(404, """{"message":"Not Found"}"""))
+            assertContains(
+                assertIs<DeliveryError.Rejected>(delivery().pullRequestReviews(7).exceptionOrNull()).message.orEmpty(),
+                "Pull requests: read",
+            )
+            github.on(pullUrl(7), FakeGitHub.response(403, """{"message":"Resource not accessible by personal access token"}"""))
+            assertContains(
+                assertIs<DeliveryError.Rejected>(delivery().pullRequestReviews(7).exceptionOrNull()).message.orEmpty(),
+                "Pull requests: read",
+            )
+        }
+
+    @Test
+    fun `m4-36, a reviews read unreadable fails, held or unreachable is unavailable`() =
+        runTest {
+            github.on(pullUrl(7), FakeGitHub.recorded("pull-request-7-dirty"))
+            github.on(reviewCommentsUrl, FakeGitHub.recorded("pull-request-7-review-comments"))
+            github.on(reviewsUrl, FakeGitHub.response(200, "not json"))
+            assertIs<DeliveryError.Rejected>(delivery().pullRequestReviews(7).exceptionOrNull())
+            github.on(reviewsUrl, FakeGitHub.response(200, """[{"id":1,"user":{"login":"a"},"body":""}]"""))
+            assertIs<DeliveryError.Rejected>(delivery().pullRequestReviews(7).exceptionOrNull(), "a review without its state")
+            github.on(reviewsUrl, FakeGitHub.recorded("pull-request-7-reviews"))
+            github.on(pullUrl(7), FakeGitHub.response(200, """{"number":7}"""))
+            assertIs<DeliveryError.Rejected>(delivery().pullRequestReviews(7).exceptionOrNull(), "a pull request without its head")
+            github.on(pullUrl(7), FakeGitHub.recorded("pull-request-7-dirty"))
+            github.on(reviewsUrl, FakeGitHub.response(502, "Bad Gateway"))
+            assertIs<DeliveryError.Unavailable>(delivery().pullRequestReviews(7).exceptionOrNull())
+            github.on(reviewsUrl, FakeGitHub.recorded("rate-limited"))
+            assertIs<DeliveryError.Unavailable>(delivery().pullRequestReviews(7).exceptionOrNull())
+            github.unreachable = true
+            assertIs<DeliveryError.Unavailable>(delivery().pullRequestReviews(7).exceptionOrNull())
         }
 }

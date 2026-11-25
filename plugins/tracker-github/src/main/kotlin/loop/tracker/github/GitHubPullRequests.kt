@@ -12,10 +12,14 @@ import loop.api.ActionsRuns
 import loop.api.ActionsStep
 import loop.api.Mergeability
 import loop.api.PullRequest
+import loop.api.PullRequestReview
+import loop.api.PullRequestReviews
 import loop.api.PullRequestState
+import loop.api.ReviewComment
 import loop.api.TrackerError
 import java.net.URI
 import java.net.URLEncoder
+import kotlin.time.Instant
 
 /**
  * The pull requests of [owner]/[repo] through [client] (m2-25), opened against [base] from a branch of the same
@@ -227,18 +231,89 @@ class GitHubPullRequests(
         )
     }
 
+    /**
+     * The reviews of the pull request [number] (m4-36): its current head, `head.sha` of `GET /repos/<owner>/<repo>/pulls/<n>`,
+     * its reviews, `GET .../pulls/<n>/reviews?per_page=100`, and its review comments, `GET .../pulls/<n>/comments?per_page=100`,
+     * one page of each, in GitHub's order. A comment GitHub marks outdated has a null `line` and keeps its `original_line`.
+     * A 403 or a 404 on any of the three names the "Pull requests: read" permission. An answer that cannot be read, a
+     * pull request without its head, a review without its id or state, or a comment without its id, path or body, fails
+     * with [TrackerError.Malformed]; other failures, a rate limit included, are those of [GitHubClient.send].
+     */
+    suspend fun reviews(number: Long): PullRequestReviews {
+        val pullUrl = URI("$pullsPath/$number")
+        val pull =
+            GitHubClient.parse(permissionRead(pullUrl, PULL_REQUESTS_READ, "read pull request #$number of $owner/$repo").body, pullUrl)
+                as? JsonObject ?: throw TrackerError.Malformed(pullUrl.toString())
+        val head =
+            (pull["head"] as? JsonObject)?.string("sha")?.takeIf { it.isNotBlank() } ?: throw TrackerError.Malformed(pullUrl.toString())
+        val reviewsUrl = URI("$pullsPath/$number/reviews?per_page=$PER_PAGE")
+        val reviews =
+            listing(reviewsUrl, "read the reviews of pull request #$number of $owner/$repo").mapIndexed { index, item ->
+                readReview(item) ?: throw TrackerError.Malformed("$reviewsUrl, item $index")
+            }
+        val commentsUrl = URI("$pullsPath/$number/comments?per_page=$PER_PAGE")
+        val comments =
+            listing(commentsUrl, "read the review comments of pull request #$number of $owner/$repo").mapIndexed { index, item ->
+                readComment(item) ?: throw TrackerError.Malformed("$commentsUrl, item $index")
+            }
+        return PullRequestReviews(head, pull.string("html_url"), reviews, comments)
+    }
+
+    /** The objects of the JSON array GitHub answers at [url], read under the "Pull requests: read" permission to [what]. */
+    private suspend fun listing(
+        url: URI,
+        what: String,
+    ): List<JsonObject?> {
+        val items =
+            GitHubClient.parse(permissionRead(url, PULL_REQUESTS_READ, what).body, url) as? JsonArray
+                ?: throw TrackerError.Malformed(url.toString())
+        return items.map { it as? JsonObject }
+    }
+
+    /** [item] as a review, null when its id or state is missing; a review whose author is gone is `ghost`, as GitHub shows it. */
+    private fun readReview(item: JsonObject?): PullRequestReview? {
+        if (item == null) return null
+        return PullRequestReview(
+            id = item.long("id") ?: return null,
+            reviewer = (item["user"] as? JsonObject)?.string("login") ?: GHOST,
+            state = item.string("state") ?: return null,
+            commitId = item.string("commit_id"),
+            body = item.string("body").orEmpty(),
+            submittedAt = item.string("submitted_at")?.let { runCatching { Instant.parse(it) }.getOrNull() },
+        )
+    }
+
+    /** [item] as a review comment, null when its id, path or body is missing; its line is `line`, else `original_line`. */
+    private fun readComment(item: JsonObject?): ReviewComment? {
+        if (item == null) return null
+        return ReviewComment(
+            id = item.long("id") ?: return null,
+            reviewId = item.long("pull_request_review_id"),
+            path = item.string("path") ?: return null,
+            line = item.long("line") ?: item.long("original_line"),
+            body = item.string("body") ?: return null,
+        )
+    }
+
     /** A GET of the Actions API at [url], a 403 or a 404 turned into a refusal naming "Actions: read" to [what]. */
     private suspend fun actionsRead(
         url: URI,
         what: String,
+    ): GitHubResponse = permissionRead(url, ACTIONS_READ, what)
+
+    /** A GET at [url], a 403 or a 404 turned into a refusal saying the token needs [permission] to [what]. */
+    private suspend fun permissionRead(
+        url: URI,
+        permission: String,
+        what: String,
     ): GitHubResponse =
         try {
-            client.send("GET", url, absent = emptySet()) ?: error("no status is absent for an Actions read")
+            client.send("GET", url, absent = emptySet()) ?: error("no status is absent for a read")
         } catch (e: TrackerError.Status) {
             if (e.status != FORBIDDEN && e.status != NOT_FOUND) throw e
             throw TrackerError.Status(
                 e.status,
-                "the token needs the Actions: read permission to $what. GitHub said: ${e.message.orEmpty().substringAfter(": ")}",
+                "the token needs the $permission permission to $what. GitHub said: ${e.message.orEmpty().substringAfter(": ")}",
             )
         }
 
@@ -324,6 +399,15 @@ class GitHubPullRequests(
         private const val NOT_FOUND = 404
 
         private const val NOT_ALLOWED = 405
+
+        /** The permission the Actions reads need, named by a 403 or a 404 on them. */
+        private const val ACTIONS_READ = "Actions: read"
+
+        /** The permission the reviews read needs (m4-36), named by a 403 or a 404 on it. */
+        const val PULL_REQUESTS_READ: String = "Pull requests: read"
+
+        /** The login GitHub shows for an author whose account is gone. */
+        private const val GHOST = "ghost"
 
         private const val CONFLICT = 409
 
