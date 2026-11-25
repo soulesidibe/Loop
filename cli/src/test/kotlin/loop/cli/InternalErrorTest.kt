@@ -97,7 +97,22 @@ class InternalErrorTest {
         val found = leaves(LoopCommand(host()))
 
         assertEquals(
-            listOf("run", "stop", "drain", "status", "trace", "show", "log", "resume", "approve", "answer", "move", "comment", "mcp", "install"),
+            listOf(
+                "run",
+                "stop",
+                "drain",
+                "status",
+                "trace",
+                "show",
+                "log",
+                "resume",
+                "approve",
+                "answer",
+                "move",
+                "comment",
+                "mcp",
+                "install",
+            ),
             found.map { it.commandName },
         )
         found.forEach { assertTrue(it is GuardedCommand, "${it.commandName} is not a GuardedCommand") }

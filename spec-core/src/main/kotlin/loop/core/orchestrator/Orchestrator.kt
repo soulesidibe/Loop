@@ -2748,7 +2748,10 @@ class Orchestrator(
                     .parse(KindPrompt.template(workflow, kind))
                     .mapCatching {
                         it to
-                            it.render(PromptVariables.of(issue, attempt, findings, workspaceReused, brief, retryKind, sources, answer)).getOrThrow()
+                            it
+                                .render(
+                                    PromptVariables.of(issue, attempt, findings, workspaceReused, brief, retryKind, sources, answer),
+                                ).getOrThrow()
                     }.getOrElse { error ->
                         recordPhase(AttemptPhase.BuildingPrompt)
                         return Executed(AttemptOutcome.Failed, "template error: ${error.describe()}")

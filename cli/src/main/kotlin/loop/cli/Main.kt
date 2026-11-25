@@ -115,7 +115,8 @@ internal fun commandPathOf(args: Array<String>): String {
     return listOfNotNull("loop", first, second).joinToString(" ")
 }
 
-internal val SUBCOMMAND_NAMES = setOf("run", "stop", "drain", "status", "trace", "show", "log", "resume", "approve", "answer", "tool", "install")
+internal val SUBCOMMAND_NAMES =
+    setOf("run", "stop", "drain", "status", "trace", "show", "log", "resume", "approve", "answer", "tool", "install")
 
 internal val TOOL_SUBCOMMANDS = setOf("move", "comment", "mcp")
 

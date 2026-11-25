@@ -120,7 +120,10 @@ class AnswerCommandTest {
             } else {
                 mapOf("to" to "review")
             }
-        it.startWaiting(WaitingIssue(project(), issueId, identifier, reason, AttemptId(ATTEMPT), null, Clock.System.now(), data)).getOrThrow()
+        it
+            .startWaiting(
+                WaitingIssue(project(), issueId, identifier, reason, AttemptId(ATTEMPT), null, Clock.System.now(), data),
+            ).getOrThrow()
     }
 
     private fun waits(): List<Map<String, String?>> = fixture.query("SELECT issue_id, reason, data FROM waiting_issues")
@@ -220,7 +223,10 @@ class AnswerCommandTest {
         val empty = answer("t-1", "   ")
 
         assertEquals(4, again.exitCode, again.toString())
-        assertEquals("loop answer: t-1 is already answered, Loop dispatches it with the first answer. Nothing changed.", again.stderr.trim())
+        assertEquals(
+            "loop answer: t-1 is already answered, Loop dispatches it with the first answer. Nothing changed.",
+            again.stderr.trim(),
+        )
         assertEquals(6, empty.exitCode, empty.toString())
         assertEquals("loop answer: the answer is empty. Nothing changed.", empty.stderr.trim())
         assertEquals(after, waits())
