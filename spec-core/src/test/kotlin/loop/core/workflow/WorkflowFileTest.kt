@@ -552,6 +552,34 @@ class WorkflowFileTest {
     }
 
     @Test
+    fun `m4-27 a resource entry's provider map reaches the provider as text, and an entry without one gets an empty map`() {
+        val workflow =
+            withResources(
+                "  - kind: ios-simulator\n    id: iphone-16\n    provider:\n      device_type: iPhone 16\n      runtime: \"iOS 18.2\"\n" +
+                    "      prepare_timeout_seconds: 600\n      base: 18.10\n" +
+                    "  - { kind: ios-simulator, id: ipad }\n",
+            ).getOrThrow()
+
+        assertEquals(
+            listOf(
+                mapOf("device_type" to "iPhone 16", "runtime" to "iOS 18.2", "prepare_timeout_seconds" to "600", "base" to "18.10"),
+                emptyMap(),
+            ),
+            workflow.config.resources.map { it.provider },
+        )
+        assertEquals(emptyList(), workflow.configWarnings)
+    }
+
+    @Test
+    fun `m4-27 preflight refuses a provider map it cannot read`() {
+        assertEquals("resources[0].provider must be a map", resourcesError("  - { kind: avd, id: pixel, provider: [a] }\n"))
+        assertEquals(
+            "resources[0].provider.runtime must be a string",
+            resourcesError("  - { kind: avd, id: pixel, provider: { runtime: [a] } }\n"),
+        )
+    }
+
+    @Test
     fun `m4-24 resource plugins that could not be found fail the load with the reason, and a loader without a check sees no provider`() {
         val failing =
             WorkflowLoader(env = emptyMap(), resourceCheck = { Result.failure(IllegalStateException("cannot load the resource plugins")) })
