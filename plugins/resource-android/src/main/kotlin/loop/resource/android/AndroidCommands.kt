@@ -39,7 +39,17 @@ internal class AndroidCommands(
         val out = Files.createTempFile(scratch, "adb-", ".out")
         try {
             val process = start(listOf(program.toString()) + args, out.toFile(), "adb", args)
-            if (!process.waitFor(timeout.inWholeMilliseconds, TimeUnit.MILLISECONDS)) {
+            val ended =
+                try {
+                    process.waitFor(timeout.inWholeMilliseconds, TimeUnit.MILLISECONDS)
+                } catch (e: InterruptedException) {
+                    // Loop interrupts a call past its own timeout (bl-208): the adb child goes, the interrupt stays set.
+                    process.descendants().forEach { it.destroyForcibly() }
+                    process.destroyForcibly()
+                    Thread.currentThread().interrupt()
+                    throw ResourceException("${display("adb", args)} was interrupted", e)
+                }
+            if (!ended) {
                 process.descendants().forEach { it.destroyForcibly() }
                 process.destroyForcibly()
                 process.waitFor(1, TimeUnit.SECONDS)

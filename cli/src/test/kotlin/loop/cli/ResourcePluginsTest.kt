@@ -1,5 +1,6 @@
 package loop.cli
 
+import loop.api.AttemptId
 import loop.api.ResourceDeclaration
 import loop.api.ResourceHolder
 import loop.api.ResourceProvider
@@ -36,7 +37,7 @@ class ResourcePluginsTest {
         assertEquals(false, plugins.serves("display").getOrThrow())
         assertEquals(
             mapOf("serial" to "fake-pixel"),
-            plugins.provider("fake-device")!!.prepare(ResourceDeclaration("fake-device", "pixel")),
+            plugins.provider("fake-device")!!.prepare(ResourceDeclaration("fake-device", "pixel"), AttemptId("a1")),
         )
     }
 
@@ -107,7 +108,10 @@ class ResourcePluginsTest {
 class FakeResourceProvider : ResourceProvider {
     override val kinds: Set<String> = setOf("fake-device", "fake-emulator")
 
-    override fun prepare(resource: ResourceDeclaration): Map<String, String> {
+    override fun prepare(
+        resource: ResourceDeclaration,
+        attemptId: AttemptId,
+    ): Map<String, String> {
         calls += Call("prepare", resource.id, ProcessHandle.current().pid())
         return mapOf("serial" to "fake-${resource.id}")
     }

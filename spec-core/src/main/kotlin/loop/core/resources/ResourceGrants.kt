@@ -1,12 +1,20 @@
 package loop.core.resources
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.future.await
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import loop.api.AttemptId
 import loop.api.DirtyResource
 import loop.api.ProjectId
@@ -16,7 +24,13 @@ import loop.api.ResourceLock
 import loop.api.ResourceProvider
 import loop.core.events.ResourceCheckFailed
 import loop.core.events.ResourceReleased
+import java.util.Collections
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Clock
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -33,7 +47,7 @@ import kotlin.time.TimeSource
  * where the holder's next `request_resource` call reads it. [endAttempt] runs the provider's `release` before the free
  * at the end of an attempt. A provider gets the entry of [declarations], the current `resources:` of the workflow, or
  * its kind and id alone when a reload removed it. A provider that fails goes to [failed] and the free goes on.
- * Locks of other projects are their own runs' to prepare. One call at a time.
+ * Locks of other projects are their own runs' to prepare.
  *
  * Since bl-204 a tick also frees as abandoned the rows of every other project that [live] says has no live run, so a
  * killed run never keeps a resource from the others, and frees again the rows of each attempt whose free at its end
@@ -46,6 +60,14 @@ import kotlin.time.TimeSource
  * resource some request waits for is checked again on a tick, under the lock of a recheck holder, at most once per
  * [recheckEvery], and a pass clears the mark. [withCheckResource] lends a resource of a kind to a check of the
  * verification or of the merge check.
+ *
+ * Since bl-208 no provider call holds the others up. Each call runs on a thread of its own with a timeout of
+ * [providerTimeout], whose thread is interrupted and left behind when it passes, and the call fails. The prepares and
+ * the releases of a [tick], and its rechecks, run in the background, so a tick never waits on a provider: one call at a
+ * time per lock, and a call still running on a lock is not started again. The end of an attempt and a check wait only
+ * for the calls in flight on their own locks. A provider error, even an [Error] such as a [LinkageError], is the failure
+ * of its call, never of the run. A lock whose prepare ran is released at its end even when the outcome was never
+ * written, and a prepare that ends after its lock was freed is released at once.
  */
 class ResourceGrants(
     private val projectId: ProjectId,
@@ -56,58 +78,141 @@ class ResourceGrants(
     private val commands: ResourceCommands = ResourceCommands.NONE,
     private val recheckEvery: Duration = DIRTY_RECHECK_EVERY,
     private val clock: Clock = Clock.System,
+    private val providerTimeout: Duration = PROVIDER_TIMEOUT,
     private val failed: (ResourceLock, String) -> Unit = { _, _ -> },
 ) {
     private val providers: Map<String, ResourceProvider> = providers.flatMap { provider -> provider.kinds.map { it to provider } }.toMap()
 
-    private val mutex = Mutex()
+    /**
+     * One mutex per lock, by attempt, kind and resource id, and per recheck of a resource: the provider calls on one
+     * lock never overlap, and a tick skips a lock whose mutex is taken (bl-208).
+     */
+    private val guards: MutableMap<LockKey, Mutex> = ConcurrentHashMap()
+
+    /** The background calls of the ticks (bl-208), which [idle] waits for. */
+    private val background = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val running: MutableSet<Job> = ConcurrentHashMap.newKeySet()
+
+    /** The failure of a background recheck, given as the failure of the next tick. */
+    private val recheckFailure = AtomicReference<Throwable?>(null)
 
     /** The attempts whose free at their end failed, with its reason, freed again on the next tick (bl-204). */
-    private val unfreed = mutableMapOf<AttemptId, String>()
+    private val unfreed: MutableMap<AttemptId, String> = ConcurrentHashMap()
 
     /**
      * The locks, by attempt, kind and resource id, whose provider `release` and own check ran already, with the dirty
-     * mark the check gave, so a free tried again never releases twice (bl-204).
+     * mark the check gave, so a free tried again never releases twice (bl-204). Null marks are values, hence a
+     * synchronized map rather than a concurrent one.
      */
-    private val givenBack = mutableMapOf<Triple<AttemptId, String, String>, DirtyResource?>()
+    private val givenBack: MutableMap<LockKey, DirtyResource?> = Collections.synchronizedMap(mutableMapOf())
 
     /** The locks whose declared check and restore ran at the end of their attempt, with the dirty mark they gave (m4-26). */
-    private val endChecked = mutableMapOf<Triple<AttemptId, String, String>, DirtyResource?>()
+    private val endChecked: MutableMap<LockKey, DirtyResource?> = Collections.synchronizedMap(mutableMapOf())
+
+    /** The locks whose provider `prepare` ran in this process, released at the end even with no outcome written (bl-208). */
+    private val prepareRan: MutableSet<LockKey> = ConcurrentHashMap.newKeySet()
 
     /** When the recheck of each dirty resource, by kind and id, last ended (m4-26). */
-    private val rechecked = mutableMapOf<Pair<String, String>, TimeSource.Monotonic.ValueTimeMark>()
+    private val rechecked: MutableMap<Pair<String, String>, TimeSource.Monotonic.ValueTimeMark> = ConcurrentHashMap()
 
     /**
      * One pass over the locks: the abandoned rows of other projects and the frees that failed, then the releases, the
-     * dirty resources someone waits for, and the prepares of the project. A failed read or change of the rows is the
-     * failure; the next tick tries again.
+     * dirty resources someone waits for, and the prepares of the project, these three started in the background
+     * (bl-208). A failed read or change of the rows is the failure, and so is a failed recheck of an earlier tick; the
+     * next tick tries again.
      */
-    suspend fun tick(): Result<Unit> =
-        mutex.withLock {
-            locks.freeAbandoned(projectId, live).onFailure { return@withLock Result.failure(it) }
-            for ((attemptId, reason) in unfreed.toMap()) {
-                free(attemptId, reason).onFailure { return@withLock Result.failure(it) }
-            }
-            val released = mine().getOrElse { return@withLock Result.failure(it) }.filter { it.releaseRequestedAt != null }
-            for (lock in released) {
-                val dirty = giveBackOnce(lock)
-                locks
-                    .release(lock.attemptId, lock.kind, lock.resourceId, dirty)
-                    .onSuccess { givenBack -= lock.key }
-                    .onFailure { failed(lock, "cannot free: ${it.describe()}") }
-            }
-            recheckDirty().onFailure { return@withLock Result.failure(it) }
-            val unprepared =
-                mine().getOrElse { return@withLock Result.failure(it) }.filter {
-                    it.releaseRequestedAt == null &&
-                        it.prepared == null &&
-                        it.prepareError == null &&
-                        it.attemptId !in unfreed &&
-                        !it.attemptId.value.startsWith(RECHECK_HOLDER)
-                }
-            for (lock in unprepared) prepareAndWrite(lock)
-            Result.success(Unit)
+    suspend fun tick(): Result<Unit> {
+        recheckFailure.getAndSet(null)?.let { return Result.failure(it) }
+        locks.freeAbandoned(projectId, live).onFailure { return Result.failure(it) }
+        for ((attemptId, reason) in unfreed.toMap()) {
+            free(attemptId, reason).onFailure { return Result.failure(it) }
         }
+        val released = mine().getOrElse { return Result.failure(it) }.filter { it.releaseRequestedAt != null }
+        for (lock in released) inBackground(lock.key, { failed(lock, it) }) { giveBackAndRelease(lock) }
+        recheckDirty().onFailure { return Result.failure(it) }
+        val unprepared =
+            mine().getOrElse { return Result.failure(it) }.filter {
+                it.releaseRequestedAt == null &&
+                    it.prepared == null &&
+                    it.prepareError == null &&
+                    it.attemptId !in unfreed &&
+                    !it.attemptId.value.startsWith(RECHECK_HOLDER)
+            }
+        for (lock in unprepared) inBackground(lock.key, { failed(lock, it) }) { prepareInBackground(lock) }
+        return Result.success(Unit)
+    }
+
+    /** Waits until no background call of a tick runs (bl-208). */
+    suspend fun idle() {
+        while (running.isNotEmpty()) running.toList().joinAll()
+    }
+
+    /**
+     * Starts [block] in the background under the mutex of [key], unless a call holds it already. A failure [block]
+     * throws goes to [failure].
+     */
+    private fun inBackground(
+        key: LockKey,
+        failure: (String) -> Unit,
+        block: suspend () -> Unit,
+    ) {
+        val guard = guard(key)
+        if (!guard.tryLock()) return
+        val job =
+            background.launch {
+                try {
+                    block()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    failure("the background call failed: ${e.describe()}")
+                } finally {
+                    guard.unlock()
+                }
+            }
+        running += job
+        job.invokeOnCompletion { running -= job }
+    }
+
+    /** The released [lock], given back through its provider and freed, when it is still released and held. */
+    private suspend fun giveBackAndRelease(lock: ResourceLock) {
+        val current = current(lock).getOrElse { return failed(lock, "cannot free: ${it.describe()}") } ?: return
+        if (current.releaseRequestedAt == null) return
+        val dirty = giveBackOnce(current)
+        locks
+            .release(current.attemptId, current.kind, current.resourceId, dirty)
+            .onSuccess { givenBack -= current.key }
+            .onFailure { failed(current, "cannot free: ${it.describe()}") }
+    }
+
+    /**
+     * The prepare of [lock] when it is still held and unprepared. One that ends after its lock was freed, at the end
+     * of its attempt, is released at once, since nobody else would.
+     */
+    private suspend fun prepareInBackground(lock: ResourceLock) {
+        val current = current(lock).getOrElse { return failed(lock, "cannot prepare: ${it.describe()}") } ?: return
+        if (current.releaseRequestedAt != null || current.prepared != null || current.prepareError != null) return
+        prepareAndWrite(current)
+        val after = current(current).getOrElse { return }
+        if (after == null) giveBackOnce(current)
+    }
+
+    /** The row of [lock] as it is now, by attempt, kind and resource id; null when it was freed. */
+    private suspend fun current(lock: ResourceLock): Result<ResourceLock?> =
+        locks.rows().map { rows -> rows.locks.firstOrNull { it.key == lock.key } }
+
+    private fun guard(key: LockKey): Mutex = guards.computeIfAbsent(key) { Mutex() }
+
+    /** Runs [block] under the mutexes of [keys], taken in one order, so two callers never wait on each other. */
+    private suspend fun <T> withGuards(
+        keys: List<LockKey>,
+        block: suspend () -> T,
+    ): T {
+        val sorted = keys.distinct().sortedBy { it.toString() }
+
+        suspend fun under(index: Int): T = if (index == sorted.size) block() else guard(sorted[index]).withLock { under(index + 1) }
+        return under(0)
+    }
 
     /**
      * Frees every lock and queue row of the attempt [attemptId], each freed lock recorded with [reason], after the
@@ -118,7 +223,7 @@ class ResourceGrants(
     suspend fun endAttempt(
         attemptId: AttemptId,
         reason: String,
-    ): Result<ResourceChange> = mutex.withLock { free(attemptId, reason) }
+    ): Result<ResourceChange> = free(attemptId, reason)
 
     /**
      * Runs [block] with a resource of [kind] lent to a check (m4-26) of the issue [issueId], [issueIdentifier]: the
@@ -148,7 +253,7 @@ class ResourceGrants(
         if (ids.isEmpty()) return Result.failure(ResourceException("no entry of resources declares the kind \"$kind\""))
         if (attemptId != null) {
             val kinds = ResourceLimits.poolOf(kind)?.kinds ?: setOf(kind)
-            mutex.withLock { takeBack(attemptId, kinds) }.onFailure { return Result.failure(it) }
+            takeBack(attemptId, kinds).onFailure { return Result.failure(it) }
         }
         val holder = AttemptId("$CHECK_HOLDER${UUID.randomUUID()}")
         var canceled = false
@@ -165,13 +270,13 @@ class ResourceGrants(
                 }
                 delay(poll)
             }
-            val prepared = mutex.withLock { preparedFor(holder, kind) }.getOrElse { return Result.failure(it) }
+            val prepared = preparedFor(holder, kind).getOrElse { return Result.failure(it) }
             return Result.success(block(prepared))
         } catch (e: CancellationException) {
             canceled = true
             throw e
         } finally {
-            withContext(NonCancellable) { mutex.withLock { free(holder, ResourceReleased.RELEASED, declaredCheck = !canceled) } }
+            withContext(NonCancellable) { free(holder, ResourceReleased.RELEASED, declaredCheck = !canceled) }
         }
     }
 
@@ -183,15 +288,27 @@ class ResourceGrants(
         attemptId: AttemptId,
         kinds: Set<String>,
     ): Result<ResourceChange> {
-        val rows = locks.rows().getOrElse { return Result.failure(it) }
-        val held = rows.locks.filter { it.attemptId == attemptId && it.kind in kinds }
-        if (held.isEmpty() && rows.queue.none { it.attemptId == attemptId && it.kind in kinds }) return Result.success(ResourceChange(rows))
-        val marks = held.mapNotNull { lock -> checkAndGiveBack(lock, declaredCheck = true) }
-        return locks.freeKinds(attemptId, kinds, ResourceReleased.CHECK, marks).onSuccess {
-            for (lock in held) {
-                givenBack -= lock.key
-                endChecked -= lock.key
+        val before = locks.rows().getOrElse { return Result.failure(it) }
+        val keys = before.locks.filter { it.attemptId == attemptId && it.kind in kinds }.map { it.key }
+        return withGuards(keys) {
+            // Read again under the mutexes: a prepare in flight may have written its outcome since.
+            val rows = locks.rows().getOrElse { return@withGuards Result.failure(it) }
+            val held = rows.locks.filter { it.attemptId == attemptId && it.kind in kinds }
+            if (held.isEmpty() && rows.queue.none { it.attemptId == attemptId && it.kind in kinds }) {
+                return@withGuards Result.success(ResourceChange(rows))
             }
+            val marks = held.mapNotNull { lock -> checkAndGiveBack(lock, declaredCheck = true) }
+            locks.freeKinds(attemptId, kinds, ResourceReleased.CHECK, marks).onSuccess { forget(held.map { it.key }) }
+        }
+    }
+
+    /** Drops what is kept of the locks of [keys], once freed. */
+    private fun forget(keys: List<LockKey>) {
+        for (key in keys) {
+            givenBack -= key
+            endChecked -= key
+            prepareRan -= key
+            guards -= key
         }
     }
 
@@ -200,19 +317,20 @@ class ResourceGrants(
         holder: AttemptId,
         kind: String,
     ): Result<Map<String, String>> {
-        val lock =
-            locks
-                .rows()
-                .getOrElse { return Result.failure(it) }
-                .locks
-                .firstOrNull { it.attemptId == holder && it.kind == kind }
-                ?: return Result.failure(ResourceException("the lock of the check was freed"))
-        lock.prepared?.let { return Result.success(it) }
-        lock.prepareError?.let { return Result.failure(ResourceException("cannot prepare ${lock.resourceId}: $it")) }
-        return prepareAndWrite(lock).fold(
-            { Result.success(it) },
-            { Result.failure(ResourceException("cannot prepare ${lock.resourceId}: ${it.describe()}")) },
-        )
+        fun Result<ResourceLock?>.orFreed(): Result<ResourceLock> =
+            mapCatching { it ?: throw ResourceException("the lock of the check was freed") }
+        val found = locks.rows().map { rows -> rows.locks.firstOrNull { it.attemptId == holder && it.kind == kind } }
+        val granted = found.orFreed().getOrElse { return Result.failure(it) }
+        // Under the mutex of the lock, so a prepare a tick started is waited for, never run twice.
+        return guard(granted.key).withLock {
+            val lock = current(granted).orFreed().getOrElse { return@withLock Result.failure(it) }
+            lock.prepared?.let { return@withLock Result.success(it) }
+            lock.prepareError?.let { return@withLock Result.failure(ResourceException("cannot prepare ${lock.resourceId}: $it")) }
+            prepareAndWrite(lock).fold(
+                { Result.success(it) },
+                { Result.failure(ResourceException("cannot prepare ${lock.resourceId}: ${it.describe()}")) },
+            )
+        }
     }
 
     private suspend fun prepareAndWrite(lock: ResourceLock): Result<Map<String, String>> {
@@ -223,8 +341,8 @@ class ResourceGrants(
     }
 
     /**
-     * Checks again each dirty resource the workflow declares and some request waits for, once per [recheckEvery] after
-     * the last recheck ended.
+     * Starts in the background a recheck of each dirty resource the workflow declares and some request waits for, once
+     * per [recheckEvery] after the last recheck ended, and never two of one resource at a time.
      */
     private suspend fun recheckDirty(): Result<Unit> {
         val rows = locks.rows().getOrElse { return Result.failure(it) }
@@ -238,9 +356,12 @@ class ResourceGrants(
             val declaration = declarations().firstOrNull { it.kind == mark.kind && it.id == mark.resourceId } ?: continue
             val last = rechecked[key]
             if (last != null && last.elapsedNow() < recheckEvery) continue
-            val outcome = recheck(declaration)
-            rechecked[key] = TimeSource.Monotonic.markNow()
-            outcome.onFailure { return Result.failure(it) }
+            val failure = { reason: String -> recheckFailure.compareAndSet(null, ResourceException(reason)) }
+            inBackground(LockKey(AttemptId(RECHECK_HOLDER), mark.kind, mark.resourceId), { failure(it) }) {
+                val outcome = recheck(declaration)
+                rechecked[key] = TimeSource.Monotonic.markNow()
+                outcome.onFailure { recheckFailure.compareAndSet(null, it) }
+            }
         }
         return Result.success(Unit)
     }
@@ -256,7 +377,7 @@ class ResourceGrants(
     private suspend fun recheck(resource: ResourceDeclaration): Result<Unit> {
         val holder = AttemptId("$RECHECK_HOLDER${UUID.randomUUID()}")
         val grant = locks.request(projectId, "", "", holder, resource.kind, resource.id).getOrElse { return Result.failure(it) }
-        val passed = grant is ResourceGrant.Granted && fullCheck(resource) == null
+        val passed = grant is ResourceGrant.Granted && fullCheck(resource, holder) == null
         return locks
             .endRecheck(holder, resource.kind, resource.id, passed)
             .onFailure { unfreed[holder] = ResourceReleased.RELEASED }
@@ -264,13 +385,16 @@ class ResourceGrants(
     }
 
     /** The whole check of a resource no holder uses: the difference it found, null when it came back as lent. */
-    private suspend fun fullCheck(resource: ResourceDeclaration): String? {
+    private suspend fun fullCheck(
+        resource: ResourceDeclaration,
+        holder: AttemptId,
+    ): String? {
         val provider = providers[resource.kind]
         val prepared =
             when (provider) {
                 null -> emptyMap()
                 else ->
-                    guarded { provider.prepare(resource) }.getOrElse { error ->
+                    guarded { provider.prepare(resource, holder) }.getOrElse { error ->
                         // A failed prepare may have started something, so it is released like a lock's (giveBack).
                         guarded { provider.release(resource) }
                         return "prepare failed: ${error.describe()}"
@@ -285,26 +409,36 @@ class ResourceGrants(
 
     /**
      * Checks each lock of [attemptId], gives it back and frees its rows with the dirty marks the checks gave, or keeps
-     * the attempt for the next tick.
+     * the attempt for the next tick. It holds the mutexes of the attempt's locks throughout, so it waits for a call in
+     * flight on them and no tick starts a prepare on them meanwhile (bl-208).
      */
     private suspend fun free(
         attemptId: AttemptId,
         reason: String,
         declaredCheck: Boolean = true,
     ): Result<ResourceChange> {
-        val rows =
+        val before =
             locks.rows().getOrElse { error ->
                 unfreed[attemptId] = reason
                 return Result.failure(error)
             }
-        val marks = rows.locks.filter { it.attemptId == attemptId }.mapNotNull { lock -> checkAndGiveBack(lock, declaredCheck) }
-        return locks
-            .freeAttempt(attemptId, reason, marks)
-            .onSuccess {
-                unfreed -= attemptId
-                givenBack.keys.removeAll { it.first == attemptId }
-                endChecked.keys.removeAll { it.first == attemptId }
-            }.onFailure { unfreed[attemptId] = reason }
+        val keys = before.locks.filter { it.attemptId == attemptId }.map { it.key }
+        return withGuards(keys) {
+            // Read again under the mutexes: a prepare in flight may have written its outcome since.
+            val rows =
+                locks.rows().getOrElse { error ->
+                    unfreed[attemptId] = reason
+                    return@withGuards Result.failure(error)
+                }
+            val held = rows.locks.filter { it.attemptId == attemptId }
+            val marks = held.mapNotNull { lock -> checkAndGiveBack(lock, declaredCheck) }
+            locks
+                .freeAttempt(attemptId, reason, marks)
+                .onSuccess {
+                    unfreed -= attemptId
+                    forget((keys + held.map { it.key }).distinct())
+                }.onFailure { unfreed[attemptId] = reason }
+        }
     }
 
     /**
@@ -344,16 +478,24 @@ class ResourceGrants(
 
     /**
      * Runs [giveBack] for [lock] unless it ran already for the same holder and resource, and returns the dirty mark of
-     * the provider's check after it; an unprepared lock has none.
+     * the provider's check after it; a lock never prepared has none. A lock whose prepare ran in this process counts as
+     * prepared even when its outcome was never written (bl-208).
      */
     private suspend fun giveBackOnce(lock: ResourceLock): DirtyResource? {
-        if (lock.prepared == null && lock.prepareError == null) return null
+        if (lock.prepared == null && lock.prepareError == null && lock.key !in prepareRan) return null
         // A null mark is a value too, so getOrPut, which runs again on null, would release twice.
         if (lock.key !in givenBack) givenBack[lock.key] = giveBack(lock)
         return givenBack[lock.key]
     }
 
-    private val ResourceLock.key: Triple<AttemptId, String, String> get() = Triple(attemptId, kind, resourceId)
+    private val ResourceLock.key: LockKey get() = LockKey(attemptId, kind, resourceId)
+
+    /** A lock by its holder, kind and resource id. */
+    private data class LockKey(
+        val attemptId: AttemptId,
+        val kind: String,
+        val resourceId: String,
+    )
 
     /**
      * Runs the provider's `release` of [lock], even when its prepare failed, since it may have started something, then
@@ -372,25 +514,67 @@ class ResourceGrants(
 
     private suspend fun prepare(lock: ResourceLock): Result<Map<String, String>> {
         val provider = providers[lock.kind] ?: return Result.success(emptyMap())
-        return guarded { provider.prepare(declaration(lock)) }
+        prepareRan += lock.key
+        return guarded { provider.prepare(declaration(lock), lock.attemptId) }
     }
 
     private fun declaration(lock: ResourceLock): ResourceDeclaration =
         declarations().firstOrNull { it.kind == lock.kind && it.id == lock.resourceId } ?: ResourceDeclaration(lock.kind, lock.resourceId)
 
-    /** Runs a provider call, which blocks, off the caller's thread; any exception but a cancellation is the failure. */
-    private suspend fun <T> guarded(call: () -> T): Result<T> =
-        try {
-            Result.success(withContext(Dispatchers.IO) { call() })
+    /**
+     * Runs a provider call, which blocks, on a thread of its own, for at most [providerTimeout] (bl-208): past it, or
+     * when the caller is canceled, the thread is interrupted and left to end on its own. Anything the call throws but a
+     * cancellation is the failure, an [Error] too, so a broken provider jar never ends the run.
+     */
+    private suspend fun <T> guarded(call: () -> T): Result<T> {
+        val call = InterruptibleCall(call)
+        val future = CompletableFuture.supplyAsync(call::run, PROVIDER_CALLS)
+        return try {
+            // On the default dispatcher, so the timeout counts real time even under a test scheduler.
+            Result.success(withContext(Dispatchers.Default) { withTimeout(providerTimeout) { future.await() } })
+        } catch (e: TimeoutCancellationException) {
+            call.interrupt()
+            Result.failure(ResourceException("the provider did not answer in $providerTimeout"))
         } catch (e: CancellationException) {
+            call.interrupt()
             throw e
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Result.failure(e)
         }
+    }
+
+    /** A provider call that can be interrupted while it runs, and only then, so a later call on its thread never is. */
+    private class InterruptibleCall<T>(
+        private val call: () -> T,
+    ) {
+        private val lock = Any()
+        private var thread: Thread? = null
+
+        fun run(): T {
+            synchronized(lock) { thread = Thread.currentThread() }
+            try {
+                return call()
+            } finally {
+                synchronized(lock) {
+                    thread = null
+                    Thread.interrupted()
+                }
+            }
+        }
+
+        fun interrupt() = synchronized(lock) { thread?.interrupt() }
+    }
 
     private fun Throwable.describe(): String = message ?: this::class.simpleName ?: "unknown error"
 
     companion object {
+        /** How long a provider `prepare`, `release` or read only check may run before it fails (bl-208). */
+        val PROVIDER_TIMEOUT: Duration = 10.minutes
+
+        /** The threads of the provider calls: daemons, so a call that never ends never keeps the JVM up (bl-208). */
+        private val PROVIDER_CALLS: ExecutorService =
+            Executors.newCachedThreadPool { runnable -> Thread(runnable, "loop-resource-provider").apply { isDaemon = true } }
+
         /** How often a dirty resource some request waits for is checked again (m4-26). */
         val DIRTY_RECHECK_EVERY: Duration = 10.seconds
 

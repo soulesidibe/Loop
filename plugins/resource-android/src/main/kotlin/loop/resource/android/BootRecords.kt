@@ -17,13 +17,15 @@ import kotlin.io.path.outputStream
 
 /**
  * One emulator the provider booted (m4-28): the [avd] it runs on [serial], `emulator-<port>`, the [pid] of the
- * `emulator` process, 0 until it started, and the [owner], the process of Loop that booted it.
+ * `emulator` process, 0 until it started, the [owner], the process of Loop that booted it, and the [attempt] whose
+ * prepare booted it (bl-208), empty in a record written before.
  */
 internal data class BootRecord(
     val avd: String,
     val serial: String,
     val pid: Long,
     val owner: String,
+    val attempt: String = "",
 )
 
 /**
@@ -49,6 +51,7 @@ internal class BootRecords(
                 setProperty("serial", record.serial)
                 setProperty("pid", record.pid.toString())
                 setProperty("owner", record.owner)
+                setProperty("attempt", record.attempt)
             }
         val temp = Files.createTempFile(booted, "record-", ".tmp")
         temp.outputStream().use { properties.store(it, null) }
@@ -67,8 +70,8 @@ internal class BootRecords(
             }
         }
 
-    /** The file of [avd]: its name with every character but letters, digits, dot, dash and underscore made an underscore. */
-    private fun file(avd: String): Path = booted.resolve(avd.replace(Regex("[^A-Za-z0-9._-]"), "_") + ".properties")
+    /** The file of [avd]: its name made safe for a file name. */
+    private fun file(avd: String): Path = booted.resolve(safeName(avd) + ".properties")
 
     private fun read(file: Path): BootRecord? =
         runCatching {
@@ -78,11 +81,15 @@ internal class BootRecords(
                 serial = properties.getProperty("serial") ?: return null,
                 pid = properties.getProperty("pid")?.toLongOrNull() ?: 0,
                 owner = properties.getProperty("owner").orEmpty(),
+                attempt = properties.getProperty("attempt").orEmpty(),
             )
         }.getOrNull()
 
-    private companion object {
+    companion object {
         /** A file lock is held per process, so the threads of one process take this lock first. */
-        val THREADS = ReentrantLock()
+        private val THREADS = ReentrantLock()
+
+        /** [name] with every character but letters, digits, dot, dash and underscore made an underscore. */
+        fun safeName(name: String): String = name.replace(Regex("[^A-Za-z0-9._-]"), "_")
     }
 }

@@ -1,5 +1,6 @@
 package loop.resource.android
 
+import loop.api.AttemptId
 import loop.api.ResourceDeclaration
 import loop.api.ResourceException
 import loop.api.ResourceHolder
@@ -35,7 +36,9 @@ internal data class AndroidTimeouts(
  * [prepare] grants a connected device by its serial, checked with `adb devices`. For an AVD it grants an emulator of
  * that AVD already connected, else boots one, `emulator -avd <name> -no-snapshot-save -port <port>` in the background
  * as a child of `loop run`, on the first free even port from 5554, waits for `adb wait-for-device` and
- * `sys.boot_completed`, and grants `emulator-<port>`. [release] stops an emulator it booted with `adb -s <serial> emu
+ * `sys.boot_completed`, and grants `emulator-<port>`. The attempt that holds the lock is written on the record of the
+ * boot and names its log (bl-208). A prepare run again for the same attempt waits for the emulator the first one booted
+ * when it still runs, and stops what is left of it when not, so it is idempotent. [release] stops an emulator it booted with `adb -s <serial> emu
  * kill`, and leaves a real device, or an emulator started outside Loop, as it is. [readOnlyCheck] confirms an emulator
  * it booted is gone. [recover] stops each emulator it booted whose AVD no live lock holds and whose booting process of
  * Loop is dead, and never touches a real device.
@@ -69,17 +72,20 @@ class AndroidResourceProvider internal constructor(
     private val records = BootRecords(stateDir)
     private val logs = stateDir.resolve("logs")
 
-    /** The emulator processes this provider started, by AVD, so one that exits before it booted is seen. */
-    private val started = ConcurrentHashMap<String, Process>()
+    /** The emulators this provider started, by AVD, so one that exits before it booted is seen. */
+    private val started = ConcurrentHashMap<String, Started>()
 
     override val kinds: Set<String> = setOf(DEVICE, AVD)
 
-    override fun prepare(resource: ResourceDeclaration): Map<String, String> =
+    override fun prepare(
+        resource: ResourceDeclaration,
+        attemptId: AttemptId,
+    ): Map<String, String> =
         named(resource) {
             val serial =
                 when (resource.kind) {
                     DEVICE -> prepareDevice(resource.id)
-                    else -> prepareAvd(resource.id)
+                    else -> prepareAvd(resource.id, attemptId.value)
                 }
             mapOf(SERIAL to serial)
         }
@@ -127,7 +133,10 @@ class AndroidResourceProvider internal constructor(
         return serial
     }
 
-    private fun prepareAvd(avd: String): String {
+    private fun prepareAvd(
+        avd: String,
+        attempt: String,
+    ): String {
         val devices = devices()
         val emulators = devices.filter { (serial, state) -> state == READY && serial.startsWith(EMULATOR_PREFIX) }.keys
         val running = emulators.firstOrNull { avdName(it) == avd }
@@ -135,20 +144,30 @@ class AndroidResourceProvider internal constructor(
             waitBooted(running, TimeSource.Monotonic.markNow() + timeouts.boot, emulator = null)
             return running
         }
+        val record = records.of(avd)
+        // A prepare of the same attempt whose outcome was lost booted it, and it still runs: wait for that boot (bl-208).
+        val mine = started[avd]?.takeIf { record != null && record.attempt == attempt && record.owner == owner && it.process.isAlive }
+        if (record != null && mine != null) {
+            waitOrStop(avd, record.serial, mine)
+            return record.serial
+        }
         // A record whose emulator no longer runs the AVD is stale: stop what is left of it before booting again.
-        records.of(avd)?.let(::stop)
-        return boot(avd)
+        record?.let(::stop)
+        return boot(avd, attempt)
     }
 
-    /** Boots [avd] on a free port and waits for it; a boot that fails stops the emulator before throwing. */
-    private fun boot(avd: String): String {
+    /** Boots [avd] for [attempt] on a free port and waits for it; a boot that fails stops the emulator before throwing. */
+    private fun boot(
+        avd: String,
+        attempt: String,
+    ): String {
         val (serial, emulator) =
             records.exclusive {
                 val port = freePort(devices())
                 val serial = "$EMULATOR_PREFIX$port"
-                records.write(BootRecord(avd, serial, pid = 0, owner = owner))
+                records.write(BootRecord(avd, serial, pid = 0, owner = owner, attempt = attempt))
                 val args = emulatorArgs(avd, port)
-                val log = logs.resolve("$serial.log")
+                val log = logs.resolve("$serial-${BootRecords.safeName(attempt)}.log")
                 val process =
                     try {
                         Files.createDirectories(logs)
@@ -157,17 +176,27 @@ class AndroidResourceProvider internal constructor(
                         records.delete(avd)
                         throw e
                     }
-                records.write(BootRecord(avd, serial, pid = process.pid(), owner = owner))
-                started[avd] = process
-                serial to Started(process, args, log)
+                records.write(BootRecord(avd, serial, pid = process.pid(), owner = owner, attempt = attempt))
+                val emulator = Started(process, args, log)
+                started[avd] = emulator
+                serial to emulator
             }
+        waitOrStop(avd, serial, emulator)
+        return serial
+    }
+
+    /** Waits for the boot of [emulator] on [serial]; one that fails stops the emulator of [avd] before throwing. */
+    private fun waitOrStop(
+        avd: String,
+        serial: String,
+        emulator: Started,
+    ) {
         try {
             waitBooted(serial, TimeSource.Monotonic.markNow() + timeouts.boot, emulator)
         } catch (e: ResourceException) {
             records.of(avd)?.let { record -> runCatching { stop(record) }.exceptionOrNull()?.let(e::addSuppressed) }
             throw e
         }
-        return serial
     }
 
     /** An emulator this provider started: its process, its arguments and its log, to name it when it exits early. */
@@ -252,7 +281,7 @@ class AndroidResourceProvider internal constructor(
      */
     private fun stop(record: BootRecord): Boolean {
         if (!runs(record, devices())) {
-            started.remove(record.avd)?.let(::kill)
+            started.remove(record.avd)?.let { kill(it.process) }
             records.delete(record.avd)
             return true
         }
@@ -265,7 +294,8 @@ class AndroidResourceProvider internal constructor(
             }
         var gone = failure == null && awaitGone(record.serial)
         if (!gone) {
-            val process = started[record.avd]?.toHandle() ?: record.pid.takeIf { it > 0 }?.let { ProcessHandle.of(it).orElse(null) }
+            val process =
+                started[record.avd]?.process?.toHandle() ?: record.pid.takeIf { it > 0 }?.let { ProcessHandle.of(it).orElse(null) }
             process?.let(::kill)
             gone = awaitGone(record.serial)
         }

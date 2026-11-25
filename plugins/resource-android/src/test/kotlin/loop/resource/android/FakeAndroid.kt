@@ -79,6 +79,11 @@ class FakeAndroid(
         connect(serial)
     }
 
+    /** Sets the `sys.boot_completed` of the emulator on [serial] to 1, as a boot that completes. */
+    fun bootCompleted(serial: String) {
+        boot.resolve(serial).writeText("1\n")
+    }
+
     fun connected(serial: String): Boolean = devices.resolve(serial).exists()
 
     /** The serials of the emulators of [avd] connected now, read from the files, never through a provider. */

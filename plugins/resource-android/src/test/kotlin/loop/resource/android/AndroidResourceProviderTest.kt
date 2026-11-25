@@ -1,5 +1,6 @@
 package loop.resource.android
 
+import loop.api.AttemptId
 import loop.api.ProjectId
 import loop.api.ResourceDeclaration
 import loop.api.ResourceException
@@ -9,6 +10,8 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
 import java.util.ServiceLoader
+import kotlin.io.path.exists
+import kotlin.io.path.readText
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -38,7 +41,7 @@ class AndroidResourceProviderTest {
     fun `a connected device is granted by its serial and no emulator starts`() {
         android.connect("R58M123")
 
-        val prepared = android.provider().prepare(DEVICE)
+        val prepared = android.provider().prepare(DEVICE, ATTEMPT)
 
         assertEquals(mapOf("serial" to "R58M123"), prepared)
         assertEquals(listOf("adb devices"), android.calls())
@@ -46,9 +49,9 @@ class AndroidResourceProviderTest {
 
     @Test
     fun `a device that is not connected, or connected but not ready, is refused naming its serial`() {
-        val absent = assertFailsWith<ResourceException> { android.provider().prepare(DEVICE) }
+        val absent = assertFailsWith<ResourceException> { android.provider().prepare(DEVICE, ATTEMPT) }
         android.connect("R58M123", state = "unauthorized")
-        val unauthorized = assertFailsWith<ResourceException> { android.provider().prepare(DEVICE) }
+        val unauthorized = assertFailsWith<ResourceException> { android.provider().prepare(DEVICE, ATTEMPT) }
 
         assertEquals("android-device R58M123: the device is not connected, adb devices lists none", absent.message)
         assertEquals("android-device R58M123: the device is unauthorized, not ready", unauthorized.message)
@@ -59,7 +62,7 @@ class AndroidResourceProviderTest {
     fun `releasing a device leaves it connected and its read only check passes`() {
         android.connect("R58M123")
         val provider = android.provider()
-        provider.prepare(DEVICE)
+        provider.prepare(DEVICE, ATTEMPT)
 
         provider.release(DEVICE)
 
@@ -74,7 +77,7 @@ class AndroidResourceProviderTest {
         android.runningEmulator("emulator-5554", "other_avd")
         val provider = android.provider()
 
-        val prepared = provider.prepare(AVD)
+        val prepared = provider.prepare(AVD, ATTEMPT)
 
         assertEquals(mapOf("serial" to "emulator-5556"), prepared)
         assertEquals(listOf("emulator-5556"), android.emulatorsOf("pixel_api35"))
@@ -100,7 +103,7 @@ class AndroidResourceProviderTest {
         android.runningEmulator("emulator-5560", "pixel_api35")
         val provider = android.provider()
 
-        val prepared = provider.prepare(AVD)
+        val prepared = provider.prepare(AVD, ATTEMPT)
         provider.release(AVD)
 
         assertEquals(mapOf("serial" to "emulator-5560"), prepared)
@@ -112,8 +115,8 @@ class AndroidResourceProviderTest {
     @Test
     fun `recover stops an emulator Loop booted for an attempt with no live lock and leaves a real device alone`() {
         android.connect("R58M123")
-        android.provider().prepare(AVD)
-        android.provider().prepare(DEVICE)
+        android.provider().prepare(AVD, ATTEMPT)
+        android.provider().prepare(DEVICE, ATTEMPT)
 
         android.provider().recover(listOf(ResourceHolder(PROJECT, "android-device", "R58M123", "attempt-2")))
 
@@ -125,7 +128,7 @@ class AndroidResourceProviderTest {
 
     @Test
     fun `recover leaves an emulator whose avd a live lock holds, and one whose booting run is alive`() {
-        android.provider().prepare(AVD)
+        android.provider().prepare(AVD, ATTEMPT)
 
         android.provider().recover(listOf(ResourceHolder(PROJECT, "avd", "pixel_api35", "attempt-1")))
         val alive =
@@ -155,7 +158,7 @@ class AndroidResourceProviderTest {
         android.flag("boot-never")
         val provider = android.provider(boot = 1.seconds)
 
-        val failure = assertFailsWith<ResourceException> { provider.prepare(AVD) }
+        val failure = assertFailsWith<ResourceException> { provider.prepare(AVD, ATTEMPT) }
 
         assertEquals(
             "avd pixel_api35: emulator-5554 did not boot in 1s, the last sys.boot_completed read was \"0\"",
@@ -170,7 +173,7 @@ class AndroidResourceProviderTest {
     fun `a failing adb call fails with the command and its exit code`() {
         android.flag("fail-devices", "7")
 
-        val failure = assertFailsWith<ResourceException> { android.provider().prepare(DEVICE) }
+        val failure = assertFailsWith<ResourceException> { android.provider().prepare(DEVICE, ATTEMPT) }
 
         assertEquals("android-device R58M123: adb devices exited with code 7: error: fake devices failure", failure.message)
     }
@@ -178,7 +181,7 @@ class AndroidResourceProviderTest {
     @Test
     fun `a failing emu kill fails release with the command and its exit code`() {
         val provider = android.provider(stop = 1.seconds)
-        provider.prepare(AVD)
+        provider.prepare(AVD, ATTEMPT)
         android.flag("fail-emu-kill", "4")
 
         val failure = assertFailsWith<ResourceException> { provider.release(AVD) }
@@ -190,7 +193,7 @@ class AndroidResourceProviderTest {
     fun `an emulator that exits before booting fails with its command and exit code`() {
         android.flag("emulator-exit", "1")
 
-        val failure = assertFailsWith<ResourceException> { android.provider().prepare(AVD) }
+        val failure = assertFailsWith<ResourceException> { android.provider().prepare(AVD, ATTEMPT) }
 
         assertEquals(
             "avd pixel_api35: emulator -avd pixel_api35 -no-snapshot-save -port 5554 exited with code 1: " +
@@ -203,7 +206,7 @@ class AndroidResourceProviderTest {
     fun `an adb call that hangs fails after the command timeout naming the command`() {
         android.flag("hang-devices")
 
-        val failure = assertFailsWith<ResourceException> { android.provider(command = 1.seconds).prepare(DEVICE) }
+        val failure = assertFailsWith<ResourceException> { android.provider(command = 1.seconds).prepare(DEVICE, ATTEMPT) }
 
         assertEquals("android-device R58M123: adb devices timed out after 1s", failure.message)
     }
@@ -211,7 +214,7 @@ class AndroidResourceProviderTest {
     @Test
     fun `an emulator left up after release is reported by the read only check`() {
         val provider = android.provider(stop = 1.seconds)
-        provider.prepare(AVD)
+        provider.prepare(AVD, ATTEMPT)
         android.flag("sticky")
 
         provider.release(AVD)
@@ -223,9 +226,43 @@ class AndroidResourceProviderTest {
         assertFalse(android.emulatorsOf("pixel_api35").isEmpty())
     }
 
+    @Test
+    fun `bl-208 the attempt is written on the record of the boot and names the emulator's log`() {
+        android.provider().prepare(AVD, ATTEMPT)
+
+        val record = android.stateDir.resolve("booted/pixel_api35.properties").readText()
+        assertTrue("attempt=attempt-1" in record, record)
+        assertTrue(android.stateDir.resolve("logs/emulator-5554-attempt-1.log").exists(), "the log is named by the attempt")
+    }
+
+    @Test
+    fun `bl-208 a prepare run again for the same attempt after an interrupted boot waits for that emulator, never boots another`() {
+        android.flag("boot-never")
+        val provider = android.provider(boot = 10.seconds)
+        val first = Thread { runCatching { provider.prepare(AVD, ATTEMPT) } }
+        first.start()
+        val deadline = System.currentTimeMillis() + 5_000
+        while (android.calls().none { "getprop" in it } && System.currentTimeMillis() < deadline) Thread.sleep(20)
+        first.interrupt()
+        first.join(5_000)
+        assertFalse(first.isAlive, "the interrupted prepare did not stop")
+        assertEquals(listOf("emulator-5554"), android.emulatorsOf("pixel_api35"), "the emulator of the lost prepare still runs")
+        android.connect("emulator-5554", state = "offline")
+        android.bootCompleted("emulator-5554")
+
+        val again = provider.prepare(AVD, ATTEMPT)
+        provider.release(AVD)
+
+        assertEquals(mapOf("serial" to "emulator-5554"), again)
+        assertEquals(1, android.calls().count { it.startsWith("emulator -avd") }, "${android.calls()}")
+        assertEquals(emptyList(), android.emulatorsOf("pixel_api35"))
+        assertEquals(emptyList(), provider.readOnlyCheck(AVD))
+    }
+
     private companion object {
         val PROJECT = ProjectId("p-1")
         val DEVICE = ResourceDeclaration(kind = "android-device", id = "R58M123")
         val AVD = ResourceDeclaration(kind = "avd", id = "pixel_api35")
+        val ATTEMPT = AttemptId("attempt-1")
     }
 }
