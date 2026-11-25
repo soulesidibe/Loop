@@ -332,7 +332,8 @@ class ResourceGrantsTest {
 
     /**
      * A provider whose calls on the resource [stuck] block until [gate] opens, deaf to interrupts, as a hung provider
-     * would: its `prepare` when [hangOn] is `prepare`, its `release` when it is `release`. [entered] opens once it blocks.
+     * would: its `prepare` when [hangOn] is `prepare`, its `release` when it is `release`. [entered] opens once it blocks,
+     * [interrupted] once an interrupt reached it.
      */
     private class HangingProvider(
         val calls: MutableList<String>,
@@ -341,6 +342,7 @@ class ResourceGrantsTest {
         val gate: CountDownLatch = CountDownLatch(1),
         val entered: CountDownLatch = CountDownLatch(1),
         val deaf: Boolean = true,
+        val interrupted: CountDownLatch = CountDownLatch(1),
     ) : ResourceProvider {
         override val kinds = setOf("ios-simulator")
 
@@ -369,6 +371,7 @@ class ResourceGrantsTest {
                     gate.await()
                     return
                 } catch (e: InterruptedException) {
+                    interrupted.countDown()
                     if (!deaf) throw e
                 }
             }
@@ -436,8 +439,13 @@ class ResourceGrantsTest {
             assertTrue(provider.entered.await(2, TimeUnit.SECONDS), "the prepare started")
 
             val ended = async { grants.endAttempt(AttemptId("a1"), "attempt_ended") }
-            repeat(20) { yield() }
+            // The end of a1 runs until it suspends, then real time passes, so a release started on the provider's thread
+            // without waiting for the prepare would have been recorded.
+            yield()
+            Thread.sleep(500)
+            yield()
             assertFalse(ended.isCompleted, "the end of a1 did not wait for its prepare in flight")
+            assertEquals(listOf("prepare iphone"), calls, "the release started while the prepare was in flight")
             provider.gate.countDown()
             ended.await().getOrThrow()
 
@@ -492,5 +500,66 @@ class ResourceGrantsTest {
 
             assertEquals(AttemptId("a2"), lock("iphone").attemptId)
             assertTrue(warnings.contains("iphone: release failed: loop/Gone"), "$warnings")
+        }
+
+    @Test
+    fun `bl-208 a hung release of a lock its holder released never holds the ticks, and fails after the core timeout`() =
+        runTest {
+            val provider = HangingProvider(calls, hangOn = "release")
+            ask("a1")
+            ask("a2", id = "ipad")
+            val grants = grants(provider, providerTimeout = 2.seconds)
+            grants.pass()
+            locks.requestRelease(AttemptId("a1"), "ios-simulator", "iphone").getOrThrow()
+
+            val started = TimeSource.Monotonic.markNow()
+            grants.tick().getOrThrow()
+            assertTrue(provider.entered.await(2, TimeUnit.SECONDS), "the release of iphone started")
+            grants.tick().getOrThrow()
+            grants.endAttempt(AttemptId("a2"), "attempt_ended").getOrThrow()
+            val waited = started.elapsedNow()
+            grants.idle()
+
+            assertTrue(waited < 1500.milliseconds, "the ticks and the end of a2 waited on the hung release: $waited")
+            assertTrue(warnings.contains("iphone: release failed: the provider did not answer in 2s"), "$warnings")
+            assertEquals(emptyList(), store.rows.locks, "the lock of the hung release is freed after the timeout")
+            provider.gate.countDown()
+        }
+
+    @Test
+    fun `bl-208 a provider Error from the read only check marks the resource dirty and the lock is still freed`() =
+        runTest {
+            val provider =
+                object : ResourceProvider by Provider(calls) {
+                    override fun readOnlyCheck(resource: ResourceDeclaration): List<String> =
+                        throw LinkageError("a class of the provider's check is missing")
+                }
+            ask("a1")
+            val grants = grants(provider)
+            grants.pass()
+
+            grants.endAttempt(AttemptId("a1"), "attempt_ended").getOrThrow()
+
+            assertEquals(listOf("prepare iphone", "release iphone"), calls)
+            assertEquals(emptyList(), store.rows.locks)
+            assertEquals(listOf("the check failed: a class of the provider's check is missing"), store.rows.dirty.map { it.difference })
+        }
+
+    @Test
+    fun `bl-208 close cancels the background calls of the ticks and interrupts the provider call in flight`() =
+        runTest {
+            val provider = HangingProvider(calls, hangOn = "prepare", deaf = false)
+            ask("a1")
+            val grants = grants(provider)
+            grants.tick().getOrThrow()
+            assertTrue(provider.entered.await(2, TimeUnit.SECONDS), "the prepare started")
+
+            grants.close()
+
+            assertTrue(provider.interrupted.await(2, TimeUnit.SECONDS), "the prepare in flight was not interrupted")
+            grants.idle()
+            grants.tick().getOrThrow()
+            grants.idle()
+            assertEquals(listOf("prepare iphone"), calls, "a tick after close started a provider call")
         }
 }

@@ -6,6 +6,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.future.await
@@ -67,7 +69,8 @@ import kotlin.time.TimeSource
  * time per lock, and a call still running on a lock is not started again. The end of an attempt and a check wait only
  * for the calls in flight on their own locks. A provider error, even an [Error] such as a [LinkageError], is the failure
  * of its call, never of the run. A lock whose prepare ran is released at its end even when the outcome was never
- * written, and a prepare that ends after its lock was freed is released at once.
+ * written, and a prepare that ends after its lock was freed is released at once. [close], at the end of `loop run`,
+ * cancels the background calls and interrupts the provider calls in flight.
  */
 class ResourceGrants(
     private val projectId: ProjectId,
@@ -142,6 +145,14 @@ class ResourceGrants(
         return Result.success(Unit)
     }
 
+    /**
+     * Cancels the background calls of the ticks and interrupts the provider calls they run (bl-208), for the end of
+     * `loop run`. A later tick starts no background call; what a canceled call left is for the providers' `recover`.
+     */
+    fun close() {
+        background.cancel()
+    }
+
     /** Waits until no background call of a tick runs (bl-208). */
     suspend fun idle() {
         while (running.isNotEmpty()) running.toList().joinAll()
@@ -156,6 +167,7 @@ class ResourceGrants(
         failure: (String) -> Unit,
         block: suspend () -> Unit,
     ) {
+        if (!background.isActive) return
         val guard = guard(key)
         if (!guard.tryLock()) return
         val job =
