@@ -2,10 +2,12 @@ package loop.cli
 
 import kotlinx.coroutines.runBlocking
 import loop.api.DeliveryError
+import loop.api.RiskReviewError
 import loop.api.RiskReviewRequest
 import loop.core.workflow.WorkflowFile
 import loop.core.workflow.WorkflowLoader
 import loop.runner.claudecode.ClaudeCodeRiskReviewer
+import loop.runner.codex.CodexRiskReviewer
 import loop.tracker.github.GitHubResponse
 import loop.tracker.github.GitHubTransport
 import java.nio.file.Files
@@ -160,6 +162,7 @@ class DeliveryExecutorsTest {
         runner: String,
         runners: String,
         folder: String = "auto",
+        reviewer: String = "claude-sonnet-5-5",
     ): WorkflowFile {
         val file = Files.createDirectories(root.resolve(folder)).resolve("WORKFLOW.md")
         file.writeText(
@@ -176,7 +179,7 @@ class DeliveryExecutorsTest {
             |    delivery:
             |      policy: auto
             |      auto_merge: { enabled: true }
-            |      risk: { reviewer: claude-sonnet-5-5 }
+            |      risk: { reviewer: $reviewer }
             |      pull_request:
             |        repo: acme/widgets
             |        token: ${'$'}LOOP_PR_TOKEN
@@ -276,5 +279,76 @@ class DeliveryExecutorsTest {
                 folder = "pinned",
             )
         assertNull(riskReviewerFor(pinned, mapOf("PATH" to "/usr/bin:/bin"), emptySet()), "an absolute path that does not exist")
+    }
+
+    /** bl-214: a fake `codex` in [dir] that logs its arguments and directory to `codex.log`, then exits 1. */
+    private fun fakeCodex(dir: Path): Path {
+        Files.createDirectories(dir)
+        val log = dir.resolve("codex.log")
+        return dir.resolve("codex").also {
+            it.writeText("#!/bin/sh\n{ echo \"ARGS \$*\"; echo \"PWD \$(pwd)\"; } >> '$log'\nexit 1\n")
+            Files.setPosixFilePermissions(it, PosixFilePermissions.fromString("rwxr-xr-x"))
+        }
+    }
+
+    @Test
+    fun `bl-214 a reviewer model naming a Codex model gets the Codex reviewer, its command found on the host PATH, in the workspace`() =
+        runBlocking {
+            val bin = root.resolve("bin-codex")
+            fakeCodex(bin)
+            val workflow = autoMergeWorkflow("claude-code", "  claude-code:\n    command: claude", reviewer = "gpt-6.1-sol")
+            val host = mapOf("PATH" to "$bin:/usr/bin:/bin", "HOME" to root.toString())
+
+            val reviewer = assertIs<CodexRiskReviewer>(riskReviewerFor(workflow, host, emptySet()))
+            assertEquals(
+                "CodexRiskReviewer(command='${bin.resolve("codex")}' 'app-server')",
+                reviewer.toString(),
+                "the default command codex app-server, with no codex section, its program found on the host PATH",
+            )
+
+            val workspace = Files.createDirectories(root.resolve("workspaces/t-2")).toRealPath()
+            val result = reviewer.review(RiskReviewRequest(workspace, "gpt-6.1-sol", "Review this.", 10_000))
+
+            assertIs<RiskReviewError.Crashed>(result.exceptionOrNull(), "the fake exits before any answer")
+            val logged = bin.resolve("codex.log").readText()
+            assertContains(logged, "ARGS app-server")
+            assertContains(logged, "PWD $workspace")
+        }
+
+    @Test
+    fun `bl-214 under codex-app-server the Codex reviewer takes runners codex command, its other words kept`() {
+        val codex = fakeCodex(root.resolve("pinned-codex"))
+        val workflow =
+            autoMergeWorkflow(
+                "codex-app-server",
+                "  codex:\n    command: \"$codex app-server -c x=y\"",
+                reviewer = "gpt-6.1-sol",
+            )
+
+        val reviewer = riskReviewerFor(workflow, mapOf("PATH" to "/usr/bin:/bin"), emptySet())
+
+        assertEquals("CodexRiskReviewer(command='$codex' 'app-server' '-c' 'x=y')", reviewer.toString())
+    }
+
+    @Test
+    fun `bl-214 a Claude reviewer model keeps the Claude Code reviewer under codex-app-server`() {
+        val claude = fakeClaude(root.resolve("claude-bin"))
+        fakeCodex(root.resolve("claude-bin"))
+        val workflow = autoMergeWorkflow("codex-app-server", "  codex:\n    command: codex app-server")
+
+        val reviewer = riskReviewerFor(workflow, mapOf("PATH" to "${root.resolve("claude-bin")}:/usr/bin:/bin"), emptySet())
+
+        assertEquals("ClaudeCodeRiskReviewer(command=$claude)", reviewer.toString())
+    }
+
+    @Test
+    fun `bl-214 a Codex reviewer whose command cannot be found gives no reviewer, so the gate falls back`() {
+        fakeClaude(root.resolve("only-claude"))
+        val workflow = autoMergeWorkflow("claude-code", "  claude-code:\n    command: claude", reviewer = "gpt-6.1-sol")
+
+        assertNull(
+            riskReviewerFor(workflow, mapOf("PATH" to root.resolve("only-claude").toString()), emptySet()),
+            "codex is not on PATH, and claude does not stand in for it",
+        )
     }
 }

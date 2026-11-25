@@ -26,6 +26,8 @@ import loop.runner.claudecode.ClaudeCodePreflight
 import loop.runner.claudecode.ClaudeCodeRiskReviewer
 import loop.runner.claudecode.ClaudeCodeSettings
 import loop.runner.claudecode.PreflightResult
+import loop.runner.codex.CodexAppServerSettings
+import loop.runner.codex.CodexRiskReviewer
 import loop.tracker.github.GitHubClients
 import loop.tracker.github.GitHubDelivery
 import loop.tracker.github.GitHubTracker
@@ -440,12 +442,13 @@ fun runnerFor(
 }
 
 /**
- * The read only reviewer of the merge risk assessment (m2-28): Claude Code's, with the [riskReviewerCommand], whatever
- * `runner.kind` is (m4-06, bl-145), since the reviewer is a concern apart from the runner that did the work and the
- * workflow names its model in `risk.reviewer`. The command is resolved as [resolveCommand] does, so the reviewer starts
- * exactly the file the startup check found; null when it cannot be found, so the auto merge gate falls back naming the
- * reviewer setup, and the startup warns ([riskReviewerWarning]). Its env is the agent env policy and its settings deny
- * reads under [holdoutDir], like an agent's.
+ * The read only reviewer of the merge risk assessment (m2-28), whatever `runner.kind` is (m4-06, bl-145), since the
+ * reviewer is a concern apart from the runner that did the work: the model the workflow names in `risk.reviewer` picks
+ * its runtime ([RiskReviewerRuntime], bl-214). A Codex model gets Codex's reviewer, with the settings of `runners.codex`
+ * ([codexReviewerSettings]); any other model Claude Code's, with the [riskReviewerCommand]. The program is resolved as
+ * [resolveCommand] does, so the reviewer starts exactly the file the startup check found; null when it cannot be found,
+ * or `runners.codex` cannot be read, so the auto merge gate falls back naming the reviewer setup, and the startup warns
+ * ([riskReviewerWarning]). Its env is the agent env policy and it refuses reads under [holdoutDir], like an agent.
  */
 fun riskReviewerFor(
     workflow: WorkflowFile,
@@ -453,30 +456,75 @@ fun riskReviewerFor(
     removedEnvNames: Set<String>,
     holdoutDir: Path? = null,
 ): RiskReviewer? =
-    resolveCommand(riskReviewerCommand(workflow), hostEnv)?.let { command ->
-        ClaudeCodeRiskReviewer(command, hostEnv, removedEnvNames, holdoutDir)
+    when (riskReviewerRuntime(workflow)) {
+        RiskReviewerRuntime.ClaudeCode ->
+            resolveCommand(riskReviewerCommand(workflow), hostEnv)?.let { command ->
+                ClaudeCodeRiskReviewer(command, hostEnv, removedEnvNames, holdoutDir)
+            }
+        RiskReviewerRuntime.Codex -> {
+            val settings = codexReviewerSettings(workflow, holdoutDir).getOrNull()
+            val argv = settings?.argv
+            argv?.let { resolveCommand(it.first(), hostEnv) }?.let { program ->
+                val command = CodexAppServerSettings.commandOf(listOf(program) + argv.drop(1))
+                CodexRiskReviewer(settings.copy(command = command), hostEnv, removedEnvNames)
+            }
+        }
+    }
+
+/** bl-214: the runtime of the merge risk reviewer of [workflow], from the model of `risk.reviewer`. */
+fun riskReviewerRuntime(workflow: WorkflowFile): RiskReviewerRuntime =
+    RiskReviewerRuntime.of(
+        workflow.config.kinds
+            ?.code
+            ?.delivery
+            ?.risk
+            ?.reviewer,
+    )
+
+/**
+ * bl-214: the settings of the Codex merge risk reviewer, `runners.codex` read as the Codex runner reads it, with
+ * [holdoutDir]: its `command`, `read_timeout_ms` and `strict_mcp` apply, the model and the time limit are the review's.
+ * No section is the defaults, `codex app-server`. A section the Codex runner refuses is a failure with its reason; under
+ * `runner.kind: codex-app-server` the loader already checked it.
+ */
+fun codexReviewerSettings(
+    workflow: WorkflowFile,
+    holdoutDir: Path? = null,
+): Result<CodexAppServerSettings> =
+    runCatching {
+        @Suppress("UNCHECKED_CAST")
+        val section = workflow.runner.sections[CodexAppServerSettings.SECTION] as? Map<String, Any?>
+        CodexAppServerSettings.of(section.orEmpty(), holdoutDir).also { it.argv }
     }
 
 /**
- * The command the merge risk reviewer runs (m4-06): under `runner.kind: claude-code` the command of its section, which
- * the loader checked; under any other runner `runners.claude-code.command` when it is set and not blank, else
- * [DEFAULT_REVIEWER_COMMAND].
+ * The program the merge risk reviewer runs (m4-06, bl-214). For a Claude Code reviewer: under `runner.kind:
+ * claude-code` the command of its section, which the loader checked; under any other runner `runners.claude-code.command`
+ * when it is set and not blank, else [DEFAULT_REVIEWER_COMMAND]. For a Codex reviewer: the first word of the command of
+ * [codexReviewerSettings], or [CodexAppServerSettings.DEFAULT_COMMAND]'s when the section cannot be read.
  */
 fun riskReviewerCommand(workflow: WorkflowFile): String =
-    if (workflow.runner.kind == ClaudeCodeSettings.KIND) {
-        ClaudeCodeSettings.of(workflow.runner.section(ClaudeCodeSettings.KIND)).command
-    } else {
-        (workflow.runner.sections[ClaudeCodeSettings.KIND] as? Map<*, *>)
-            ?.get("command")
-            ?.let { it as? String }
-            ?.takeIf { it.isNotBlank() }
-            ?: DEFAULT_REVIEWER_COMMAND
+    when (riskReviewerRuntime(workflow)) {
+        RiskReviewerRuntime.Codex ->
+            codexReviewerSettings(workflow).getOrNull()?.argv?.first()
+                ?: CodexAppServerSettings.DEFAULT_COMMAND.substringBefore(' ')
+        RiskReviewerRuntime.ClaudeCode ->
+            if (workflow.runner.kind == ClaudeCodeSettings.KIND) {
+                ClaudeCodeSettings.of(workflow.runner.section(ClaudeCodeSettings.KIND)).command
+            } else {
+                (workflow.runner.sections[ClaudeCodeSettings.KIND] as? Map<*, *>)
+                    ?.get("command")
+                    ?.let { it as? String }
+                    ?.takeIf { it.isNotBlank() }
+                    ?: DEFAULT_REVIEWER_COMMAND
+            }
     }
 
 /**
  * m4-06: the startup warning of a workflow whose auto merge gate would run a merge risk reviewer, `policy: auto` with
- * `pull_request.merge` and `risk.reviewer`, while the [riskReviewerCommand] cannot be found: every result would then
- * wait for `loop approve`, for the reviewer setup and not for the result. Null otherwise.
+ * `pull_request.merge` and `risk.reviewer`, while the [riskReviewerCommand] cannot be found, or, for a Codex reviewer
+ * (bl-214), `runners.codex` cannot be read: every result would then wait for `loop approve`, for the reviewer setup and
+ * not for the result. Null otherwise.
  */
 fun riskReviewerWarning(
     workflow: WorkflowFile,
@@ -488,10 +536,22 @@ fun riskReviewerWarning(
             ?.delivery ?: return null
     if (delivery.policy != DeliveryPolicy.Auto || delivery.pullRequest?.merge == null) return null
     val model = delivery.risk.reviewer ?: return null
+    val runtime = riskReviewerRuntime(workflow)
+    if (runtime == RiskReviewerRuntime.Codex) {
+        codexReviewerSettings(workflow).exceptionOrNull()?.let {
+            return "kinds.code.delivery.risk.reviewer is $model, but runners.codex cannot be read (${it.message}), so no " +
+                "merge risk reviewer can run and every result waits for loop approve"
+        }
+    }
     val command = riskReviewerCommand(workflow)
     if (resolveCommand(command, hostEnv) != null) return null
+    val fix =
+        when (runtime) {
+            RiskReviewerRuntime.ClaudeCode -> "Install Claude Code or set runners.claude-code.command"
+            RiskReviewerRuntime.Codex -> "Install Codex or set runners.codex.command"
+        }
     return "kinds.code.delivery.risk.reviewer is $model, but its command $command cannot be found, so no merge risk " +
-        "reviewer can run and every result waits for loop approve. Install Claude Code or set runners.claude-code.command"
+        "reviewer can run and every result waits for loop approve. $fix"
 }
 
 /**

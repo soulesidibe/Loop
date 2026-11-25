@@ -72,7 +72,7 @@ Loop checks `runners.codex` against the profile on every load of `WORKFLOW.md`, 
 | `runners.codex` not a map | `invalid_config` | `runners.codex must be a map` |
 | a key the profile does not list | none, a startup warning | `runners.codex.<key> is not a key of the codex-app-server runner, Loop ignores it` |
 
-The merge risk reviewer of a Codex result is not Codex: Loop runs the model of `kinds.code.delivery.risk.reviewer` through the Claude Code command, `runners.claude-code.command` when set, else `claude`, and under `policy: auto` with merge `loop run` warns at startup when that command cannot be found (m4-06, see [the reviewer apart from the runner](../spec-decisions.md#the-reviewer-apart-from-the-runner-extension-m4-06)).
+The merge risk reviewer follows the model of `kinds.code.delivery.risk.reviewer`, not `runner.kind`. A Codex model (`gpt-`, `codex-` or an `o` series name such as `o3`) runs on Codex since bl-214: one read only turn of this runner with the settings of `runners.codex`, on the `read-only` sandbox with every approval declined (see [Codex merge risk reviewer](../spec-decisions.md#codex-merge-risk-reviewer-extension-bl-214)). Any other model runs through the Claude Code command, `runners.claude-code.command` when set, else `claude` (m4-06, see [the reviewer apart from the runner](../spec-decisions.md#the-reviewer-apart-from-the-runner-extension-m4-06)). Under `policy: auto` with merge `loop run` warns at startup when the reviewer's command cannot be found.
 
 ## Launch and streams
 

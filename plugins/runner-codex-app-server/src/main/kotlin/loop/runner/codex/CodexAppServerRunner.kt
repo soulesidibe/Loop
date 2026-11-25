@@ -59,6 +59,8 @@ import kotlin.time.TimeSource
  * folder (m2-14), given by the host through plugin loading, whose reads and edits the approval rules refuse (m3-20);
  * null refuses none. [model] (`model`, bl-141) is sent as the `model` of `thread/start`, so the thread runs the model
  * the workflow names rather than the one of the operator's Codex config; null sends none and keeps Codex's choice.
+ * [readOnly] (bl-214, no profile key) is the posture of the merge risk reviewer, [CodexRiskReviewer]: the thread runs
+ * on the `read-only` sandbox and every command and file change approval is declined, see [ServerRequestPolicy].
  */
 data class CodexAppServerSettings(
     val command: String = DEFAULT_COMMAND,
@@ -67,6 +69,7 @@ data class CodexAppServerSettings(
     val strictMcp: Boolean = true,
     val holdoutDir: Path? = null,
     val model: String? = null,
+    val readOnly: Boolean = false,
 ) {
     /** [command] split into the words the runner launches, see [CommandWords]; throws [RunnerConfigException]. */
     val argv: List<String> get() = CommandWords.of(command, "runners.$SECTION.command")
@@ -83,6 +86,12 @@ data class CodexAppServerSettings(
 
         /** The longest `turn_timeout_ms` and `read_timeout_ms`, one day, as for the claude-code runner. */
         const val MAX_TIMEOUT_MS: Long = 86_400_000
+
+        /**
+         * A `command` whose [argv] is [words] (bl-214): each word in single quotes, a single quote in a word written as
+         * `'\''`, so a host can start the absolute path it resolved and keep the rest of the operator's command.
+         */
+        fun commandOf(words: List<String>): String = words.joinToString(" ") { "'" + it.replace("'", "'\\''") + "'" }
 
         /**
          * The profile of `runners.codex`: `command` (m3-17), the two timeouts with the spec's defaults (5.3.6) and
@@ -315,12 +324,14 @@ class CodexAppServerRunner internal constructor(
         private val loopTools = LoopClientTools.load(ctx.env)
         private val ready = loopTools as? LoopClientTools.Loaded.Ready
         private val toolCall = ready?.let { LoopToolCall(it.launcher, loopVersion) }
-        private val handshake = StartupHandshake(ctx.workspace, loopVersion, settings.strictMcp, ready?.tools?.specs, settings.model)
+        private val handshake =
+            StartupHandshake(ctx.workspace, loopVersion, settings.strictMcp, ready?.tools?.specs, settings.model, settings.readOnly)
         private val requests =
             ServerRequestPolicy(
                 ctx.workspace,
                 settings.holdoutDir?.let { HoldoutFolder(it, hostEnv["HOME"]?.let(Path::of)) },
                 ready?.tools?.names.orEmpty(),
+                settings.readOnly,
             )
 
         // Usage and rate limits of the whole session, kept across turns, so a later turn's usage replaces the earlier (m3-21).
