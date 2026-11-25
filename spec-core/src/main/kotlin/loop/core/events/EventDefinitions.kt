@@ -88,6 +88,9 @@ object EventDefinitions {
             PullRequestMerged,
             MergeRiskAssessed,
             AutoMergeFallback,
+            // m4-34: the reactions to a waiting pull request.
+            ReactionTriggered,
+            ReactionSkipped,
             // Retries and parks.
             RetryScheduled,
             RetryDropped,
