@@ -92,6 +92,8 @@ data class KindsConfig(
  * `WORKFLOW.md` body (m4-19). [workspace] says whether Loop reads the workspace with git, and [populate] who fills it
  * (m4-20). [deliverable] names the files the work produces (m4-21) or its report (m4-23), none by default.
  * [requireSections] is `verify.require_sections`, the sections the report must hold (m4-23), none by default.
+ * [followupTracker] is `followup.tracker`, the tracker id the kind's follow ups go to (m4-33), null for the tracker of
+ * the parent issue.
  */
 data class KindConfig(
     val checks: List<CheckConfig>,
@@ -106,6 +108,7 @@ data class KindConfig(
     val populate: KindPopulate = KindPopulate.Hooks,
     val deliverable: KindDeliverable = KindDeliverable(),
     val requireSections: List<String> = emptyList(),
+    val followupTracker: String? = null,
 )
 
 /**

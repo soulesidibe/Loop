@@ -59,6 +59,13 @@ class NamespacedTracker(
         return native.completeIssue(issue.copy(id = id)).map(::namespaced)
     }
 
+    /** Creates the issue in the native tracker (m4-33) and gives it with its namespaced id. */
+    override suspend fun createIssue(
+        title: String,
+        body: String,
+        labels: List<String>,
+    ): Result<Issue> = native.createIssue(title, body, labels).map(::namespaced)
+
     override fun toString(): String = "NamespacedTracker($trackerId, $native)"
 
     /** The native id of [issueId] when it names an issue of this tracker, else null. */

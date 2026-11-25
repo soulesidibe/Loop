@@ -420,6 +420,30 @@ class WorkflowFileTest {
     }
 
     @Test
+    fun `m4-33 kinds kind followup tracker sends the follow ups of the kind to that tracker, none by default`() {
+        val kinds =
+            load(
+                withKinds(codeKind + "  research:\n    match: { label: research }\n    followup: { tracker: notes }\n    verify:\n      checks: []\n"),
+            ).config.kinds!!
+
+        assertEquals("notes", kinds.named.getValue("research").followupTracker)
+        assertEquals(null, kinds.code.followupTracker)
+    }
+
+    @Test
+    fun `m4-33 preflight refuses a followup tracker that is not in the registry`() {
+        fun followup(value: String) = kindsError(codeKind.replace("    verify:", "    followup: $value\n    verify:"))
+
+        assertEquals(
+            "kinds.code.followup.tracker \"gh\" is not a tracker id, use one of default, notes",
+            followup("{ tracker: gh }"),
+        )
+        assertEquals("kinds.code.followup must be a map", followup("notes"))
+        assertEquals("kinds.code.followup.tracker must not be blank", followup("{ tracker: \" \" }"))
+        assertEquals("kinds.code.followup.labels is not supported, use tracker", followup("{ labels: [a] }"))
+    }
+
+    @Test
     fun `m4-18 preflight refuses kinds with no default`() {
         assertEquals(
             "kinds has no default kind, give one kind match: { default: true }",

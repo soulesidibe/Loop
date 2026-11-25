@@ -53,6 +53,22 @@ class WriteRouting(
         remove: List<String>,
     ): Result<Unit> = write(issueId) { it.updateLabels(issueId, add, remove) }
 
+    /**
+     * Creates an issue in the tracker [trackerId] (m4-33), the lone adapter when it is not namespaced. A tracker id not in
+     * [adapters] fails with nothing written, never falling back to the primary.
+     */
+    suspend fun createIssue(
+        trackerId: String,
+        title: String,
+        body: String,
+        labels: List<String>,
+    ): Result<Issue> {
+        val adapter =
+            lone ?: adapters[trackerId]
+                ?: return Result.failure(IllegalStateException("No tracker \"$trackerId\" in this project, so no follow up was filed"))
+        return adapter.createIssue(title, body, labels)
+    }
+
     /** [block] on the adapter of [issueId], or the failure of [route]. */
     private inline fun write(
         issueId: String,
