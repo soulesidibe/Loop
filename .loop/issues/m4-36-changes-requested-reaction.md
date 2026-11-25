@@ -1,7 +1,7 @@
 ---
 id: m4-36
 title: "The changes_requested reaction with escalate_after"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-35]
@@ -71,3 +71,17 @@ Out of this issue: replying to review threads on GitHub, resolving them, reviews
   - Low, one malformed comment (no `body` or `path`) makes `reviews` throw `Malformed` for the whole read; skip the bad comment instead.
   - Docs only: a new head silences a change request although GitHub keeps it in force until the reviewer reviews again, and `AutoMergeGate` has no review condition, so under `auto` a merge can happen with the request still open; say so in spec-decisions. Also, "verified, waits for approval again" is true only under `human`; under `auto` it goes to the auto merge.
   - Not in this pass (backlog, shared with bl-224): the wait ended from the tick snapshot over a concurrent `loop approve` (bl-224 finding 3), and findings kept in memory while the review is stored as sent, so a restart loses it for good (bl-224 finding 6).
+
+2026-11-25 20:43Z loop: Loop updated pull request #78 for this issue: https://github.com/soulesidibe/Loop/pull/78
+
+2026-11-25 20:47Z loop: Loop did not merge pull request #78 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Failed conditions:
+  - diff_size: the diff changes 1006 lines outside tests and docs, over the limit of 1000, 2104 lines in all
+  Merge risk: band medium, score 1.27.
+  - alignment: aligned, The diff implements the reviews read, the DeliveryExecutor default, the reaction logic in loop.core.reactions, the HumanChannel escalation, trusted associations and the docs the send-back asked for, with Orchestrator.kt touched by only a few call-site lines.
+  - impact: medium (floor medium: the diff changes 1006 lines outside tests and docs, over half the limit of 1000), It adds a polled reaction that resumes agents and notifies humans, and extends the public plugin API and HumanEvent, with 1006 non-test lines changed, over the floor.
+  - verification: strong, An 884-line orchestrator test covers triggers, dedup, older heads, trust filtering, escalation rounds, 403 and 404, retries and the last slot, and the GitHub reads are tested, though the recorded answers are hand written.
+  - rollback_cost: two_way, A revert removes the code, and the new event fields and kinds stay in the store as unread data, with no schema or migration change.
+  - error_detection: loud, A refused reviews read records reaction_skipped with the permission named, an unreadable run store sends nothing, and an escalation or spent retries notify the human, though a 5xx or unreachable API is only logged at warn.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 19 of 26 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
