@@ -742,7 +742,8 @@ class ClaudeCodeRunner internal constructor(
              * A `result` line's usage is added to the session's and reported at once, the session total, after the line.
              * An [idle] `init` or main session `assistant` line means the process runs a wake, until a `result` line; a
              * subagent's line does not (bl-122). The first `task_notification` line of a run an earlier turn started
-             * makes this turn a wake turn, reported once, after the line (m4-03).
+             * makes this turn a wake turn, reported once, after the line (m4-03). A `rate_limit_event` line that changes
+             * the session's snapshot is reported after the line (bl-209).
              */
             private suspend fun line(
                 event: ProcessEvent.Line,
@@ -754,6 +755,7 @@ class ClaudeCodeRunner internal constructor(
                 var usage: RunnerEvent.Usage? = null
                 var result: StreamLine.Result? = null
                 var woken: RunnerEvent.WakeTurn? = null
+                var rateLimit: RunnerEvent.RateLimit? = null
                 if (event.stream == Stream.Stdout) {
                     when (val line = StreamJsonMapper.parse(event.text)) {
                         is StreamLine.Init -> {
@@ -784,6 +786,7 @@ class ClaudeCodeRunner internal constructor(
                             if (!idle && (!line.wake || synchronized(inputLock) { interrupted })) result = line
                         }
                         is StreamLine.TaskStarted -> continuity.runs.putIfAbsent(line.run, ids.turn)
+                        is StreamLine.RateLimit -> rateLimit = continuity.rateLimits.read(line, sessionId, turnId)
                         is StreamLine.TaskNotification -> {
                             val startedIn = continuity.runs[line.run]
                             if (!wake && startedIn != null && startedIn < ids.turn) {
@@ -810,9 +813,10 @@ class ClaudeCodeRunner internal constructor(
                 } else if (event.text.startsWith(EXEC_FAILED)) {
                     execFailure = event.text.removePrefix(LOOP_PREFIX)
                 }
-                // The estimate, the occupancy or the usage follows the line it came from.
+                // The estimate, the occupancy, the usage or the rate limit follows the line it came from.
                 emit(RunnerEvent.Output(event.stream, event.text))
                 woken?.let { emit(it) }
+                rateLimit?.let { emit(it) }
                 estimate?.let { emit(it) }
                 occupancy?.let { emit(it) }
                 usage?.let { emit(it) }
@@ -877,8 +881,8 @@ class ClaudeCodeRunner internal constructor(
 
     /**
      * What a session carries across its turns and processes: Claude Code's newest session id, the usage so far, the
-     * newest `init` line's model, the main session message ids whose occupancy was reported and the turn that read
-     * each background task run's `task_started` line (m4-03).
+     * newest `init` line's model, the main session message ids whose occupancy was reported, the turn that read
+     * each background task run's `task_started` line (m4-03) and the rate limit snapshot (bl-209).
      */
     private class Continuity {
         var runtimeSessionId: String? = null
@@ -886,6 +890,7 @@ class ClaudeCodeRunner internal constructor(
         var model: String? = null
         val countedMessages = mutableSetOf<String>()
         val runs = mutableMapOf<StreamLine.TaskRun, Int>()
+        val rateLimits = ClaudeRateLimits()
     }
 
     /**
@@ -933,7 +938,8 @@ class ClaudeCodeRunner internal constructor(
         /**
          * Whether [event] goes to the queue. Always while a turn reads the process. While it is idle, every line a
          * later turn needs is kept: `result` lines (their usage), `init` lines, the `task_started` and
-         * `task_notification` lines of background runs, main session `assistant` lines and Loop's own `loop:` lines.
+         * `task_notification` lines of background runs, `rate_limit_event` lines (bl-209), main session `assistant`
+         * lines and Loop's own `loop:` lines.
          * Any other line, a subagent's message or a tool result, is kept up to [idleLineBound], then dropped.
          */
         @Synchronized
@@ -965,7 +971,9 @@ class ClaudeCodeRunner internal constructor(
         private fun needed(event: ProcessEvent.Line): Boolean =
             if (event.stream == Stream.Stdout) {
                 when (val line = StreamJsonMapper.parse(event.text)) {
-                    is StreamLine.Result, is StreamLine.Init, is StreamLine.TaskStarted, is StreamLine.TaskNotification -> true
+                    is StreamLine.Result, is StreamLine.Init, is StreamLine.TaskStarted, is StreamLine.TaskNotification,
+                    is StreamLine.RateLimit,
+                    -> true
                     is StreamLine.Assistant -> line.parentToolUseId == null
                     else -> false
                 }

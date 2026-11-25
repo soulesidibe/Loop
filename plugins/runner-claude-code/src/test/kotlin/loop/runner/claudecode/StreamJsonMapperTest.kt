@@ -37,6 +37,36 @@ class StreamJsonMapperTest {
     }
 
     @Test
+    fun `bl-209 the recorded rate limit line carries its status and its unified windows`() {
+        val line = lines("real_two_turns_one_process").filterIsInstance<StreamLine.RateLimit>().single()
+
+        assertEquals("allowed", line.status)
+        assertEquals(mapOf("seven_day" to StreamLine.RateLimit.Window(utilization = 0.74, resetsAt = 1794906000)), line.windows)
+    }
+
+    @Test
+    fun `bl-209 a rate limit line without its info or with odd windows keeps what it can read`() {
+        val bare = assertIs<StreamLine.RateLimit>(StreamJsonMapper.parse("""{"type":"rate_limit_event"}"""))
+        assertEquals(StreamLine.RateLimit(status = null, windows = emptyMap()), bare)
+        val odd =
+            StreamJsonMapper.parse(
+                """{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","unifiedWindows":""" +
+                    """{"five_hour":{"utilization":1,"resetsAt":1794906000},"seven_day":{"resetsAt":1795510800},"x":"y"}}}""",
+            )
+        assertEquals(
+            StreamLine.RateLimit(
+                status = "rejected",
+                windows =
+                    mapOf(
+                        "five_hour" to StreamLine.RateLimit.Window(utilization = 1.0, resetsAt = 1794906000),
+                        "seven_day" to StreamLine.RateLimit.Window(utilization = null, resetsAt = 1795510800),
+                    ),
+            ),
+            odd,
+        )
+    }
+
+    @Test
     fun `a success result completes the turn with the exit code`() {
         val events = turnEvents("success")
 
