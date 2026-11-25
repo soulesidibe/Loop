@@ -628,7 +628,11 @@ class SqliteEventStore private constructor(
                 st.setString(5, redactor.redact(lock.issueIdentifier))
                 st.setString(6, lock.attemptId.value)
                 st.setString(7, lock.grantedAt.toString())
-                st.setNullable(8, encodeData(lock.prepared.mapValues { (_, value) -> redactor.redact(value) }))
+                // m4-25: an empty map is a prepare that returned nothing, kept apart from null, a prepare not run yet.
+                st.setNullable(8, lock.prepared?.let { prepared -> encodeMap(prepared.mapValues { (_, value) -> redactor.redact(value) }) })
+                st.setNullable(9, lock.prepareError?.let(redactor::redact))
+                st.setInt(10, if (lock.answered) 1 else 0)
+                st.setNullable(11, lock.releaseRequestedAt?.toString())
                 st.executeUpdate()
             }
         }
@@ -779,7 +783,7 @@ class SqliteEventStore private constructor(
 
     companion object {
         const val FILE_NAME: String = "store.db"
-        const val SCHEMA_VERSION: Int = 8
+        const val SCHEMA_VERSION: Int = 9
 
         private const val COLUMNS =
             "ts, run_id, project_id, issue_id, issue_identifier, attempt_id, session_id, turn_id, kind, phase, data"
@@ -875,9 +879,11 @@ class SqliteEventStore private constructor(
         private const val SELECT_MACHINE_ATTEMPTS_SINCE =
             "SELECT $ATTEMPT_COLUMNS, attempt_number, human_touches FROM attempts WHERE finished_at >= ? ORDER BY seq"
         private const val RESOURCE_LOCK_COLUMNS =
-            "kind, resource_id, project_id, issue_id, identifier, attempt_id, granted_at, prepared"
+            "kind, resource_id, project_id, issue_id, identifier, attempt_id, granted_at, prepared, " +
+                "prepare_error, answered, release_requested_at"
         private const val SELECT_RESOURCE_LOCKS = "SELECT $RESOURCE_LOCK_COLUMNS FROM resource_locks ORDER BY rowid"
-        private const val INSERT_RESOURCE_LOCK = "INSERT INTO resource_locks ($RESOURCE_LOCK_COLUMNS) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        private const val INSERT_RESOURCE_LOCK =
+            "INSERT INTO resource_locks ($RESOURCE_LOCK_COLUMNS) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         private const val RESOURCE_QUEUE_COLUMNS =
             "kind, resource_id, project_id, issue_id, identifier, attempt_id, requested_at, place"
         private const val SELECT_RESOURCE_QUEUE = "SELECT $RESOURCE_QUEUE_COLUMNS FROM resource_queue ORDER BY place"
@@ -1039,7 +1045,8 @@ class SqliteEventStore private constructor(
                 """.trimIndent(),
                 // Version 8 (m4-50): the resource locks, keyed by kind and resource id and never by project, so every
                 // project of the machine shares them, and the requests that wait, in their place. prepared is a JSON
-                // object of strings, null until the provider's prepare ran (m4-25).
+                // object of strings, null until the provider's prepare ran (m4-25). Version 9 (m4-25) adds the last
+                // three columns, see ADDED_COLUMNS.
                 """
                 CREATE TABLE IF NOT EXISTS resource_locks (
                     kind TEXT NOT NULL CHECK (kind <> ''),
@@ -1050,6 +1057,9 @@ class SqliteEventStore private constructor(
                     attempt_id TEXT NOT NULL,
                     granted_at TEXT NOT NULL,
                     prepared TEXT,
+                    prepare_error TEXT,
+                    answered INTEGER NOT NULL DEFAULT 0,
+                    release_requested_at TEXT,
                     PRIMARY KEY (kind, resource_id)
                 )
                 """.trimIndent(),
@@ -1150,9 +1160,32 @@ class SqliteEventStore private constructor(
                 if (checkedVersion(connection) < SCHEMA_VERSION) {
                     connection.createStatement().use { st ->
                         SCHEMA.forEach { st.execute(it) }
+                        addMissingColumns(st)
                         st.execute("PRAGMA user_version = $SCHEMA_VERSION")
                     }
                 }
+            }
+        }
+
+        /**
+         * Columns added to a table after its first version, as table, column and definition. `CREATE TABLE IF NOT
+         * EXISTS` leaves a table of an older store as it was, so each is added when the table lacks it.
+         */
+        private val ADDED_COLUMNS =
+            listOf(
+                // Version 9 (m4-25): why prepare failed, whether the holder was answered granted, and when it released.
+                Triple("resource_locks", "prepare_error", "TEXT"),
+                Triple("resource_locks", "answered", "INTEGER NOT NULL DEFAULT 0"),
+                Triple("resource_locks", "release_requested_at", "TEXT"),
+            )
+
+        private fun addMissingColumns(statement: Statement) {
+            for ((table, column, definition) in ADDED_COLUMNS) {
+                val present =
+                    statement.executeQuery("PRAGMA table_info($table)").use { rs ->
+                        generateSequence { if (rs.next()) rs.getString("name") else null }.toList()
+                    }
+                if (column !in present) statement.execute("ALTER TABLE $table ADD COLUMN $column $definition")
             }
         }
 
@@ -1264,6 +1297,9 @@ class SqliteEventStore private constructor(
             return LedgerRow(attempt, number = getInt("attempt_number"), humanTouches = getInt("human_touches"))
         }
 
+        /** [data] as a JSON object of strings, an empty one included. */
+        private fun encodeMap(data: Map<String, String>): String = JsonObject(data.mapValues { JsonPrimitive(it.value) }).toString()
+
         private fun encodeData(data: Map<String, String>): String? =
             if (data.isEmpty()) null else JsonObject(data.mapValues { JsonPrimitive(it.value) }).toString()
 
@@ -1357,7 +1393,10 @@ class SqliteEventStore private constructor(
                 issueIdentifier = getString("identifier"),
                 attemptId = AttemptId(getString("attempt_id")),
                 grantedAt = Instant.parse(getString("granted_at")),
-                prepared = decodeData(getString("prepared")),
+                prepared = getString("prepared")?.let(::decodeData),
+                prepareError = getString("prepare_error"),
+                answered = getInt("answered") != 0,
+                releaseRequestedAt = getString("release_requested_at")?.let(Instant::parse),
             )
 
         private fun ResultSet.toResourceRequest(): ResourceRequest =

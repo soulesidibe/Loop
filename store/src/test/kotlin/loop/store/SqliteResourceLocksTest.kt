@@ -51,7 +51,7 @@ class SqliteResourceLocksTest {
         second: Int = 0,
     ) = ResourceRequest(kind, id, project, "issue-$attempt", "T-$attempt", AttemptId(attempt), at + second.seconds)
 
-    private fun ResourceRequest.lock(prepared: Map<String, String> = emptyMap()) =
+    private fun ResourceRequest.lock(prepared: Map<String, String>? = null) =
         ResourceLock(kind, resourceId, projectId, issueId, issueIdentifier, attemptId, requestedAt, prepared)
 
     /** Grants [request] when its kind and id has no lock, else queues it at the end: true when granted. */
@@ -182,7 +182,7 @@ class SqliteResourceLocksTest {
                         .locks
                         .single()
                 assertEquals(false, secret in read.issueIdentifier)
-                assertEquals(false, read.prepared.values.any { secret in it })
+                assertEquals(false, read.prepared.orEmpty().values.any { secret in it })
                 assertContains(read.issueIdentifier, "T-")
             }
         }
@@ -208,6 +208,53 @@ class SqliteResourceLocksTest {
                 DriverManager.getConnection("jdbc:sqlite:${loopHome.resolve(SqliteEventStore.FILE_NAME)}").use { conn ->
                     conn.createStatement().use { st -> st.executeQuery("PRAGMA user_version").use { it.getInt(1) } }
                 }
-            assertEquals(8, version)
+            // m4-25: version 9 since the lock row keeps its prepare error, its answer and its release request.
+            assertEquals(9, version)
+        }
+
+    @Test
+    fun `m4-25 the prepare result or its error, the answer and the release request survive a reopen`() =
+        runTest {
+            val released = at + 30.seconds
+            val rows =
+                ResourceLockRows(
+                    locks =
+                        listOf(
+                            asking("a1").lock(prepared = mapOf("udid" to "X-1")).copy(answered = true, releaseRequestedAt = released),
+                            asking("a2", id = "plain").lock(prepared = emptyMap()),
+                            asking("a3", id = "broken").lock().copy(prepareError = "simctl boot failed: no runtime"),
+                            asking("a4", id = "fresh").lock(),
+                        ),
+                )
+            open().use { store -> store.updateResourceLocks { ResourceLockUpdate(rows, Unit) }.getOrThrow() }
+
+            val read = open().use { store -> store.resourceLockRows().getOrThrow() }
+            assertEquals(rows, read)
+            assertEquals(emptyMap(), read.locks[1].prepared, "a plain lock prepared to nothing is not an unprepared lock")
+            assertEquals(null, read.locks[3].prepared)
+        }
+
+    @Test
+    fun `m4-25 a version eight store gains the lock columns, its locks unprepared and kept`() =
+        runTest {
+            DriverManager.getConnection("jdbc:sqlite:${Files.createDirectories(loopHome).resolve(SqliteEventStore.FILE_NAME)}").use { conn ->
+                conn.createStatement().use { st ->
+                    // The version 8 table of the m4-50 build, with one lock and no prepare result.
+                    st.execute(
+                        "CREATE TABLE resource_locks (kind TEXT NOT NULL, resource_id TEXT NOT NULL, project_id TEXT NOT NULL, " +
+                            "issue_id TEXT NOT NULL, identifier TEXT NOT NULL, attempt_id TEXT NOT NULL, granted_at TEXT NOT NULL, " +
+                            "prepared TEXT, PRIMARY KEY (kind, resource_id))",
+                    )
+                    st.execute("INSERT INTO resource_locks VALUES ('avd', 'api35', '${first.value}', 'issue-a1', 'T-a1', 'a1', '$at', NULL)")
+                    st.execute("PRAGMA user_version = 8")
+                }
+            }
+
+            open().use { store ->
+                assertEquals(listOf(asking("a1").lock()), store.resourceLockRows().getOrThrow().locks)
+                val answered = asking("a1").lock(prepared = mapOf("serial" to "emulator-5554")).copy(answered = true)
+                store.updateResourceLocks { ResourceLockUpdate(ResourceLockRows(locks = listOf(answered)), Unit) }.getOrThrow()
+                assertEquals(listOf(answered), store.resourceLockRows().getOrThrow().locks)
+            }
         }
 }

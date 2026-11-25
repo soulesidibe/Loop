@@ -52,7 +52,9 @@ public data class ResourceLockRows(
 /**
  * The lock of the resource of [kind] and [resourceId], keyed by both and never by project: the attempt [attemptId]
  * of the issue [issueId] in [projectId] holds it since [grantedAt]. [prepared] is what the provider's `prepare`
- * returned, empty until it ran.
+ * returned, null until it ran and empty for a plain lock (m4-25). [prepareError] is why `prepare` failed, null when it
+ * did not. [answered] is true once the holder was answered `granted` with [prepared]. [releaseRequestedAt] is when the
+ * holder released it, null while it keeps it: `loop run` then runs the provider's `release` and frees the lock.
  */
 public data class ResourceLock(
     public val kind: String,
@@ -62,7 +64,10 @@ public data class ResourceLock(
     public val issueIdentifier: String,
     public val attemptId: AttemptId,
     public val grantedAt: Instant,
-    public val prepared: Map<String, String> = emptyMap(),
+    public val prepared: Map<String, String>? = null,
+    public val prepareError: String? = null,
+    public val answered: Boolean = false,
+    public val releaseRequestedAt: Instant? = null,
 )
 
 /**
