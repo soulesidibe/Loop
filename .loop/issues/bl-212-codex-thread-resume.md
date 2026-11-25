@@ -59,6 +59,20 @@ Filed from the runner capability comparison of Claude, Codex and Gemini after th
   - band floor medium: the reviewer's diff was cut to fit its prompt limit, 6 of 10 changed files left out in whole or in part
   Once approved, Loop runs the merge check again and merges.
 
+2026-11-25 22:07Z loop: Loop could not merge pull request #81: merging main at b701385cae52206748c57648f572cb1ae9e71787 into loop/bl-212 conflicts (conflict in docs/spec-decisions.md). The merge was aborted and the branch is unchanged. The next attempt merges refs/loop/base/main into its branch, resolves the conflict and submits the result again.
+
+2026-11-25 22:14Z loop: Loop updated pull request #81 for this issue: https://github.com/soulesidibe/Loop/pull/81
+
+2026-11-25 22:18Z loop: Loop did not merge pull request #81 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.27.
+  - alignment: aligned, The diff implements respawn via thread/resume, resumeSession, a response_error failure that never starts a new thread, and the docs and spec updates the issue asks for, with only small supporting changes such as the replayed-usage baseline.
+  - impact: medium, It changes the Codex runner's session lifecycle, app server spawn path, per-process handshake and usage accounting, but only the Codex runner is affected and the plugin-api change is a doc comment.
+  - verification: strong, About 750 lines of new tests cover respawn, resume, a failed resume, strict MCP and dynamicTools on the resume request, the usage baseline and the contract, and a real run on the pinned codex is recorded in the issue.
+  - rollback_cost: two_way, The change is code and docs only, with no schema, data or persisted format, so a revert restores the old behavior.
+  - error_detection: loud, A failed thread/resume, an answer naming another thread or a second exit in the same turn fails the turn with response_error or port_exit, and each respawn or resume writes a stderr line, so nothing silently starts a new thread.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 6 of 10 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
+
 ## Agent Brief
 
 **Category:** enhancement
