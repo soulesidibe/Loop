@@ -3260,6 +3260,38 @@ Out of m4-35: reading CI logs, an automatic rerun on GitHub, and a reaction to a
 
 Tests: `spec-core/src/test/kotlin/loop/core/reactions/CiFailedReactionTest.kt` (the orchestrator with the fake runner on the recorded answers: a red verdict that resumes the workspace with retry kind `reaction` and the findings and verifies again, the retries spent, the count across a restart, a store that cannot be read, the run 43779352010 ending `not_started` with no reaction, no reaction, `notify_human`, the `max_attempts` slot and the park, a pull request a human merged during the CI wait, `ci: none`, and the findings text), `spec-core/src/test/kotlin/loop/core/reactions/ReactionsPreflightTest.kt` (`m4-35 under ci none preflight logs one warning naming ci_failed, which never fires`) and `plugins/tracker-github/src/test/kotlin/loop/tracker/github/GitHubPullRequestsTest.kt` (`m4-35, the jobs read keeps the name and conclusion of each step, in order, from the hand written red run`).
 
+### loop replay --prompt renders an attempt's prompt again and diffs it (extension, m4-40)
+
+Story 137, PLAN 10.4. Lane C, not gating the M4 exit. No Gradle change: `cli` already depends on `spec-core` and `store`. Verification replay is m4-41; a later turn, a rotation prompt and the prompt fill and trimming of M3 are out. The decisions:
+
+- **The command.** `loop replay <attempt> --prompt [--workflow WORKFLOW.md]` (`ReplayCommand`), the attempt a full id or a unique prefix as in `loop show` (`resolveAttempt`, shared). With no mode it is a usage error naming `--prompt`, the only mode so far. The workflow is loaded read only, as `loop show` loads it.
+- **The original.** The turn 1 `prompt` record of the Attempt file, as `loop show --prompt` prints it. It was redacted when written.
+- **The render.** The prompt template of the kind `attempt_started` names, through `KindLookup.pinned`; a kind gone from the workflow falls back to the kind the issue matches now, and the header says so. The issue is the one the tracker returns now, completed as a dispatch completes it; the header says its text may have changed since the attempt.
+- **The variables** (`loop.core.replay.RecordedPromptVariables`), read from the issue's events between the `attempt_started` of the attempt before and this attempt, nothing guessed:
+  - `attempt`: the count of a `retry_scheduled` no `retry_dropped` followed, else null.
+  - `loop.retry_kind`: `answer` after `question_answered`, `sent_back` after `sent_back`, else the kind of that retry as the retry coordinator maps it (`continuation`, `refuted`, `reaction`, `error`), else null.
+  - `loop.verify_findings`: after `sent_back`, the text the orchestrator builds from its `by` and `reason`. A refuted or reaction retry recorded no findings text, so it is not recovered.
+  - `loop.workspace_reused`: false when the attempt ran `after_create`, which runs only in a new workspace, else not recovered.
+  - `loop.session_brief`: null on a first dispatch in a new workspace, else not recovered, since it is built from the workspace at dispatch.
+  - `loop.answer`: not recovered after `question_answered`, which holds no text. `loop.context_sources`: not recovered when the kind declares context files.
+  - A variable not recovered renders empty or false and the render goes on.
+- **The header.** `Replay of the turn 1 prompt of attempt <id>, issue <name>.`, the recorded template version from `attempt_started` and the rendered one, `workflowHash` of the template text, first 12 characters each, the tracker note, the kind note when there is one, `Recovered: ...` and `Not recovered, rendered empty or false: ...` naming each variable.
+- **The diff** (`loop.core.replay.UnifiedDiff`). A line diff in the format of `diff -u`, Myers' algorithm, 3 lines of context, labels `recorded prompt` then `rendered prompt`. Equal texts print `No difference: the same prompt.`.
+- **Secrets.** The render and the header go through the project's redactor before they are printed.
+- **Read only.** Nothing is written to the store, the tracker or the workspace.
+- **Exit codes.**
+
+| Case | Exit | Output |
+|------|------|--------|
+| Printed | 0 | the header, then the diff or `No difference: the same prompt.` |
+| Startup | 1 | the startup failure |
+| Usage, no or several attempts match | 2 | the usage line, or `loop replay: no attempt "<typed>" in project <id>.` |
+| Store or Attempt file | 3 | `loop replay: cannot read the store at <path>: <reason>.` or `cannot read the attempt file at <path>: <reason>.` |
+| No recorded prompt | 4 | `loop replay: no prompt recorded for attempt <id>, nothing to replay.` |
+| Issue or render | 5 | `loop replay: cannot read <issue> in <tracker>: <reason>.`, `<tracker> has no issue <issue> now, nothing to render.` or `the prompt template of <path> does not render: <reason>.` |
+
+Tests: `cli/src/test/kotlin/loop/cli/ReplayCommandTest.kt` (a real `loop run --once` replayed with the template unchanged, the store and the issue file compared before and after; a changed template, its diff and both versions; a sent back retry and a refuted retry on a seeded store, the latter naming what it cannot recover; a token in the issue body redacted; an unknown attempt; no recorded prompt; no mode), `spec-core/src/test/kotlin/loop/core/replay/RecordedPromptVariablesTest.kt` and `UnifiedDiffTest.kt`.
+
 ## Spec changes log
 
 Each change of the pinned spec commit adds one entry, newest first: the date, the old and new commits, what changed upstream, and what Loop changed in response.
