@@ -140,7 +140,7 @@ class ResourceGrantsTest {
     private fun lock(id: String) = store.rows.locks.single { it.resourceId == id }
 
     @Test
-    fun `a tick prepares the unprepared locks of its project with the declaration and the holder, a plain lock to nothing`() =
+    fun `a tick prepares the unprepared locks of its project with the declaration, a plain lock to nothing`() =
         runTest {
             ask("a1")
             ask("a2", kind = "display", id = "main")
