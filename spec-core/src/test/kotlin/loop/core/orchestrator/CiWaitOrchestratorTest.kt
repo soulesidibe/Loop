@@ -196,6 +196,8 @@ class CiWaitOrchestratorTest {
         var tip: (() -> String)? = null
         val answers = ArrayDeque<Result<ActionsRuns>>()
         val listed = mutableListOf<String>()
+        var opened = 0
+        val updated = mutableListOf<Long>()
 
         override suspend fun push(
             sha: String,
@@ -213,6 +215,7 @@ class CiWaitOrchestratorTest {
             title: String,
             body: String,
         ): Result<PullRequest> {
+            opened++
             val pull = PullRequest(7, "https://github.com/acme/widgets/pull/7", created = true, headSha = pushes.lastOrNull())
             pulls[branch] = pull
             return Result.success(pull)
@@ -222,7 +225,10 @@ class CiWaitOrchestratorTest {
             number: Long,
             title: String,
             body: String,
-        ): Result<PullRequest> = Result.success(pulls.values.single { it.number == number })
+        ): Result<PullRequest> {
+            updated += number
+            return Result.success(pulls.values.single { it.number == number })
+        }
 
         override suspend fun fetchBase(): Result<String> {
             val sha = bases.removeFirstOrNull() ?: lastBase ?: error("no base to fetch")
@@ -556,6 +562,52 @@ class CiWaitOrchestratorTest {
                     .state,
             )
             assertEquals(emptyList(), setup.tracker.moves, "no dispatch, the issue is not moved")
+        }
+
+    @Test
+    fun `m4-32, after a red CI wait loop send-back sends the issue back with its pull request open, the next delivery updates it`() =
+        runTest {
+            val workflow =
+                workflow().copy(
+                    promptTemplate = "Work on {{ issue.identifier }}.{% if loop.verify_findings %}\n{{ loop.verify_findings }}{% endif %}",
+                )
+            val setup = Setup(workflow)
+            setup.remote.answers += listOf(red, green)
+            val runner =
+                FakeRunner().apply {
+                    onCall =
+                        { ctx -> ToolRequestQueue(Path.of(checkNotNull(ctx.env["LOOP_TOOL_CONFIG"])).parent).enqueue(ToolRequest.Move("review")) }
+                }
+            val orchestrator = orchestrator(setup.tracker, setup.remote, setup.waiting, setup.sink, workflow, runner)
+            tick(orchestrator)
+            tick(orchestrator, after = 30_000)
+            assertFalse(assertNotNull(setup.wait).approved, "the red CI left an unapproved approval")
+            assertEquals(1, setup.remote.opened)
+
+            // `loop send-back`, another process, writes the store the running Loop reads on its next tick.
+            assertNotNull(setup.waiting.sendBack(PROJECT, "id-t-1", "soule", "Fix the lint run.", FIXED_NOW).getOrThrow())
+            tick(orchestrator, after = 1_000)
+            testScheduler.advanceUntilIdle()
+
+            val prompt = runner.calls.single().second
+            assertEquals("Work on t-1.\nSent back by soule: Fix the lint run.", prompt)
+            assertEquals(
+                PullRequestState.Open,
+                setup.remote.pulls.values
+                    .single()
+                    .state,
+                "the send back leaves the pull request open",
+            )
+            val waiting = assertNotNull(setup.wait, "the second attempt's verified result waits for approval")
+            assertEquals(WaitReason.Approval, waiting.reason)
+            assertFalse(waiting.sentBack)
+            setup.waiting.records[PROJECT.value to "id-t-1"] =
+                waiting.copy(data = waiting.data + mapOf(WaitingIssue.APPROVED_BY to "soule", WaitingIssue.APPROVED_AT to FIXED_NOW.toString()))
+
+            tick(orchestrator, after = 1_000)
+
+            assertEquals(1, setup.remote.opened, "the next delivery opens no second pull request")
+            assertEquals(listOf(7L), setup.remote.updated, "the next delivery updates pull request #7")
         }
 
     @Test
