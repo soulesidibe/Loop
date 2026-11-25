@@ -258,6 +258,15 @@ class AttachDelivery(
         /** The `reason` of the `issue_commented` event of the deliverable comment. */
         const val REASON = IssueCommented.DELIVERABLE
 
+        /** The line of the evidence summary when an auto delivery waits because [listed] files are not inlined. */
+        fun fallbackNote(listed: Int): String {
+            val files = if (listed == 1) "1 deliverable file is" else "$listed deliverable files are"
+            return "$files only listed, not inlined, so Loop did not move it on its own."
+        }
+
+        /** The line of the evidence summary when the deliverable comment could not be posted, for the [reason] given. */
+        fun failureNote(reason: String): String = "The deliverable could not be posted: $reason."
+
         const val CHANGED = "changed since its verification"
         const val NOT_TEXT = "not UTF-8 text"
 

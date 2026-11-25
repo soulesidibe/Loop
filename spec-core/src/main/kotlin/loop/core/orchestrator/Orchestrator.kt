@@ -4477,10 +4477,8 @@ class Orchestrator(
             comment: AttachDelivery.Prepared.Comment,
             fallback: Boolean,
         ): List<String> {
-            val files = if (comment.listed == 1) "1 deliverable file is" else "${comment.listed} deliverable files are"
-            val why = "$files only listed, not inlined, so Loop did not move it on its own."
             val failure = postDeliverable(issue, comment)
-            return listOfNotNull(why.takeIf { fallback }, failure?.let { "The deliverable could not be posted: $it." })
+            return listOfNotNull(AttachDelivery.fallbackNote(comment.listed).takeIf { fallback }, failure?.let(AttachDelivery::failureNote))
         }
 
         private fun attachDelivery() = AttachDelivery(tracker, redactor, clock, io, record)
