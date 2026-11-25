@@ -130,6 +130,30 @@ class SqliteEventStoreTest {
         }
 
     @Test
+    fun `events of some kinds recorded after an instant come back in seq order, fractions compared exactly (m4-38)`() =
+        runTest {
+            SqliteEventStore.open(loopHome, projectRoot, Redactor.NONE).getOrThrow().use { store ->
+                val at = { text: String, kind: String -> event(kind).copy(ts = Instant.parse(text)) }
+                val before = at("2026-11-06T19:02:00.400Z", "issue_moved")
+                val same = at("2026-11-06T19:02:00.500Z", "issue_moved")
+                val after = at("2026-11-06T19:02:00.600Z", "verdict")
+                val whole = at("2026-11-06T19:02:01Z", "issue_moved")
+                store.record(whole).getOrThrow()
+                store.record(before).getOrThrow()
+                store.record(same).getOrThrow()
+                store.record(after).getOrThrow()
+                store.record(at("2026-11-06T19:02:05Z", "attempt_started")).getOrThrow()
+                store.record(at("2026-11-06T19:02:05Z", "issue_moved").copy(projectId = projectB)).getOrThrow()
+
+                val since = Instant.parse("2026-11-06T19:02:00.500Z")
+                val stored = store.eventsOfKindsSince(projectA, setOf("issue_moved", "verdict"), since).getOrThrow()
+
+                assertEquals(listOf(whole, after), stored.map { it.event })
+                assertEquals(emptyList(), store.eventsOfKindsSince(projectA, emptySet(), since).getOrThrow())
+            }
+        }
+
+    @Test
     fun `events of one issue come back in seq order with every field`() =
         runTest {
             SqliteEventStore.open(loopHome, projectRoot, Redactor.NONE).getOrThrow().use { store ->

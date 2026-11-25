@@ -477,8 +477,8 @@ internal class AutoMergeGate(
         ): String = "$NOT_ALLOWED, its last change was rejected, $code: $message"
 
         private const val NOT_ALLOWED = "the workflow no longer allows an auto merge"
-        const val REVIEWER_RUNNER: String = "risk_reviewer"
-        const val REVIEW_REASON: String = "merge_risk_review"
+        const val REVIEWER_RUNNER: String = RiskReviewRow.RUNNER
+        const val REVIEW_REASON: String = RiskReviewRow.REASON
         private const val VERIFIED = "verified"
         private const val HIDDEN_CHECK_LINE = "- hidden check "
         private const val NO_ATTEMPT = "none"
@@ -491,4 +491,10 @@ internal class AutoMergeGate(
         const val MERGEABLE_READS = 5
         const val MERGEABLE_READ_DELAY_MS = 2_000L
     }
+}
+
+/** The ledger row of a merge risk review (m2-28): its runner and reason, public for `loop report` (m4-38). */
+object RiskReviewRow {
+    const val RUNNER: String = "risk_reviewer"
+    const val REASON: String = "merge_risk_review"
 }

@@ -344,7 +344,7 @@ Since m4-34 `reactions:` parses these four keys, each with `action` (`send_to_ag
 - Token accounting follows the spec (absolute totals, no double counting). Manager agent usage comes from Koog's tracing.
 - These are spend budgets. Context budgets (how full a window gets) are separate, see section 8.
 - A ledger line per turn (JSONL) and a row per attempt: tracker, kind, runner, model, template, attempt, tokens, cost, wall time, checks, guards, verdict, human touches.
-- `loop report --since 7d`: issues delivered by kind and tracker, delivered with zero human touches, cost per delivered issue, refutation reasons, comparison by runner, model and template.
+- `loop report --since 7d` (m4-38): issues delivered by kind and tracker, delivered with zero human touches, cost per delivered issue, refutation reasons, comparison by runner, model and template, see section 10.4.
 
 ### 6.9 Resources
 
@@ -647,7 +647,7 @@ run
 - `loop show <attempt> --prompt | --events | --checks | --cost`.
 - `loop replay <attempt>`: re-run verification on the recorded workspace fingerprint, or re-render the prompt with the current config and diff it with the original.
 - `loop query "<sql>"`: SQL over the event store.
-- `loop report`: aggregates (section 6.8).
+- `loop report [--since <duration>] [--workflow WORKFLOW.md]` (m4-38): what the project delivered and spent over a window, `<n>d`, `<n>h` or `<n>m`, 7 days by default, read only from the ledger rows and the events of the store, which it never writes or creates. An issue counts as delivered when an `issue_moved` with `by` = `host` and `verified` = `true` falls in the window; its cost is the sum of every attempt's `cost_usd`, whatever their date. It prints the delivered issues by kind and tracker, the delivered issues with zero human touches marked `(not reliable, see bl-64)`, the cost per delivered issue, the refutation reasons of the refuted verdicts of the window, and a comparison of the window's attempts by runner, model and template. A runner that reports no cost (Codex today) shows `not reported`, never zero, and is left out of the cost averages, which name how many issues and attempts they rest on. Exit 0 printed, `Nothing delivered since <instant> (<since>).` when nothing was, 1 startup failure, 2 a bad `--since` (the usage line), 3 store failure. Details in `docs/spec-decisions.md`, loop report.
 - Later, the spec's HTTP API extension serves the same data, and the retro agent reads it to propose improvements.
 
 Observability starts in M1: the event store and the ids are the first thing every other part writes to.
