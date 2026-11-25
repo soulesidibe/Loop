@@ -2,6 +2,7 @@ package loop.core.resources
 
 import kotlinx.coroutines.test.runTest
 import loop.api.AttemptId
+import loop.api.DirtyResource
 import loop.api.EventSink
 import loop.api.ProjectId
 import loop.api.RecordedEvent
@@ -16,6 +17,7 @@ import loop.api.RunId
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import kotlin.time.Clock
 import kotlin.time.Instant
 
@@ -246,5 +248,56 @@ class ResourceGrantsTest {
                 listOf("a1 attempt_ended"),
                 sink.events.filter { it.kind == "resource_released" }.map { "${it.attemptId?.value} ${it.data["reason"]}" },
             )
+        }
+
+    @Test
+    fun `m4-26 a dirty resource is rechecked under the lock of a recheck holder, and a failed prepare is released`() =
+        runTest {
+            store.rows = store.rows.copy(dirty = listOf(DirtyResource("ios-simulator", "iphone", p1, "provider", "app installed", now)))
+            ask("a1")
+
+            grants(Provider(calls, failing = "iphone")).tick().getOrThrow()
+
+            assertEquals(listOf("prepare iphone", "release iphone"), calls, "a failed prepare is released like a lock's")
+            assertEquals(1, store.rows.dirty.size, "the failed recheck keeps the mark")
+            assertEquals(emptyList(), store.rows.locks, "the recheck holder's lock is freed")
+            assertEquals(listOf(AttemptId("a1")), store.rows.queue.map { it.attemptId })
+            val recheck = sink.events.filter { it.kind == "resource_granted" || it.kind == "resource_released" }
+            assertEquals(listOf("resource_granted", "resource_released"), recheck.map { it.kind }, "the recheck held a real lock")
+            assertTrue(recheck.all { it.attemptId == null && it.issueId == null }, "$recheck")
+        }
+
+    @Test
+    fun `m4-26 a recheck waits for a later tick when the pool of the dirty resource is at its limit`() =
+        runTest {
+            store.rows = store.rows.copy(dirty = listOf(DirtyResource("ios-simulator", "iphone", p1, "provider", "app installed", now)))
+            ask("a1")
+            ask("b1", id = "sim-1", project = p2)
+            ask("b2", id = "sim-2", project = p2)
+
+            grants().tick().getOrThrow()
+
+            assertEquals(emptyList(), calls, "no check ran outside the limit")
+            assertEquals(listOf(AttemptId("a1")), store.rows.queue.map { it.attemptId }, "the recheck's request went")
+            assertEquals(1, store.rows.dirty.size)
+        }
+
+    @Test
+    fun `m4-26 a check takes back the lock its own attempt holds in the pool, then holds it itself`() =
+        runTest {
+            ask("a1")
+            val grants = grants()
+            grants.tick().getOrThrow()
+
+            val prepared =
+                grants
+                    .withCheckResource("ios-simulator", "i-a1", "t-a1", AttemptId("a1")) { it }
+                    .getOrThrow()
+
+            assertEquals("UDID-iphone", prepared["udid"])
+            assertEquals(listOf("prepare iphone", "release iphone", "prepare iphone", "release iphone"), calls)
+            assertEquals(emptyList(), store.rows.locks)
+            val released = sink.events.filter { it.kind == "resource_released" }.map { "${it.attemptId?.value} ${it.data["reason"]}" }
+            assertEquals(listOf("a1 check", "null released"), released)
         }
 }

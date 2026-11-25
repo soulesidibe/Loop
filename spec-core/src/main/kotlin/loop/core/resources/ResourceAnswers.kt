@@ -4,6 +4,7 @@ import loop.api.AttemptId
 import loop.api.ResourceLock
 import loop.api.ResourceLockRows
 import loop.api.ResourceRequest
+import loop.core.events.ResourceQueued
 import kotlin.time.Instant
 
 /**
@@ -24,11 +25,16 @@ sealed interface ResourceAnswer {
         val requested: Boolean,
     ) : ResourceAnswer
 
-    /** The request waits at [position], 1 being the next one granted, behind [holder]; [requested] is true for a new request. */
+    /**
+     * The request waits at [position], 1 being the next one granted, behind [holder], null when the resource waits for
+     * a limit or a check (m4-26); [requested] is true for a new request, and [reason] is why it waits, see
+     * [ResourceQueued].
+     */
     data class Queued(
         val position: Int,
-        val holder: ResourceLock,
+        val holder: ResourceLock?,
         val requested: Boolean,
+        val reason: String = ResourceQueued.HELD,
     ) : ResourceAnswer
 
     /** The attempt already holds [lock] and was answered granted: a double request. */
@@ -95,15 +101,12 @@ object ResourceAnswers {
                 }
             return Answered(ResourceChange(rows.replace(held, changed)), answer)
         }
-        val waiting = rows.queue.filter { it.kind == request.kind && it.resourceId == request.resourceId }
-        val place = waiting.indexOfFirst { it.attemptId == request.attemptId }
-        val holder = rows.locks.firstOrNull { it.isOf(request.kind, request.resourceId) }
-        if (place >= 0 && holder != null) return Answered(ResourceChange(rows), ResourceAnswer.Queued(place + 1, holder, requested = false))
+        val waited = rows.queue.any { it.kind == request.kind && it.resourceId == request.resourceId && it.attemptId == request.attemptId }
         val requested = ResourceQueue.request(rows, request, now)
         val answer =
             when (val grant = requested.grant) {
-                is ResourceGrant.Granted -> ResourceAnswer.Preparing(grant.lock, requested = place < 0)
-                is ResourceGrant.Queued -> ResourceAnswer.Queued(grant.position, grant.holder, requested = place < 0)
+                is ResourceGrant.Granted -> ResourceAnswer.Preparing(grant.lock, requested = !waited)
+                is ResourceGrant.Queued -> ResourceAnswer.Queued(grant.position, grant.holder, requested = !waited, reason = grant.reason)
             }
         return Answered(requested.change, answer)
     }

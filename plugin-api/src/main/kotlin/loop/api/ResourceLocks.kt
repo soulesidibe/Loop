@@ -41,12 +41,28 @@ public data class ResourceLockUpdate<T>(
 )
 
 /**
- * The resource rows of the machine: [locks], at most one per kind and resource id, and [queue], the requests that
- * wait, oldest first.
+ * The resource rows of the machine: [locks], at most one per kind and resource id, [queue], the requests that wait,
+ * oldest first, and [dirty], the resources a read only check found changed, never lent until a check passes (m4-26).
  */
 public data class ResourceLockRows(
     public val locks: List<ResourceLock> = emptyList(),
     public val queue: List<ResourceRequest> = emptyList(),
+    public val dirty: List<DirtyResource> = emptyList(),
+)
+
+/**
+ * The dirty mark of the resource of [kind] and [resourceId] (m4-26): its read only check failed after a release, so
+ * Loop lends it to nobody until a check passes again. [check] names the check that failed, `read_only_check` (the
+ * declared command, after `restore` ran once) or `provider` (the provider's own check after its release), and
+ * [difference] what it found. [projectId] is the project of the holder it came back from, at [markedAt].
+ */
+public data class DirtyResource(
+    public val kind: String,
+    public val resourceId: String,
+    public val projectId: ProjectId,
+    public val check: String,
+    public val difference: String,
+    public val markedAt: Instant,
 )
 
 /**
@@ -72,7 +88,9 @@ public data class ResourceLock(
 
 /**
  * One request that waits in the queue of the resource of [kind] and [resourceId]: the attempt [attemptId] of the
- * issue [issueId] in [projectId] asked for it at [requestedAt].
+ * issue [issueId] in [projectId] asked for it at [requestedAt]. With [anyOfKind] (m4-26) the request is one of a group,
+ * a check that holds a resource of [kind], whichever: the holder waits on each resource of the kind at once, and the
+ * first one granted drops the others.
  */
 public data class ResourceRequest(
     public val kind: String,
@@ -82,4 +100,5 @@ public data class ResourceRequest(
     public val issueIdentifier: String,
     public val attemptId: AttemptId,
     public val requestedAt: Instant,
+    public val anyOfKind: Boolean = false,
 )

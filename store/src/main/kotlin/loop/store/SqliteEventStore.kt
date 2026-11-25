@@ -14,6 +14,7 @@ import loop.api.AttemptId
 import loop.api.AttemptLedger
 import loop.api.Claim
 import loop.api.Claims
+import loop.api.DirtyResource
 import loop.api.EventSink
 import loop.api.Freeze
 import loop.api.FrozenAcceptanceCommands
@@ -59,7 +60,7 @@ import kotlin.time.Instant
  * The machine level event store, one SQLite file at `<loopHome>/store.db` shared
  * by every project (ADR 0001). It also holds the Project state that survives a restart: parked issues (m1-07),
  * claims and retry states (m2-02), waiting issues (m2-04), frozen acceptance command lists (m2-09) and the ledger's
- * attempt rows (m2-19), the machine slots (m3-16) and the resource locks with their queue (m4-50). One connection per
+ * attempt rows (m2-19), the machine slots (m3-16) and the resource locks with their queue (m4-50) and dirty marks (m4-26). One connection per
  * instance, WAL mode, autocommit single statement inserts, so several Loop processes can write to the same file. A
  * write of several statements, the schema migration included, runs in a transaction that takes the write lock before
  * it reads (bl-41), so a command beside a running Loop waits on `busy_timeout` instead of failing on a stale snapshot.
@@ -68,7 +69,8 @@ import kotlin.time.Instant
  * data values, the issue identifier and the phase, a parked issue's identifier, state and
  * labels, a claim's identifier and runtime session id, a retry state's identifier and error, a waiting
  * issue's identifier and data values, a frozen command list's identifier, an attempt row's identifier, model,
- * reason and issue state, and a resource lock's identifier and prepared values and a queue row's identifier.
+ * reason and issue state, a resource lock's identifier and prepared values, a queue row's identifier and a dirty
+ * mark's difference.
  * Ids are Loop's own and left alone. Reads return what was stored, never redact again.
  */
 class SqliteEventStore private constructor(
@@ -610,7 +612,11 @@ class SqliteEventStore private constructor(
             connection.prepareStatement(SELECT_RESOURCE_QUEUE).use { st ->
                 st.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toResourceRequest()) } }
             }
-        return ResourceLockRows(locks, queue)
+        val dirty =
+            connection.prepareStatement(SELECT_RESOURCE_DIRTY).use { st ->
+                st.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toDirtyResource()) } }
+            }
+        return ResourceLockRows(locks, queue, dirty)
     }
 
     /** Replaces every lock and queue row with [rows], on the caller's connection lock, inside its transaction. */
@@ -618,6 +624,7 @@ class SqliteEventStore private constructor(
         connection.createStatement().use { st ->
             st.executeUpdate("DELETE FROM resource_locks")
             st.executeUpdate("DELETE FROM resource_queue")
+            st.executeUpdate("DELETE FROM resource_dirty")
         }
         connection.prepareStatement(INSERT_RESOURCE_LOCK).use { st ->
             for (lock in rows.locks) {
@@ -646,6 +653,18 @@ class SqliteEventStore private constructor(
                 st.setString(6, request.attemptId.value)
                 st.setString(7, request.requestedAt.toString())
                 st.setLong(8, place.toLong())
+                st.setInt(9, if (request.anyOfKind) 1 else 0)
+                st.executeUpdate()
+            }
+        }
+        connection.prepareStatement(INSERT_RESOURCE_DIRTY).use { st ->
+            for (mark in rows.dirty) {
+                st.setString(1, mark.kind)
+                st.setString(2, mark.resourceId)
+                st.setString(3, mark.projectId.value)
+                st.setString(4, mark.check)
+                st.setString(5, redactor.redact(mark.difference))
+                st.setString(6, mark.markedAt.toString())
                 st.executeUpdate()
             }
         }
@@ -783,7 +802,7 @@ class SqliteEventStore private constructor(
 
     companion object {
         const val FILE_NAME: String = "store.db"
-        const val SCHEMA_VERSION: Int = 9
+        const val SCHEMA_VERSION: Int = 10
 
         private const val COLUMNS =
             "ts, run_id, project_id, issue_id, issue_identifier, attempt_id, session_id, turn_id, kind, phase, data"
@@ -885,10 +904,13 @@ class SqliteEventStore private constructor(
         private const val INSERT_RESOURCE_LOCK =
             "INSERT INTO resource_locks ($RESOURCE_LOCK_COLUMNS) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         private const val RESOURCE_QUEUE_COLUMNS =
-            "kind, resource_id, project_id, issue_id, identifier, attempt_id, requested_at, place"
+            "kind, resource_id, project_id, issue_id, identifier, attempt_id, requested_at, place, any_of_kind"
         private const val SELECT_RESOURCE_QUEUE = "SELECT $RESOURCE_QUEUE_COLUMNS FROM resource_queue ORDER BY place"
         private const val INSERT_RESOURCE_REQUEST =
-            "INSERT INTO resource_queue ($RESOURCE_QUEUE_COLUMNS) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO resource_queue ($RESOURCE_QUEUE_COLUMNS) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        private const val RESOURCE_DIRTY_COLUMNS = "kind, resource_id, project_id, check_name, difference, marked_at"
+        private const val SELECT_RESOURCE_DIRTY = "SELECT $RESOURCE_DIRTY_COLUMNS FROM resource_dirty ORDER BY rowid"
+        private const val INSERT_RESOURCE_DIRTY = "INSERT INTO resource_dirty ($RESOURCE_DIRTY_COLUMNS) VALUES (?, ?, ?, ?, ?, ?)"
         private const val FROZEN_COLUMNS = "project_id, issue_id, identifier, digest, count, frozen_at, changed_digest, changed_count"
         private const val INSERT_FROZEN =
             "INSERT INTO acceptance_commands (project_id, issue_id, identifier, digest, count, frozen_at) " +
@@ -1073,7 +1095,21 @@ class SqliteEventStore private constructor(
                     attempt_id TEXT NOT NULL,
                     requested_at TEXT NOT NULL,
                     place INTEGER NOT NULL,
+                    any_of_kind INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (kind, resource_id, attempt_id)
+                )
+                """.trimIndent(),
+                // Version 10 (m4-26): the dirty marks, one per resource whose read only check failed, machine wide like
+                // the locks, and any_of_kind on the queue rows of a check that holds any resource of a kind.
+                """
+                CREATE TABLE IF NOT EXISTS resource_dirty (
+                    kind TEXT NOT NULL CHECK (kind <> ''),
+                    resource_id TEXT NOT NULL CHECK (resource_id <> ''),
+                    project_id TEXT NOT NULL CHECK (project_id <> ''),
+                    check_name TEXT NOT NULL,
+                    difference TEXT NOT NULL,
+                    marked_at TEXT NOT NULL,
+                    PRIMARY KEY (kind, resource_id)
                 )
                 """.trimIndent(),
             )
@@ -1177,6 +1213,8 @@ class SqliteEventStore private constructor(
                 Triple("resource_locks", "prepare_error", "TEXT"),
                 Triple("resource_locks", "answered", "INTEGER NOT NULL DEFAULT 0"),
                 Triple("resource_locks", "release_requested_at", "TEXT"),
+                // Version 10 (m4-26): a queue row of a check's group, which waits on every resource of its kind.
+                Triple("resource_queue", "any_of_kind", "INTEGER NOT NULL DEFAULT 0"),
             )
 
         private fun addMissingColumns(statement: Statement) {
@@ -1408,6 +1446,17 @@ class SqliteEventStore private constructor(
                 issueIdentifier = getString("identifier"),
                 attemptId = AttemptId(getString("attempt_id")),
                 requestedAt = Instant.parse(getString("requested_at")),
+                anyOfKind = getInt("any_of_kind") != 0,
+            )
+
+        private fun ResultSet.toDirtyResource(): DirtyResource =
+            DirtyResource(
+                kind = getString("kind"),
+                resourceId = getString("resource_id"),
+                projectId = ProjectId(getString("project_id")),
+                check = getString("check_name"),
+                difference = getString("difference"),
+                markedAt = Instant.parse(getString("marked_at")),
             )
 
         private fun ResultSet.toStoredEvent(ids: IssueIdForms): StoredEvent =

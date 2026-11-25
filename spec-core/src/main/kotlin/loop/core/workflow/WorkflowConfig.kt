@@ -486,10 +486,14 @@ data class ReadyConfig(
 sealed interface CheckConfig {
     val label: String
 
-    /** `sh -lc <run>` in the workspace; it passes on exit 0 within [timeoutMs]. */
+    /**
+     * `sh -lc <run>` in the workspace; it passes on exit 0 within [timeoutMs]. [resource] is the kind of resource the
+     * check holds while it runs (m4-26), with what its prepare returned as `LOOP_RESOURCE_<KEY>` env, null for none.
+     */
     data class Command(
         val run: String,
         val timeoutMs: Long = DEFAULT_TIMEOUT_MS,
+        val resource: String? = null,
     ) : CheckConfig {
         override val label: String get() = run
     }

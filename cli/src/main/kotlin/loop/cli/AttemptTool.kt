@@ -80,6 +80,9 @@ internal class AttemptTool(
     /** The Loop home of the machine, where the store and the run files are (m4-25). */
     val loopHome: Path get() = host.loopHome
 
+    /** The environment of the process, the agent's own, which a resource's `read_only_check` runs with (m4-26). */
+    val rawEnv: Map<String, String> get() = host.rawEnv
+
     /** Prints one redacted warning line to stderr, which fails nothing (m4-25). */
     fun warn(message: String) {
         echoErr(redact("loop tool $name: $message"))

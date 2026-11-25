@@ -150,15 +150,19 @@ class LoopClientTools(
             "Ask Loop for a resource of the workflow, such as a device or a simulator, by its name, before you use it. " +
                 "Loop answers at once with a JSON object. status granted: it is yours, with what you need to use it " +
                 "(for example a udid or a serial) and what it can and cannot test. status preparing: it is yours and Loop " +
-                "is preparing it, call request_resource again with the same name in a few seconds. status queued: another " +
-                "attempt holds it and position is your place in its queue, call request_resource again later to check, " +
-                "your place is kept. Never use a resource before it is granted. Call release_resource as soon as you are " +
-                "done with it."
+                "is preparing it, call request_resource again with the same name in a few seconds. status queued: position is " +
+                "your place in its queue and reason says why it waits: held by another attempt, limit when the machine holds " +
+                "as many of its kind as allowed, release one you hold if you do not need both, or dirty when its read only " +
+                "check failed. Call request_resource again later to check, your place is kept. Never use a resource before " +
+                "it is granted. Call release_resource as soon as you are done with it. When you submit your result, Loop " +
+                "takes back any resource you still hold that a check of the verification needs, before the check runs."
 
         private const val RELEASE_RESOURCE_DESCRIPTION =
-            "Give back a resource Loop granted you, by its name, as soon as you are done with it. Stop using it now: " +
-                "Loop gives it back and grants it to the next attempt in its queue. Loop also frees it when your attempt " +
-                "ends. Releasing a resource you do not hold is an error."
+            "Give back a resource Loop granted you, by its name, as soon as you are done with it. Loop first runs its " +
+                "read only check: when it fails, the resource stays yours and the error gives the difference and the restore " +
+                "commands to run before you call release_resource again. Once released, stop using it: Loop gives it back " +
+                "and grants it to the next attempt in its queue. Loop also frees it when your attempt ends, and before a " +
+                "check of your verification that needs a resource of its kind. Releasing a resource you do not hold is an error."
 
         /**
          * The tools of the attempt whose env is [env]: [Loaded.None] without `LOOP_LAUNCHER` or `LOOP_TOOL_CONFIG`, as

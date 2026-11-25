@@ -98,7 +98,7 @@ class ResourceToolsTest {
 
         val pid = ProcessHandle.current().pid()
         assertEquals(
-            listOf("prepare" to pid, "release" to pid, "prepare" to pid, "release" to pid),
+            listOf("prepare" to pid, "release" to pid, "check" to pid, "prepare" to pid, "release" to pid, "check" to pid),
             FakeResourceProvider.calls.filter { it.id == resource }.map { it.op to it.pid },
         )
 
@@ -144,8 +144,8 @@ class ResourceToolsTest {
                 .toLong()
         assertNotEquals(loopRun, toolProcess, "loop tool mcp is its own process")
         val calls = FakeResourceProvider.calls.filter { it.id == resource }
-        assertEquals(listOf("prepare", "release"), calls.map { it.op })
-        assertEquals(listOf(loopRun, loopRun), calls.map { it.pid }, "each provider call ran in loop run")
+        assertEquals(listOf("prepare", "release", "check"), calls.map { it.op })
+        assertEquals(listOf(loopRun, loopRun, loopRun), calls.map { it.pid }, "each provider call ran in loop run")
     }
 
     @Test
@@ -156,9 +156,12 @@ class ResourceToolsTest {
         val env = fixture.toolEnv(ATTEMPT, "t-1")
         val snapshot = Json.parseToJsonElement(Path.of(env.getValue("LOOP_TOOL_CONFIG")!!).readText()).jsonObject
         assertEquals(
-            Json.parseToJsonElement("""[{"kind":"fake-device","id":"$resource","can":["ui tests"],"cannot":["push"]}]"""),
+            Json.parseToJsonElement(
+                """[{"kind":"fake-device","id":"$resource","can":["ui tests"],"cannot":["push"],""" +
+                    """"restore":["true"],"read_only_check":"true"}]""",
+            ),
             snapshot["resources"],
-            "the kind, id, can and cannot, never the restore or read only commands",
+            "the kind, id, can and cannot, and since m4-26 the restore and read only commands release_resource runs",
         )
         // `loop tool mcp` never reads WORKFLOW.md: one that fails to load changes nothing.
         fixture.workflow.writeText("not a workflow\n")

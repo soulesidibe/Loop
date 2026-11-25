@@ -37,7 +37,10 @@ private const val TOOL_OUTPUT_TOKENS = "tool_output_tokens"
 private const val TRACKER_ID = "tracker_id"
 private const val TRACKER_IDS = "tracker_ids"
 
-/** The snapshot key of the resources of `resources:` (m4-25), which `loop tool mcp` grants: kind, id, can and cannot. */
+/**
+ * The snapshot key of the resources of `resources:` (m4-25), which `loop tool mcp` grants: kind, id, can and cannot,
+ * and since m4-26 restore and read only check, which `release_resource` runs and answers.
+ */
 private const val RESOURCES = "resources"
 
 /** What `loop tool` reads from the snapshot: no tracker settings beyond the kind, no credential. */
@@ -54,8 +57,9 @@ data class ToolConfig(
     /** Every tracker id of the project, the primary first (m4-47), null in a snapshot written before m4-47. */
     val trackerIds: List<String>? = null,
     /**
-     * The resources of `resources:` (m4-25), each with its kind, id, can and cannot, never its restore or read only
-     * commands, which only `loop run` runs; none in a snapshot written before m4-25.
+     * The resources of `resources:` (m4-25), each with its kind, id, can and cannot, and since m4-26 its `restore`
+     * entries and its `read_only_check`, which `release_resource` runs while the resource is up; none in a snapshot
+     * written before m4-25, and no commands in one written before m4-26.
      */
     val resources: List<ResourceDeclaration> = emptyList(),
 ) {
@@ -131,9 +135,15 @@ private fun resources(value: JsonElement): List<ResourceDeclaration> {
             id = resource.string("id"),
             can = resource.strings("can"),
             cannot = resource.strings("cannot"),
+            // m4-26: optional, so a snapshot of a Loop before m4-26 still reads, with no check to run.
+            restore = resource.strings(RESTORE),
+            readOnlyCheck = (resource[READ_ONLY_CHECK] as? JsonPrimitive)?.takeIf { it.isString }?.content,
         )
     }
 }
+
+private const val RESTORE = "restore"
+private const val READ_ONLY_CHECK = "read_only_check"
 
 private fun JsonObject.strings(key: String): List<String> =
     (this[key] as? JsonArray)
@@ -148,7 +158,7 @@ private fun JsonObject.string(key: String): String =
 /**
  * Writes `tool-config.json` (m1-23): `version`, `project_id`, `workflow_dir`, `tracker_kind`,
  * `defined_states`, `tool_output_tokens` (m3-14), `tracker_id` and `tracker_ids` (m4-47), `resources` (m4-25), the
- * kind, id, can and cannot of each entry of `resources:`, and `provider`, the non
+ * kind, id, can and cannot of each entry of `resources:`, with its restore and read only check since m4-26, and `provider`, the non
  * credential `provider` fields with `dir` resolved to an absolute path. `tracker_kind`, `defined_states` and `provider`
  * are those of the issue's own tracker (m4-14); `tracker_id` stays the primary's, which bare ids are read by. A value
  * that is exactly `$NAME`, at any depth inside `provider` and other than the `dir` path key, is a credential and is
@@ -195,7 +205,8 @@ object ToolConfigSnapshotWriter : ToolConfigWriter {
                 "id" to JsonPrimitive(resource.id),
                 "can" to JsonArray(resource.can.map(::JsonPrimitive)),
                 "cannot" to JsonArray(resource.cannot.map(::JsonPrimitive)),
-            ),
+                RESTORE to JsonArray(resource.restore.map(::JsonPrimitive)),
+            ) + listOfNotNull(resource.readOnlyCheck?.let { READ_ONLY_CHECK to JsonPrimitive(it) }),
         )
 
     /** The value as JSON, null when it is a credential reference (exactly `$NAME`). */

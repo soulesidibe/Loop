@@ -56,6 +56,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Clock
+import kotlin.time.Duration
 
 /**
  * `loop run [path-to-WORKFLOW.md] [--once]` (plan D15). A daemon until SIGINT or
@@ -219,19 +220,6 @@ class RunCommand(
         // m4-06: the merge risk reviewer runs through the Claude Code command whatever the runner; said once at startup.
         riskReviewerWarning(workflow, host.rawEnv)?.let { warn(redactor.redact(it)) }
         val workspacesOf = { wf: WorkflowFile -> WorkspaceManager(Workspaces(wf.workspaceRoot), wf.config.hooks, ShellHookRunner()) }
-        // m2-03: a check runs code the agent wrote, so it gets the agent env policy, never the full host env, and
-        // the orchestrator adds only the issue and attempt ids: no tool config and no launcher on PATH.
-        val checksOf = { wf: WorkflowFile ->
-            val removed = agentEnvRemovedNames(wf)
-            val runner = CoreCheckRunner()
-            CheckRunner {
-                check,
-                cwd,
-                env,
-                ->
-                runner.run(check, cwd, agentEnvironment(overrides = env, removed = removed, host = host.rawEnv))
-            }
-        }
         val launcher = host.launcher().getOrElse { fail(it.sentence()) }
         val store = project.store().getOrElse { fail(it.sentence()) }
         // m1-39: the human readable run log, next to this key=value log. A write that fails warns here once.
@@ -292,6 +280,15 @@ class RunCommand(
         // m4-25: this process prepares and gives back the resources its attempts take with request_resource, so a
         // booted device is its child, never the tool process's; the entries follow each reload.
         val resourcesAt = AtomicReference(workflow.config.resources)
+        // m4-26: the read only check and the restore of a resource at the end of an attempt run with the agent env
+        // policy of the current workflow, in the folder of WORKFLOW.md, the `workflow_dir` the tool process runs the
+        // check of a release in.
+        val removedAt = AtomicReference(agentEnvRemovedNames(workflow))
+        val resourceCommands =
+            ShellResourceCommands(
+                cwd = { workflow.path.parent },
+                base = { agentEnvironment(removed = removedAt.get(), host = host.rawEnv) },
+            )
         val resourceGrants =
             ResourceGrants(
                 projectId,
@@ -302,6 +299,7 @@ class RunCommand(
                 resourcesAt::get,
                 // bl-204: the rows of a project whose run died are freed on the tick, its own project never peeked.
                 live = { project -> projectRunLive(host.loopHome, project) },
+                commands = resourceCommands,
             ) { lock, reason ->
                 val fields = mapOf("kind" to lock.kind, "resource_id" to lock.resourceId)
                 log.log(
@@ -313,6 +311,33 @@ class RunCommand(
                     reason = reason,
                 )
             }
+        // m2-03: a check runs code the agent wrote, so it gets the agent env policy, never the full host env, and
+        // the orchestrator adds only the issue and attempt ids: no tool config and no launcher on PATH.
+        val checksOf = { wf: WorkflowFile ->
+            val removed = agentEnvRemovedNames(wf)
+            val runner = CoreCheckRunner()
+            CheckRunner {
+                check,
+                cwd,
+                env,
+                ->
+                // m4-26: a command check that declares `resource:` holds a resource of that kind while it runs.
+                val waiting = { kind: String, waited: Duration ->
+                    val ids = context.copy(issueIdentifier = env["LOOP_ISSUE_IDENTIFIER"])
+                    log.log(
+                        LogLevel.WARN,
+                        "check",
+                        LogOutcome.PARKED,
+                        ids,
+                        fields = mapOf("kind" to kind),
+                        reason = "waits for a $kind resource, $waited",
+                    )
+                }
+                withCheckResource(resourceGrants, check, env, waiting) { resourceEnv ->
+                    runner.run(check, cwd, agentEnvironment(overrides = env + resourceEnv, removed = removed, host = host.rawEnv))
+                }
+            }
+        }
         val runner = runnerOf(workflow)
         // m3-09: a runner that declares no occupancy gets only the prompt limit and the turn cap (plan 8.3), said once
         // at startup; `loop status` says it again for each of its running attempts, whatever runner a reload picks.
@@ -366,6 +391,7 @@ class RunCommand(
                 reloadWarnings = { previous, reloaded ->
                     trackersAt.set(reloaded.trackers)
                     resourcesAt.set(reloaded.config.resources)
+                    removedAt.set(agentEnvRemovedNames(reloaded))
                     reloadWarnings(previous, reloaded, host.rawEnv)
                 },
                 // m2-02: the retry queue, its counters and the claims survive a restart.

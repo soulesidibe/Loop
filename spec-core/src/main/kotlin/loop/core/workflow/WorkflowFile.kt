@@ -10,6 +10,7 @@ import com.charleskorn.kaml.YamlTaggedNode
 import loop.api.MergeMethod
 import loop.api.PluginProfile
 import loop.api.ProfileProblem
+import loop.api.ResourceDeclaration
 import loop.core.delivery.AttachDelivery
 import loop.core.kinds.KindWorkspaces
 import loop.core.resources.ResourceCheck
@@ -269,6 +270,7 @@ class WorkflowLoader(
                 ?: systemTemp.resolve(DEFAULT_WORKSPACES_DIR).toAbsolutePath().normalize()
 
         val terminalStates = tracker.terminalStates
+        checkResourcesDeclared(kinds, resources)
         // m2-26: a merged pull request is done, so its issue leaves the tracker's work for good. Checked for every kind
         // since m4-18.
         kinds?.named?.forEach { (name, kind) ->
@@ -1121,6 +1123,30 @@ class WorkflowLoader(
         )
     }
 
+    /**
+     * m4-26: a `command` check of a kind, visible or holdout, that declares `resource: <kind>` needs an entry of
+     * `resources:` of that kind, since the check takes one of them.
+     */
+    private fun checkResourcesDeclared(
+        kinds: KindsConfig?,
+        resources: List<ResourceDeclaration>,
+    ) {
+        val declared = resources.map { it.kind }.toSet()
+        kinds?.named?.forEach { (name, kind) ->
+            val lists = listOf("checks" to kind.checks, "holdout" to kind.holdout)
+            for ((key, checks) in lists) {
+                checks.forEachIndexed { index, check ->
+                    val wanted = (check as? CheckConfig.Command)?.resource ?: return@forEachIndexed
+                    if (wanted !in declared) {
+                        throw WorkflowError.InvalidConfig(
+                            "kinds.$name.verify.$key[$index].resource is \"$wanted\", which no entry of resources declares",
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     private fun parseCheck(
         kindKey: String,
         name: String,
@@ -1135,7 +1161,12 @@ class WorkflowLoader(
                     check.string("$name.run", "run")?.takeIf { it.isNotBlank() }
                         ?: throw WorkflowError.InvalidConfig("$name.run is required")
                 val timeoutMs = check.positiveLong("$name.timeout_ms", "timeout_ms") ?: CheckConfig.DEFAULT_TIMEOUT_MS
-                CheckConfig.Command(run, timeoutMs)
+                // m4-26: the kind of resource the check holds, which an entry of `resources:` must declare.
+                val resource =
+                    check.string("$name.resource", "resource")?.let { written ->
+                        written.trim().takeIf { it.isNotEmpty() } ?: throw WorkflowError.InvalidConfig("$name.resource must not be blank")
+                    }
+                CheckConfig.Command(run, timeoutMs, resource)
             }
             "file_exists" -> CheckConfig.FileExists(checkPath(name, check))
             "file_matches" -> {

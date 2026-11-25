@@ -7,8 +7,11 @@ import kotlinx.serialization.json.JsonPrimitive
 import loop.api.RecordedEvent
 import loop.api.ResourceDeclaration
 import loop.api.ResourceLock
+import loop.core.events.ResourceQueued
+import loop.core.resources.ReadOnlyChecks
 import loop.core.resources.ReleaseAnswer
 import loop.core.resources.ResourceAnswer
+import loop.core.resources.ResourceCommands
 import loop.core.resources.ResourceLocks
 import loop.mcp.ToolReply
 import kotlin.time.Clock
@@ -21,14 +24,23 @@ import kotlin.time.Clock
  * on its next tick and writes the result on the lock, which the next call reads, and gives back a released one.
  *
  * Every answer is one JSON object. `status` is `granted` (with `prepared`, what the provider's prepare returned, and
- * `can` and `cannot`), `preparing` (granted, `loop run` has not prepared it yet), `queued` (with `position`) or
+ * `can` and `cannot`), `preparing` (granted, `loop run` has not prepared it yet), `queued` (with `position`, and `reason` since m4-26) or
  * `released`. A structured failure is a tool error whose `status` is `error`, with an `error` code and a `message`,
- * and the turn goes on: `unknown_resource`, `already_held`, `releasing`, `prepare_failed`, `not_held`, or `store` when
+ * and the turn goes on: `unknown_resource`, `already_held`, `releasing`, `prepare_failed`, `not_held`,
+ * `read_only_check_failed` (m4-26), or `store` when
  * the store refused the change.
+ *
+ * Since m4-26 `release_resource` first runs the resource's `read_only_check` here, through [commands], while the
+ * resource is still up, in the folder of `WORKFLOW.md` (`workflow_dir` of the snapshot, where `loop run` runs the
+ * same check at the end of an attempt) with the agent's env and what its prepare returned as `LOOP_RESOURCE_<KEY>`
+ * env: a failure is the tool error `read_only_check_failed`, with the `difference` and the `restore` entries the agent
+ * must run, and the attempt keeps the lock. A pass marks the lock released, and `loop run` runs the provider's
+ * `release`, then the provider's own check.
  */
 internal class ResourceTools(
     private val tool: AttemptTool,
     private val env: AttemptTool.Env,
+    private val commands: ResourceCommands = ShellResourceCommands(cwd = { env.config.workflowDir }, base = { tool.rawEnv }),
 ) {
     private val resources: List<ResourceDeclaration> get() = env.config.resources
 
@@ -52,6 +64,7 @@ internal class ResourceTools(
     suspend fun release(name: String): ToolReply {
         val resource = declared(name) ?: return unknown(name)
         return withLocks { locks, _ ->
+            checkBeforeRelease(locks, resource)?.let { return@withLocks it }
             val answer =
                 locks
                     .requestRelease(env.attemptId, resource.kind, resource.id)
@@ -76,6 +89,37 @@ internal class ResourceTools(
                 }
             }
         }
+    }
+
+    /**
+     * The read only check of [resource] before its release (m4-26), when the attempt holds it prepared, so it is up:
+     * the failure to answer, which keeps the lock, or null to release it. A lock not held or not prepared yet is left
+     * to [ResourceLocks.requestRelease], which answers it.
+     */
+    private suspend fun checkBeforeRelease(
+        locks: ResourceLocks,
+        resource: ResourceDeclaration,
+    ): ToolReply? {
+        val rows = locks.rows().getOrElse { return storeFailure(resource, it) }
+        val held =
+            rows.locks.firstOrNull {
+                it.attemptId == env.attemptId && it.kind == resource.kind && it.resourceId == resource.id && it.releaseRequestedAt == null
+            }
+        val prepared = held?.prepared ?: return null
+        val difference = ReadOnlyChecks.run(resource, prepared, commands) ?: return null
+        val restore =
+            resource.restore
+                .ifEmpty { null }
+                ?.joinToString(prefix = " Run the restore entries, in order: ", separator = "; ", postfix = ".")
+                .orEmpty()
+        return failure(
+            "read_only_check_failed",
+            resource,
+            "The read only check of ${resource.id} failed, so you keep it: $difference.$restore " +
+                "Then call release_resource again; at the end of your attempt Loop runs the restore entries once itself.",
+            "difference" to JsonPrimitive(difference),
+            "restore" to JsonArray(resource.restore.map(::JsonPrimitive)),
+        )
     }
 
     /** Opens the store, checks the attempt is live, and runs [block] with the lock calls of the attempt's run. */
@@ -119,9 +163,10 @@ internal class ResourceTools(
                 reply(
                     STATUS_QUEUED,
                     resource,
-                    "Queued at position ${answer.position}: another attempt holds ${resource.id}. " +
+                    "Queued at position ${answer.position}: ${why(answer.reason, resource)}. " +
                         "Call request_resource with the same name again later to check; your place is kept.",
                     "position" to JsonPrimitive(answer.position),
+                    "reason" to JsonPrimitive(answer.reason),
                 )
             is ResourceAnswer.AlreadyHeld ->
                 failure(
@@ -142,6 +187,20 @@ internal class ResourceTools(
                     resource,
                     "Loop could not prepare ${resource.id}: ${answer.lock.prepareError}. It is released; request it again to retry.",
                 )
+        }
+
+    /** Why a request waits (m4-26), by the `reason` of `resource_queued`. */
+    private fun why(
+        reason: String,
+        resource: ResourceDeclaration,
+    ): String =
+        when (reason) {
+            ResourceQueued.LIMIT ->
+                "the machine already holds as many resources of this kind as its limit allows. " +
+                    "If you hold one of them and do not need both at once, release it with release_resource, " +
+                    "or two attempts may each wait for the other"
+            ResourceQueued.DIRTY -> "the read only check of ${resource.id} failed, Loop lends it again once a check passes"
+            else -> "another attempt holds ${resource.id}"
         }
 
     private fun describe(lock: ResourceLock): String =
@@ -176,7 +235,8 @@ internal class ResourceTools(
         code: String,
         resource: ResourceDeclaration?,
         message: String,
-    ): ToolReply = ToolReply(json(STATUS_ERROR, resource, message, "error" to JsonPrimitive(code)), isError = true)
+        vararg fields: Pair<String, JsonElement>,
+    ): ToolReply = ToolReply(json(STATUS_ERROR, resource, message, "error" to JsonPrimitive(code), *fields), isError = true)
 
     private fun json(
         status: String,
