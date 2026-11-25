@@ -103,10 +103,10 @@ import loop.core.events.IssueCommented
 import loop.core.events.IssueLabeled
 import loop.core.events.IssueMoved
 import loop.core.events.IssueParked
-import loop.core.events.QuestionAsked
 import loop.core.events.MergeRequeued
 import loop.core.events.Phase
 import loop.core.events.PromptRecordFailed
+import loop.core.events.QuestionAsked
 import loop.core.events.RateLimit
 import loop.core.events.ResourceReleased
 import loop.core.events.ResultDiscarded
@@ -2226,7 +2226,18 @@ class Orchestrator(
                     .getOrElse { return it.describe() }
                     .firstOrNull()
                     ?: return "no issue ${issue.identifier} in the tracker"
-            val wait = Wait.ask(projectId, issue.id, issue.identifier, attemptId, runId, clock.now(), current.state, request.questionKind, kind?.name)
+            val wait =
+                Wait.ask(
+                    projectId,
+                    issue.id,
+                    issue.identifier,
+                    attemptId,
+                    runId,
+                    clock.now(),
+                    current.state,
+                    request.questionKind,
+                    kind?.name,
+                )
             return Asks
                 .start(
                     Asks.Question(request.questionKind, request.question, request.options, request.recommendation),
@@ -2235,7 +2246,10 @@ class Orchestrator(
                     post = { text -> withContext(io) { tracker.addComment(current, IssueComment(agentAuthor(), clock.now(), text)) } },
                     record = { definition, data -> record(definition, data = data) },
                     save = { asking ->
-                        notices.asking(asking, Asks.noticeReason(request.questionKind)) { noticed -> storeWaiting(noticed) { waits.save(noticed) } }
+                        notices.asking(
+                            asking,
+                            Asks.noticeReason(request.questionKind),
+                        ) { noticed -> storeWaiting(noticed) { waits.save(noticed) } }
                     },
                 ).also { failure -> if (failure == null) asked = true }
         }
@@ -5235,9 +5249,21 @@ class Orchestrator(
                 }
             if (!wait.humanMoved(issue?.state, active = found is Standing.Active)) continue
             endWaiting(wait)
-            val touch = mapOfNotNull(HumanTouched.TOUCH to HumanTouch.MOVE, HumanTouched.FROM_STATE to wait.state, HumanTouched.TO_STATE to issue?.state)
+            val touch =
+                mapOfNotNull(
+                    HumanTouched.TOUCH to HumanTouch.MOVE,
+                    HumanTouched.FROM_STATE to wait.state,
+                    HumanTouched.TO_STATE to issue?.state,
+                )
             recordWaitEvent(wait, HumanTouched, touch)
-            log.log(LogLevel.INFO, WAITING, LogOutcome.RELEASED, waitContext(wait), mapOf("wait_reason" to wait.reason.wire), "a human moved the issue")
+            log.log(
+                LogLevel.INFO,
+                WAITING,
+                LogOutcome.RELEASED,
+                waitContext(wait),
+                mapOf("wait_reason" to wait.reason.wire),
+                "a human moved the issue",
+            )
         }
     }
 

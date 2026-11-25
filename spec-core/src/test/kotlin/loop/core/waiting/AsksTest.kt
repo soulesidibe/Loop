@@ -61,7 +61,10 @@ class AsksTest {
             question = Asks.Question("product", "Ship the token ghp_secret too?", listOf("yes", "no"), "no"),
             wait = wait,
             redact = { it.replace("ghp_secret", "[REDACTED]") },
-            post = { text -> posted += text; post },
+            post = { text ->
+                posted += text
+                post
+            },
             record = { definition, data -> recorded += definition to data },
             save = { saved += it },
         )

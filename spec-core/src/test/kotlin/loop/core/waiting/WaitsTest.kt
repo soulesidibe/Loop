@@ -484,7 +484,18 @@ class WaitsTest {
 
     @Test
     fun `m4-31 an ask wait holds the state it was asked in and its question kind, and its record restores it`() {
-        val ask = Wait.ask(project, "id-1", "t-1", AttemptId("a1"), RunId("r1"), since, state = "todo", questionKind = "product", kind = "code")
+        val ask =
+            Wait.ask(
+                project,
+                "id-1",
+                "t-1",
+                AttemptId("a1"),
+                RunId("r1"),
+                since,
+                state = "todo",
+                questionKind = "product",
+                kind = "code",
+            )
 
         assertEquals(WaitReason.Ask, ask.reason)
         assertEquals("ask", WaitReason.Ask.wire)

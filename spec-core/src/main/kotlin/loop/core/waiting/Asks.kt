@@ -69,7 +69,14 @@ object Asks {
         val chars = text.length.toString()
         record(IssueCommented, mapOf(Tracker.CHARS to chars, Tracker.BY to Tracker.BY_HOST, Tracker.REASON to IssueCommented.QUESTION))
         val options = question.options.count { it.isNotBlank() }
-        record(QuestionAsked, mapOf(QuestionAsked.QUESTION_KIND to question.kind, QuestionAsked.OPTIONS to options.toString(), Tracker.CHARS to chars))
+        record(
+            QuestionAsked,
+            mapOf(
+                QuestionAsked.QUESTION_KIND to question.kind,
+                QuestionAsked.OPTIONS to options.toString(),
+                Tracker.CHARS to chars,
+            ),
+        )
         save(wait)
         return null
     }

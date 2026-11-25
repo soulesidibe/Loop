@@ -86,7 +86,10 @@ class LoopClientTools(
             putJsonObject(KIND) {
                 put("type", "string")
                 put("enum", JsonArray(ASK_KINDS.map(::JsonPrimitive)))
-                put("description", "Who the question is for. In this version every question goes to a human, and the kind is recorded with it.")
+                put(
+                    "description",
+                    "Who the question is for. In this version every question goes to a human, and the kind is recorded with it.",
+                )
             }
             putJsonObject(QUESTION) {
                 put("type", "string")

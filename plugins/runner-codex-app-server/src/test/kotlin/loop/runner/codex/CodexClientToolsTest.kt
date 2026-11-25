@@ -239,7 +239,12 @@ class CodexClientToolsTest {
 
         assertEquals(emptyList(), schema.problems("v2/DynamicToolSpec", ask), "$ask")
         val properties = ask.obj("inputSchema").obj("properties")
-        assertEquals(listOf("engineering", "design", "product", "human"), properties.obj("kind").getValue("enum").jsonArray.map { it.jsonPrimitive.content })
+        assertEquals(
+            listOf("engineering", "design", "product", "human"),
+            properties.obj("kind").getValue("enum").jsonArray.map {
+                it.jsonPrimitive.content
+            },
+        )
         assertEquals("string", properties.obj("question").string("type"))
         assertEquals("array", properties.obj("options").string("type"))
         assertEquals("string", properties.obj("options").obj("items").string("type"))

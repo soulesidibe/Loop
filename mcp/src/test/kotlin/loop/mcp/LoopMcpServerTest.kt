@@ -485,13 +485,45 @@ class LoopMcpServerTest {
             assertEquals(listOf("kind", "question", "options", "recommendation"), properties.keys.toList())
             val kind = properties.getValue("kind").jsonObject
             assertEquals("string", kind.getValue("type").jsonPrimitive.content)
-            assertEquals(listOf("engineering", "design", "product", "human"), kind.getValue("enum").jsonArray.map { it.jsonPrimitive.content })
-            assertEquals("string", properties.getValue("question").jsonObject.getValue("type").jsonPrimitive.content)
+            assertEquals(
+                listOf("engineering", "design", "product", "human"),
+                kind.getValue("enum").jsonArray.map { it.jsonPrimitive.content },
+            )
+            assertEquals(
+                "string",
+                properties
+                    .getValue("question")
+                    .jsonObject
+                    .getValue("type")
+                    .jsonPrimitive.content,
+            )
             val options = properties.getValue("options").jsonObject
             assertEquals("array", options.getValue("type").jsonPrimitive.content)
-            assertEquals("string", options.getValue("items").jsonObject.getValue("type").jsonPrimitive.content)
-            assertEquals("string", properties.getValue("recommendation").jsonObject.getValue("type").jsonPrimitive.content)
-            properties.values.forEach { assertTrue(it.jsonObject.getValue("description").jsonPrimitive.content.isNotBlank(), "$it") }
+            assertEquals(
+                "string",
+                options
+                    .getValue("items")
+                    .jsonObject
+                    .getValue("type")
+                    .jsonPrimitive.content,
+            )
+            assertEquals(
+                "string",
+                properties
+                    .getValue("recommendation")
+                    .jsonObject
+                    .getValue("type")
+                    .jsonPrimitive.content,
+            )
+            properties.values.forEach {
+                assertTrue(
+                    it.jsonObject
+                        .getValue("description")
+                        .jsonPrimitive.content
+                        .isNotBlank(),
+                    "$it",
+                )
+            }
             val description = tool.getValue("description").jsonPrimitive.content
             assertContains(description, "only for a question a human must answer")
             assertContains(description, "Technical choices are your own")
@@ -503,7 +535,13 @@ class LoopMcpServerTest {
     @Test
     fun `m4-31 an ask call hands its arguments to the handler, options and recommendation optional`() {
         val received = mutableListOf<AskCall>()
-        withClient(ask = AskHandler { received += it; ToolReply("pending") }) {
+        withClient(
+            ask =
+                AskHandler {
+                    received += it
+                    ToolReply("pending")
+                },
+        ) {
             initialize()
             val full =
                 request(
@@ -528,7 +566,13 @@ class LoopMcpServerTest {
     @Test
     fun `m4-31 an ask without its kind or question, with an unknown kind or with options that are not strings reaches no handler`() {
         val received = mutableListOf<AskCall>()
-        withClient(ask = AskHandler { received += it; ToolReply("pending") }) {
+        withClient(
+            ask =
+                AskHandler {
+                    received += it
+                    ToolReply("pending")
+                },
+        ) {
             initialize()
             val refusals =
                 listOf(

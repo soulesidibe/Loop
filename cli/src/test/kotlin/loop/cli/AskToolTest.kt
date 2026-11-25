@@ -79,19 +79,19 @@ class AskToolTest {
             |set -e
             |echo "${D}LOOP_ATTEMPT_ID" >> '${fixture.agentCallsFile}'
             |$before
-            |replies=${D}(mktemp)
-            |rpc=${D}(mktemp -d)
+            |replies=$D(mktemp)
+            |rpc=$D(mktemp -d)
             |mkfifo "${D}rpc/in"
             |loop tool mcp < "${D}rpc/in" > "${D}replies" &
             |exec 3> "${D}rpc/in"
             |printf '%s\n' '$INITIALIZE' '$INITIALIZED' >&3
             |id=1
             |call() {
-            |  id=${D}((id + 1))
+            |  id=$D((id + 1))
             |  printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"%s","arguments":%s}}\n' "${D}id" "${D}1" "${D}2" >&3
             |  n=0
-            |  until grep -Eq "\"id\":${D}id[,}]" "${D}replies"; do n=${D}((n + 1)); [ ${D}n -lt 600 ] || exit 9; sleep 0.1; done
-            |  echo "${D}1 ${D}(grep -E "\"id\":${D}id[,}]" "${D}replies")" >> '$transcript'
+            |  until grep -Eq "\"id\":${D}id[,}]" "${D}replies"; do n=$D((n + 1)); [ ${D}n -lt 600 ] || exit 9; sleep 0.1; done
+            |  echo "${D}1 $D(grep -E "\"id\":${D}id[,}]" "${D}replies")" >> '$transcript'
             |}
             |finish() { exec 3>&-; wait; }
             |$body
@@ -111,7 +111,15 @@ class AskToolTest {
             val reply = Json.parseToJsonElement(line.removePrefix("ask ")).jsonObject
             val result = reply.getValue("result").jsonObject
             val text = result.getValue("content") as JsonArray
-            val answer = Json.parseToJsonElement(text.first().jsonObject.getValue("text").jsonPrimitive.content).jsonObject
+            val answer =
+                Json
+                    .parseToJsonElement(
+                        text
+                            .first()
+                            .jsonObject
+                            .getValue("text")
+                            .jsonPrimitive.content,
+                    ).jsonObject
             JsonObject(answer + ("isError" to (result["isError"] ?: JsonPrimitive(false))))
         }
 

@@ -404,7 +404,8 @@ sealed class Wait(
             questionKind: String,
             kind: String? = null,
         ): Ask {
-            val data = mapOf(WaitKeys.STATE to state, WaitKeys.QUESTION_KIND to questionKind) + listOfNotNull(kind?.let { WaitKeys.KIND to it })
+            val data =
+                mapOf(WaitKeys.STATE to state, WaitKeys.QUESTION_KIND to questionKind) + listOfNotNull(kind?.let { WaitKeys.KIND to it })
             return Ask(WaitingIssue(projectId, issueId, identifier, WaitReason.Ask, attemptId, runId, since, data))
         }
 

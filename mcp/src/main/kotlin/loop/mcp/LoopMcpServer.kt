@@ -243,9 +243,15 @@ object LoopMcpServer {
         ask: AskHandler,
         trimmer: ReplyTrimmer,
     ) {
-        addTool(name = ASK, description = ASK_DESCRIPTION, inputSchema = ToolSchema(properties = askProperties, required = listOf(KIND, QUESTION))) {
-            request ->
-            val reply = askCall(request.arguments ?: JsonObject(emptyMap())).fold({ ask.ask(it) }, { ToolReply("$it $NOTHING_QUEUED", isError = true) })
+        addTool(
+            name = ASK,
+            description = ASK_DESCRIPTION,
+            inputSchema = ToolSchema(properties = askProperties, required = listOf(KIND, QUESTION)),
+        ) { request ->
+            val reply =
+                askCall(
+                    request.arguments ?: JsonObject(emptyMap()),
+                ).fold({ ask.ask(it) }, { ToolReply("$it $NOTHING_QUEUED", isError = true) })
             trimmer.trim(ASK, reply).toResult()
         }
     }
@@ -277,7 +283,10 @@ object LoopMcpServer {
             putJsonObject(KIND) {
                 put("type", "string")
                 putJsonArray("enum") { ASK_KINDS.forEach { add(JsonPrimitive(it)) } }
-                put("description", "Who the question is for. In this version every question goes to a human, and the kind is recorded with it.")
+                put(
+                    "description",
+                    "Who the question is for. In this version every question goes to a human, and the kind is recorded with it.",
+                )
             }
             putJsonObject(QUESTION) {
                 put("type", "string")
