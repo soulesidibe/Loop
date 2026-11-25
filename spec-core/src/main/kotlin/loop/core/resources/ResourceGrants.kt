@@ -41,8 +41,11 @@ class ResourceGrants(
     /** The attempts whose free at their end failed, with its reason, freed again on the next tick (bl-204). */
     private val unfreed = mutableMapOf<AttemptId, String>()
 
-    /** The locks whose provider `release` ran already, so a free tried again never releases twice (bl-204). */
-    private val givenBack = mutableSetOf<ResourceLock>()
+    /**
+     * The locks, by attempt, kind and resource id, whose provider `release` ran already, so a free tried again never
+     * releases twice (bl-204).
+     */
+    private val givenBack = mutableSetOf<Triple<AttemptId, String, String>>()
 
     /**
      * One pass over the locks: the abandoned rows of other projects and the frees that failed, then the releases and the
@@ -56,12 +59,15 @@ class ResourceGrants(
             }
             val released = mine().getOrElse { return@withLock Result.failure(it) }.filter { it.releaseRequestedAt != null }
             for (lock in released) {
-                giveBack(lock)
-                locks.release(lock.attemptId, lock.kind, lock.resourceId).onFailure { failed(lock, "cannot free: ${it.describe()}") }
+                giveBackOnce(lock)
+                locks
+                    .release(lock.attemptId, lock.kind, lock.resourceId)
+                    .onSuccess { givenBack -= lock.key }
+                    .onFailure { failed(lock, "cannot free: ${it.describe()}") }
             }
             val unprepared =
                 mine().getOrElse { return@withLock Result.failure(it) }.filter {
-                    it.releaseRequestedAt == null && it.prepared == null && it.prepareError == null
+                    it.releaseRequestedAt == null && it.prepared == null && it.prepareError == null && it.attemptId !in unfreed
                 }
             for (lock in unprepared) {
                 val outcome = prepare(lock)
@@ -91,19 +97,24 @@ class ResourceGrants(
                 unfreed[attemptId] = reason
                 return Result.failure(error)
             }
-        rows.locks.filter { it.attemptId == attemptId && it !in givenBack }.forEach { lock ->
-            giveBack(lock)
-            givenBack += lock
-        }
+        rows.locks.filter { it.attemptId == attemptId }.forEach { giveBackOnce(it) }
         return locks
             .freeAttempt(attemptId, reason)
             .onSuccess {
                 unfreed -= attemptId
-                givenBack.removeAll { it.attemptId == attemptId }
+                givenBack.removeAll { it.first == attemptId }
             }.onFailure { unfreed[attemptId] = reason }
     }
 
     private suspend fun mine(): Result<List<ResourceLock>> = locks.rows().map { rows -> rows.locks.filter { it.projectId == projectId } }
+
+    /** Runs [giveBack] for [lock] unless it ran already for the same holder and resource; an unprepared lock has none. */
+    private suspend fun giveBackOnce(lock: ResourceLock) {
+        if (lock.prepared == null && lock.prepareError == null) return
+        if (givenBack.add(lock.key)) giveBack(lock)
+    }
+
+    private val ResourceLock.key: Triple<AttemptId, String, String> get() = Triple(attemptId, kind, resourceId)
 
     /** Runs the provider's `release` of [lock] when its prepare ran, even when it failed, since it may have started something. */
     private suspend fun giveBack(lock: ResourceLock) {
