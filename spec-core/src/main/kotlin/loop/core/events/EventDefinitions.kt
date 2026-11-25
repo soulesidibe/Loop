@@ -86,6 +86,9 @@ object EventDefinitions {
             IssueParked,
             IssueUnparked,
             CandidateSkipped,
+            // Resources.
+            ResourceGranted,
+            ResourceReleased,
             // The run.
             Preflight,
             ConfigReloaded,
