@@ -1,7 +1,7 @@
 ---
 id: m4-32
 title: "loop send-back, which is bl-89's loop reject"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-52]
@@ -61,4 +61,18 @@ Carries the manual half of bl-89. Since m3-15, a red CI ends the CI wait with a 
   - rollback_cost: two_way, A revert removes the command and code. The sent_back keys in the wait data and the new events are additive and cause no schema change, so only existing events and comments remain.
   - error_detection: loud, Each refusal exits with its own code and a message, and a store failure fails the command. A comment or event write failure only warns on stderr, though the reason still reaches the agent through the store.
   - band floor medium: the reviewer's diff was cut to fit its prompt limit, 15 of 23 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
+
+2026-11-25 16:45Z loop: Loop did not merge pull request #71: main at a9f1e95bab581823811ead904526b69444d20da8 was merged into loop/m4-32, but the checks failed on the result (a check failed). The merge commit stays on the branch. The next attempt fixes the result and submits it again.
+
+2026-11-25 16:51Z loop: Loop updated pull request #71 for this issue: https://github.com/soulesidibe/Loop/pull/71
+
+2026-11-25 16:55Z loop: Loop did not merge pull request #71 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.27.
+  - alignment: aligned, The diff adds the send-back command, its exit codes, the no-slot rule, the new retry kind and the docs the issue asks for, and the orchestrator change is small, at call sites.
+  - impact: medium, It adds an opt-in command but touches the shared wait model, the store, dispatch hold logic, prompt variables and the orchestrator.
+  - verification: strong, Each acceptance criterion has its own test, including the refusal cases, the no-slot case, the red CI case and unit and store tests.
+  - rollback_cost: two_way, A revert removes the command and code, and the sent_back wait data keys and events are additive with no schema migration.
+  - error_detection: loud, Each refusal exits with its own code and a message and a store failure fails the command, while a comment or event write failure only warns on stderr.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 18 of 25 changed files left out in whole or in part
   Once approved, Loop runs the merge check again and merges.
