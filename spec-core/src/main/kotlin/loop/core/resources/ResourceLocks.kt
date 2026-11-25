@@ -205,7 +205,9 @@ class ResourceLocks(
         kind: String,
         resourceId: String,
     ): Result<ResourceChange> =
-        change(reason = ResourceReleased.RELEASED) { rows -> ResourceQueue.clearDirty(rows, kind, resourceId, clock.now()).let { it to it } }
+        change(
+            reason = ResourceReleased.RELEASED,
+        ) { rows -> ResourceQueue.clearDirty(rows, kind, resourceId, clock.now()).let { it to it } }
 
     /** Frees every lock and queue row of the project [projectId], each freed lock recorded with [reason]. */
     suspend fun freeProject(
@@ -245,7 +247,8 @@ class ResourceLocks(
     private fun event(
         event: RecordedEvent,
         lock: ResourceLock,
-    ): RecordedEvent = event.copy(runId = runId, issueId = lock.issueId, issueIdentifier = lock.issueIdentifier, attemptId = lock.attemptId.ofEvent())
+    ): RecordedEvent =
+        event.copy(runId = runId, issueId = lock.issueId, issueIdentifier = lock.issueIdentifier, attemptId = lock.attemptId.ofEvent())
 
     /**
      * The attempt id an event of a lock of this holder carries: none for a check's holder (m4-26), `check-<uuid>`,

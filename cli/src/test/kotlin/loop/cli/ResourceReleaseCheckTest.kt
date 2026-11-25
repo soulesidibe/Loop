@@ -230,7 +230,8 @@ class ResourceReleaseCheckTest {
     /** Marks [resource] dirty in the machine's store, as a failed check of an earlier run left it. */
     private fun markDirty() {
         SqliteEventStore.open(fixture.loopHome, fixture.projectDir, Redactor.NONE).getOrThrow().use { store ->
-            val mark = DirtyResource("fake-device", resource, ProjectId(fixture.projectId()), "provider", "app installed", Clock.System.now())
+            val mark =
+                DirtyResource("fake-device", resource, ProjectId(fixture.projectId()), "provider", "app installed", Clock.System.now())
             runBlocking {
                 store.updateResourceLocks { rows -> ResourceLockUpdate(rows.copy(dirty = rows.dirty + mark), Unit) }.getOrThrow()
             }

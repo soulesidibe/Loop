@@ -89,7 +89,10 @@ class CheckResourceTest {
         opener.join()
 
         assertEquals(0, run.exitCode, run.toString())
-        val resourceEvents = fixture.query("SELECT kind, issue_identifier, attempt_id, data FROM events WHERE kind LIKE 'resource_%' ORDER BY seq")
+        val resourceEvents =
+            fixture.query(
+                "SELECT kind, issue_identifier, attempt_id, data FROM events WHERE kind LIKE 'resource_%' ORDER BY seq",
+            )
         assertTrue(queuedAt != null && queued().isNotEmpty(), "a third check waited in the queue: ${log.readLines()}\n$resourceEvents")
         listOf("t-1", "t-2", "t-3").forEach { assertEquals("review", fixture.stateOf(it), "$it\n$run") }
         val lines = log.readLines()
@@ -240,7 +243,12 @@ class CheckResourceTest {
             createContext("/acme/widgets.git/") { exchange -> gitServer.handle(exchange) }
             createContext("/api/") { exchange ->
                 val (status, body) =
-                    answer(exchange.requestMethod, exchange.requestURI.path, exchange.requestURI.query.orEmpty(), exchange.requestBody.readBytes().decodeToString())
+                    answer(
+                        exchange.requestMethod,
+                        exchange.requestURI.path,
+                        exchange.requestURI.query.orEmpty(),
+                        exchange.requestBody.readBytes().decodeToString(),
+                    )
                 exchange.responseHeaders.add("Content-Type", "application/json; charset=utf-8")
                 exchange.responseHeaders.add("x-ratelimit-remaining", "4999")
                 val bytes = body.toByteArray()
@@ -294,7 +302,10 @@ class CheckResourceTest {
                             mapOf(
                                 "state" to JsonPrimitive("closed"),
                                 "merged_at" to JsonPrimitive("2026-11-25T10:00:00Z"),
-                                "head" to JsonObject(mapOf("ref" to JsonPrimitive(head.removePrefix("acme:")), "sha" to JsonPrimitive(sha))),
+                                "head" to
+                                    JsonObject(
+                                        mapOf("ref" to JsonPrimitive(head.removePrefix("acme:")), "sha" to JsonPrimitive(sha)),
+                                    ),
                             ),
                     )
                 200 to """{"sha":"${"ab".repeat(20)}","merged":true,"message":"Pull Request successfully merged"}"""

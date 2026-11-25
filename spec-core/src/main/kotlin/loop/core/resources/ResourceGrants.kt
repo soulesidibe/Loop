@@ -195,7 +195,10 @@ class ResourceGrants(
     private suspend fun fullCheck(resource: ResourceDeclaration): String? {
         val provider = providers[resource.kind]
         val prepared =
-            if (provider == null) emptyMap() else guarded { provider.prepare(resource) }.getOrElse { return "prepare failed: ${it.describe()}" }
+            when (provider) {
+                null -> emptyMap()
+                else -> guarded { provider.prepare(resource) }.getOrElse { return "prepare failed: ${it.describe()}" }
+            }
         val declared = ReadOnlyChecks.run(resource, prepared, commands)
         if (provider == null) return declared
         val released = guarded { provider.release(resource) }.exceptionOrNull()?.let { "release failed: ${it.describe()}" }

@@ -219,7 +219,11 @@ class StatusCommand(
                             details(
                                 "check" to dirty.check,
                                 "since" to seconds(dirty.markedAt),
-                                "difference" to dirty.difference.lineSequence().first().take(DIFFERENCE_SHOWN),
+                                "difference" to
+                                    dirty.difference
+                                        .lineSequence()
+                                        .first()
+                                        .take(DIFFERENCE_SHOWN),
                                 "queue" to queue.ifEmpty { null },
                             )
                     // m4-26: free with a queue, the requests wait for a machine limit.
@@ -228,9 +232,6 @@ class StatusCommand(
             "Resource $kind $resourceId  $state"
         }
     }
-
-    /** The most of a dirty mark's difference a resource line shows (m4-26). */
-    private val DIFFERENCE_SHOWN = 120
 
     private fun of(limit: String?): String = limit?.let { " of $it" } ?: ""
 
@@ -327,6 +328,10 @@ class StatusCommand(
 
     private companion object {
         const val DEFAULT_WORKFLOW = "WORKFLOW.md"
+
+        /** The most of a dirty mark's difference a resource line shows (m4-26). */
+        const val DIFFERENCE_SHOWN = 120
+
         const val RUNNING = "running"
         const val RETRYING = "retrying"
         const val WAITING = "waiting"

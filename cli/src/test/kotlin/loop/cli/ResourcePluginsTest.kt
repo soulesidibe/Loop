@@ -122,7 +122,9 @@ class FakeResourceProvider : ResourceProvider {
         val calls: MutableList<Call> = CopyOnWriteArrayList()
 
         /** The resource ids whose read only check finds a difference (m4-26), the others pass. */
-        val changed: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+        val changed: MutableSet<String> =
+            java.util.concurrent.ConcurrentHashMap
+                .newKeySet()
     }
 
     /** One provider call: `prepare`, `release` or `check` of the resource [id], run by the process [pid]. */

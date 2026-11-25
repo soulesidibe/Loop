@@ -24,7 +24,9 @@ internal suspend fun withCheckResource(
     val identifier = env[ISSUE_IDENTIFIER] ?: issueId
     return grants
         .withCheckResource(kind, issueId, identifier) { prepared -> run(ReadOnlyChecks.env(prepared)) }
-        .getOrElse { error -> CheckResult(null, timedOut = false, durationMs = 0, startError = "cannot hold a $kind resource: ${error.sentence()}") }
+        .getOrElse { error ->
+            CheckResult(null, timedOut = false, durationMs = 0, startError = "cannot hold a $kind resource: ${error.sentence()}")
+        }
 }
 
 private const val ISSUE_ID = "LOOP_ISSUE_ID"
