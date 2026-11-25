@@ -27,7 +27,9 @@ class ResourcePluginsTest {
     fun `a fake provider registered through a test services file is loaded and serves its kinds`() {
         val plugins = ResourcePlugins.discover(root.resolve("no-plugins")).getOrThrow()
 
-        assertEquals(listOf("fake-device", "fake-emulator"), plugins.kinds)
+        // m4-27: the iOS simulator provider of resource-ios, on the runtime classpath, comes after the test's fake.
+        assertEquals(listOf("fake-device", "fake-emulator", "ios-simulator"), plugins.kinds)
+        assertEquals("loop.resource.ios.IosSimulatorProvider", plugins.provider("ios-simulator")?.javaClass?.name)
         assertIs<FakeResourceProvider>(plugins.provider("fake-device"))
         assertIs<FakeResourceProvider>(plugins.provider("fake-emulator"))
         assertNull(plugins.provider("avd"))

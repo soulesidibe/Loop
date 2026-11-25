@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# A fake xcrun for the tests of the iOS simulator provider (m4-27). It records each call, one line of arguments
+# separated by tabs, in $FAKE_XCRUN_STATE/calls, and answers like `xcrun simctl` over the simulators of
+# $FAKE_XCRUN_STATE/devices, one file per UDID holding its name on the first line and its state on the second.
+# FAKE_XCRUN_FAIL=<subcommand> makes that subcommand exit with FAKE_XCRUN_FAIL_CODE (3 by default), and
+# FAKE_XCRUN_HANG=<subcommand> makes it hang.
+set -u
+state="${FAKE_XCRUN_STATE:?FAKE_XCRUN_STATE is not set}"
+devices="$state/devices"
+mkdir -p "$devices"
+(
+    IFS=$'\t'
+    printf '%s\n' "$*"
+) >>"$state/calls"
+
+if [ "${1:-}" != "simctl" ]; then
+    echo "xcrun: error: unknown tool ${1:-}" >&2
+    exit 72
+fi
+command="${2:-}"
+shift 2
+
+if [ "${FAKE_XCRUN_HANG:-}" = "$command" ]; then
+    exec sleep 600
+fi
+if [ "${FAKE_XCRUN_FAIL:-}" = "$command" ]; then
+    echo "An error was encountered processing the command (domain=com.apple.CoreSimulator.SimError, code=405)" >&2
+    exit "${FAKE_XCRUN_FAIL_CODE:-3}"
+fi
+
+name_of() { sed -n 1p "$devices/$1"; }
+state_of() { sed -n 2p "$devices/$1"; }
+set_state() {
+    local name
+    name="$(name_of "$1")"
+    printf '%s\n%s\n' "$name" "$2" >"$devices/$1"
+}
+invalid() {
+    echo "Invalid device: $1" >&2
+    exit 148
+}
+# A UDID or a name, as simctl takes either.
+resolve() {
+    local file
+    if [ -f "$devices/$1" ]; then
+        echo "$1"
+        return
+    fi
+    for file in "$devices"/*; do
+        [ -f "$file" ] || continue
+        if [ "$(sed -n 1p "$file")" = "$1" ]; then
+            basename "$file"
+            return
+        fi
+    done
+    invalid "$1"
+}
+new_udid() {
+    local count
+    count=$(($(cat "$state/counter" 2>/dev/null || echo 0) + 1))
+    echo "$count" >"$state/counter"
+    printf 'FAKE0000-0000-0000-0000-%012d\n' "$count"
+}
+
+case "$command" in
+list)
+    printf '{\n  "devices" : {\n    "com.apple.CoreSimulator.SimRuntime.iOS-18-2" : [\n'
+    first=1
+    for file in "$devices"/*; do
+        [ -f "$file" ] || continue
+        [ $first -eq 1 ] || printf ',\n'
+        first=0
+        printf '      {\n        "udid" : "%s",\n        "isAvailable" : true,\n        "state" : "%s",\n        "name" : "%s"\n      }' \
+            "$(basename "$file")" "$(sed -n 2p "$file")" "$(sed -n 1p "$file")"
+    done
+    printf '\n    ]\n  }\n}\n'
+    ;;
+create)
+    udid="$(new_udid)"
+    printf '%s\n%s\n' "$1" "Shutdown" >"$devices/$udid"
+    echo "$udid"
+    ;;
+clone)
+    source="$(resolve "$1")"
+    if [ "$(state_of "$source")" != "Shutdown" ]; then
+        echo "Unable to clone device in current state: $(state_of "$source")" >&2
+        exit 149
+    fi
+    udid="$(new_udid)"
+    printf '%s\n%s\n' "$2" "Shutdown" >"$devices/$udid"
+    echo "$udid"
+    ;;
+boot)
+    udid="$(resolve "$1")"
+    if [ "$(state_of "$udid")" != "Shutdown" ]; then
+        echo "Unable to boot device in current state: $(state_of "$udid")" >&2
+        exit 149
+    fi
+    set_state "$udid" "Booted"
+    ;;
+bootstatus)
+    udid="$(resolve "$1")"
+    [ "$(state_of "$udid")" = "Booted" ] || { echo "Device is not booted" >&2; exit 164; }
+    echo "Device already booted, nothing to do."
+    ;;
+shutdown)
+    udid="$(resolve "$1")"
+    if [ "$(state_of "$udid")" != "Booted" ]; then
+        echo "Unable to shutdown device in current state: $(state_of "$udid")" >&2
+        exit 149
+    fi
+    set_state "$udid" "Shutdown"
+    ;;
+delete)
+    udid="$(resolve "$1")"
+    if [ "$(state_of "$udid")" != "Shutdown" ]; then
+        echo "Unable to delete a device in state $(state_of "$udid")" >&2
+        exit 149
+    fi
+    rm "$devices/$udid"
+    ;;
+*)
+    echo "Unknown subcommand: $command" >&2
+    exit 64
+    ;;
+esac

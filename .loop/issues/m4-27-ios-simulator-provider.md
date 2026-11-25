@@ -1,7 +1,7 @@
 ---
 id: m4-27
 title: "iOS simulator provider"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-01, m4-26]
@@ -50,3 +50,20 @@ Premise, checked before the first edit: no Gradle edit needed. m4-01 created the
   - bl-208 finding 5: `guarded` in `ResourceGrants.kt` catches `Throwable` except `CancellationException`, so a plugin `Error` (a `LinkageError` from a provider jar) cannot kill the run, and in `endAttempt` the free gets its own try so `dropRequests` and `deleteDirectory` still run.
   - bl-208 finding 12: `ResourceProvider.prepare` receives the attempt id (plugin-api change, documented), and the provider uses it where it names what it creates.
   If m4-27 and m4-28 both change the shared core (findings 2, 5 and 12), the second to merge rebases on the first; the core change is made once.
+
+2026-11-25 10:56Z agent 2d5a0120: m4-27 done, for review. Two decisions to check:
+  1. ResourceDeclaration had no field for a device type, a runtime or a base, so a resources entry gains an optional `provider` map (like `tracker.provider`), read into `ResourceDeclaration.provider` as text (plugin-api and spec-core, not protected). Keys: device_type, runtime, base, prepare_timeout_seconds (default 300, 1 to 3600).
+  2. prepare receives no holder, so the simulator is named `loop-sim-<resource id>-<pid>`, not with the attempt id. The pid is there because `loop run` calls every provider's recover at startup: without it, a run of another Loop home of the machine (Loop's own cli tests included) would delete the simulators of a live run. The provider only removes a simulator of that shape whose process is the current one or dead, and recover also keeps those with a live ios-simulator holder. recover does nothing when no xcrun is on the PATH (Linux hosts).
+  Proof: resource-ios tests (33 passed, the contract for a created and a cloned simulator, on a fake xcrun), spec-core and cli resource tests, ktlint. Profile in docs/plugins/resource-ios.md, decisions in spec-decisions "iOS simulator provider (extension, m4-27)".
+
+2026-11-25 11:01Z loop: Loop opened pull request #66 for this issue: https://github.com/soulesidibe/Loop/pull/66
+
+2026-11-25 11:05Z loop: Loop did not merge pull request #66 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.40.
+  - alignment: partial, The provider and its profile are delivered, but the diff does not touch ResourceGrants or the core. The required bl-208 findings 2 (core timeout, mutex) and 5 (guarded Throwable) are missing, and finding 12 (prepare receives the attempt id) was replaced by naming simulators with the resource id and
+  - impact: medium, It adds a new provider to cli's runtime classpath, whose recover runs at every loop run startup. It also adds a field to the shared ResourceDeclaration and changes the resources parser.
+  - verification: strong, A fake xcrun script records arguments. Tests cover create, clone, release, recover, failing and hanging calls, setting refusals and the shared contract. The core findings have no tests.
+  - rollback_cost: two_way, The change is code, docs and a services file, so a revert undoes it. A simulator left behind by a run is cleaned by recover.
+  - error_detection: loud, A failing or hanging xcrun call raises a ResourceException naming the command and its exit code or timeout, and invalid settings fail prepare with a clear message. recover is skipped when no xcrun is on the PATH.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 4 of 16 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
