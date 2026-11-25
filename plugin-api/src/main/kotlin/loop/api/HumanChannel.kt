@@ -49,13 +49,14 @@ public value class HumanEvent(
 ) {
     /**
      * The command, without its issue, that answers this event, null for an event this Loop does not know and for
-     * [ChangesRequested], which the human answers on the pull request.
+     * [ChangesRequested], which the human answers on the pull request. [ApprovedGreen] is answered by `loop approve`,
+     * which merges the pull request after a new merge check, or by a merge on the provider.
      */
     public val command: String?
         get() =
             when (this) {
                 Parked -> "loop resume"
-                ApprovalWaiting, DeliveryFailed -> "loop approve"
+                ApprovalWaiting, DeliveryFailed, ApprovedGreen -> "loop approve"
                 Question -> "loop answer"
                 else -> null
             }
@@ -79,7 +80,13 @@ public value class HumanEvent(
          */
         public val ChangesRequested: HumanEvent = HumanEvent("changes_requested")
 
+        /**
+         * A pull request that waits for a new approval is approved on its head and green there, by its Actions runs or
+         * by the merge check (m4-37): it is ready to merge.
+         */
+        public val ApprovedGreen: HumanEvent = HumanEvent("approved_green")
+
         /** Every event this Loop knows, in this order. */
-        public val KNOWN: List<HumanEvent> = listOf(Parked, ApprovalWaiting, DeliveryFailed, Question, ChangesRequested)
+        public val KNOWN: List<HumanEvent> = listOf(Parked, ApprovalWaiting, DeliveryFailed, Question, ChangesRequested, ApprovedGreen)
     }
 }

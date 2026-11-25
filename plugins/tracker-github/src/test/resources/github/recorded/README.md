@@ -74,3 +74,10 @@ Written by hand for the `changes_requested` reaction (m4-36), after the shapes G
 | `pull-request-7-reviews` | `GET /repos/octocat/Hello-World/pulls/7/reviews?per_page=100`: 200 with five reviews by collaborators, oldest first: 80 `COMMENTED` by octocat on the older head `e5bd3914e2e5`, 81 `CHANGES_REQUESTED` by monalisa on that older head, 82 `CHANGES_REQUESTED` by octocat on the current head, 83 `APPROVED` by hubot on the current head, 84 `COMMENTED` by octocat on the current head |
 | `pull-request-7-review-comments` | `GET /repos/octocat/Hello-World/pulls/7/comments?sort=created&direction=desc&per_page=100`: 200 with three review comments by collaborators, newest first: 1003 and 1002 of review 82 on `src/main/kotlin/Lists.kt`, an outdated one with a null `line` and `original_line` 30 and one on line 12, then 1001 of review 81 on `README.md` line 3 |
 | `reviews-forbidden` | the reviews listing with a token that lacks pull requests read: 403 `Resource not accessible by personal access token` with `x-accepted-github-permissions: pull_requests=read` |
+
+Written by hand for the `approved_green` reaction (m4-37), after the same shapes, because no review can be left on a repository no test may write to and GitHub Actions refuses every job of Loop's repositories for billing since 2026-11-16, so no green run can be recorded. Both are on pull request 7's current head, `6dcb09b5b578`:
+
+| Name | Response |
+|---|---|
+| `pull-request-7-reviews-approved` | `GET /repos/octocat/Hello-World/pulls/7/reviews?per_page=100`: 200 with five reviews by collaborators, oldest first: 80 `COMMENTED` by octocat and 81 `CHANGES_REQUESTED` by monalisa on the older head `e5bd3914e2e5`, then on the current head 83 `APPROVED` by hubot, 85 `APPROVED` by monalisa, which replaces her change request, and 86 `COMMENTED` by octocat |
+| `actions-runs-green` | `GET /repos/octocat/Hello-World/actions/runs?head_sha=<sha>&per_page=100`: 200 with two completed runs of the current head, `build` on `push` (run 30433710, `success`) and `lint` on `pull_request` (run 30433711, `success`) |

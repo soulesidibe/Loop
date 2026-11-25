@@ -21,6 +21,7 @@ import loop.api.RunId
 import loop.api.SecretRedactor
 import loop.core.channel.TerminalChannel
 import loop.core.events.DeliveryQueuePaused
+import loop.core.events.MergeCheckFinished
 import loop.core.events.ReactionSkipped
 import loop.core.events.ReactionTriggered
 import loop.core.events.RunStopped
@@ -448,6 +449,10 @@ class RunCommand(
                     store.eventsOfKinds(projectId, setOf(ReactionTriggered.name, ReactionSkipped.name)).map { stored ->
                         stored.map { it.event }
                     }
+                },
+                // m4-37: the merge checks of every run, so approved_green under ci: none knows the head the check passed on.
+                mergeChecksBefore = {
+                    store.eventsOfKinds(projectId, setOf(MergeCheckFinished.name)).map { stored -> stored.map { it.event } }
                 },
             )
         log.log(

@@ -8,7 +8,8 @@ import loop.core.workflow.WorkflowError
  * takes. `ci_failed` and `changes_requested` take `retries` (an integer of 0 or more) and `escalate_after` (a duration
  * such as `4h`), and `changes_requested` takes `trusted_associations` (m4-36), a non empty list of GitHub author
  * associations; `merge_conflict` and `approved_green` take `action` only. An unknown reaction, an unknown action and a
- * bad option are each a [WorkflowError.InvalidConfig] naming the key, so the preflight refuses the workflow.
+ * bad option are each a [WorkflowError.InvalidConfig] naming the key, so the preflight refuses the workflow. Since m4-37
+ * `approved_green` takes `notify_human` only: an approved and green pull request gives an agent nothing to do.
  */
 internal object ReactionsParser {
     private const val KEY = "reactions"
@@ -73,6 +74,11 @@ internal object ReactionsParser {
                     "$name.$ACTION is \"$written\", which is not an action Loop knows, use " +
                         ReactionAction.entries.joinToString(", ") { it.wire },
                 )
+        if (key == ReactionsConfig.APPROVED_GREEN && action != ReactionAction.NotifyHuman) {
+            throw WorkflowError.InvalidConfig(
+                "$name.$ACTION is \"$written\", which $key does not take, use ${ReactionAction.NotifyHuman.wire}",
+            )
+        }
         return Reaction(
             action = action,
             retries = map[RETRIES]?.let { retries(name, it) },

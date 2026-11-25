@@ -3,7 +3,7 @@ id: bl-221
 title: "Findings of the m4-52 review, an answer can be lost before the agent reads it"
 state: todo
 priority: 1
-labels: [needs-triage]
+labels: [ready-for-agent]
 blocked_by: []
 ---
 
@@ -37,3 +37,46 @@ Area: `AnswerCommand.kt`, `Orchestrator.kt` (grep, never read it whole), `Prefli
 Filed from the merge risk review of m4-52. Triage decides which findings are worth fixing; findings 1 to 3 first.
 
 2026-11-25 soule: extended after the merge risk reviews of pull request #71 (m4-32, `loop send-back`), Sonnet 5.5 then Fable 5.2. Finding 1 also covers `sentBack?.let { endWaiting(it) }` (branch `Orchestrator.kt`, around line 2777) and `dispatchSentBacks`: fix the answer and the send back in one change, keeping the wait in the store until the attempt has at least one completed turn, so `budgetEnd(turns = 0)`, a failed open, a `loop stop`, a crash or a first turn that errors all leave it; tests after a send back and after an answer. Correction to finding 1: the answer is not lost to the agent entirely, the comment is in `issue.description` on the files tracker (`FilesTracker.kt`, around line 382) and on GitHub (`GitHubTracker.kt`, around lines 23 to 24 and 124), and `WORKFLOW.md` renders the description; what is lost is `loop.answer`, `loop.verify_findings` and the retry kind. The budget path cannot happen on Loop's own repository, which has no budgets. Finding 3 also covers `SendBackCommand`, which uses `project.tracker()` the same way. Finding 2's PLAN 8.9 rows: add `sent_back` beside `answer` to the `loop.retry_kind` row (around line 546) and the send back to the `loop.verify_findings` row (around line 544).
+
+2026-11-25 soule: triaged ready-for-agent, with bl-222 finding 1 folded in (`loop approve` on a sent back wait). Finding 2's `WORKFLOW.md` block is already on main (a9f1e95); its preflight warning and PLAN rows are in the brief.
+
+## Agent Brief
+
+**Category:** bug
+**Summary:** an answered or sent back wait survives until the agent has really started on it, its comment lands on the issue's own tracker, and `loop approve` refuses a sent back wait.
+
+**Current behavior:**
+- At dispatch, after `loop answer` or `loop send-back`, the orchestrator renders the prompt with `loop.answer` or the send back reason (`loop.verify_findings`, `loop.retry_kind` = `answer` or `sent_back`) and ends the wait right after the render. A budget breach at dispatch (`budgetEnd` with zero turns), a session that fails to open, a `loop stop`, a crash, or a first turn that errors before completing then loses the answer or reason for every later attempt: the wait row is gone and the in memory maps (`dispatchAnswers`, `dispatchSentBacks`) are cleared.
+- `loop answer` and `loop send-back` post their comment through the project's primary tracker, so for an issue of another tracker (a namespaced id such as `local:x-1`) `addComment` fails, the command warns on stderr and still exits 0 saying it answered or sent back.
+- Preflight renders a sample with `loop.answer` set but says nothing when a workflow's template never reads `loop.answer`, so a workflow can lose every answer silently.
+- `loop approve` on an approval wait that was sent back reports "Approved", records `approval_given` and a `human_touch`, exits 0, while the store's `approve` leaves the row unchanged; nothing is approved.
+- `loop.answer` has no size cap. The `question` notice says `loop answer <issue>` without the text argument.
+
+**Desired behavior:**
+1. An answered or sent back wait stays in the store, with its answer or reason, until the attempt that carries it has completed at least one turn. On every earlier end (budget end at zero turns, failed open, cancel, stop, crash, first turn failing) the next dispatch renders the same `loop.answer` or reason and the same retry kind again. Once a turn completed, the wait ends as today. Apply the same rule to both the answer and the send back, in one place.
+2. `loop answer` and `loop send-back` post their comment on the tracker the issue belongs to, resolved from the issue id's namespace like the tracker poll does, and a comment that cannot be posted is reported with the issue id, as today's warning.
+3. Preflight warns (does not refuse) when the workflow can ask (the `ask` tool is offered) and the prompt template never reads `loop.answer`.
+4. `loop approve` refuses a wait that was sent back: exit 4, a message saying the issue was sent back and Loop dispatches it with the reason, nothing recorded, nothing changed.
+5. `loop answer` refuses an answer over a fixed size (pick a limit and an exit code, document both); the `question` notice names the command as `loop answer <issue> "<text>"`; the docs say an answer starting with `-` needs `--` before it.
+
+**Key interfaces:**
+- The answered and sent back wait (`Wait.Ask` answered, `Wait.Approval` sent back) and where the orchestrator ends it after the render.
+- `AnswerCommand`, `SendBackCommand`, `ApproveCommand` and how they get a tracker (`OpenProject.tracker()` versus the per namespace registry the tracker poll uses).
+- Preflight's prompt sample for `loop.answer`.
+- `docs/PLAN.md` 8.9 variable table: add a `loop.answer` row, add `answer` and `sent_back` to the `loop.retry_kind` row, and the send back to the `loop.verify_findings` row.
+
+**Acceptance criteria:**
+- [ ] An orchestrator test: an issue answered with `loop answer` whose attempt ends at a budget breach before its first turn, then a second dispatch whose first prompt still carries the question and the answer with retry kind `answer`.
+- [ ] The same with a session that fails to open, and the same two cases after `loop send-back` (the reason and retry kind `sent_back` carried again).
+- [ ] A test that a completed first turn ends the wait, so a third dispatch carries no answer.
+- [ ] A CLI test with two trackers: `loop answer` and `loop send-back` on a namespaced issue of the second tracker post the comment there (assert the comment on a real issue).
+- [ ] A preflight test: a workflow offering `ask` whose template never reads `loop.answer` gets a warning; one that reads it gets none.
+- [ ] A CLI test: `loop approve` after `loop send-back` exits 4, prints the refusal, and records no `approval_given` and no `human_touch`.
+- [ ] A CLI test for the answer size refusal.
+- [ ] `docs/PLAN.md` 8.9 rows and `docs/spec-decisions.md` updated, including the corrected sentence that a failure only before the render keeps the wait.
+- [ ] `./gradlew build` passes.
+
+**Out of scope:**
+- The other reactions' wait races (bl-224) and the `WORKFLOW.md` `sent_back` block (bl-222 finding 3, a human step).
+- Persisting `verifyFindings` of refutations or reactions.
+- bl-222 findings 2 and 4 to 7.

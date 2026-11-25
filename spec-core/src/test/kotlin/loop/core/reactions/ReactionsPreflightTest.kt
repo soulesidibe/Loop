@@ -102,6 +102,14 @@ class ReactionsPreflightTest {
     }
 
     @Test
+    fun `m4-37, approved_green takes notify_human only, an approved and green pull request gives an agent nothing to do`() {
+        assertEquals(
+            "reactions.approved_green.action is \"send_to_agent\", which approved_green does not take, use notify_human",
+            refused("reactions:\n  approved_green: { action: send_to_agent }"),
+        )
+    }
+
+    @Test
     fun `preflight refuses a bad option`() {
         assertEquals(
             "reactions.ci_failed.retries must be an integer of 0 or more",
