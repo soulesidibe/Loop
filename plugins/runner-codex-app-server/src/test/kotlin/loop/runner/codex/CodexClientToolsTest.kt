@@ -36,8 +36,8 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * m3-22, 17.5 items 15 and 16 (tools 1): Loop's tools, `submit_result`, `move` and `comment`, are the Codex thread's
- * client tools. The thread start declares them, built from the attempt's tool config snapshot, so `move` accepts the
+ * m3-22, 17.5 items 15 and 16 (tools 1): Loop's tools, `submit_result`, `move`, `comment` and, since m4-31, `ask`, are
+ * the Codex thread's client tools. The thread start declares them, built from the attempt's tool config snapshot, so `move` accepts the
  * states of the workflow's tracker; a call is run through `loop tool mcp`, here a [FakeLoopTool], and its reply goes
  * back to the session. Since m4-51 a workflow with `resources:` adds `request_resource` and `release_resource`, whose
  * answers, those of m4-25, reach the session unchanged. Every message is checked against the pinned schema; the tool
@@ -86,7 +86,7 @@ class CodexClientToolsTest {
                 .getValue("dynamicTools")
                 .jsonArray
                 .map { it.jsonObject }
-        assertEquals(listOf("submit_result", "move", "comment"), tools.map { it.string("name") })
+        assertEquals(listOf("submit_result", "move", "comment", "ask"), tools.map { it.string("name") })
         tools.forEach { tool ->
             assertEquals(emptyList(), schema.problems("v2/DynamicToolSpec", tool), "$tool")
             assertEquals("function", tool.string("type"))
@@ -100,7 +100,7 @@ class CodexClientToolsTest {
         // The rest of the request is the stable thread/start.
         val stable = JsonObject(thread + ("params" to JsonObject(thread.obj("params") - "dynamicTools")))
         assertEquals(emptyList(), schema.problems("ClientRequest", stable))
-        val (submit, move, comment) = tools.map { it.obj("inputSchema") }
+        val (submit, move, comment, ask) = tools.map { it.obj("inputSchema") }
         assertEquals(
             listOf("status", "deliverable", "summary", "acceptance", "residual_human_steps", "followups", "notes_for_next_attempt"),
             submit.obj("properties").keys.toList(),
@@ -119,6 +119,8 @@ class CodexClientToolsTest {
         assertEquals(listOf("state"), move.getValue("required").jsonArray.map { it.jsonPrimitive.content })
         assertEquals("string", comment.obj("properties").obj("text").string("type"))
         assertEquals(listOf("text"), comment.getValue("required").jsonArray.map { it.jsonPrimitive.content })
+        assertEquals(listOf("kind", "question", "options", "recommendation"), ask.obj("properties").keys.toList())
+        assertEquals(listOf("kind", "question"), ask.getValue("required").jsonArray.map { it.jsonPrimitive.content })
         assertEquals(0, loop.runs(), "no call, so loop tool mcp never ran")
     }
 
@@ -130,7 +132,7 @@ class CodexClientToolsTest {
         assertEquals(FILES_STATES, stateEnum(move))
         assertTrue("files tracker" in move.string("description").orEmpty(), "$move")
         assertTrue("files tracker" in stateProperty(move).string("description").orEmpty(), "$move")
-        assertEquals(listOf("submit_result", "move", "comment"), tools.map { it.string("name") })
+        assertEquals(listOf("submit_result", "move", "comment", "ask"), tools.map { it.string("name") })
     }
 
     @Test
@@ -141,7 +143,7 @@ class CodexClientToolsTest {
         assertEquals(GITHUB_STATES, stateEnum(move))
         assertTrue("github tracker" in move.string("description").orEmpty(), "$move")
         assertTrue("files" !in move.toString() && "todo" !in move.toString(), "nothing of another tracker: $move")
-        assertEquals(listOf("submit_result", "move", "comment"), tools.map { it.string("name") })
+        assertEquals(listOf("submit_result", "move", "comment", "ask"), tools.map { it.string("name") })
     }
 
     @Test
@@ -232,6 +234,38 @@ class CodexClientToolsTest {
     }
 
     @Test
+    fun `m4-31 ask has kind and question required, options a list of strings, and says it is only for a human`() {
+        val ask = advertised(snapshot("files", FILES_STATES)).single { it.string("name") == "ask" }
+
+        assertEquals(emptyList(), schema.problems("v2/DynamicToolSpec", ask), "$ask")
+        val properties = ask.obj("inputSchema").obj("properties")
+        assertEquals(listOf("engineering", "design", "product", "human"), properties.obj("kind").getValue("enum").jsonArray.map { it.jsonPrimitive.content })
+        assertEquals("string", properties.obj("question").string("type"))
+        assertEquals("array", properties.obj("options").string("type"))
+        assertEquals("string", properties.obj("options").obj("items").string("type"))
+        assertEquals("string", properties.obj("recommendation").string("type"))
+        val description = ask.string("description").orEmpty()
+        assertTrue("only for a question a human must answer" in description, description)
+        assertTrue("Technical choices are your own" in description, description)
+    }
+
+    @Test
+    fun `m4-31 an ask call runs through loop tool mcp and its pending answer reaches the turn unchanged`() {
+        val reply = """{"status":"pending","message":"End your turn now."}"""
+        val arguments =
+            buildJsonObject {
+                put("kind", "product")
+                put("question", "Should the export include archived items?")
+            }
+
+        val call = call("ask", arguments, FakeLoopTool.reply(reply))
+
+        assertEquals(success(reply), call.answer)
+        assertMcpCall(call.loop, "ask", arguments)
+        assertIs<RunnerEvent.TurnCompleted>(call.events.last(), "${call.events}")
+    }
+
+    @Test
     fun `17_5 item 16 a call loop tool mcp refuses gets a failure result and the turn goes on`() {
         val refusal =
             "loop tool mcp: \"shipped\" is not a state of the files tracker. Valid states: todo, review. Nothing queued."
@@ -261,7 +295,7 @@ class CodexClientToolsTest {
 
         val text = text(call.answer)
         assertEquals(failure(text), call.answer)
-        assertTrue("deploy_to_production" in text && "submit_result, move and comment" in text, text)
+        assertTrue("deploy_to_production" in text && "submit_result, move, comment and ask" in text, text)
         assertEquals(0, call.loop.runs())
         assertIs<RunnerEvent.TurnCompleted>(call.events.last(), "${call.events}")
     }
@@ -280,11 +314,14 @@ class CodexClientToolsTest {
     }
 
     @Test
-    fun `m4-51 with resources the thread start carries request_resource and release_resource after Loop's three tools`() {
+    fun `m4-51 with resources the thread start carries request_resource and release_resource after Loop's four tools`() {
         val tools = advertised(snapshot("files", FILES_STATES, resources = listOf("pixel-7", "iphone-16")))
 
-        assertEquals(listOf("submit_result", "move", "comment", "request_resource", "release_resource"), tools.map { it.string("name") })
-        tools.drop(3).forEach { tool ->
+        assertEquals(
+            listOf("submit_result", "move", "comment", "ask", "request_resource", "release_resource"),
+            tools.map { it.string("name") },
+        )
+        tools.drop(4).forEach { tool ->
             assertEquals("function", tool.string("type"))
             assertTrue(tool.string("description").orEmpty().isNotBlank(), "$tool")
             val input = tool.obj("inputSchema")
@@ -297,7 +334,7 @@ class CodexClientToolsTest {
             assertNull(name["enum"], "$tool")
             assertEquals("The name of a resource of the workflow: pixel-7, iphone-16.", name.string("description"))
         }
-        val (request, release) = tools.drop(3).map { it.string("description").orEmpty() }
+        val (request, release) = tools.drop(4).map { it.string("description").orEmpty() }
         assertTrue("status granted" in request && "status queued" in request && "position" in request, request)
         assertTrue("release_resource" in request, request)
         assertTrue("Give back a resource" in release, release)
@@ -308,8 +345,8 @@ class CodexClientToolsTest {
         val absent = advertised(snapshot("files", FILES_STATES))
         val empty = advertised(snapshot("files", FILES_STATES, resources = emptyList()))
 
-        assertEquals(listOf("submit_result", "move", "comment"), absent.map { it.string("name") })
-        assertEquals(listOf("submit_result", "move", "comment"), empty.map { it.string("name") })
+        assertEquals(listOf("submit_result", "move", "comment", "ask"), absent.map { it.string("name") })
+        assertEquals(listOf("submit_result", "move", "comment", "ask"), empty.map { it.string("name") })
     }
 
     @Test
@@ -402,7 +439,7 @@ class CodexClientToolsTest {
 
         val text = text(call.answer)
         assertEquals(failure(text), call.answer)
-        assertTrue("request_resource" in text && "submit_result, move and comment" in text, text)
+        assertTrue("request_resource" in text && "submit_result, move, comment and ask" in text, text)
         assertEquals(0, call.loop.runs())
         assertIs<RunnerEvent.TurnCompleted>(call.events.last(), "${call.events}")
     }
