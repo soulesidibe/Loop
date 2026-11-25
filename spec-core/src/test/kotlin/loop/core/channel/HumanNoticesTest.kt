@@ -180,6 +180,25 @@ class HumanNoticesTest {
     }
 
     @Test
+    fun `m4-31 an ask wait notifies once with the question event, and saved again or restored it does not notify twice`() {
+        val notices = notices()
+        val ask = Wait.ask(project, "default:m4-30", "m4-30", AttemptId("a1"), RunId("r1"), since, state = "todo", questionKind = "product")
+        var saved: Wait.Ask? = null
+
+        runBlocking { notices.asking(ask, "the agent asks a product question") { saved = it } }
+        val noticed = checkNotNull(saved)
+        runBlocking { notices.asking(noticed) { saved = it } }
+        runBlocking { notices().asking(Wait.of(noticed.toRecord()) as Wait.Ask) { saved = it } }
+
+        val notice = shown.single()
+        assertEquals(HumanEvent.Question, notice.event)
+        assertEquals("the agent asks a product question", notice.reason)
+        assertEquals("loop answer m4-30", notice.nextCommand)
+        assertEquals("default:m4-30|ask|$since", noticed.toRecord().data[WaitKeys.HUMAN_NOTICE])
+        assertEquals("question", recorded.single { it.definition == HumanNotified }.data[HumanNotified.EVENT])
+    }
+
+    @Test
     fun `the same wait saved again on a later tick does not notify twice`() {
         val notices = notices()
         val saved = save(notices, approval())

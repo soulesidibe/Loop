@@ -69,6 +69,25 @@ class HumanNotices(
         tell(wait.issueId, wait.identifier, event, reason, wait.pullRequest, wait.since)
     }
 
+    /**
+     * Saves the ask [wait] (m4-31) through [save], with the key of its notice, and tells the human about its question for
+     * [reason] when the wait has not been notified yet, so the same wait saved again or read back after a restart never
+     * notifies twice. Saved before the human is told, as [waiting] does.
+     */
+    suspend fun asking(
+        wait: Wait.Ask,
+        reason: String = "",
+        save: suspend (Wait.Ask) -> Unit,
+    ) {
+        val key = key(wait.issueId, wait.reason.wire, wait.since)
+        if (wait.humanNotice == key) {
+            save(wait)
+            return
+        }
+        save(wait.noticed(key))
+        tell(wait.issueId, wait.identifier, HumanEvent.Question, reason, url = null, at = wait.since)
+    }
+
     /** Tells the human that [park] parked its issue, for [reason]. Called once per park, where the park is recorded. */
     suspend fun parked(
         park: ParkedIssue,

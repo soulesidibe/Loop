@@ -7,7 +7,7 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Instant
 
 /**
- * The waits of one project (m2-04, m2-24, m2-26): the `Waiting(verify | approval | merge)` records in the [store]
+ * The waits of one project (m2-04, m2-24, m2-26, m4-31): the `Waiting(verify | approval | merge | ask)` records in the [store]
  * and their transitions, with the copy in memory that decides for this process. Built per project from the store,
  * so the orchestrator, `loop approve` and `loop status` share it (ADR 0001); it does not do the work a wait waits
  * for: running checks and delivering stay with the orchestrator, merging is `loop.core.merge` (bl-85).
@@ -47,7 +47,7 @@ class Waits(
     fun awaitsApproval(issueId: String): Boolean = held[issueId] == WaitReason.Approval
 
     /**
-     * Reads every wait of the project from the store, once per tick. An approval or a merge wait keeps its issue
+     * Reads every wait of the project from the store, once per tick. An approval, a merge or an ask wait keeps its issue
      * waiting from then on, a verify wait only once its own path resumes it ([hold]). A failed read shows no wait in
      * [current] for this tick and changes nothing in memory.
      */
@@ -56,7 +56,7 @@ class Waits(
         stored = LinkedHashMap()
         read.getOrNull()?.forEach { wait ->
             stored[wait.issueId] = wait
-            if (wait is Wait.Approval || wait is Wait.Merge) hold(wait)
+            if (wait is Wait.Approval || wait is Wait.Merge || wait is Wait.Ask) hold(wait)
         }
         return read
     }

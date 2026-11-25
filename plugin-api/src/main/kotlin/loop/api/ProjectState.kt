@@ -217,6 +217,9 @@ public value class WaitReason(
 
         /** An approved pull request waits for its merge check and its merge (m2-26). */
         public val Merge: WaitReason = WaitReason("merge")
+
+        /** An agent asked a human a question with `ask` (m4-31): the issue waits for the answer or a human move. */
+        public val Ask: WaitReason = WaitReason("ask")
     }
 }
 

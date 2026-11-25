@@ -9,7 +9,7 @@ import loop.core.delivery.MergeCheck
 import kotlin.time.Instant
 
 /**
- * One wait of an issue, `Waiting(verify | approval | merge)` (m2-04, m2-24, m2-26), typed. It is read from and
+ * One wait of an issue, `Waiting(verify | approval | merge | ask)` (m2-04, m2-24, m2-26, m4-31), typed. It is read from and
  * written to the store as a [WaitingIssue] whose data stays an opaque map: [of] translates a record, a record
  * written by an earlier Loop included, and [toRecord] gives it back with every key it was read with, so a wait
  * that goes through this type writes back exactly what it read plus what its transition changed.
@@ -286,6 +286,40 @@ sealed class Wait(
         fun unmerged(): Approval = Approval(with(reason = WaitReason.Approval, data = data - WaitKeys.MERGE_KEYS))
     }
 
+    /**
+     * An agent asked a human a question with `ask` (m4-31): the attempt ended without verification, its workspace kept,
+     * and the issue waits until a human moves it. [state] is the state it was in when the question was asked.
+     */
+    class Ask internal constructor(
+        record: WaitingIssue,
+    ) : Wait(record) {
+        /** The state the issue was in at the ask, null when the record holds none. */
+        val state: String? get() = data[WaitKeys.STATE]
+
+        /** The kind of the question, `engineering`, `design`, `product` or `human`, null when the record holds none. */
+        val questionKind: String? get() = data[WaitKeys.QUESTION_KIND]
+
+        /** The key of the notice a human was sent for this wait (m4-30), null before one was sent. */
+        val humanNotice: String? get() = data[WaitKeys.HUMAN_NOTICE]
+
+        /** This wait holding [key], the key of the notice a human was sent for it (m4-30). */
+        fun noticed(key: String): Ask = Ask(with(data = data + (WaitKeys.HUMAN_NOTICE to key)))
+
+        /**
+         * True when a human moved the issue since the ask, which ends the wait, as for an approval: the issue is gone
+         * ([state] null), out of the active states ([active] false), or in another state than the one it was asked in.
+         * A record with no state ends on the first two only.
+         */
+        fun humanMoved(
+            state: String?,
+            active: Boolean,
+        ): Boolean {
+            if (state == null || !active) return true
+            val asked = this.state ?: return false
+            return !asked.trim().equals(state.trim(), ignoreCase = true)
+        }
+    }
+
     /** A wait for a reason this Loop does not know, kept as it is: its issue waits. */
     class Other internal constructor(
         record: WaitingIssue,
@@ -298,6 +332,7 @@ sealed class Wait(
                 WaitReason.Verify -> Verify(record)
                 WaitReason.Approval -> Approval(record)
                 WaitReason.Merge -> Merge(record)
+                WaitReason.Ask -> Ask(record)
                 else -> Other(record)
             }
 
@@ -352,6 +387,25 @@ sealed class Wait(
                         kind?.let { WaitKeys.KIND to it },
                     )
             return Approval(WaitingIssue(projectId, issueId, identifier, WaitReason.Approval, attemptId, runId, since, data))
+        }
+
+        /**
+         * The `Waiting(ask)` of an agent's question of [questionKind] (m4-31), asked while the issue was in [state], under
+         * the [kind] the issue was dispatched under (m4-18).
+         */
+        fun ask(
+            projectId: ProjectId,
+            issueId: String,
+            identifier: String,
+            attemptId: AttemptId?,
+            runId: RunId?,
+            since: Instant,
+            state: String,
+            questionKind: String,
+            kind: String? = null,
+        ): Ask {
+            val data = mapOf(WaitKeys.STATE to state, WaitKeys.QUESTION_KIND to questionKind) + listOfNotNull(kind?.let { WaitKeys.KIND to it })
+            return Ask(WaitingIssue(projectId, issueId, identifier, WaitReason.Ask, attemptId, runId, since, data))
         }
 
         private fun checkLines(data: Map<String, String>): List<String> =
