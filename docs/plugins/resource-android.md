@@ -65,7 +65,8 @@ Fixed in code, `AndroidTimeouts`; no key changes them.
 |---|---|
 | Each `adb` call | 30 seconds |
 | A boot, from the start of `emulator` to `sys.boot_completed` = 1 | 300 seconds |
-| An emulator leaving `adb devices` after `emu kill`, then again after its process is killed | 30 seconds each |
+| An emulator ending, its process gone and its serial out of `adb devices`, after `emu kill`, then again after its process is killed | 30 seconds each |
+| An emulator log no clean release deleted, kept until a `recover` | 7 days (`LOG_RETENTION`) |
 | The pause between two reads while waiting | 1 second |
 | Emulator ports | the first free even port from 5554 to 5584, with its next port free too |
 | Each `prepare`, `release` and read only check, as a whole | 10 minutes, Loop's own timeout (`ResourceGrants.PROVIDER_TIMEOUT`, bl-208), not the provider's |
@@ -86,10 +87,10 @@ Fixed in code, `AndroidTimeouts`; no key changes them.
 
 ## Release, the read only check and recover
 
-- **The record.** Each emulator the provider boots has a file in `<LOOP_HOME>/resources/android/booted/`, one per AVD: the AVD, the serial, the pid of `emulator`, the process of Loop that booted it, as `<pid>@<start time>`, and the attempt whose prepare booted it. A port is chosen and its record written under a lock of the folder, so two processes of the machine never take one port. The record goes once the emulator is gone.
-- **`release`.** For an emulator it booted, `adb -s <serial> emu kill`, then a wait for the serial to leave `adb devices`. An emulator still there after the wait gets its process killed, then a second wait. A real device, and an emulator of the AVD started outside Loop, are left as they are.
-- **The read only check.** For an `avd`, a difference when an emulator the provider booted still runs the AVD after release: `the emulator emulator-5554 of avd pixel_api35 that Loop booted is still running after release`. Loop then marks the resource dirty (m4-26). Nothing for an `android-device`.
-- **`recover`**, called once at the startup of `loop run` with the holders of every live lock on the machine (m4-50). It stops, like `release`, each emulator of a record whose AVD no live lock of kind `avd` holds and whose booting process of Loop is no longer running. It never touches a real device, an emulator started outside Loop, or an emulator a live `loop run` booted. With no record it calls no `adb`.
+- **The record.** Each emulator the provider boots has a file in `<LOOP_HOME>/resources/android/booted/`, one per AVD: the AVD, the serial, the pid of `emulator` and its start time, the process of Loop that booted it, as `<pid>@<start time>`, and the attempt whose prepare booted it. The pid and its start time name the emulator: the provider stops an emulator only while that process runs. A record whose process is dead, or whose pid another process took since, names nothing and is dropped without stopping anything, so an emulator someone started by hand on the same port after Loop's died is never stopped. A `prepare` drops such a record before it looks for an emulator already running. A port is chosen and its record written under a lock of the folder, so two processes of the machine never take one port. The record goes once the emulator is gone.
+- **`release`.** For an emulator it booted, while its process runs, `adb -s <serial> emu kill` when the serial is connected, then a wait for the process to end and the serial to leave `adb devices`. An emulator still there after the wait, or not yet connected, gets its process and the process's children killed, then a second wait. A real device, and an emulator of the AVD started outside Loop, are left as they are. A release that ends cleanly deletes the emulator's log.
+- **The read only check.** For an `avd`, a difference when an emulator the provider booted still runs after release, its process alive, or its serial connected, ready and running the AVD, as an emulator that outlived its killed process would: `the emulator emulator-5554 of avd pixel_api35 that Loop booted is still running after release`. Loop then marks the resource dirty (m4-26). Nothing for an `android-device`.
+- **`recover`**, called once at the startup of `loop run` with the holders of every live lock on the machine (m4-50). It stops, like `release`, each emulator of a record whose AVD no live lock of kind `avd` holds and whose booting process of Loop is no longer running, an emulator that started but is not yet in `adb devices` too. It deletes the emulator logs older than 7 days. It never touches a real device, an emulator started outside Loop, or an emulator a live `loop run` booted. With no record it calls no `adb`.
 
 ## Failures
 
