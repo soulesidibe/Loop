@@ -1,7 +1,7 @@
 ---
 id: bl-214
 title: "Codex-backed merge risk reviewer"
-state: todo
+state: done
 priority: 3
 labels: [ready-for-agent]
 blocked_by: []
@@ -33,3 +33,5 @@ Add a Codex-backed `RiskReviewer` that runs read only with the holdout denied an
 Filed from the runner capability comparison of Claude, Codex and Gemini after the Gemini support landed.
 
 2026-11-25 soule: triaged ready-for-agent.
+
+2026-11-25 09:55Z loop: Loop opened pull request #65 for this issue: https://github.com/soulesidibe/Loop/pull/65
