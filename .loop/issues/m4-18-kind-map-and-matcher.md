@@ -45,3 +45,23 @@ Today `KindsConfig` holds one field, `code` (`spec-core/src/main/kotlin/loop/cor
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-25 00:07Z loop: Loop opened pull request #52 for this issue: https://github.com/soulesidibe/Loop/pull/52
+
+2026-11-25 00:10Z loop: Loop did not merge pull request #52 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.40.
+  - alignment: partial, Core asks are met, but it adds an unrequested refusal of delivery.pull_request on non-code kinds and edits ApproveCommand.kt, and the diff is cut so the parser and HookEnv changes could not be read.
+  - impact: medium (floor medium: the diff changes 512 lines outside tests and docs, over half the limit of 1000), It changes the kind resolution that every attempt, verification and delivery goes through, plus preflight parsing and hook env, but code-only workflows keep their old behavior (floor medium).
+  - verification: strong, It adds a matcher table test, preflight cases, a HookEnv test and an end-to-end CLI test that checks per-kind checks, LOOP_KIND and ledger rows.
+  - rollback_cost: two_way, A revert undoes it. The ledger rows written with non-code kind names are additive data and only matter to later reports.
+  - error_detection: loud, Bad kind configs fail preflight with invalid_config and named keys. The only quiet spot is the matcher falling back to code when no default is found, which preflight prevents.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 6 of 17 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
+
+2026-11-25 00:30Z soule: sent back before merge, after the merge risk reviews of pull request #52 (Sonnet 5.5 low 1.40, Fable 5.2 medium 1.80). Fix these on the same branch, then submit again:
+  - **Medium. Pin the kind on the waits.** The attempt pins the kind at dispatch (`Orchestrator.kt` around line 1635), but `deliverApproved` resolves it again from the live issue (around lines 4865 to 4872), and so do the restored verify wait (around line 5232) and `ApproveCommand.kt` (around line 138). The agent can change the live state itself with `loop tool move` to another active state (`intercepts` around line 2104 only catches moves out of the active states), and a human can move it or edit a label during the wait. With two kinds this skips the pull request (an issue dispatched as `code` resolves to a kind without `pull_request`, gets a plain move recorded as verified and approved, no pull request, no merge check, work stranded on the branch), or forces one (an issue dispatched under a non code kind resolves to `code` and `deliverPullRequest` runs on work never checked by the code kind, bypassing the preflight refusal). Write the kind name on the verify and approval waits at dispatch, resolve by that name at those three places, fall back to the live lookup only for waits stored without the key, and keep the wait (with a warning) when the name left the config. Add a test: two kinds with a state match, the state moved before submit, delivery follows the dispatched kind; and one for a restored verify wait after a restart.
+  - **Low. Code only paths read `kinds.code` for any issue** (`Orchestrator.kt` around lines 4103, 4927 and 5097, `AutoMergeGate.kt` around lines 123 and 239). Once the kind is pinned, assert or document that only code issues reach them.
+  - **Low. An agent can move its issue to a laxer kind.** With `match.state` (or labels the agent can edit), the next attempt is dispatched under that kind's checks. Document it in `docs/spec-decisions.md` "Kind map and matcher", and consider pinning the kind per issue across attempts or refusing an agent move that changes the kind.
+  - **Low. `on_delivered.move_to` terminal state check covers `code` only** (`WorkflowFile.kt` around line 261). Check it for every kind.
+  - **Low. A `kinds.code.match` key, ignored before, is now parsed and validated.** Say so in the docs (no workflow in the repo has one).
+  - **Low. State matching is case folded.** Keep it consistent with the tracker's `normalized()` state comparison and test it.
