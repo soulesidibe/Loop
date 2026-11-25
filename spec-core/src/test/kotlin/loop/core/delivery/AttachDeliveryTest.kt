@@ -177,7 +177,13 @@ class AttachDeliveryTest {
     @Test
     fun `compose counts the files only listed, zero when every file is inlined`() {
         val inlined = AttachComment.compose("p-1", "a1", listOf(file("out/a.md", "# A\n")), evidence = true)
-        val over = AttachComment.compose("p-1", "a1", listOf(file("out/a.md", "# A\n"), file("out/big.md", "a".repeat(70_000))), evidence = true)
+        val over =
+            AttachComment.compose(
+                "p-1",
+                "a1",
+                listOf(file("out/a.md", "# A\n"), file("out/big.md", "a".repeat(70_000))),
+                evidence = true,
+            )
 
         assertEquals(0, inlined.listed)
         assertEquals(1, over.listed)

@@ -332,7 +332,10 @@ class AttachDeliveryOrchestratorTest {
             val wait = waiting.records.values.single()
             assertEquals(WaitReason.Approval, wait.reason)
             assertEquals("done", wait.data["to"])
-            val deliverable = tracker.comments.first().second.text
+            val deliverable =
+                tracker.comments
+                    .first()
+                    .second.text
             assertContains(deliverable, "- `out/big.md`, 70000 bytes")
             assertContains(summary(), "1 deliverable file is only listed, not inlined, so Loop did not move it on its own.")
             assertContains(summary(), "The delivery policy is auto: p-1 moves to done once an operator approves it.")
@@ -351,8 +354,18 @@ class AttachDeliveryOrchestratorTest {
             orchestrator(workflow(attachAuto), waiting).tick()
 
             assertEquals(emptyList(), tracker.moves)
-            assertEquals(WaitReason.Approval, waiting.records.values.single().reason)
-            assertContains(tracker.comments.first().second.text, "changed since its verification")
+            assertEquals(
+                WaitReason.Approval,
+                waiting.records.values
+                    .single()
+                    .reason,
+            )
+            assertContains(
+                tracker.comments
+                    .first()
+                    .second.text,
+                "changed since its verification",
+            )
         }
 
     @Test
@@ -365,7 +378,12 @@ class AttachDeliveryOrchestratorTest {
 
             orchestrator(workflow(attachHuman), waiting).tick()
 
-            assertEquals(WaitReason.Approval, waiting.records.values.single().reason)
+            assertEquals(
+                WaitReason.Approval,
+                waiting.records.values
+                    .single()
+                    .reason,
+            )
             assertContains(summary(), "The deliverable could not be posted: cannot post the deliverable: ")
             assertContains(summary(), "comments are closed")
         }
@@ -378,7 +396,12 @@ class AttachDeliveryOrchestratorTest {
             orchestrator(workflow(attachAuto.copy(attachAutoEnabled = false)), waiting).tick()
 
             assertEquals(emptyList(), tracker.moves)
-            assertEquals(WaitReason.Approval, waiting.records.values.single().reason)
+            assertEquals(
+                WaitReason.Approval,
+                waiting.records.values
+                    .single()
+                    .reason,
+            )
             assertContains(summary(), "The delivery policy is human")
         }
 
