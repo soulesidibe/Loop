@@ -15,6 +15,7 @@ import loop.api.RunId
 import loop.api.SessionId
 import loop.api.WaitReason
 import loop.api.WaitingIssue
+import loop.core.resources.ResourceLocks
 import loop.store.MachineSlot
 import loop.store.SqliteEventStore
 import org.junit.jupiter.api.io.TempDir
@@ -798,6 +799,39 @@ class StatusCommandTest {
 
         assertEquals(0, result.exitCode, result.toString())
         assertTrue(result.stdout.lines().none { it.startsWith("Machine") }, result.toString())
+    }
+
+    @Test
+    fun `m4-50 status shows each resource of the workflow, then each other one an issue of the project holds or waits for, with its holder and queue`() {
+        fixture.writeWorkflow(extra = "resources:\n  - { kind: avd, id: api35 }\n  - { kind: display, id: main }\n")
+        val other = ProjectId("0123456789abcdef")
+        val granted = Instant.parse("2026-11-25T09:30:00.123Z")
+        val clock =
+            object : Clock {
+                override fun now() = granted
+            }
+        SqliteEventStore.open(fixture.loopHome, fixture.projectDir, Redactor.NONE).getOrThrow().use { store ->
+            val locks = ResourceLocks(store, store, clock, RunId(LoopFixture.RUN_ID))
+            runBlocking {
+                locks.request(project, "t-1", "t-1", AttemptId("a1000000-0000-4000-8000-000000000001"), "avd", "api35").getOrThrow()
+                locks.request(other, "o-9", "o-9", AttemptId("o9000000-0000-4000-8000-000000000009"), "avd", "api35").getOrThrow()
+                locks.request(project, "t-2", "t-2", AttemptId("a2000000-0000-4000-8000-000000000002"), "avd", "api35").getOrThrow()
+                locks.request(project, "t-3", "t-3", AttemptId("a3000000-0000-4000-8000-000000000003"), "gpu", "one").getOrThrow()
+                locks.request(other, "o-9", "o-9", AttemptId("o9000000-0000-4000-8000-000000000009"), "avd", "theirs").getOrThrow()
+            }
+        }
+
+        val result = fixture.inProcess("status", fixture.workflow.toString())
+
+        assertEquals(0, result.exitCode, result.toString())
+        assertEquals(
+            listOf(
+                "Resource avd api35  held_by=t-1 attempt=a1000000 since=2026-11-25T09:30:00Z queue=01234567/o-9,t-2",
+                "Resource display main  free",
+                "Resource gpu one  held_by=t-3 attempt=a3000000 since=2026-11-25T09:30:00Z",
+            ),
+            result.stdout.lines().filter { it.startsWith("Resource") },
+        )
     }
 
     /** Takes the project's run file for this JVM, as a live `loop run` holds it. */

@@ -1,14 +1,18 @@
 package loop.cli
 
 import loop.api.ProjectId
+import loop.api.ResourceHolder
+import loop.api.ResourceProvider
 import loop.api.RunId
 import loop.core.events.AttemptFinished
 import loop.core.events.AttemptStarted
+import loop.core.events.ResourceReleased
 import loop.core.events.RunStopped
 import loop.core.log.KeyValueLog
 import loop.core.log.LogContext
 import loop.core.log.LogLevel
 import loop.core.log.LogOutcome
+import loop.core.resources.ResourceLocks
 import loop.store.SqliteEventStore
 import loop.store.StoredEvent
 import kotlin.coroutines.cancellation.CancellationException
@@ -99,6 +103,54 @@ internal suspend fun closeAbandonedAttempts(
         throw e
     } catch (e: Exception) {
         log.log(LogLevel.WARN, "attempt", LogOutcome.FAILED, context, reason = "cannot close abandoned attempts: ${e.sentence()}")
+    }
+}
+
+/**
+ * Frees the resource locks a dead process of [projectId] left (m4-50), called once the run lock is held, after the
+ * abandoned attempts are closed. With the lock held no live process of this Project runs an Attempt, so every lock and
+ * queue row of the Project belongs to a dead one: the attempts [closeAbandonedAttempts] finds, and any attempt whose
+ * free at its end failed. Each freed lock goes to the oldest request of its queue and records `resource_released` with
+ * the reason `abandoned`. Then each of [providers] gets `recover` once with the holders of every lock left on the
+ * machine, of every project, so it removes what a crash left on a resource nobody holds. Never throws: a failure is
+ * logged and the run goes on, and a lock the store did not free is freed by the next run. A free that failed calls no
+ * `recover`, since its rows could not be read.
+ */
+internal suspend fun freeAbandonedLocks(
+    projectId: ProjectId,
+    locks: ResourceLocks,
+    providers: List<ResourceProvider>,
+    log: KeyValueLog,
+    context: LogContext,
+) {
+    try {
+        val freed =
+            locks.freeProject(projectId, ResourceReleased.ABANDONED).getOrElse { error ->
+                log.log(LogLevel.WARN, "resource", LogOutcome.FAILED, context, reason = "cannot free abandoned locks: ${error.sentence()}")
+                return
+            }
+        for (lock in freed.released) {
+            val lockContext = context.copy(issueId = lock.issueId, issueIdentifier = lock.issueIdentifier, attemptId = lock.attemptId)
+            val fields = mapOf("kind" to lock.kind, "resource_id" to lock.resourceId)
+            log.log(LogLevel.WARN, "resource", LogOutcome.FAILED, lockContext, fields = fields, reason = ResourceReleased.ABANDONED)
+        }
+        if (providers.isEmpty()) return
+        val holders =
+            freed.rows.locks.map { ResourceHolder(it.projectId, it.kind, it.resourceId, it.attemptId.value) }
+        for (provider in providers) {
+            try {
+                provider.recover(holders)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val fields = mapOf("provider" to provider.javaClass.name)
+                log.log(LogLevel.WARN, "resource", LogOutcome.FAILED, context, fields = fields, reason = "recover failed: ${e.sentence()}")
+            }
+        }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        log.log(LogLevel.WARN, "resource", LogOutcome.FAILED, context, reason = "cannot free abandoned locks: ${e.sentence()}")
     }
 }
 

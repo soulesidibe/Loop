@@ -22,6 +22,9 @@ class ResourcePlugins private constructor(
     /** The kinds served, classpath first in `ServiceLoader` order, then the JARs' by file name, each provider's sorted. */
     val kinds: List<String> = found.flatMap { it.provider.kinds.sorted() }
 
+    /** Every provider found, in the order of [kinds]; each gets `recover` once at the startup of a run (m4-50). */
+    val providers: List<ResourceProvider> = found.map { it.provider }
+
     /** The provider serving [kind], or null when none does: the resource is then a plain lock. */
     fun provider(kind: String): ResourceProvider? = found.firstOrNull { kind in it.provider.kinds }?.provider
 
