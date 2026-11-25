@@ -246,13 +246,15 @@ class SimulatedIssues(
     /**
      * Adds labels (`POST .../labels`, a label already there is kept once, compared case insensitively), removes one
      * (`DELETE .../labels/<name>`, 404 `Label does not exist` when absent), patches the state (`PATCH` the issue) or
-     * takes a comment (`POST .../comments`). An unknown issue answers 404.
+     * takes a comment (`POST .../comments`). An unknown issue answers 404. A `POST` of the issues creates the next issue,
+     * open, with the title, the body and the labels sent (m4-33).
      */
     fun write(
         method: String,
         url: URI,
         body: String?,
     ): GitHubResponse {
+        if (method == "POST" && url.rawPath == "/repos/$repo/issues") return create(Json.parseToJsonElement(body!!).jsonObject)
         val prefix = "/repos/$repo/issues/"
         val rest =
             url.rawPath.removePrefix(prefix).takeIf { url.rawPath.startsWith(prefix) } ?: return FakeGitHub.recorded("issue-not-found")
@@ -281,6 +283,20 @@ class SimulatedIssues(
             method == "POST" && parts.getOrNull(1) == "comments" && parts.size == 2 -> FakeGitHub.recorded("create-comment-26")
             else -> FakeGitHub.recorded("issue-not-found")
         }
+    }
+
+    private fun create(sent: JsonObject): GitHubResponse {
+        val number = (issues.maxOfOrNull { (it["number"] as JsonPrimitive).content.toInt() } ?: 0) + 1
+        val issue =
+            FakeGitHub.issue(
+                number = number,
+                title = (sent.getValue("title") as JsonPrimitive).content,
+                labels = (sent["labels"] as? JsonArray).orEmpty().map { (it as JsonPrimitive).content },
+                body = (sent["body"] as? JsonPrimitive)?.content,
+                repo = repo,
+            )
+        issues += issue
+        return FakeGitHub.response(201, issue.toString())
     }
 
     private fun relabel(

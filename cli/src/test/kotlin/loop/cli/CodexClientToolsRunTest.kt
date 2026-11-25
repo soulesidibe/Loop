@@ -197,8 +197,8 @@ class CodexClientToolsRunTest {
             assertEquals(mcpSchema["required"], codexSchema["required"], name)
             val mcpProperties = mcpSchema.getValue("properties").jsonObject
             val codexProperties = codexSchema.getValue("properties").jsonObject
-            // m4-31: ask has the same arguments and description on both runners.
-            if (name == "submit_result" || name == "ask") {
+            // m4-31: ask, and since m4-33 file_followup, have the same arguments and description on both runners.
+            if (name == "submit_result" || name == "ask" || name == "file_followup") {
                 assertEquals(mcpProperties, codexProperties, name)
                 assertEquals(mcp["description"], codex["description"], name)
             } else {

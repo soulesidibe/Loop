@@ -55,7 +55,13 @@ import kotlin.io.path.readText
  * intended labels in order with every other field unchanged, else the write fails with
  * [TrackerError.Malformed] and nothing is written. Nothing is written when the label set does not change.
  *
- * A move, a comment or a label write reads, changes and renames under one lock, so none loses another.
+ * A created issue (m4-33) is a new file `<prefix>-<nn>-<slug>.md`, [prefix] `bl` by default, `<nn>` the next free
+ * number of that prefix, at least two digits, read from the front matter ids and the file names alike, so a file that
+ * does not parse still holds its number. Its front matter is `id`, the title double quoted, `state` the
+ * [firstActiveState], `priority: null`, the `labels` as one flow list and an empty `blocked_by`; the body follows. The
+ * text must parse back to that issue, else nothing is written. The file is written whole, never through the label write.
+ *
+ * A move, a comment, a label write or a create reads, changes and renames under one lock, so none loses another.
  */
 class FilesTracker(
     private val issuesDir: Path,
@@ -63,7 +69,15 @@ class FilesTracker(
     private val onMalformed: (TrackerError.Malformed) -> Unit = {},
     /** Gets one operator warning per issue and missing or malformed blocker pair, the first time it is seen. */
     private val onWarning: (String) -> Unit = {},
+    /** The id prefix of the issues [createIssue] writes (m4-33), `tracker.provider.prefix`. */
+    private val prefix: String = DEFAULT_PREFIX,
+    /** The state of the issues [createIssue] writes (m4-33), the tracker's first active state. */
+    private val firstActiveState: String = DEFAULT_ACTIVE_STATE,
 ) : TrackerAdapter {
+    init {
+        require(PREFIX_PATTERN.matches(prefix)) { "a files tracker prefix must match ${PREFIX_PATTERN.pattern}: $prefix" }
+    }
+
     override val definedStates: List<String> = DEFINED_STATES
 
     /** Issue and blocker pairs already warned about, so each is warned once per process. */
@@ -257,6 +271,58 @@ class FilesTracker(
         }
     }
 
+    /**
+     * Writes a new issue file, see the class doc (m4-33). A blank title fails with [TrackerError.Rejected] and writes
+     * nothing; so does a text that does not parse back to the issue, with [TrackerError.Malformed].
+     */
+    override suspend fun createIssue(
+        title: String,
+        body: String,
+        labels: List<String>,
+    ): Result<Issue> {
+        val written = title.trim()
+        if (written.isEmpty()) return Result.failure(TrackerError.Rejected("The issue title is empty, so no issue was created"))
+        val kept = labels.map { it.trim() }.filter { it.isNotEmpty() }.distinctBy { it.lowercase() }
+        return io {
+            locked {
+                val id = "$prefix-%02d".format(nextNumber())
+                val text =
+                    "---\nid: $id\ntitle: ${quoted(written)}\nstate: $firstActiveState\npriority: null\n" +
+                        "labels: [${kept.joinToString(", ") { flowItem(it) }}]\nblocked_by: []\n---\n\n${body.trim()}\n"
+                val file = issuesDir.resolve("$id-${slug(written)}.md")
+                val issue =
+                    parseText(file, text).getOrNull()?.issue?.takeIf {
+                        it.id == id &&
+                            it.title == written &&
+                            it.state == firstActiveState &&
+                            it.labels == kept.map(String::lowercase)
+                    }
+                        ?: throw TrackerError.Malformed(file.toString())
+                if (Files.exists(
+                        file,
+                        NOFOLLOW_LINKS,
+                    )
+                ) {
+                    throw TrackerError.Rejected("The issue file ${file.name} already exists, so no issue was created")
+                }
+                writeNew(file, text.toByteArray(Charsets.UTF_8))
+                issue
+            }
+        }
+    }
+
+    /** One more than the highest number of [prefix] in the front matter ids and the file names, 1 when there is none. */
+    private fun nextNumber(): Int {
+        val id = Regex("${Regex.escape(prefix)}-(\\d+)")
+        val name = Regex("${Regex.escape(prefix)}-(\\d+)(-.*)?\\.md")
+        val numbers =
+            issueFiles().flatMap { file ->
+                val fromId = parse(file).getOrNull()?.id?.let { id.matchEntire(it) }
+                listOfNotNull(name.matchEntire(file.name), fromId).mapNotNull { it.groupValues[1].toIntOrNull() }
+            }
+        return (numbers.maxOrNull() ?: 0) + 1
+    }
+
     private fun issueFiles(): List<Path> =
         issuesDir
             .listDirectoryEntries()
@@ -318,6 +384,20 @@ class FilesTracker(
         }
     }
 
+    /** Writes [bytes] to the new [file] through a temp file and an atomic rename, so a reader never sees a partial file. */
+    private fun writeNew(
+        file: Path,
+        bytes: ByteArray,
+    ) {
+        val tmp = Files.createTempFile(issuesDir, ".${file.name}.", ".tmp")
+        try {
+            Files.write(tmp, bytes)
+            Files.move(tmp, file, ATOMIC_MOVE)
+        } finally {
+            Files.deleteIfExists(tmp)
+        }
+    }
+
     private suspend fun <T> io(block: () -> T): Result<T> =
         withContext(Dispatchers.IO) {
             try {
@@ -331,6 +411,18 @@ class FilesTracker(
 
     companion object {
         val DEFINED_STATES: List<String> = listOf("todo", "in_progress", "review", "needs_info", "done", "canceled")
+
+        /** The id prefix of a created issue when `tracker.provider.prefix` is absent (m4-33). */
+        const val DEFAULT_PREFIX: String = "bl"
+
+        /** The state of a created issue when the host gives no active state, the profile's first (m4-33). */
+        const val DEFAULT_ACTIVE_STATE: String = "todo"
+
+        /** What a prefix must match, so `<prefix>-<nn>` is an id and a file name (m4-33). */
+        val PREFIX_PATTERN: Regex = Regex("[a-z][a-z0-9]*")
+
+        /** The longest slug of a created issue's file name. */
+        private const val SLUG_MAX = 60
 
         private const val DONE = "done"
         private const val LOCK_KEY_BYTES = 8
@@ -534,6 +626,26 @@ class FilesTracker(
         /** Every front matter field but `labels`, in order, as key and content. */
         private fun YamlMap.otherFields(): List<Pair<String, String>> =
             entries.filterKeys { it.content != LABELS }.map { (key, value) -> key.content to value.contentToString() }
+
+        /** [text] as a YAML double quoted scalar on one line (m4-33). */
+        private fun quoted(text: String): String =
+            "\"" +
+                text
+                    .replace("\\", "\\\\")
+                    .replace("\"", "\\\"")
+                    .replace("\n", "\\n")
+                    .replace("\r", "\\r")
+                    .replace("\t", "\\t") + "\""
+
+        /** The file name part of [title]: lowercase letters and digits, runs of anything else one `-`, `issue` when empty. */
+        private fun slug(title: String): String =
+            title
+                .lowercase()
+                .replace(Regex("[^a-z0-9]+"), "-")
+                .trim('-')
+                .take(SLUG_MAX)
+                .trimEnd('-')
+                .ifEmpty { "issue" }
 
         /** A label as a YAML flow list item: plain when that reads back as the same text, double quoted otherwise. */
         private fun flowItem(label: String): String =

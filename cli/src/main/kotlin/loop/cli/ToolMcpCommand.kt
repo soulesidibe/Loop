@@ -15,6 +15,7 @@ import loop.core.workflow.TokenCounters
 import loop.core.workflow.ToolOutputTrim
 import loop.mcp.AskHandler
 import loop.mcp.CommentHandler
+import loop.mcp.FollowupHandler
 import loop.mcp.LoopMcpServer
 import loop.mcp.MoveHandler
 import loop.mcp.ReplyTrimmer
@@ -48,6 +49,9 @@ import loop.mcp.ToolReply
  *
  * Since m4-31 it serves `ask` ([queueAsk]), queued like `comment`: it answers `pending` at once, and when the turn ends
  * Loop posts the question on the issue and the issue waits as `Waiting(ask)`.
+ *
+ * Since m4-33 it serves `file_followup` ([queueFollowup]), queued like `comment`: it answers `queued` at once, and when
+ * the turn ends Loop files the follow up labelled `needs-triage` and comments its id on the issue.
  */
 class ToolMcpCommand(
     private val host: Host,
@@ -68,6 +72,7 @@ class ToolMcpCommand(
                 ReplyTrimmer { tool, reply -> trim(env, tool, reply) },
                 resourceHandler(scope, env),
                 AskHandler { call -> answered(scope) { queueAsk(env, call) } },
+                FollowupHandler { title, body -> answered(scope) { queueFollowup(env, title, body) } },
             )
         }
     }
@@ -135,8 +140,8 @@ class ToolMcpCommand(
     }
 
     /**
-     * Runs one resource call (m4-25) or `ask` call (m4-31) with a fresh [AttemptTool]: its answer, or the refusal it
-     * printed, such as an attempt that is not live, as a tool error.
+     * Runs one resource call (m4-25), `ask` call (m4-31) or `file_followup` call (m4-33) with a fresh [AttemptTool]: its
+     * answer, or the refusal it printed, such as an attempt that is not live, as a tool error.
      */
     private suspend fun answered(
         scope: RedactorScope,

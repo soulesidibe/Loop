@@ -141,6 +141,14 @@ class TrackerPoll(
 
     override suspend fun completeIssue(issue: Issue): Result<Issue> = adapterOf(trackerOf(issue.id)).completeIssue(issue)
 
+    /** Creates an issue in the tracker [tracker] (m4-33), see [WriteRouting.createIssue]. */
+    suspend fun createIssueIn(
+        tracker: String,
+        title: String,
+        body: String,
+        labels: List<String>,
+    ): Result<Issue> = writes.createIssue(tracker, title, body, labels)
+
     override fun toString(): String = "TrackerPoll(${adapters.keys.joinToString()})"
 
     private fun adapterOf(tracker: String): TrackerAdapter = adapters.getValue(tracker)

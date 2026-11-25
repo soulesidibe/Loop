@@ -541,7 +541,32 @@ class WorkflowLoader(
             populate = populate,
             deliverable = deliverable,
             requireSections = requireSections,
+            followupTracker = parseFollowupTracker(kindKey, kind, trackerIds),
         )
+    }
+
+    /**
+     * m4-33: `kinds.<kind>.followup.tracker`, the tracker id the kind's follow ups go to, null when absent: they go to the
+     * tracker of their parent issue. Present, `followup` is a map whose only key is `tracker`, a tracker id of
+     * [trackerIds], so a follow up never goes to a tracker the registry does not have.
+     */
+    private fun parseFollowupTracker(
+        kindKey: String,
+        kind: YamlMap?,
+        trackerIds: List<String>,
+    ): String? {
+        val name = "$kindKey.followup"
+        val followup = kind.child("followup", name) ?: return null
+        followup.entries.keys
+            .map { it.content }
+            .firstOrNull { it != "tracker" }
+            ?.let { throw WorkflowError.InvalidConfig("$name.$it is not supported, use tracker") }
+        val written = followup.string("$name.tracker", "tracker") ?: throw WorkflowError.InvalidConfig("$name must hold tracker")
+        val tracker = written.trim().takeIf { it.isNotEmpty() } ?: throw WorkflowError.InvalidConfig("$name.tracker must not be blank")
+        if (tracker !in trackerIds) {
+            throw WorkflowError.InvalidConfig("$name.tracker \"$tracker\" is not a tracker id, use one of ${trackerIds.joinToString(", ")}")
+        }
+        return tracker
     }
 
     /**

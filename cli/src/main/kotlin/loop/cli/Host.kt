@@ -250,7 +250,7 @@ private fun adapterFor(
     gitHub: GitHubClients,
 ): TrackerAdapter {
     val provider = plugins.provider(entry.kind) ?: throw IllegalStateException(plugins.unsupported(entry.kind))
-    val context = TrackerContext(entry.dir, loopHome.resolve("locks"), onMalformed, onWarning, requiredLabels)
+    val context = TrackerContext(entry.dir, loopHome.resolve("locks"), onMalformed, onWarning, requiredLabels, entry.activeStates)
     return if (provider is GitHubTrackerProvider) {
         provider.create(
             entry.settings,

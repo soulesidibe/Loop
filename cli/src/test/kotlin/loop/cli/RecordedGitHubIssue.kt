@@ -114,7 +114,10 @@ class RecordedGitHubIssue(
                 ),
         )
 
-    /** The recorded answer to a write on issue 26, the labels changed as asked; any other issue is not found. */
+    /**
+     * The recorded answer to a write on issue 26, the labels changed as asked, or to the creation of an issue, the recorded
+     * issue 27 (m4-33); any other issue is not found.
+     */
     private fun answerWrite(
         method: String,
         path: String,
@@ -136,6 +139,8 @@ class RecordedGitHubIssue(
                     "remove-label-26"
                 }
                 method == "POST" && path == "$repo/issues/26/comments" -> "create-comment-26"
+                // m4-33: a created issue, answered with the recorded issue 27.
+                method == "POST" && path == "$repo/issues" -> "create-issue-27"
                 else -> "issue-not-found"
             }
         val status =

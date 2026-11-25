@@ -76,6 +76,15 @@ class TrackerAdapterDefaultsTest {
     }
 
     @Test
+    fun `m4-33 a tracker without an issue create fails it as unsupported`() {
+        val result = runBlocking { readOnly.createIssue("Follow up", "Body.", listOf("needs-triage")) }
+
+        val error = assertIs<TrackerError.Unsupported>(result.exceptionOrNull(), result.toString())
+        assertContains(error.message.orEmpty(), "issues")
+        assertEquals(emptyList(), writes)
+    }
+
+    @Test
     fun `bl-06 a tracker without a prompt completion returns the issue unchanged`() {
         val result = runBlocking { readOnly.completeIssue(issue) }
 

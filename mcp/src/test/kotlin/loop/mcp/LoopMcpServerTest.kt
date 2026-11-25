@@ -37,6 +37,7 @@ class LoopMcpServerTest {
         trimmer: ReplyTrimmer = ReplyTrimmer.NONE,
         resources: ResourceHandler? = null,
         ask: AskHandler? = null,
+        followup: FollowupHandler? = null,
     ) {
         private val input = Pipe.open()
         private val output = Pipe.open()
@@ -49,7 +50,20 @@ class LoopMcpServerTest {
         val serving =
             Thread {
                 try {
-                    runBlocking { LoopMcpServer.serve(serverIn, serverOut, "test", handler, move, comment, trimmer, resources, ask) }
+                    runBlocking {
+                        LoopMcpServer.serve(
+                            serverIn,
+                            serverOut,
+                            "test",
+                            handler,
+                            move,
+                            comment,
+                            trimmer,
+                            resources,
+                            ask,
+                            followup,
+                        )
+                    }
                 } finally {
                     serverOut.close()
                 }
@@ -99,9 +113,10 @@ class LoopMcpServerTest {
         trimmer: ReplyTrimmer = ReplyTrimmer.NONE,
         resources: ResourceHandler? = null,
         ask: AskHandler? = null,
+        followup: FollowupHandler? = null,
         block: suspend Client.() -> Unit,
     ) {
-        val client = Client(handler, move, comment, trimmer, resources, ask)
+        val client = Client(handler, move, comment, trimmer, resources, ask, followup)
         try {
             runBlocking { client.block() }
         } finally {
@@ -589,6 +604,73 @@ class LoopMcpServerTest {
                 assertTrue(refusal.text().endsWith("Nothing queued."), refusal.text())
             }
             assertContains(refusals[2].text(), "engineering, design, product, human")
+        }
+    }
+
+    @Test
+    fun `m4-33 with a followup handler the server lists file_followup after ask, with title and body required strings`() =
+        withClient(ask = AskHandler { ToolReply("pending") }, followup = FollowupHandler { _, _ -> ToolReply("queued") }) {
+            initialize()
+            val tools = tools()
+            assertEquals(
+                listOf("submit_result", "move", "comment", "ask", "file_followup"),
+                tools.map { it.getValue("name").jsonPrimitive.content },
+            )
+            val tool = tools.single { it.getValue("name").jsonPrimitive.content == "file_followup" }
+            val schema = tool.getValue("inputSchema").jsonObject
+            assertEquals("object", schema.getValue("type").jsonPrimitive.content)
+            assertEquals(JsonArray(listOf(JsonPrimitive("title"), JsonPrimitive("body"))), schema["required"])
+            val properties = schema.getValue("properties").jsonObject
+            assertEquals(listOf("title", "body"), properties.keys.toList())
+            properties.values.forEach {
+                assertEquals(
+                    "string",
+                    it.jsonObject
+                        .getValue("type")
+                        .jsonPrimitive.content,
+                    "$it",
+                )
+                assertTrue(
+                    it.jsonObject
+                        .getValue("description")
+                        .jsonPrimitive.content
+                        .isNotBlank(),
+                    "$it",
+                )
+            }
+            val description = tool.getValue("description").jsonPrimitive.content
+            assertContains(description, "needs-triage")
+            assertContains(description, "when this turn ends")
+            assertContains(description, "at most 3")
+        }
+
+    @Test
+    fun `m4-33 a file_followup call hands its title and body to the handler, one without either reaches no handler`() {
+        val received = mutableListOf<Pair<String, String>>()
+        withClient(
+            followup =
+                FollowupHandler { title, body ->
+                    received += title to body
+                    ToolReply("queued")
+                },
+        ) {
+            initialize()
+            val call =
+                request("tools/call", """{"name":"file_followup","arguments":{"title":"Archived items","body":"They are dropped."}}""")
+                    .getValue("result")
+                    .jsonObject
+            val refusals =
+                listOf("""{"title":"Archived items"}""", """{"body":"They are dropped."}""", """{"title":1,"body":"b"}""")
+                    .map { arguments ->
+                        request("tools/call", """{"name":"file_followup","arguments":$arguments}""").getValue("result").jsonObject
+                    }
+
+            assertEquals("queued", call.text())
+            assertEquals(listOf("Archived items" to "They are dropped."), received)
+            refusals.forEach { refusal ->
+                assertEquals(true, refusal.getValue("isError").jsonPrimitive.boolean, "$refusal")
+                assertTrue(refusal.text().endsWith("Nothing queued."), refusal.text())
+            }
         }
     }
 

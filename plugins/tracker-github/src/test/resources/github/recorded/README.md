@@ -28,6 +28,7 @@ Written by hand for the write side (m2-23), after the shapes GitHub documents in
 | `label-not-found` | the same `DELETE` for a label the issue does not carry: 404 `Label does not exist` |
 | `update-issue-26` | `PATCH /repos/octocat/Hello-World/issues/26` with `{"state":"closed"}`: 200 with the issue, closed |
 | `create-comment-26` | `POST /repos/octocat/Hello-World/issues/26/comments`: 201 with the comment |
+| `create-issue-27` | `POST /repos/octocat/Hello-World/issues` with a title, a body and the label `needs-triage`: 201 with the new issue 27, open, by the token's account (m4-33) |
 | `write-forbidden` | a write with a read only token: 403 `Resource not accessible by personal access token` |
 | `validation-failed` | a write GitHub refuses: 422 `Validation Failed` |
 
