@@ -18,19 +18,23 @@ object PlainWorkspace {
     ): Result<String> = if (plain) fingerprinter.tree(workspace) else fingerprinter.of(workspace)
 
     /**
-     * Why the verified result at [verified] cannot be delivered from [workspace], null when it is still at that
-     * fingerprint: the workspace is gone, its fingerprint cannot be taken, or a file changed after the verdict.
+     * Why the verified result at [verified] cannot be delivered from the workspace [located], null when it is still at
+     * that fingerprint: the workspace cannot be located or is gone, its fingerprint cannot be taken, or a file changed
+     * after the verdict.
      */
     fun stale(
         fingerprinter: Fingerprinter,
-        workspace: Path?,
+        located: Result<Path?>,
         verified: String?,
     ): String? {
-        if (workspace == null) return "the workspace is gone"
+        val workspace =
+            located.getOrElse { error -> return "cannot locate the workspace: ${describe(error)}" } ?: return "the workspace is gone"
         val now =
             fingerprinter.tree(workspace).getOrElse { error ->
-                return "cannot take the workspace fingerprint: ${error.message ?: error::class.simpleName}"
+                return "cannot take the workspace fingerprint: ${describe(error)}"
             }
         return if (now == verified) null else "the workspace is at $now, not at the verified $verified"
     }
+
+    private fun describe(error: Throwable): String = error.message ?: error::class.simpleName ?: "unknown error"
 }

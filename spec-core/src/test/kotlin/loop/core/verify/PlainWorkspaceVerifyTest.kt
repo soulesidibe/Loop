@@ -245,7 +245,11 @@ class PlainWorkspaceVerifyTest {
             assertContains(failed.getValue("reason"), verified)
             assertEquals(emptyList(), tracker.moves)
             // The approval is cleared, so only a new loop approve tries again.
-            assertNull(waiting.records.values.single().data[WaitingIssue.APPROVED_BY])
+            assertNull(
+                waiting.records.values
+                    .single()
+                    .data[WaitingIssue.APPROVED_BY],
+            )
         }
 
     @Test
@@ -504,7 +508,14 @@ class PlainWorkspaceVerifyTest {
         val folder = root.resolve("plain").createDirectories()
         folder.resolve("report.xml").writeText("<report name=\"r\"/>")
 
-        val result = CoreChecks.changedLineCoverage(CheckConfig.ChangedLineCoverage(listOf("report.xml"), 80.0), folder, mapOf("PATH" to "/usr/bin:/bin"))
+        val result =
+            CoreChecks.changedLineCoverage(
+                CheckConfig.ChangedLineCoverage(listOf("report.xml"), 80.0),
+                folder,
+                mapOf(
+                    "PATH" to "/usr/bin:/bin",
+                ),
+            )
 
         assertContains(assertNotNull(result.couldNotRun), "not the top of a git work tree")
     }
@@ -537,8 +548,11 @@ class PlainWorkspaceVerifyTest {
                 }
             val holdout = CheckConfig.Command("sh \"\$LOOP_HOLDOUT/check.sh\"")
             val hiddenSink = FakeSink()
-            orchestrator(workflow(mapOf("code" to code, "notes" to notes(holdout = listOf(holdout)))), tracker(notesIssue), sink = hiddenSink)
-                .tick()
+            orchestrator(
+                workflow(mapOf("code" to code, "notes" to notes(holdout = listOf(holdout)))),
+                tracker(notesIssue),
+                sink = hiddenSink,
+            ).tick()
             assertEquals("refuted", hiddenSink.verdict()["verdict"])
             assertTrue(hiddenSink.verdict().getValue("fingerprint").startsWith("tree:"))
 

@@ -153,9 +153,9 @@ import loop.core.verify.CheckRunner
 import loop.core.verify.Evidence
 import loop.core.verify.EvidenceWriter
 import loop.core.verify.Fingerprinter
-import loop.core.verify.PlainWorkspace
 import loop.core.verify.Holdouts
 import loop.core.verify.JudgmentCalls
+import loop.core.verify.PlainWorkspace
 import loop.core.verify.ResultFile
 import loop.core.verify.SubmittedResult
 import loop.core.verify.UncommittedFiles
@@ -4931,11 +4931,7 @@ class Orchestrator(
         // m4-20: a plain workspace is delivered only while it is still at its verified fingerprint.
         if (KindWorkspaces.isPlain(kind)) {
             val key = NamespacedId.workspaceKey(wait.issueId, wait.identifier, effective.trackerId)
-            val stale =
-                withContext(io) {
-                    val located = workspacesFor(effective).locate(key).getOrElse { return@withContext "cannot locate the workspace: ${it.describe()}" }
-                    PlainWorkspace.stale(fingerprinter, located, wait.fingerprint)
-                }
+            val stale = withContext(io) { PlainWorkspace.stale(fingerprinter, workspacesFor(effective).locate(key), wait.fingerprint) }
             if (stale != null) {
                 val reason = redactor.redact(stale).take(REASON_MAX)
                 recordWaitEvent(wait, DeliveryFailed, mapOf(Delivery.STEP to PlainWorkspace.STEP_FINGERPRINT, Delivery.REASON to reason))
