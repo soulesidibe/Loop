@@ -2,6 +2,7 @@ package loop.core.merge
 
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import loop.api.ActionsJobs
 import loop.api.DeliveryError
 import loop.api.DeliveryExecutor
 import loop.api.EventSink
@@ -47,6 +48,8 @@ import loop.core.log.KeyValueLog
 import loop.core.log.LogContext
 import loop.core.log.LogLevel
 import loop.core.log.LogOutcome
+import loop.core.reactions.CiFailedOutcome
+import loop.core.reactions.CiFailedReaction
 import loop.core.trackers.NamespacedId
 import loop.core.verify.Fingerprinter
 import loop.core.verify.ProtectedPaths
@@ -110,6 +113,8 @@ internal class Merges(
     private val onCiTimeout: suspend (Wait.Merge) -> Unit = {},
     /** m4-30: the notices to a human, told when a merge falls back to an approval wait; none tells nobody. */
     private val notices: HumanNotices? = null,
+    /** m4-35: the `ci_failed` reaction, asked what a red verdict of the CI wait does; none keeps the path of m3-15. */
+    private val ciFailed: CiFailedReaction? = null,
     private val sink: EventSink,
     private val sinkName: String,
     private val log: KeyValueLog,
@@ -179,10 +184,16 @@ internal class Merges(
 
     /**
      * What [wait] needs this tick without a slot (m3-15): a wait in phase `ci` is polled, at most once every
-     * [CiWait.POLL_FLOOR_MS]. The wait whose next step needs a slot, the check or the merge, for [run]; null when
-     * nothing more runs this tick.
+     * [CiWait.POLL_FLOOR_MS]; [issue] is its issue as the tick read it, which a `ci_failed` reaction sends back (m4-35).
+     * The wait whose next step needs a slot, the check or the merge, for [run]; null when nothing more runs this tick.
+     * [onSettled] is told when the wait ended with no dispatch due, its pull request found merged before a send back
+     * (bl-181), so the tick does not dispatch the issue it read before, as after [checkEarly].
      */
-    suspend fun advance(wait: Wait.Merge): Wait.Merge? = if (wait.phase == MergePhase.Ci) pollCi(wait) else wait
+    suspend fun advance(
+        wait: Wait.Merge,
+        issue: Issue,
+        onSettled: () -> Unit = {},
+    ): Wait.Merge? = if (wait.phase == MergePhase.Ci) pollCi(wait, issue, onSettled) else wait
 
     /**
      * The early conflict check of [wait], a merge wait queued behind the head of the delivery queue (bl-178), inline in
@@ -420,8 +431,13 @@ internal class Merges(
      * that can pass with time (unreachable, 5xx, a rate limit hold) keeps the wait, records nothing and counts nothing;
      * a refusal for good, a 403 or 404 naming "Actions: read" included, is refused. An answer adds the time since the
      * previous answered poll, then [CiWait.decide] rules: the wait in phase `merge` when CI allows it, null otherwise.
+     * A red verdict goes to the `ci_failed` reaction first (m4-35), see [ciRed].
      */
-    private suspend fun pollCi(wait: Wait.Merge): Wait.Merge? {
+    private suspend fun pollCi(
+        wait: Wait.Merge,
+        issue: Issue,
+        onSettled: () -> Unit,
+    ): Wait.Merge? {
         val context = waitContext(wait)
         val workflow = workflow()
         val merge =
@@ -487,9 +503,48 @@ internal class Merges(
                     }
                 val lines = CiWait.failedRunLines(failed) { redactor.redact(it) }
                 val notStarted = verdict is CiVerdict.NotStarted
+                // m4-35: only a red verdict reaches the ci_failed reaction, never not_started, a timeout or no run.
+                val note =
+                    if (verdict is CiVerdict.Red) {
+                        (ciRed(counted, issue, workflow, verdict, jobs, decision.reason, onSettled) ?: return null).note
+                    } else {
+                        null
+                    }
                 mergeRefused(counted, CiWait.STEP, decision.reason) { reason ->
-                    CiWait.failedComment(wait.numberText, reason, lines, notStarted) to IssueCommented.CI
+                    val text = CiWait.failedComment(wait.numberText, reason, lines, notStarted)
+                    (if (note == null) text else "$text\n\n$note") to IssueCommented.CI
                 }.also { if (decision.outcome == CiWait.TIMEOUT) onCiTimeout(wait) }
+            }
+        }
+    }
+
+    /**
+     * The `ci_failed` reaction to the red [verdict] of the CI wait [wait] (m4-35): the refusal of m3-15 when it does not
+     * send [issue] back, with the note that ends its comment; null when the wait ended here. A send back reads the pull
+     * request first, and one a human merged meanwhile is never sent back (bl-181), [onSettled] told; otherwise it
+     * comments on the issue and hands the wait to the reaction, which ends it and schedules the retry.
+     */
+    private suspend fun ciRed(
+        wait: Wait.Merge,
+        issue: Issue,
+        workflow: WorkflowFile,
+        verdict: CiVerdict.Red,
+        jobs: Map<Long, ActionsJobs>,
+        reason: String,
+        onSettled: () -> Unit,
+    ): CiFailedOutcome.Refuse? {
+        val reaction = ciFailed ?: return CiFailedOutcome.Refuse()
+        return when (val outcome = reaction.decide(workflow, wait, verdict, jobs, reason)) {
+            is CiFailedOutcome.Refuse -> outcome
+            is CiFailedOutcome.SendBack -> {
+                if (mergedDuringCheck(wait, issue, workflow)) {
+                    onSettled()
+                    return null
+                }
+                commentMerge(wait, outcome.comment, IssueCommented.CI)
+                forget(wait.issueId)
+                reaction.send(workflow, wait, issue, outcome)
+                null
             }
         }
     }

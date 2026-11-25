@@ -142,9 +142,11 @@ class OrchestratorStallTest {
     /**
      * Production shape: `runBlocking` on one thread, runner events sent from IO threads like the
      * process launcher's readers, so every receive races a send. A spin fails on the JUnit timeout.
+     * The 300 rounds take about 35 seconds alone and more under the full build's parallel load, so the timeout
+     * leaves room for that load: a spin never ends, whatever the bound.
      */
     @Test
-    @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    @Timeout(value = 180, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
     fun `turns fed from other threads always finish with the stall timer on`() {
         val ioTurn =
             channelFlow {

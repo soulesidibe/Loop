@@ -110,7 +110,8 @@ public data class ActionsJobs(
 
 /**
  * One job of an Actions run (m4-07): its [id], its [name], its [status] and [conclusion] as the provider names them,
- * and the number of [steps] it ran, zero for a job GitHub refused to start (billing or limits).
+ * and the number of [steps] it ran, zero for a job GitHub refused to start (billing or limits). Since m4-35 [stepList]
+ * holds each step that has a name, in order, so the `ci_failed` reaction can name the step that failed.
  */
 public data class ActionsJob(
     public val id: Long,
@@ -118,6 +119,13 @@ public data class ActionsJob(
     public val status: String,
     public val conclusion: String?,
     public val steps: Int,
+    public val stepList: List<ActionsStep> = emptyList(),
+)
+
+/** One step of an Actions job (m4-35): its [name] and its [conclusion] as the provider names it, null while it runs. */
+public data class ActionsStep(
+    public val name: String,
+    public val conclusion: String?,
 )
 
 /**
