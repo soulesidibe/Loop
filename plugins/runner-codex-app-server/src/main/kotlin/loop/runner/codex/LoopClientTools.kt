@@ -25,7 +25,9 @@ import kotlin.io.path.readText
  * call is not run here: the runner hands it to `loop tool mcp`, see [LoopToolCall].
  *
  * Since m4-31 every attempt also gets `ask`, for a question a human must answer, with the arguments and the description
- * `loop tool mcp` gives it; its `pending` answer and its structured failures are those of `loop tool mcp`.
+ * `loop tool mcp` gives it; its `pending` answer and its structured failures are those of `loop tool mcp`. Since m4-33
+ * it also gets `file_followup`, for a follow up issue filed when the turn ends, with the arguments and the description of
+ * `loop tool mcp`, whose answers it gets too.
  *
  * Since m4-51 a workflow that declares `resources:`, whose ids the snapshot holds as [resources] (m4-25), adds
  * `request_resource` and `release_resource`, the tools `loop tool mcp` serves then, with the same argument and the same
@@ -39,8 +41,8 @@ class LoopClientTools(
     val resources: List<String> = emptyList(),
 ) {
     /**
-     * The `dynamicTools` of `thread/start`: [SUBMIT_RESULT], [MOVE], [COMMENT] and [ASK], then [REQUEST_RESOURCE] and
-     * [RELEASE_RESOURCE] when the workflow declares resources, in that order.
+     * The `dynamicTools` of `thread/start`: [SUBMIT_RESULT], [MOVE], [COMMENT], [ASK] and [FILE_FOLLOWUP], then
+     * [REQUEST_RESOURCE] and [RELEASE_RESOURCE] when the workflow declares resources, in that order.
      */
     val specs: JsonArray
         get() =
@@ -49,6 +51,7 @@ class LoopClientTools(
                 add(function(MOVE, moveDescription(), objectSchema(moveProperties(), listOf(STATE))))
                 add(function(COMMENT, COMMENT_DESCRIPTION, objectSchema(commentProperties(), listOf(TEXT))))
                 add(function(ASK, ASK_DESCRIPTION, objectSchema(askProperties(), listOf(KIND, QUESTION))))
+                add(function(FILE_FOLLOWUP, FILE_FOLLOWUP_DESCRIPTION, objectSchema(followupProperties(), listOf(TITLE, BODY))))
                 if (resources.isNotEmpty()) {
                     add(function(REQUEST_RESOURCE, REQUEST_RESOURCE_DESCRIPTION, objectSchema(nameProperties(), listOf(NAME))))
                     add(function(RELEASE_RESOURCE, RELEASE_RESOURCE_DESCRIPTION, objectSchema(nameProperties(), listOf(NAME))))
@@ -106,6 +109,18 @@ class LoopClientTools(
             }
         }
 
+    private fun followupProperties(): JsonObject =
+        buildJsonObject {
+            putJsonObject(TITLE) {
+                put("type", "string")
+                put("description", "The title of the follow up issue, one short sentence.")
+            }
+            putJsonObject(BODY) {
+                put("type", "string")
+                put("description", "What you found and where, in full sentences a human can triage without reading your session.")
+            }
+        }
+
     private fun nameProperties(): JsonObject =
         buildJsonObject {
             putJsonObject(NAME) {
@@ -139,11 +154,14 @@ class LoopClientTools(
         /** The tool of a question a human must answer (m4-31). */
         const val ASK = "ask"
 
+        /** The tool of a follow up issue (m4-33). */
+        const val FILE_FOLLOWUP = "file_followup"
+
         const val REQUEST_RESOURCE = "request_resource"
         const val RELEASE_RESOURCE = "release_resource"
 
         /** The names of the tools every attempt gets, in the order of [specs]. */
-        val NAMES: List<String> = listOf(SUBMIT_RESULT, MOVE, COMMENT, ASK)
+        val NAMES: List<String> = listOf(SUBMIT_RESULT, MOVE, COMMENT, ASK, FILE_FOLLOWUP)
 
         /** The names of the resource tools (m4-51), listed after [NAMES] when the workflow declares resources. */
         val RESOURCE_NAMES: List<String> = listOf(REQUEST_RESOURCE, RELEASE_RESOURCE)
@@ -159,6 +177,10 @@ class LoopClientTools(
         const val QUESTION = "question"
         const val OPTIONS = "options"
         const val RECOMMENDATION = "recommendation"
+
+        /** The arguments of `file_followup` (m4-33), as `loop tool mcp` reads them, both required. */
+        const val TITLE = "title"
+        const val BODY = "body"
 
         /** The values of `ask`'s `kind`, those of `loop tool mcp`. */
         val ASK_KINDS: List<String> = listOf("engineering", "design", "product", "human")
@@ -194,6 +216,12 @@ class LoopClientTools(
                 "decide. Give the options you see and the one you recommend. Loop answers pending at once: end your turn then. " +
                 "When the turn ends, Loop posts your question on the issue, ends your attempt without verification and keeps " +
                 "your workspace, and the issue waits for a human's answer. Call it once per attempt."
+
+        private const val FILE_FOLLOWUP_DESCRIPTION =
+            "File a follow up issue for work you found that is outside your issue, such as a bug next to your change or a " +
+                "missing test elsewhere. Do not use it for your own issue's work. Loop queues it and, when this turn ends, " +
+                "creates the issue labelled needs-triage, so a human triages it, with a last line naming your issue and " +
+                "attempt, and comments its id on your issue. You may file at most 3 per attempt."
 
         private const val REQUEST_RESOURCE_DESCRIPTION =
             "Ask Loop for a resource of the workflow, such as a device or a simulator, by its name, before you use it. " +
