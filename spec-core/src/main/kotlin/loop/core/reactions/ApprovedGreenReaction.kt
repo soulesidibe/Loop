@@ -79,8 +79,10 @@ class ApprovedGreenReaction(
     ): Boolean {
         if (reaction.action != ReactionAction.NotifyHuman) return false
         val read = read(one, "the reviews of pull request #${one.number}") { reviews() } ?: return false
-        val trusted =
-            (workflow.config.reactions.changesRequested?.trustedAssociations ?: ReactionsConfig.DEFAULT_TRUSTED_ASSOCIATIONS).toSet()
+        val written =
+            workflow.config.reactions.changesRequested
+                ?.trustedAssociations
+        val trusted = (written ?: ReactionsConfig.DEFAULT_TRUSTED_ASSOCIATIONS).toSet()
         val approvers = approvers(read, trusted)
         if (approvers.isEmpty()) return false
         val head = read.headSha

@@ -535,7 +535,13 @@ class ApprovedGreenReactionTest {
             tick(second, after = Reactions.POLL_FLOOR_MS)
 
             assertEquals(2, setup.channel.notices.size, "a new approved and green head notifies again")
-            assertContains(setup.channel.notices.last().reason, "on its head ${NEW_HEAD.take(12)}")
+            val short = NEW_HEAD.take(12)
+            assertContains(
+                setup.channel.notices
+                    .last()
+                    .reason,
+                "on its head $short",
+            )
             assertEquals(listOf(HEAD, NEW_HEAD), setup.all(ReactionTriggered.name).map { it["head"] })
             assertEquals(NEW_HEAD, setup.remote.runReads.last())
         }
