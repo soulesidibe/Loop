@@ -135,6 +135,10 @@ _Avoid_: Output file, result.json (on its own)
 A short value that identifies the state of a workspace when a verification starts: for a git work tree, `git:<HEAD>:<diff hash>:<untracked hash>`, the commit, a hash of the uncommitted changes against it and a hash of the untracked files git does not ignore; for any other folder, `tree:<hash>` of every file. The result file `.loop/result.json` at the top of the workspace is never part of it; every other file under `.loop/` is. The same state always gives the same value and one changed file changes it.
 _Avoid_: Checksum, snapshot, workspace hash
 
+**Context source**:
+A path in the workspace that a kind declares under `context.files` for its issues, such as a brand voice file or a folder of published posts. The prompt lists it as a pointer where the template places `loop.context_sources`, and the agent reads it on demand; its text is never inlined.
+_Avoid_: Context file, attachment
+
 **Prompt slot**:
 One part of a rendered prompt, in the plan's priority order: the template and its rules, the issue, verify findings, the session brief, lessons and context sources. The size of each is recorded with every rendered prompt (m1-17); from M3 the slots fill the prompt budget in that order.
 _Avoid_: Prompt section, prompt part

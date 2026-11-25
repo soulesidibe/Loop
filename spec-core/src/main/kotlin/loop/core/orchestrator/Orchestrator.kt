@@ -2580,7 +2580,8 @@ class Orchestrator(
                 templates
                     .parse(KindPrompt.template(workflow, kind))
                     .mapCatching {
-                        it to it.render(PromptVariables.of(issue, attempt, findings, workspaceReused, brief, retryKind, sources)).getOrThrow()
+                        it to
+                            it.render(PromptVariables.of(issue, attempt, findings, workspaceReused, brief, retryKind, sources)).getOrThrow()
                     }.getOrElse { error ->
                         recordPhase(AttemptPhase.BuildingPrompt)
                         return Executed(AttemptOutcome.Failed, "template error: ${error.describe()}")
@@ -2890,7 +2891,14 @@ class Orchestrator(
         private suspend fun contextSources(workspace: Path): String? {
             val sources = KindPrompt.sources(kind, workspace)
             sources.missing.forEach { path ->
-                record(ContextSourceMissing, data = mapOf(ContextSourceMissing.PATH to path, ContextSourceMissing.KIND to kind?.name.orEmpty()))
+                record(
+                    ContextSourceMissing,
+                    data =
+                        mapOf(
+                            ContextSourceMissing.PATH to path,
+                            ContextSourceMissing.KIND to kind?.name.orEmpty(),
+                        ),
+                )
             }
             return sources.text
         }

@@ -154,7 +154,14 @@ internal class LedgerMeter {
                 kind = kind,
                 runner = workflow.runner.kind,
                 model = model,
-                templateVersion = workflowHash(workflow.config.kinds?.named?.get(kind)?.template?.text ?: workflow.promptTemplate),
+                templateVersion =
+                    workflowHash(
+                        workflow.config.kinds
+                            ?.named
+                            ?.get(kind)
+                            ?.template
+                            ?.text ?: workflow.promptTemplate,
+                    ),
                 configVersion = workflow.sourceHash.ifEmpty { null },
             )
     }

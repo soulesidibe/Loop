@@ -61,5 +61,13 @@ object KindPrompt {
     fun sources(
         kind: IssueKind?,
         workspace: Path,
-    ): RenderedSources = ContextSources.render(kind?.config?.context?.files.orEmpty(), workspace)
+    ): RenderedSources =
+        ContextSources.render(
+            kind
+                ?.config
+                ?.context
+                ?.files
+                .orEmpty(),
+            workspace,
+        )
 }

@@ -149,7 +149,16 @@ class Preflight(
             for (workspaceReused in listOf(false, true)) {
                 val brief = PromptVariables.SAMPLE_SESSION_BRIEF.takeIf { attempt != null || workspaceReused || retryKind != null }
                 for (sources in listOf(null, PromptVariables.SAMPLE_CONTEXT_SOURCES)) {
-                    val variables = PromptVariables.of(PromptVariables.SAMPLE_ISSUE, attempt, findings, workspaceReused, brief, retryKind, sources)
+                    val variables =
+                        PromptVariables.of(
+                            PromptVariables.SAMPLE_ISSUE,
+                            attempt,
+                            findings,
+                            workspaceReused,
+                            brief,
+                            retryKind,
+                            sources,
+                        )
                     template.render(variables).exceptionOrNull()?.let { return it }
                 }
             }

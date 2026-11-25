@@ -54,7 +54,13 @@ object PromptVariables {
     val RETRY_KINDS: List<String> = listOf(RETRY_CONTINUATION, RETRY_ROTATION, RETRY_ERROR, RETRY_REFUTED)
 
     val schema: TemplateSchema =
-        TemplateSchema(mapOf(ISSUE to issueFields(SAMPLE_ISSUE).keys, ATTEMPT to null, LOOP to loopFields(null, false, null, null, null).keys))
+        TemplateSchema(
+            mapOf(
+                ISSUE to issueFields(SAMPLE_ISSUE).keys,
+                ATTEMPT to null,
+                LOOP to loopFields(null, false, null, null, null).keys,
+            ),
+        )
 
     /**
      * [attempt] is null on a first run, else the retry attempt (set by the retry queue, m1-07). [verifyFindings]

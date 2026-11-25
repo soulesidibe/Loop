@@ -86,7 +86,11 @@ class ContextSourcesOrchestratorTest {
         runTest {
             val code = KindConfig(checks = emptyList(), context = KindContext(listOf("present.md", "gone.md")))
             val workflow = workflow(KindsConfig(code))
-            workflow.workspaceRoot.resolve("m4-19").createDirectories().resolve("present.md").writeText("here")
+            workflow.workspaceRoot
+                .resolve("m4-19")
+                .createDirectories()
+                .resolve("present.md")
+                .writeText("here")
             val runner = FakeRunner()
             val sink = FakeSink()
 
@@ -99,7 +103,10 @@ class ContextSourcesOrchestratorTest {
             assertEquals("id-m4-19", missing.issueId)
             assertEquals(AttemptOutcome.Succeeded, summary.outcome)
             val building = sink.events.buildingPrompt()
-            assertEquals("\nSources:\n- present.md\n- gone.md (missing from the workspace)".length.toString(), building.data["slot_context_sources_chars"])
+            assertEquals(
+                "\nSources:\n- present.md\n- gone.md (missing from the workspace)".length.toString(),
+                building.data["slot_context_sources_chars"],
+            )
             assertTrue(building.data.getValue("slot_context_sources_tokens").toInt() > 0)
         }
 

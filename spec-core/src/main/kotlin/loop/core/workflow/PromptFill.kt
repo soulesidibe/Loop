@@ -56,7 +56,13 @@ object PromptFill {
 
     /** The line that ends a list of context sources cut to fit, [n] sources being left out. */
     fun sourcesLeftOut(n: Int): String =
-        if (n == 1) "(1 more context source is left out to fit the prompt limit.)" else "($n more context sources are left out to fit the prompt limit.)"
+        if (n ==
+            1
+        ) {
+            "(1 more context source is left out to fit the prompt limit.)"
+        } else {
+            "($n more context sources are left out to fit the prompt limit.)"
+        }
 
     /** How many lines of the findings may form their head, at most. */
     private const val FINDINGS_HEAD_MAX = 5
@@ -80,8 +86,17 @@ object PromptFill {
     ): FilledPrompt? {
         fun render(of: PromptContent): String? =
             template
-                .render(PromptVariables.of(of.issue, attempt, of.verifyFindings, workspaceReused, of.sessionBrief, retryKind, of.contextSources))
-                .getOrNull()
+                .render(
+                    PromptVariables.of(
+                        of.issue,
+                        attempt,
+                        of.verifyFindings,
+                        workspaceReused,
+                        of.sessionBrief,
+                        retryKind,
+                        of.contextSources,
+                    ),
+                ).getOrNull()
 
         val rendered = render(content) ?: return null
         if (counter.count(rendered) <= limit) return FilledPrompt(rendered, content, null)

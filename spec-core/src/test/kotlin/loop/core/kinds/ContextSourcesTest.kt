@@ -38,7 +38,8 @@ class ContextSourcesTest {
 
     private fun template(text: String) = templates.parse(text, PromptVariables.schema).getOrThrow()
 
-    private val placed = "Work on {{ issue.identifier }}.{% if loop.context_sources %}\nRead when needed:\n{{ loop.context_sources }}{% endif %}"
+    private val placed =
+        "Work on {{ issue.identifier }}.{% if loop.context_sources %}\nRead when needed:\n{{ loop.context_sources }}{% endif %}"
 
     @Test
     fun `each path renders as one line, in the order written`() {
@@ -99,7 +100,11 @@ class ContextSourcesTest {
         val content =
             IssueKind(
                 "content",
-                KindConfig(checks = emptyList(), match = KindMatch(label = "content"), template = KindTemplate(".loop/templates/content.md", "Write")),
+                KindConfig(
+                    checks = emptyList(),
+                    match = KindMatch(label = "content"),
+                    template = KindTemplate(".loop/templates/content.md", "Write"),
+                ),
             )
         val code = IssueKind("code", KindConfig(checks = emptyList()))
         val workflow = workflowFile(KindsConfig(linkedMapOf("code" to code.config, "content" to content.config)))
@@ -123,11 +128,17 @@ class ContextSourcesTest {
         folder.resolve(".loop/templates").createDirectories()
         folder.resolve(".loop/templates/content.md").writeText("Write {{ issue.identifier }}. {{ loop.context_sources }}")
 
-        val kinds = load(contentKind("    template: .loop/templates/content.md\n    context:\n      files: [docs/voice.md, posts/]")).config.kinds!!
+        val kinds =
+            load(
+                contentKind("    template: .loop/templates/content.md\n    context:\n      files: [docs/voice.md, posts/]"),
+            ).config.kinds!!
 
         val content = kinds.named.getValue("content")
         assertEquals(listOf("docs/voice.md", "posts/"), content.context.files)
-        assertEquals(KindTemplate(".loop/templates/content.md", "Write {{ issue.identifier }}. {{ loop.context_sources }}"), content.template)
+        assertEquals(
+            KindTemplate(".loop/templates/content.md", "Write {{ issue.identifier }}. {{ loop.context_sources }}"),
+            content.template,
+        )
         assertEquals(KindContext(), kinds.code.context)
         assertNull(kinds.code.template)
     }
@@ -179,7 +190,10 @@ class ContextSourcesTest {
             onOwn.message,
         )
 
-        folder.resolve("content.md").writeText("Write {{ issue.identifier }}.{% if loop.context_sources %} {{ loop.context_sources }}{% endif %}")
+        folder
+            .resolve(
+                "content.md",
+            ).writeText("Write {{ issue.identifier }}.{% if loop.context_sources %} {{ loop.context_sources }}{% endif %}")
         assertIs<PreflightResult.Ok>(preflight(contentKind("    template: content.md\n    context:\n      files: [a.md]")))
         assertIs<PreflightResult.Ok>(preflight(contentKind("    context:\n      files: [a.md]"), body = placed))
     }
@@ -228,14 +242,17 @@ class ContextSourcesTest {
         body: String = "Work on {{ issue.identifier }}",
     ): Path =
         folder.resolve("WORKFLOW.md").also {
-            it.writeText("---\ntracker:\n  kind: files\nrunner:\n  kind: command\nrunners:\n  command:\n    command: ./agent.sh\n$kinds\n---\n$body")
+            it.writeText(
+                "---\ntracker:\n  kind: files\nrunner:\n  kind: command\nrunners:\n  command:\n    command: ./agent.sh\n$kinds\n---\n$body",
+            )
         }
 
     private val loader = WorkflowLoader(env = emptyMap())
 
     private fun load(kinds: String): WorkflowFile = loader.load(write(kinds)).getOrThrow()
 
-    private fun loadError(kinds: String): String = assertIs<WorkflowError.InvalidConfig>(loader.load(write(kinds)).exceptionOrNull()).message!!
+    private fun loadError(kinds: String): String =
+        assertIs<WorkflowError.InvalidConfig>(loader.load(write(kinds)).exceptionOrNull()).message!!
 
     private fun preflight(
         kinds: String,
