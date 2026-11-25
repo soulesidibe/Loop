@@ -18,6 +18,7 @@ object EventDefinitions {
             SessionStopFailed,
             SessionRotated,
             RunnerOutput,
+            ContextSourceMissing,
             PromptRecordFailed,
             RunnerOutputRecordFailed,
             HookFinished,

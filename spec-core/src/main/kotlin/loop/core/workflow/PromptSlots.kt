@@ -5,8 +5,8 @@ import loop.core.template.Template
 
 /**
  * The size of every slot of a rendered prompt, in the plan's priority order (8.5), in characters since m1-17 and in
- * tokens since m3-13. The verify findings slot is measured since m2-06, the session brief slot since m3-10; until the
- * later milestones fill them, the lessons and context sources slots are empty. Recorded so the context limits can be
+ * tokens since m3-13. The verify findings slot is measured since m2-06, the session brief slot since m3-10, the context
+ * sources slot since m4-19; until M6 fills it, the lessons slot is empty. Recorded so the context limits can be
  * tuned from data. Since m3-14 the same shape holds the tokens each slot lost when [PromptFill] cut it.
  */
 data class PromptSlotSizes(
@@ -19,6 +19,7 @@ data class PromptSlotSizes(
     /** What `loop.session_brief` added to the rendered prompt (m3-10). */
     val sessionBrief: Int = 0,
     val lessons: Int = 0,
+    /** What `loop.context_sources` added to the rendered prompt (m4-19). */
     val contextSources: Int = 0,
 ) {
     val total: Int get() = template + issue + verifyFindings + sessionBrief + lessons + contextSources
@@ -92,8 +93,9 @@ object PromptBudget {
 }
 
 /**
- * Measures the slots of a prompt the template renders as a whole. The session brief slot is the difference
- * between [rendered] and the same template rendered without the brief (m3-10). The verify findings slot is the
+ * Measures the slots of a prompt the template renders as a whole. The context sources slot is the difference between
+ * [rendered] and the same template rendered without the sources (m4-19). The session brief slot is the difference
+ * between that render and one without the brief too (m3-10). The verify findings slot is the
  * difference between that render and one without findings too. The issue slot is the difference between that
  * render and one with the issue's fields emptied too: text strings become empty, lists empty and nullable fields
  * null. A field used twice counts twice, and text the template shows only for a present field counts in that
@@ -101,8 +103,8 @@ object PromptBudget {
  */
 object PromptSlots {
     /**
-     * The slots of [rendered], the render of [template] for [issue], [attempt], [verifyFindings], [workspaceReused]
-     * and [sessionBrief]; null when a render without them fails. Every render keeps [attempt], [workspaceReused] and
+     * The slots of [rendered], the render of [template] for [issue], [attempt], [verifyFindings], [workspaceReused],
+     * [sessionBrief] and [contextSources]; null when a render without them fails. Every render keeps [attempt], [workspaceReused] and
      * [retryKind], so what they show counts in the template slot (bl-19, m3-11).
      */
     fun measure(
@@ -114,8 +116,10 @@ object PromptSlots {
         workspaceReused: Boolean = false,
         sessionBrief: String? = null,
         retryKind: String? = null,
+        contextSources: String? = null,
     ): PromptSlotSizes? =
-        renders(template, issue, attempt, rendered, verifyFindings, workspaceReused, sessionBrief, retryKind)?.sizes(String::length)
+        renders(template, issue, attempt, rendered, verifyFindings, workspaceReused, sessionBrief, retryKind, contextSources)
+            ?.sizes(String::length)
 
     /**
      * The slots of [rendered] as [measure] finds them, in characters and in tokens of [counter] (m3-13). Each token slot
@@ -131,28 +135,37 @@ object PromptSlots {
         sessionBrief: String? = null,
         retryKind: String? = null,
         counter: TokenCounter,
+        contextSources: String? = null,
     ): PromptMeasure? {
-        val renders = renders(template, issue, attempt, rendered, verifyFindings, workspaceReused, sessionBrief, retryKind) ?: return null
+        val renders =
+            renders(template, issue, attempt, rendered, verifyFindings, workspaceReused, sessionBrief, retryKind, contextSources)
+                ?: return null
         return PromptMeasure(renders.sizes(String::length), renders.sizes(counter::count))
     }
 
-    /** The full render and the renders without the brief, then without the findings, then without the issue too. */
+    /**
+     * The full render and the renders without the context sources, then without the brief, then without the findings,
+     * then without the issue too.
+     */
     private class Renders(
         val full: String,
+        val withoutSources: String,
         val withoutBrief: String,
         val withoutFindings: String,
         val withoutIssue: String,
     ) {
         fun sizes(size: (String) -> Int): PromptSlotSizes {
             val total = size(full)
-            val brief = (total - size(withoutBrief)).coerceIn(0, total)
-            val findings = (size(withoutBrief) - size(withoutFindings)).coerceIn(0, total - brief)
-            val issue = (size(withoutFindings) - size(withoutIssue)).coerceIn(0, total - brief - findings)
+            val sources = (total - size(withoutSources)).coerceIn(0, total)
+            val brief = (size(withoutSources) - size(withoutBrief)).coerceIn(0, total - sources)
+            val findings = (size(withoutBrief) - size(withoutFindings)).coerceIn(0, total - sources - brief)
+            val issue = (size(withoutFindings) - size(withoutIssue)).coerceIn(0, total - sources - brief - findings)
             return PromptSlotSizes(
-                template = total - brief - findings - issue,
+                template = total - sources - brief - findings - issue,
                 issue = issue,
                 verifyFindings = findings,
                 sessionBrief = brief,
+                contextSources = sources,
             )
         }
     }
@@ -166,16 +179,19 @@ object PromptSlots {
         workspaceReused: Boolean,
         sessionBrief: String?,
         retryKind: String?,
+        contextSources: String?,
     ): Renders? {
         fun render(
             of: Issue,
             findings: String?,
-        ): String? = template.render(PromptVariables.of(of, attempt, findings, workspaceReused, retryKind = retryKind)).getOrNull()
+            brief: String? = null,
+        ): String? = template.render(PromptVariables.of(of, attempt, findings, workspaceReused, brief, retryKind)).getOrNull()
 
-        val withoutBrief = if (sessionBrief == null) rendered else render(issue, verifyFindings) ?: return null
+        val withoutSources = if (contextSources == null) rendered else render(issue, verifyFindings, sessionBrief) ?: return null
+        val withoutBrief = if (sessionBrief == null) withoutSources else render(issue, verifyFindings) ?: return null
         val withoutFindings = if (verifyFindings == null) withoutBrief else render(issue, null) ?: return null
         val withoutIssue = render(emptied(issue), null) ?: return null
-        return Renders(rendered, withoutBrief, withoutFindings, withoutIssue)
+        return Renders(rendered, withoutSources, withoutBrief, withoutFindings, withoutIssue)
     }
 
     /** [issue] with its fields emptied: text strings empty, lists empty and nullable fields null. */

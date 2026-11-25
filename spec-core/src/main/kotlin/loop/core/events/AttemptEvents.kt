@@ -518,6 +518,27 @@ object RunnerOutput : EventDefinition("runner_output") {
     override val sample = mapOf(STREAM to "stdout", LINE to "hello", CHARS to "5")
 }
 
+/**
+ * A context source of the attempt's kind was not in the workspace when the prompt rendered (m4-19): the prompt lists it
+ * as missing and the attempt goes on. One event per missing path and render.
+ */
+object ContextSourceMissing : EventDefinition("context_source_missing") {
+    /** The path as `kinds.<kind>.context.files` writes it. */
+    const val PATH = "path"
+
+    /** The name of the attempt's kind. */
+    const val KIND = "kind"
+
+    override val trace = TraceShow.TIMELINE
+    override val human = HumanShow.ISSUE
+    override val sample = mapOf(PATH to "docs/brand/voice.md", KIND to "content")
+
+    override fun humanSentence(
+        data: Map<String, String>,
+        facts: HumanFacts,
+    ): String = "the context source ${data[PATH]} of the ${data[KIND]} kind is not in the workspace, the prompt lists it as missing"
+}
+
 /** The rendered prompt could not be written to the attempt file (m1-17). */
 object PromptRecordFailed : EventDefinition("prompt_record_failed") {
     const val REASON = "reason"

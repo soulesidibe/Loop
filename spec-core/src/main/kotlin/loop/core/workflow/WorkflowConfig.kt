@@ -64,6 +64,8 @@ data class KindsConfig(
  * [holdout] holds the hidden checks (m2-14), run after every visible check passed, from the holdout folder
  * outside every workspace; empty when the kind declares none. [delivery] is how a verified result is delivered
  * (m2-24), `human` by default. [match] says which issues the kind takes (m4-18), the default kind by default.
+ * [context] holds the kind's context sources and [template] its own prompt template, null to render the
+ * `WORKFLOW.md` body (m4-19).
  */
 data class KindConfig(
     val checks: List<CheckConfig>,
@@ -72,6 +74,26 @@ data class KindConfig(
     val holdout: List<CheckConfig> = emptyList(),
     val delivery: DeliveryConfig = DeliveryConfig(),
     val match: KindMatch = KindMatch.DEFAULT,
+    val context: KindContext = KindContext(),
+    val template: KindTemplate? = null,
+)
+
+/**
+ * A kind's `context` (m4-19, plan 8.6): [files], paths relative to the workspace that the agent reads on demand, in the
+ * order written. Loop lists them in the prompt where the template places `loop.context_sources`, never their text.
+ */
+data class KindContext(
+    val files: List<String> = emptyList(),
+)
+
+/**
+ * A kind's own prompt template (m4-19): [path] as `kinds.<kind>.template` writes it, relative to the folder of
+ * `WORKFLOW.md`, and [text], the file read with the workflow. It is rendered instead of the `WORKFLOW.md` body for the
+ * issues of the kind.
+ */
+data class KindTemplate(
+    val path: String,
+    val text: String,
 )
 
 /**

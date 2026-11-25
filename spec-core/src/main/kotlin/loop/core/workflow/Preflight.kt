@@ -36,7 +36,10 @@ fun interface PreflightCheck {
  * `loop.workspace_reused` false and true, and `loop.session_brief` set exactly when the attempt is a retry, a rotation
  * or the workspace is reused, so it renders null and set. Since m3-13 it also renders the template with an empty issue
  * and no optional slot: when that alone is over the prompt limit of the window of [promptModel], the template can
- * never fit and the preflight fails with `invalid_config`. Never throws, except to propagate cancellation.
+ * never fit and the preflight fails with `invalid_config`. Since m4-19 it checks the template of every kind, its own
+ * `template` or the body, the same way, renders each with `loop.context_sources` null and set, and refuses a kind that
+ * declares `context.files` with a template that never uses `loop.context_sources`. Never throws, except to propagate
+ * cancellation.
  */
 class Preflight(
     private val loader: WorkflowLoader,
@@ -80,23 +83,78 @@ class Preflight(
         trackerCheck(workflow)?.let { return PreflightResult.Failed(INVALID_CONFIG, it) }
         // m2-09: no remote issue text runs a command until Loop checks who wrote it.
         untrustedAcceptanceCommands(workflow)?.let { return PreflightResult.Failed(INVALID_CONFIG, it) }
-        val template =
-            templates
-                .parse(workflow.promptTemplate, PromptVariables.schema)
-                .getOrElse { return templateFailure(it) }
-        // A first run, each retry kind (m3-11) and a refutation with its findings (m2-06), each in a new and a reused
-        // workspace (bl-19), so every branch on them renders. The session brief is set as the Orchestrator sets it
-        // (m3-10): null on the first run in a new workspace, set on every other sample, so both of its branches render.
+        for (prompt in prompts(workflow)) {
+            val template =
+                templates
+                    .parse(prompt.text, PromptVariables.schema)
+                    .getOrElse { return templateFailure(it, prompt.name) }
+            unusedSources(prompt, template)?.let { return PreflightResult.Failed(INVALID_CONFIG, it) }
+            renderSamples(template)?.let { return templateFailure(it, prompt.name) }
+            templateOverLimit(workflow, template, prompt.name)?.let { return PreflightResult.Failed(INVALID_CONFIG, it) }
+        }
+        return PreflightResult.Ok(workflow)
+    }
+
+    /**
+     * A prompt template to check (m4-19): its [text], its [name] in render messages, null for the `WORKFLOW.md` body,
+     * [sourcesKind], the key of its kind when that kind declares context sources, else null, and [source], how the
+     * refusal of unused sources names the template.
+     */
+    private class PromptToCheck(
+        val text: String,
+        val name: String?,
+        val sourcesKind: String?,
+        val source: String,
+    )
+
+    /**
+     * The template of every kind, in the order written, its own `template` or the body (m4-19); the body alone in Symphony
+     * mode.
+     */
+    private fun prompts(workflow: WorkflowFile): List<PromptToCheck> {
+        val kinds = workflow.config.kinds ?: return listOf(PromptToCheck(workflow.promptTemplate, null, null, BODY))
+        return kinds.named.map { (name, kind) ->
+            val own = kind.template
+            PromptToCheck(
+                text = own?.text ?: workflow.promptTemplate,
+                name = own?.let { "kinds.$name (${it.path})" },
+                sourcesKind = "kinds.$name".takeIf { kind.context.files.isNotEmpty() },
+                source = own?.let { "kinds.$name.template (${it.path})" } ?: BODY,
+            )
+        }
+    }
+
+    /**
+     * Why a kind that declares `context.files` cannot show them (m4-19): its template never uses `loop.context_sources`,
+     * and Loop never inserts the list by itself. Null when it does or the kind declares none.
+     */
+    private fun unusedSources(
+        prompt: PromptToCheck,
+        template: Template,
+    ): String? {
+        val kindKey = prompt.sourcesKind ?: return null
+        if (template.uses(PromptVariables.LOOP, PromptVariables.CONTEXT_SOURCES)) return null
+        return "$kindKey.context.files is set, but ${prompt.source} never uses loop.${PromptVariables.CONTEXT_SOURCES}, " +
+            "place {{ loop.${PromptVariables.CONTEXT_SOURCES} }} where the sources go"
+    }
+
+    /**
+     * Renders [template] for a first run, each retry kind (m3-11) and a refutation with its findings (m2-06), each in a
+     * new and a reused workspace (bl-19), each with and without context sources (m4-19), so every branch on them renders.
+     * The session brief is set as the Orchestrator sets it (m3-10): null on the first run in a new workspace, set on every
+     * other sample, so both of its branches render. The first render error, or null.
+     */
+    private fun renderSamples(template: Template): Throwable? {
         for ((attempt, findings, retryKind) in SAMPLES) {
             for (workspaceReused in listOf(false, true)) {
                 val brief = PromptVariables.SAMPLE_SESSION_BRIEF.takeIf { attempt != null || workspaceReused || retryKind != null }
-                template
-                    .render(PromptVariables.of(PromptVariables.SAMPLE_ISSUE, attempt, findings, workspaceReused, brief, retryKind))
-                    .getOrElse { return templateFailure(it) }
+                for (sources in listOf(null, PromptVariables.SAMPLE_CONTEXT_SOURCES)) {
+                    val variables = PromptVariables.of(PromptVariables.SAMPLE_ISSUE, attempt, findings, workspaceReused, brief, retryKind, sources)
+                    template.render(variables).exceptionOrNull()?.let { return it }
+                }
             }
         }
-        templateOverLimit(workflow, template)?.let { return PreflightResult.Failed(INVALID_CONFIG, it) }
-        return PreflightResult.Ok(workflow)
+        return null
     }
 
     /**
@@ -107,6 +165,7 @@ class Preflight(
     private fun templateOverLimit(
         workflow: WorkflowFile,
         template: Template,
+        name: String?,
     ): String? {
         val model = promptModel(workflow)
         val context = workflow.config.context
@@ -118,7 +177,7 @@ class Preflight(
         val counter = TokenCounters.forModel(model)
         val tokens = counter.count(alone)
         if (tokens <= limit.tokens) return null
-        return "the prompt template alone is $tokens tokens, over the prompt limit of ${limit.tokens} tokens " +
+        return "${subject(name)} alone is $tokens tokens, over the prompt limit of ${limit.tokens} tokens " +
             "(context.prompt_limit ${context.promptLimit} of a ${limit.window} token window, ${counter.method})"
     }
 
@@ -136,19 +195,25 @@ class Preflight(
         return PreflightResult.Failed(code, error.firstLine())
     }
 
-    private fun templateFailure(error: Throwable): PreflightResult.Failed =
+    /** `the prompt template`, and of which kind when the template is a kind's own [name] (m4-19). */
+    private fun subject(name: String?): String = if (name == null) "the prompt template" else "the prompt template of $name"
+
+    private fun templateFailure(
+        error: Throwable,
+        name: String?,
+    ): PreflightResult.Failed =
         when (error) {
             is TemplateError.Render ->
                 PreflightResult.Failed(
                     "template_render_error",
-                    error.variable?.let { "the prompt template uses \"$it\", which is not a variable" }
-                        ?: "the prompt template does not render: ${error.firstLine()}",
+                    error.variable?.let { "${subject(name)} uses \"$it\", which is not a variable" }
+                        ?: "${subject(name)} does not render: ${error.firstLine()}",
                 )
             is TemplateError.Parse ->
                 PreflightResult.Failed(
                     "template_parse_error",
-                    error.filter?.let { "the prompt template uses the filter \"$it\", which does not exist" }
-                        ?: "the prompt template does not parse: ${error.firstLine()}",
+                    error.filter?.let { "${subject(name)} uses the filter \"$it\", which does not exist" }
+                        ?: "${subject(name)} does not parse: ${error.firstLine()}",
                 )
             else -> PreflightResult.Failed(INTERNAL_ERROR, "preflight failed: ${error.firstLine()}")
         }
@@ -171,6 +236,7 @@ class Preflight(
             )
 
         const val INVALID_CONFIG = "invalid_config"
+        const val BODY = "the WORKFLOW.md body"
         const val INTERNAL_ERROR = "internal_error"
     }
 }

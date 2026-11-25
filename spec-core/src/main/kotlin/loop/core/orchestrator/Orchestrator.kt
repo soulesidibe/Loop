@@ -80,6 +80,7 @@ import loop.core.events.CheckFinished
 import loop.core.events.CheckStarted
 import loop.core.events.ConfigReloadFailed
 import loop.core.events.ConfigReloaded
+import loop.core.events.ContextSourceMissing
 import loop.core.events.ContextUsage
 import loop.core.events.ContextWindowUnknown
 import loop.core.events.Delivery
@@ -124,6 +125,7 @@ import loop.core.events.Usage
 import loop.core.events.Verdict
 import loop.core.kinds.IssueKind
 import loop.core.kinds.KindLookup
+import loop.core.kinds.KindPrompt
 import loop.core.kinds.PinnedKind
 import loop.core.kinds.Readiness
 import loop.core.log.KeyValueLog
@@ -2572,11 +2574,13 @@ class Orchestrator(
             val retryKind = dispatchRetryKinds[issue.id]
             // m3-10: a retry or a reused workspace gets a session brief built from facts, a fresh first dispatch none.
             val brief = if (attempt != null || workspaceReused) sessionBrief(issue, workspace.path, fetchedBase, findings) else null
+            // m4-19: the kind's own template or the body, and its context sources as the workspace holds them now.
+            val sources = contextSources(workspace.path)
             val (template, rendered) =
                 templates
-                    .parse(workflow.promptTemplate)
+                    .parse(KindPrompt.template(workflow, kind))
                     .mapCatching {
-                        it to it.render(PromptVariables.of(issue, attempt, findings, workspaceReused, brief, retryKind)).getOrThrow()
+                        it to it.render(PromptVariables.of(issue, attempt, findings, workspaceReused, brief, retryKind, sources)).getOrThrow()
                     }.getOrElse { error ->
                         recordPhase(AttemptPhase.BuildingPrompt)
                         return Executed(AttemptOutcome.Failed, "template error: ${error.describe()}")
@@ -2589,7 +2593,7 @@ class Orchestrator(
                 progress = RotationProgress(head, tree)
             }
             // m3-14: over its limit the prompt is filled slot by slot, each slot cut by its rule.
-            val filled = fillPrompt(template, rendered, PromptContent(issue, findings, brief), attempt, workspaceReused, retryKind)
+            val filled = fillPrompt(template, rendered, PromptContent(issue, findings, brief, sources), attempt, workspaceReused, retryKind)
             val prompt = filled.prompt
             val promptRecordError = recordPrompt(prompt)
             val promptData =
@@ -2852,6 +2856,7 @@ class Orchestrator(
                     content.sessionBrief,
                     retryKind,
                     counter,
+                    content.contextSources,
                 )
             if (slots == null) {
                 val reason = "the template does not render without the issue"
@@ -2879,6 +2884,15 @@ class Orchestrator(
             if (counter.count(rendered) <= limit.tokens) return whole
             val pointer = issuePointer(content.issue)
             return PromptFill.fill(template, content, attempt, workspaceReused, retryKind, counter, limit.tokens, pointer) ?: whole
+        }
+
+        /** The context sources of the attempt's kind as [workspace] holds them now (m4-19), each missing one recorded. */
+        private suspend fun contextSources(workspace: Path): String? {
+            val sources = KindPrompt.sources(kind, workspace)
+            sources.missing.forEach { path ->
+                record(ContextSourceMissing, data = mapOf(ContextSourceMissing.PATH to path, ContextSourceMissing.KIND to kind?.name.orEmpty()))
+            }
+            return sources.text
         }
 
         /**
@@ -3160,9 +3174,10 @@ class Orchestrator(
             val findings = if (verdicts) refuted?.text else inputs.findings
             val notices = drainFailures.values.toList()
             val brief = sessionBrief(issue, inputs.workspace, inputs.fetchedBase, findings, rotations)
+            val sources = contextSources(inputs.workspace)
             val (template, rendered) =
                 templates
-                    .parse(workflow.promptTemplate)
+                    .parse(KindPrompt.template(workflow, kind))
                     .mapCatching {
                         val variables =
                             PromptVariables.of(
@@ -3172,6 +3187,7 @@ class Orchestrator(
                                 inputs.workspaceReused,
                                 brief,
                                 PromptVariables.RETRY_ROTATION,
+                                sources,
                             )
                         it to it.render(variables).getOrThrow()
                     }.getOrElse { error ->
@@ -3181,7 +3197,7 @@ class Orchestrator(
                         return Rotation.Ended(Executed(AttemptOutcome.Failed, "template error: ${error.describe()}", turns = number))
                     }
             // m3-14: filled to the prompt limit like the attempt's first prompt, the notices trimmed after it.
-            val content = PromptContent(issue, findings, brief)
+            val content = PromptContent(issue, findings, brief, sources)
             val filled = fillPrompt(template, rendered, content, inputs.attempt, inputs.workspaceReused, PromptVariables.RETRY_ROTATION)
             val prompt = filled.prompt + noticesText(notices, workflow.config.context.toolOutputTokens)
             // A cut rotated prompt records its budget and its cuts on the session_rotated event, as the first prompt does
