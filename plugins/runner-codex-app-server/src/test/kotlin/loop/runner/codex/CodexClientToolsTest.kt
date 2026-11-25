@@ -319,7 +319,7 @@ class CodexClientToolsTest {
     }
 
     @Test
-    fun `m4-51 with resources the thread start carries request_resource and release_resource after Loop's four tools`() {
+    fun `m4-51 with resources the thread start carries request_resource and release_resource after Loop's three tools`() {
         val tools = advertised(snapshot("files", FILES_STATES, resources = listOf("pixel-7", "iphone-16")))
 
         assertEquals(
