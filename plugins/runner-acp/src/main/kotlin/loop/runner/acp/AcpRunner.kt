@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -103,14 +104,52 @@ class AcpRunner internal constructor(
     override fun openSession(ctx: AttemptContext): AgentSession = AcpSession(ctx)
 
     /**
-     * Under `preset: agy`, returns null because each session runs with a freshly isolated `--gemini-dir`
-     * that is deleted on stop, so transcripts are not persisted across sessions. Generic ACP sessions
-     * still support `session/load`.
+     * Opens a session whose turn 1 loads [runtimeSessionId] with `session/load`. Under `preset: agy` (bl-213), the
+     * session store lives in the isolated `--gemini-dir` folder, so this finds the folder an earlier attempt of the
+     * same issue kept for that id and claims it, or returns null when none is kept and Loop opens a fresh session.
      */
     override fun resumeSession(
         ctx: AttemptContext,
         runtimeSessionId: String,
-    ): AgentSession? = if (settings.isAgyPreset) null else AcpSession(ctx, resumeFrom = runtimeSessionId)
+    ): AgentSession? {
+        if (!settings.isAgyPreset) return AcpSession(ctx, resumeFrom = runtimeSessionId)
+        val roots = isolationRoots(agentEnv(ctx))
+        AgyIsolationDir.sweepStale(roots.home, roots.loopHome).forEach { warn(ctx, it) }
+        val kept =
+            AgyIsolationDir.findKept(roots.home, roots.loopHome, ctx.projectId.value, ctx.issue.id, runtimeSessionId)
+                ?: return null
+        return AcpSession(ctx, resumeFrom = runtimeSessionId, keptDir = kept)
+    }
+
+    /** Where isolated `--gemini-dir` folders live for an agent environment [env]. */
+    private data class IsolationRoots(
+        val home: Path,
+        val loopHome: Path?,
+    )
+
+    private fun isolationRoots(env: Map<String, String>): IsolationRoots =
+        IsolationRoots(
+            home =
+                env["HOME"]?.takeIf { it.isNotBlank() }?.let(Path::of)
+                    ?: hostEnv["HOME"]?.takeIf { it.isNotBlank() }?.let(Path::of)
+                    ?: Path.of(System.getProperty("user.home")),
+            loopHome =
+                env["LOOP_HOME"]?.takeIf { it.isNotBlank() }?.let(Path::of)
+                    ?: hostEnv["LOOP_HOME"]?.takeIf { it.isNotBlank() }?.let(Path::of),
+        )
+
+    private fun agentEnv(ctx: AttemptContext): Map<String, String> {
+        val removed = if (settings.isAgyPreset) removedEnvNames + AGY_REMOVED_ENV_NAMES else removedEnvNames
+        return agentEnvironment(ctx.env, removed, hostEnv, resolveAddedEnv(addedEnv, ctx.workspace))
+    }
+
+    private fun warn(
+        ctx: AttemptContext,
+        error: String,
+    ) {
+        val clean = error.replace('"', '\'').replace('\n', ' ')
+        onWarn("level=warn event=acp_cleanup project=${ctx.projectId.value} attempt=${ctx.attemptId.value} reason=\"$clean\"")
+    }
 
     private class LiveProcess(
         val events: Channel<ProcessEvent>,
@@ -118,6 +157,9 @@ class AcpRunner internal constructor(
     ) {
         lateinit var job: Job
         var stdoutLines: Int = 0
+
+        /** True once the process exited or failed to spawn, even while its last events wait in [events]. */
+        @Volatile var gone: Boolean = false
     }
 
     private data class TurnIds(
@@ -125,21 +167,27 @@ class AcpRunner internal constructor(
         val turnId: TurnId,
     )
 
-    /** One ACP session on one long lived process, running turns 1..n sequentially. */
+    /**
+     * One ACP session on one long lived process, running turns 1..n sequentially. Under `preset: agy`, a turn whose
+     * process is gone respawns it once and loads the session from the kept [isolationDir] (bl-213), and a session that
+     * resumes an earlier attempt's [resumeFrom] from [keptDir] falls back to a fresh session when it cannot load it.
+     */
     private inner class AcpSession(
         private val ctx: AttemptContext,
         private val resumeFrom: String? = null,
+        keptDir: AgyIsolationDir? = null,
     ) : AgentSession {
         private val scope = CoroutineScope(SupervisorJob() + dispatcher)
         private val threadId = UUID.randomUUID().toString()
-        private val handshake =
-            AcpHandshake(
-                workspace = ctx.workspace,
-                loopVersion = loopVersion,
-                preset = settings.preset,
-                configuredModel = settings.model,
-                resumeFrom = resumeFrom,
-            )
+
+        @Volatile private var handshake = newHandshake(resumeFrom)
+
+        /** The earlier attempt's runtime session turn 1 resumes under `preset: agy`, until it loads or is given up. */
+        private var pendingResume: String? = resumeFrom?.takeIf { settings.isAgyPreset }
+
+        /** The `mcpServers` of the turn that opened the session, passed again when a respawn loads it. */
+        private var sessionMcpServers: JsonArray = JsonArray(emptyList())
+        private val owner = AgyIsolationDir.Owner(ctx.projectId.value, ctx.issue.id, ctx.workspace)
         private val homePath: Path? =
             (ctx.env["HOME"] ?: hostEnv["HOME"])?.takeIf { it.isNotBlank() }?.let(Path::of)
         private val permissionPolicy =
@@ -155,7 +203,7 @@ class AcpRunner internal constructor(
 
         @Volatile private var live: LiveProcess? = null
 
-        @Volatile private var isolationDir: AgyIsolationDir? = null
+        @Volatile private var isolationDir: AgyIsolationDir? = keptDir
 
         @Volatile private var latest: TurnIds? = null
 
@@ -206,7 +254,7 @@ class AcpRunner internal constructor(
                         }
                     }
                 } finally {
-                    deleteIsolationDir()
+                    releaseIsolationDir()
                     scope.cancel()
                 }
             }
@@ -221,9 +269,18 @@ class AcpRunner internal constructor(
             return telemetry.readPromptUsage(result, ids.sessionId, ids.turnId)
         }
 
+        private fun newHandshake(resumeFrom: String?): AcpHandshake =
+            AcpHandshake(
+                workspace = ctx.workspace,
+                loopVersion = loopVersion,
+                preset = settings.preset,
+                configuredModel = settings.model,
+                resumeFrom = resumeFrom,
+            )
+
         private fun spawn(warnings: MutableList<String>): LiveProcess {
             val process = LiveProcess(Channel(Channel.UNLIMITED), Channel(Channel.UNLIMITED))
-            val env = agentEnv()
+            val env = agentEnv(ctx)
             val argv = buildLaunchArgv(env, warnings)
             val spec =
                 LaunchSpec(
@@ -235,12 +292,16 @@ class AcpRunner internal constructor(
             process.job =
                 scope.launch {
                     try {
-                        launchProcess(spec).collect { process.events.send(it) }
+                        launchProcess(spec).collect {
+                            if (it is ProcessEvent.Exited || it is ProcessEvent.SpawnFailed) process.gone = true
+                            process.events.send(it)
+                        }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
                         process.events.close(e)
                     } finally {
+                        process.gone = true
                         process.events.close()
                     }
                 }
@@ -254,22 +315,15 @@ class AcpRunner internal constructor(
         ): List<String> {
             val base = settings.argv
             if (!settings.isAgyPreset) return base
-            val homePath =
-                env["HOME"]?.takeIf { it.isNotBlank() }?.let(Path::of)
-                    ?: hostEnv["HOME"]?.takeIf { it.isNotBlank() }?.let(Path::of)
-                    ?: Path.of(System.getProperty("user.home"))
-            AgyIsolationDir.sweepStale(homePath).forEach { warnings += it }
-            val loopHomePath =
-                env["LOOP_HOME"]?.takeIf { it.isNotBlank() }?.let(Path::of)
-                    ?: hostEnv["LOOP_HOME"]?.takeIf { it.isNotBlank() }?.let(Path::of)
+            val roots = isolationRoots(env)
+            AgyIsolationDir.sweepStale(roots.home, roots.loopHome).forEach { warnings += it }
+            // A new session of the issue supersedes the folders its earlier sessions kept; its own folder is live.
+            AgyIsolationDir.removeKept(roots.home, roots.loopHome, ctx.projectId.value, ctx.issue.id).forEach { warnings += it }
             val isolated =
-                AgyIsolationDir.create(
-                    homeDir = homePath,
-                    loopHome = loopHomePath,
-                    projectId = ctx.projectId.value,
-                    attemptId = ctx.attemptId.value,
-                )
-            isolationDir = isolated
+                isolationDir
+                    ?: AgyIsolationDir
+                        .create(homeDir = roots.home, loopHome = roots.loopHome, attemptId = ctx.attemptId.value)
+                        .also { isolationDir = it }
             return base + listOf(FLAG_DISABLE_TELEMETRY, FLAG_SANDBOX, FLAG_GEMINI_DIR, isolated.relativePath)
         }
 
@@ -290,28 +344,30 @@ class AcpRunner internal constructor(
             return dirs.distinct().map { HoldoutFolder(it, homePath) }
         }
 
-        private fun deleteIsolationDir(): String? {
-            val dir = isolationDir ?: return null
+        private fun deleteIsolationDir() {
+            val dir = isolationDir ?: return
             isolationDir = null
-            val error = dir.delete() ?: return null
-            val clean = error.replace('"', '\'').replace('\n', ' ')
-            onWarn(
-                "level=warn event=acp_cleanup project=${ctx.projectId.value} attempt=${ctx.attemptId.value} reason=\"$clean\"",
-            )
-            return error
+            dir.delete()?.let { warn(ctx, it) }
         }
 
-        private fun agentEnv(): Map<String, String> {
-            val removed = if (settings.isAgyPreset) removedEnvNames + AGY_REMOVED_ENV_NAMES else removedEnvNames
-            return agentEnvironment(ctx.env, removed, hostEnv, resolveAddedEnv(addedEnv, ctx.workspace))
+        /**
+         * At the stop, keeps the folder of a session that reported its runtime session id, so a respawn or a later
+         * attempt can load it (bl-213), and deletes any other.
+         */
+        private fun releaseIsolationDir() {
+            val dir = isolationDir ?: return
+            if (dir.keep()) {
+                isolationDir = null
+            } else {
+                deleteIsolationDir()
+            }
         }
 
-        private suspend fun kill(process: LiveProcess): String? =
+        private suspend fun kill(process: LiveProcess) =
             withContext(NonCancellable) {
                 if (live === process) live = null
                 process.stdin.close()
                 process.job.cancelAndJoin()
-                deleteIsolationDir()
             }
 
         private inner class Turn(
@@ -324,6 +380,9 @@ class AcpRunner internal constructor(
             private var ended = false
             private var runtimeSessionId: String? = resumeFrom
             private val held = mutableListOf<RunnerEvent>()
+
+            /** Why the agent could not load [pendingResume], set when [read] stops to fall back to a fresh session. */
+            private var resumeRefusal: String? = null
 
             private val interruptLock = Any()
             private var interruptAsked = false
@@ -373,13 +432,27 @@ class AcpRunner internal constructor(
                         }
                         val mcpEnv = ctx.env + mapOf(ENV_SESSION_ID to sessionId.value, ENV_TURN_ID to turnId.value)
                         val mcpServers = AcpMcpConfig.mcpServers(mcpEnv)
-                        val spawnWarnings = mutableListOf<String>()
-                        val process = spawn(spawnWarnings)
-                        spawnWarnings.forEach { out(loopNote(it)) }
-                        process.stdin.send(handshake.start(input, mcpServers))
+                        sessionMcpServers = mcpServers
+                        pendingResume?.let { resumed ->
+                            val refusal = isolationDir?.checkBeforeLoad()
+                            if (refusal != null) {
+                                giveUpResume(resumed, refusal)
+                            } else {
+                                out(loopNote("turn 1 resumes agy session $resumed of an earlier attempt"))
+                            }
+                        }
+                        val process = startProcess(input, mcpServers)
                         read(process)
+                        val refusal = resumeRefusal ?: return
+                        killAndDrain(process)
+                        giveUpResume(checkNotNull(pendingResume), refusal)
+                        read(startProcess(input, mcpServers))
                     } else {
                         val process = live
+                        val established = handshake.acpSessionId
+                        if (settings.isAgyPreset && (process == null || process.gone) && established != null && isolationDir != null) {
+                            return respawn(process, established, input)
+                        }
                         if (process == null || !handshake.isReadyForContinuation) {
                             return fail(
                                 null,
@@ -398,6 +471,53 @@ class AcpRunner internal constructor(
                     if (running === this) running = null
                     if (!ended) live?.let { kill(it) }
                 }
+            }
+
+            private suspend fun startProcess(
+                input: String,
+                mcpServers: JsonArray,
+            ): LiveProcess {
+                val spawnWarnings = mutableListOf<String>()
+                val process = spawn(spawnWarnings)
+                spawnWarnings.forEach { out(loopNote(it)) }
+                process.stdin.send(handshake.start(input, mcpServers))
+                return process
+            }
+
+            /**
+             * Turn 1 cannot load the earlier attempt's session [resumed] for [reason]: it says why and opens a fresh
+             * session in a fresh folder, never a half resumed one.
+             */
+            private suspend fun giveUpResume(
+                resumed: String,
+                reason: String,
+            ) {
+                out(loopNote("cannot resume agy session $resumed of an earlier attempt ($reason), turn 1 opens a fresh session"))
+                pendingResume = null
+                resumeRefusal = null
+                runtimeSessionId = null
+                deleteIsolationDir()
+                handshake = newHandshake(null)
+            }
+
+            /**
+             * The `agy` process of session [established] is gone ([previous] exited, or a failed turn killed it):
+             * starts a new `agy acp` on the same `--gemini-dir`, loads the session with the `mcpServers` of the turn
+             * that opened it, and runs this turn on it. At most once per turn: a failure fails the turn.
+             */
+            private suspend fun respawn(
+                previous: LiveProcess?,
+                established: String,
+                input: String,
+            ) {
+                previous?.let { kill(it) }
+                ProtectedRootsCheck.refusal(ctx.workspace, ctx.baseRef)?.let { return fail(null, it) }
+                checkNotNull(isolationDir).checkBeforeLoad()?.let { refusal ->
+                    return fail(null, "port_exit: the agy process of session $established is gone and turn $turn cannot load it: $refusal")
+                }
+                out(loopNote("the agy process of session $established is gone, turn $turn starts a new one and loads the session"))
+                handshake = newHandshake(established)
+                read(startProcess(input, sessionMcpServers))
             }
 
             private suspend fun read(process: LiveProcess) {
@@ -486,6 +606,16 @@ class AcpRunner internal constructor(
                                     is AcpHandshake.Step.ReadyForPrompt -> {
                                         step.notes.forEach { out(loopNote(it)) }
                                         runtimeSessionId = step.acpSessionId
+                                        pendingResume = null
+                                        isolationDir?.let { dir ->
+                                            runCatching { dir.recordSession(owner, step.acpSessionId) }.onFailure { e ->
+                                                out(
+                                                    loopNote(
+                                                        "the isolated agy folder cannot record session ${step.acpSessionId}, it is not kept: ${e.message}",
+                                                    ),
+                                                )
+                                            }
+                                        }
                                         if (settings.isAgyPreset) {
                                             ProtectedRootsCheck.refusal(ctx.workspace, ctx.baseRef)?.let {
                                                 return killAndFail(process, it)
@@ -497,6 +627,10 @@ class AcpRunner internal constructor(
                                         since = timeSource.markNow()
                                     }
                                     is AcpHandshake.Step.Failed -> {
+                                        if (pendingResume != null && step.failure.refusesLoad()) {
+                                            resumeRefusal = step.failure.reason
+                                            return
+                                        }
                                         val classified =
                                             (step.failure as? AcpHandshakeFailure.ErrorAnswer)?.let { err ->
                                                 AcpErrors.classify(err.method, err.code, err.message, err.data)
@@ -628,13 +762,16 @@ class AcpRunner internal constructor(
                 process: LiveProcess,
                 event: RunnerEvent,
             ) {
-                val cleanupWarning = kill(process)
+                killAndDrain(process)
+                end(event)
+            }
+
+            private suspend fun killAndDrain(process: LiveProcess) {
+                kill(process)
                 while (true) {
                     val queued = process.events.tryReceive().getOrNull() ?: break
                     if (queued is ProcessEvent.Line) out(RunnerEvent.Output(queued.stream, queued.text))
                 }
-                cleanupWarning?.let { out(loopNote(it)) }
-                end(event)
             }
         }
     }

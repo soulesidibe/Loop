@@ -9,8 +9,9 @@ The `acp` runner drives an Agent Client Protocol (ACP) agent over JSON-RPC 2.0 o
 3. [Startup check](#startup-check)
 4. [Launch and streams](#launch-and-streams)
 5. [Session startup and turns](#session-startup-and-turns)
-6. [Context limits and rotation](#context-limits-and-rotation)
-7. [Capabilities](#capabilities)
+6. [Isolated folder lifetime](#isolated-folder-lifetime)
+7. [Context limits and rotation](#context-limits-and-rotation)
+8. [Capabilities](#capabilities)
 
 ## Configuration
 
@@ -67,19 +68,29 @@ Loop checks `runners.acp` against the profile and `AcpRunnerProvider.validate` o
 
 ## Launch and streams
 
-- **Launch:** argv words run in the workspace working directory inside an isolated process group (`ProcessGroupLauncher`) with no shell. Under `preset: agy`, Loop sweeps stale `~/.loop-agy/` folders from dead processes, appends `--disable-telemetry`, `--sandbox`, and `--gemini-dir <relative-under-HOME>` pointing to an attempt-local directory containing `antigravity-cli/settings.json` (`{"toolPermission": "strict", "allowNonWorkspaceAccess": false}`), and deletes that directory when the session stops (logging any deletion failure). Loop never passes `--dangerously-skip-permissions`, `--effort`, `--remote-agent`, or `--remote-control`.
-- **Loop MCP server:** when the attempt environment provides `LOOP_LAUNCHER` and `LOOP_TOOL_CONFIG`, `session/new` and `session/load` pass Loop's stdio MCP server (`name: "loop"`, `command: <LOOP_LAUNCHER>`, `args: ["tool", "mcp"]`) with only the 8 Loop environment variables (`LOOP_TOOL_CONFIG`, `LOOP_ATTEMPT_ID`, `LOOP_ISSUE_ID`, `LOOP_ISSUE_IDENTIFIER`, `LOOP_TRACKER_ID`, `LOOP_HOME`, `LOOP_SESSION_ID`, `LOOP_TURN_ID`). `LOOP_SESSION_ID` and `LOOP_TURN_ID` stay fixed at the values of the turn that opened the session. Under `preset: agy`, `resumeSession` returns null because isolated `--gemini-dir` folders are removed when a session stops.
+- **Launch:** argv words run in the workspace working directory inside an isolated process group (`ProcessGroupLauncher`) with no shell. Under `preset: agy`, Loop sweeps stale isolated folders, removes the folders earlier sessions of the same issue kept, and appends `--disable-telemetry`, `--sandbox`, and `--gemini-dir <relative-under-HOME>` pointing to an isolated folder containing `antigravity-cli/settings.json` (`{"toolPermission": "strict", "allowNonWorkspaceAccess": false}`). The folder is `$LOOP_HOME/agy/<attempt>-<id>` when `LOOP_HOME` lies under `$HOME`, else `$HOME/.loop-agy/<attempt>-<id>`, never in the attempt folder, which Loop deletes when the attempt ends. See [Isolated folder lifetime](#isolated-folder-lifetime). Loop never passes `--dangerously-skip-permissions`, `--effort`, `--remote-agent`, or `--remote-control`.
+- **Loop MCP server:** when the attempt environment provides `LOOP_LAUNCHER` and `LOOP_TOOL_CONFIG`, `session/new` and `session/load` pass Loop's stdio MCP server (`name: "loop"`, `command: <LOOP_LAUNCHER>`, `args: ["tool", "mcp"]`) with only the 8 Loop environment variables (`LOOP_TOOL_CONFIG`, `LOOP_ATTEMPT_ID`, `LOOP_ISSUE_ID`, `LOOP_ISSUE_IDENTIFIER`, `LOOP_TRACKER_ID`, `LOOP_HOME`, `LOOP_SESSION_ID`, `LOOP_TURN_ID`). `LOOP_SESSION_ID` and `LOOP_TURN_ID` stay fixed at the values of the turn that opened the session. A respawn or a resume under `preset: agy` passes the `mcpServers` again in `session/load`.
 - **Stdout:** newline delimited JSON-RPC 2.0 messages, bounded to 10 MB per line (`ProcessGroupLauncher.MAX_LINE_BYTES`). Malformed lines are logged on stderr with a fixed reason (never quoting the line) and skipped.
 - **Stderr:** kept apart from the protocol stream as diagnostic output.
-- **Stop:** closing a session closes stdin and waits up to 5 seconds (`STOP_GRACE`) for the process to exit. When the grace expires, Loop kills the process group and reports `stop_grace_expired` through `AgentSession.stop(report)`. The isolated `--gemini-dir` folder is removed after the process exits.
+- **Stop:** closing a session closes stdin and waits up to 5 seconds (`STOP_GRACE`) for the process to exit. When the grace expires, Loop kills the process group and reports `stop_grace_expired` through `AgentSession.stop(report)`. Under `preset: agy`, the isolated `--gemini-dir` folder of a session that reported its runtime session id is kept after the process exits, since it holds `agy`'s session store; any other folder is removed (logging any removal failure).
 
 ## Session startup and turns
 
 1. Under `preset: agy`, verify protected workspace customization roots (`.agents/`, `.agent/`, `_agents/`, `_agent/`) against the attempt base commit before spawning the session.
 2. `initialize` with `protocolVersion: 1`, `clientInfo` (`{"name": "loop", "version": "<Loop version>"}`), and `clientCapabilities` (`{"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false}`). Under `preset: agy`, `agentInfo.version` must be on major version `1` (pinned `1.5.16`).
-3. `session/new` (for a new session) or `session/load` (for `resumeSession`) with `cwd` and `mcpServers`.
+3. `session/new` (for a new session) or `session/load` (for `resumeSession`, and under `preset: agy` for a respawn) with `cwd` and `mcpServers`. Under `preset: agy`, a load first needs `agentCapabilities.loadSession: true` in the `initialize` answer.
 4. Under `preset: agy`, `session/set_model` with `runners.acp.model`, verified against any `config_option_update` or response model id.
 5. `session/prompt` with the prompt text (escaping a leading `/` under `preset: agy`), preceded by the protected workspace roots check before every turn. Turn 1 emits `session_started` with the ACP `sessionId` as `runtimeSessionId`; turns 2..n reuse the same process and `sessionId` and emit `turn_started`.
+
+## Isolated folder lifetime
+
+Under `preset: agy`, the isolated `--gemini-dir` folder holds `agy`'s session store, so since bl-213 it lives as long as the session may still be loaded, not as long as the process.
+
+- **Record:** each folder holds `.loop-pid` (the Loop process that owns it) and, once `session/new` or `session/load` answered, `.loop-session.json` with the project, the issue id, the workspace, the runtime session id and a state, `live` or `kept`. A session that never reported a runtime session id deletes its folder when it stops.
+- **Respawn after a dead process:** a turn 2..n whose `agy` process is gone (it exited, or a failed turn killed it) starts a new `agy acp` with the same `--gemini-dir`, then sends `initialize`, `session/load` with the session id, `cwd` and the `mcpServers` of the turn that opened the session, `session/set_model`, and runs the turn, after the line `loop: the agy process of session <id> is gone, turn <n> starts a new one and loads the session`. At most once per turn: a failed respawn fails the turn with the reason. A fresh session would get only the continuation guidance, not the prompt, so a respawn never falls back to one.
+- **Resume after a network hold:** `resumeSession(ctx, runtimeSessionId)` finds the kept folder whose record names that runtime session, the issue and the project, claims it as `live` for this Loop process, and returns a session whose turn 1 loads it. When no folder is kept, it returns null and Loop opens a fresh session. When turn 1 cannot load it (`initialize` without `loadSession`, a `session/load` error, or a refused folder), the turn says why in a `loop:` line, deletes the folder and opens a fresh session with the full prompt in a fresh folder, never a half resumed one.
+- **Isolation on a load:** before every `session/load` from a kept folder, Loop refuses the folder when its root holds anything but `antigravity-cli/`, `config/`, `.loop-pid` and `.loop-session.json`, a symbolic link among them, or `config/hooks.json` (which `agy` would run), then rewrites `antigravity-cli/settings.json` with the strict settings. The protected workspace roots check runs before the load and before every turn. `strict_mcp`, `--sandbox`, `--disable-telemetry` and the permission policy are unchanged.
+- **Removal:** a kept folder is removed at one of three ends. (1) A new session of the same issue opens, a fresh one or a resume: Loop only ever resumes the last session of an issue, so the folders of earlier sessions can never be loaded again. A resumed session that stops is kept again, so a second hold resumes too. (2) The issue reaches a terminal state: Loop removes its workspace, and the sweep removes a kept folder whose recorded workspace is gone. (3) The stale sweep, at every launch and every resume, removes any folder whose owner process is dead or whose `.loop-pid` is missing: the choice to resume is kept in memory, so a restarted `loop run` never resumes.
 
 ## Guards and holdout protection
 
@@ -107,7 +118,7 @@ Loop ships default context windows of `1048576` tokens in `ContextConfig.DEFAULT
 
 | Capability | Value | Why |
 |---|---|---|
-| `continuation` | true | A session runs turns 1..n on one long lived ACP process and session id. |
+| `continuation` | true | A session runs turns 1..n on one long lived ACP process and session id. `resumeSession` loads the runtime session of an earlier attempt with `session/load`; under `preset: agy` it does so from the kept isolated folder, and returns null when none is kept. |
 | `loop_tools` | `mcp` | Loop's MCP server (`loop tool mcp`) is passed in `session/new` and `session/load` `mcpServers`. |
 | `usage` | true | Session token totals are accumulated from `session/prompt` responses. |
 | `cost` | false | ACP reports no USD cost, so dollar budgets do not hold for this runner. |

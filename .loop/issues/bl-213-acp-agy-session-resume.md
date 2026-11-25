@@ -1,7 +1,7 @@
 ---
 id: bl-213
 title: "The acp runner resumes agy sessions after a dead process or a network hold"
-state: todo
+state: done
 priority: 3
 labels: [ready-for-agent]
 blocked_by: []
@@ -47,6 +47,16 @@ Filed from the runner capability comparison of Claude, Codex and Gemini after th
   Verdict: the resume works on the real agy, and the folder lifetime in `docs/plugins/runner-acp.md#isolated-folder-lifetime` relies on it.
 
 2026-11-25 21:39Z loop: Loop opened pull request #80 for this issue: https://github.com/soulesidibe/Loop/pull/80
+
+2026-11-25 21:53Z loop: Loop did not merge pull request #80 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.60.
+  - alignment: aligned, The diff implements the folder lifetime, respawn, resume after a hold, isolation checks, fallback and docs as the brief decided, with no visible unrelated change.
+  - impact: medium (floor medium: the diff changes 647 lines outside tests and docs, over half the limit of 1000), It rewrites session lifecycle and isolated folder handling for the agy preset (647 non-test lines), and kept folders now persist on disk past the session.
+  - verification: strong, New fake-server tests cover respawn, resume after a hold, a missing folder, a tampered settings.json, no loadSession and removal, and a real agy run is recorded.
+  - rollback_cost: costly, A revert leaves kept folders under $LOOP_HOME/agy that the old sweep, which only scans .loop-agy, never removes.
+  - error_detection: partial, Resume failures emit loop: notes and fail the turn, but a failed record write or a failed sweep only warns and the folder is then not kept.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 6 of 10 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
 
 ## Agent Brief
 
