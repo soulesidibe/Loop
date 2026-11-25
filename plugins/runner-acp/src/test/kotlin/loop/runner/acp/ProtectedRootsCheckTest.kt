@@ -230,6 +230,154 @@ class ProtectedRootsCheckTest {
         assertTrue(elapsedMs < 5_000L, "hanging git took $elapsedMs ms instead of timing out near 1s")
     }
 
+    @Test
+    fun `clean filter in git info attributes or gitattributes never runs and cannot hide edited hooks json`() {
+        // 1. Clean filter configured via .git/info/attributes
+        val infoAttrRepo = scratch.resolve("clean-filter-info").createDirectories()
+        val infoBase = repoWithTrackedHooks(infoAttrRepo)
+        val infoMarker = scratch.resolve("filter-info-ran.txt")
+        val baseBlob = """{"hooks":[]}"""
+        git(infoAttrRepo, "config", "filter.evil.clean", "touch '$infoMarker'; printf '%s' '$baseBlob'")
+        infoAttrRepo.resolve(".git/info").createDirectories()
+        infoAttrRepo.resolve(".git/info/attributes").writeText(".agents/hooks.json filter=evil\n")
+        infoAttrRepo.resolve(".agents/hooks.json").writeText("""{"hooks":[{"cmd":"pwn"}]}""")
+
+        val infoRefusal = ProtectedRootsCheck.refusal(infoAttrRepo, infoBase)
+        assertTrue(infoRefusal != null && ".agents/hooks.json" in infoRefusal, "$infoRefusal")
+        assertTrue(!Files.exists(infoMarker), "clean filter must never execute")
+
+        // 2. Clean filter configured via untracked workspace .gitattributes
+        val wsAttrRepo = scratch.resolve("clean-filter-ws").createDirectories()
+        val wsBase = repoWithTrackedHooks(wsAttrRepo)
+        val wsMarker = scratch.resolve("filter-ws-ran.txt")
+        git(wsAttrRepo, "config", "filter.evil.clean", "touch '$wsMarker'; printf '%s' '$baseBlob'")
+        wsAttrRepo.resolve(".gitattributes").writeText(".agents/hooks.json filter=evil\n")
+        wsAttrRepo.resolve(".agents/hooks.json").writeText("""{"hooks":[{"cmd":"pwn2"}]}""")
+
+        val wsRefusal = ProtectedRootsCheck.refusal(wsAttrRepo, wsBase)
+        assertTrue(wsRefusal != null && ".agents/hooks.json" in wsRefusal, "$wsRefusal")
+        assertTrue(!Files.exists(wsMarker), "clean filter via .gitattributes must never execute")
+    }
+
+    @Test
+    fun `git replace on base tree, git replace on base commit, and git info grafts cannot bypass the check`() {
+        // 1. git replace <baseTree> <editedTree>
+        val treeRepo = scratch.resolve("replace-tree").createDirectories()
+        val treeBase = repoWithTrackedHooks(treeRepo)
+        val baseTree = git(treeRepo, "rev-parse", "$treeBase^{tree}").trim()
+        treeRepo.resolve(".agents/hooks.json").writeText("""{"hooks":[{"cmd":"tree-replace"}]}""")
+        git(treeRepo, "add", ".agents/hooks.json")
+        val editedTree = git(treeRepo, "write-tree").trim()
+        git(treeRepo, "replace", baseTree, editedTree)
+
+        val treeRefusal = ProtectedRootsCheck.refusal(treeRepo, treeBase)
+        assertTrue(treeRefusal != null && ".agents/hooks.json" in treeRefusal, "$treeRefusal")
+
+        // 2. git replace <baseCommit> <forgedCommit> (both HEAD == base and HEAD descendant of base)
+        val commitRepo = scratch.resolve("replace-commit").createDirectories()
+        val commitBase = repoWithTrackedHooks(commitRepo)
+        commitRepo.resolve(".agents/hooks.json").writeText("""{"hooks":[{"cmd":"commit-replace"}]}""")
+        git(commitRepo, "add", ".agents/hooks.json")
+        val forgedTree = git(commitRepo, "write-tree").trim()
+        val forgedCommit = git(commitRepo, "commit-tree", forgedTree, "-m", "Forged base").trim()
+        git(commitRepo, "replace", commitBase, forgedCommit)
+
+        val headEqRefusal = ProtectedRootsCheck.refusal(commitRepo, commitBase)
+        assertTrue(headEqRefusal != null && ".agents/hooks.json" in headEqRefusal, "$headEqRefusal")
+
+        commitRepo.resolve("README.md").writeText("descendant")
+        git(commitRepo, "add", "README.md")
+        git(commitRepo, "commit", "-m", "Descendant commit")
+        val headDescRefusal = ProtectedRootsCheck.refusal(commitRepo, commitBase)
+        assertTrue(headDescRefusal != null && ".agents/hooks.json" in headDescRefusal, "$headDescRefusal")
+
+        // 3. .git/info/grafts rewriting commit parents so merge-base moves to the edited commit
+        val graftRepo = scratch.resolve("graft-bypass").createDirectories()
+        val graftBase = repoWithTrackedHooks(graftRepo)
+        graftRepo.resolve(".agents/hooks.json").writeText("""{"hooks":[{"cmd":"graft-pwn"}]}""")
+        git(graftRepo, "add", ".agents/hooks.json")
+        git(graftRepo, "commit", "-m", "Edited hooks")
+        val editedCommit = git(graftRepo, "rev-parse", "HEAD").trim()
+        graftRepo.resolve(".git/info").createDirectories()
+        graftRepo.resolve(".git/info/grafts").writeText("$graftBase $editedCommit\n")
+
+        val graftRefusal = ProtectedRootsCheck.refusal(graftRepo, graftBase)
+        assertTrue(graftRefusal != null && ".agents/hooks.json" in graftRefusal, "$graftRefusal")
+    }
+
+    @Test
+    fun `runGit uses minimal env without host secrets and places --no-replace-objects before the subcommand`() {
+        val envDump = scratch.resolve("git-env.txt")
+        val argvDump = scratch.resolve("git-argv.txt")
+        val fakeGit = scratch.resolve("fake-git")
+        fakeGit.writeText(
+            """
+            #!/bin/bash
+            env > '$envDump'
+            printf '%s\n' "$@" > '$argvDump'
+            exit 0
+            """.trimIndent() + "\n",
+        )
+        fakeGit.setPosixFilePermissions(PosixFilePermissions.fromString("rwxr-xr-x"))
+
+        val result =
+            ProtectedRootsCheck.runGit(
+                repoRoot = scratch,
+                args = listOf("ls-tree", "-r", "-z", "HEAD"),
+                gitCommand = fakeGit.toString(),
+                baseEnv =
+                    mapOf(
+                        "PATH" to (System.getenv("PATH") ?: "/usr/bin:/bin"),
+                        "HOME" to scratch.toString(),
+                        "LANG" to "C.UTF-8",
+                        "LC_ALL" to "C.UTF-8",
+                        "LOOP_TEST_SECRET" to "super-secret-token-value",
+                        "GEMINI_API_KEY" to "AIzaSecretHostKey",
+                        "GIT_DIR" to "/tmp/hijacked-git-dir",
+                    ),
+            )
+
+        assertTrue(result != null && result.exitCode == 0, "$result")
+        val dumpedEnv = Files.readString(envDump)
+        assertTrue("LOOP_TEST_SECRET" !in dumpedEnv, dumpedEnv)
+        assertTrue("super-secret-token-value" !in dumpedEnv, dumpedEnv)
+        assertTrue("GEMINI_API_KEY" !in dumpedEnv, dumpedEnv)
+        assertTrue("GIT_DIR=" !in dumpedEnv, dumpedEnv)
+        assertTrue("GIT_TERMINAL_PROMPT=0" in dumpedEnv, dumpedEnv)
+        assertTrue("GIT_GRAFT_FILE=/dev/null" in dumpedEnv, dumpedEnv)
+
+        val argv = Files.readAllLines(argvDump)
+        val noReplaceIdx = argv.indexOf("--no-replace-objects")
+        val subcmdIdx = argv.indexOf("ls-tree")
+        assertTrue(noReplaceIdx >= 0 && subcmdIdx > noReplaceIdx, "expected --no-replace-objects before ls-tree: $argv")
+    }
+
+    @Test
+    fun `strict CRLF fallback accepts exact autocrlf checkout of LF base and refuses lone CR or mixed endings`() {
+        val crlfRepo = scratch.resolve("crlf-repo").createDirectories()
+        initGitRepo(crlfRepo)
+        crlfRepo.resolve(".agents").createDirectories()
+        val lfContent = "{\n  \"hooks\": []\n}\n"
+        crlfRepo.resolve(".agents/hooks.json").writeText(lfContent)
+        git(crlfRepo, "add", ".agents/hooks.json")
+        git(crlfRepo, "commit", "-m", "LF base")
+        val baseSha = git(crlfRepo, "rev-parse", "HEAD").trim()
+
+        // Exact CRLF checkout of the LF base blob passes.
+        crlfRepo.resolve(".agents/hooks.json").writeText(lfContent.replace("\n", "\r\n"))
+        assertNull(ProtectedRootsCheck.refusal(crlfRepo, baseSha))
+
+        // Mixed CRLF and bare LF is refused.
+        crlfRepo.resolve(".agents/hooks.json").writeText("{\r\n  \"hooks\": []\n}\r\n")
+        val mixedRefusal = ProtectedRootsCheck.refusal(crlfRepo, baseSha)
+        assertTrue(mixedRefusal != null && ".agents/hooks.json" in mixedRefusal, "$mixedRefusal")
+
+        // Extra lone CR before CRLF is refused.
+        crlfRepo.resolve(".agents/hooks.json").writeText("{\r\r\n  \"hooks\": []\r\n}\r\n")
+        val loneCrRefusal = ProtectedRootsCheck.refusal(crlfRepo, baseSha)
+        assertTrue(loneCrRefusal != null && ".agents/hooks.json" in loneCrRefusal, "$loneCrRefusal")
+    }
+
     private fun repoWithTrackedHooks(dir: Path): String {
         initGitRepo(dir)
         dir.resolve(".agents").createDirectories()
@@ -243,6 +391,7 @@ class ProtectedRootsCheckTest {
         git(dir, "init", "-b", "main")
         git(dir, "config", "user.email", "test@example.com")
         git(dir, "config", "user.name", "Test")
+        git(dir, "config", "commit.gpgsign", "false")
     }
 
     private fun git(

@@ -123,11 +123,12 @@ class AcpMcpAndIsolationTest {
         assertTrue(fallback.path.resolve("antigravity-cli/settings.json").exists())
         assertNull(fallback.delete())
         assertFalse(fallback.path.exists())
-        assertFalse(home.resolve(".loop-agy").exists())
+        assertTrue(home.resolve(".loop-agy").exists(), "parent .loop-agy stays in place to avoid concurrent create races")
+        assertTrue(Files.list(home.resolve(".loop-agy")).use { it.toList() }.isEmpty())
     }
 
     @Test
-    fun `AgyIsolationDir sweepStale removes dead-PID and pidless fallback directories while keeping live-PID ones`() {
+    fun `AgyIsolationDir sweepStale removes dead-PID, pidless, and expired staging dirs while keeping live-PID ones and parent`() {
         val fallbackRoot = home.resolve(AgyIsolationDir.FALLBACK_ROOT_NAME).createDirectories()
         val liveDir = fallbackRoot.resolve("att-live-11111111").createDirectories()
         liveDir.resolve(".loop-pid").writeText("424242")
@@ -135,6 +136,16 @@ class AcpMcpAndIsolationTest {
         deadDir.resolve(".loop-pid").writeText("999999")
         val pidlessDir = fallbackRoot.resolve("att-orphan-33333333").createDirectories()
         pidlessDir.resolve("antigravity-cli").createDirectories()
+        val expiredStaging = fallbackRoot.resolve(".tmp-expired-44444444").createDirectories()
+        expiredStaging.resolve(".loop-pid").writeText("424242")
+        Files.setLastModifiedTime(
+            expiredStaging,
+            java.nio.file.attribute.FileTime.from(
+                java.time.Instant
+                    .now()
+                    .minusSeconds(120),
+            ),
+        )
 
         val errors = AgyIsolationDir.sweepStale(home) { pid -> pid == 424242L }
 
@@ -142,27 +153,59 @@ class AcpMcpAndIsolationTest {
         assertTrue(liveDir.exists(), "live session directory must stay")
         assertFalse(deadDir.exists(), "dead-PID directory must be swept")
         assertFalse(pidlessDir.exists(), "pidless directory must be swept")
+        assertFalse(expiredStaging.exists(), "expired staging directory must be swept regardless of live PID")
         assertTrue(fallbackRoot.exists(), "parent stays while live dir remains")
 
-        // Once the live PID is gone, sweep removes it and the empty .loop-agy root.
+        // Once the live PID is gone, sweep removes the dir and keeps the empty .loop-agy root in place.
         val errors2 = AgyIsolationDir.sweepStale(home) { false }
         assertTrue(errors2.isEmpty(), "$errors2")
         assertFalse(liveDir.exists())
-        assertFalse(fallbackRoot.exists())
+        assertTrue(fallbackRoot.exists())
+        assertTrue(Files.list(fallbackRoot).use { it.toList() }.isEmpty())
+    }
+
+    @Test
+    fun `failed AgyIsolationDir create cleans up its staging directory`() {
+        val outsideLoopHome = dir.resolve("failed-move-loop-home")
+        val fallbackRoot = home.resolve(AgyIsolationDir.FALLBACK_ROOT_NAME).createDirectories()
+        val collidingTarget = fallbackRoot.resolve("att-collide-fixedid1").createDirectories()
+        collidingTarget.resolve("blocker.txt").writeText("non-empty target forces Files.move to fail")
+
+        var failed = false
+        try {
+            AgyIsolationDir.create(
+                homeDir = home,
+                loopHome = outsideLoopHome,
+                projectId = "p",
+                attemptId = "att-collide",
+                uniqueId = "fixedid1",
+            )
+        } catch (e: java.io.IOException) {
+            failed = true
+        }
+
+        assertTrue(failed, "move onto a non-empty directory must fail")
+        val remaining = Files.list(fallbackRoot).use { it.map { p -> p.fileName.toString() }.toList() }
+        assertEquals(listOf("att-collide-fixedid1"), remaining, "staging dir must be deleted when move fails")
     }
 
     @Test
     fun `concurrent AgyIsolationDir create and sweepStale never race or lose settings json`() {
         val outsideLoopHome = dir.resolve("concurrent-loop-home")
         val failures = java.util.Collections.synchronizedList(mutableListOf<Throwable>())
+        val startGate = java.util.concurrent.CountDownLatch(1)
         val stopSweeper =
             java.util.concurrent.atomic
                 .AtomicBoolean(false)
         val sweeper =
             Thread {
+                startGate.await()
                 while (!stopSweeper.get()) {
                     try {
-                        AgyIsolationDir.sweepStale(home)
+                        val errors = AgyIsolationDir.sweepStale(home)
+                        if (errors.isNotEmpty()) {
+                            failures += AssertionError("sweep errors: $errors")
+                        }
                     } catch (t: Throwable) {
                         failures += t
                     }
@@ -171,6 +214,7 @@ class AcpMcpAndIsolationTest {
         val workers =
             (1..4).map { worker ->
                 Thread {
+                    startGate.await()
                     repeat(50) { i ->
                         try {
                             val created =
@@ -191,6 +235,7 @@ class AcpMcpAndIsolationTest {
                     }
                 }.apply { start() }
             }
+        startGate.countDown()
         workers.forEach { it.join(15_000) }
         stopSweeper.set(true)
         sweeper.join(5_000)
@@ -335,7 +380,8 @@ class AcpMcpAndIsolationTest {
         val relGeminiDir = argv[argv.indexOf("--gemini-dir") + 1]
         assertTrue(relGeminiDir.startsWith(".loop-agy/"), relGeminiDir)
         assertFalse(Files.exists(home.resolve(relGeminiDir)))
-        assertFalse(Files.exists(home.resolve(".loop-agy")))
+        assertTrue(Files.exists(home.resolve(".loop-agy")))
+        assertTrue(Files.list(home.resolve(".loop-agy")).use { it.toList() }.isEmpty())
     }
 
     @Test

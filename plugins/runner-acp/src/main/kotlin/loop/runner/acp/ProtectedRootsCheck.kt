@@ -1,10 +1,13 @@
 package loop.runner.acp
 
 import loop.runner.process.ProtectedWorkspaceRoots
+import java.io.BufferedInputStream
 import java.io.IOException
 import java.io.UncheckedIOException
 import java.nio.file.Files
 import java.nio.file.Path
+import java.security.MessageDigest
+import java.util.HexFormat
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.io.path.exists
@@ -17,7 +20,12 @@ import kotlin.io.path.exists
  * Hardened against:
  * - git index tricks (`git rm --cached`, `assume-unchanged`, `skip-worktree`) by comparing every
  *   on-disk customization file directly against `git ls-tree -r -z <base>` using file mode and
- *   `git hash-object` blob SHA,
+ *   `git hash-object --no-filters` blob SHA,
+ * - agent-controlled git clean filters, replace refs, grafts, hooks, and host-env leaks by passing
+ *   `--no-replace-objects`, safe `-c` pins before every subcommand, a minimal environment with
+ *   `GIT_TERMINAL_PROMPT=0` and `GIT_GRAFT_FILE=/dev/null`, and `--no-filters` (so LFS pointers,
+ *   `ident`, `working-tree-encoding`, and smudge filters fail closed; exact `core.autocrlf=true`
+ *   checkouts of LF base blobs are accepted via a strict, size-bounded, streamed JVM digest check),
  * - nested paths `agy` never loads (`docs/examples/.agents/...`), by inspecting only roots sitting
  *   directly in directories between `workspace` and `repoRoot`,
  * - macOS case-insensitivity, symlinked protected roots, symlink type changes (`120000`),
@@ -30,7 +38,37 @@ internal object ProtectedRootsCheck {
     private const val MODE_SYMLINK = "120000"
     private const val MODE_EXECUTABLE = "100755"
     private const val MODE_REGULAR = "100644"
+    private const val SHA1_HEX_LENGTH = 40
+    private const val SHA256_HEX_LENGTH = 64
+    private const val STREAM_BUFFER_BYTES = 8_192
     private val ROOT_NAMES_LOWER: Set<String> = ProtectedWorkspaceRoots.ROOT_NAMES.map { it.lowercase(Locale.ROOT) }.toSet()
+    private val KEPT_ENV: Set<String> = setOf("PATH", "HOME", "LANG", "LANGUAGE")
+
+    /**
+     * Safe git command-line pins matching `WorkspaceGit.PINS` + `WorkspaceGit.MORE_PINS`, placed
+     * before every git subcommand so agent-writable `.git/config` or `refs/replace/` cannot alter
+     * what Loop executes or reads.
+     */
+    internal val GIT_PINS: List<String> =
+        listOf(
+            "core.hooksPath=/dev/null",
+            "core.fsmonitor=false",
+            "commit.gpgsign=false",
+            "core.commitGraph=false",
+            "merge.verifySignatures=false",
+            "gpg.program=",
+            "gpg.ssh.program=",
+            "gpg.x509.program=",
+            "gc.auto=0",
+            "maintenance.auto=false",
+        ).flatMap { listOf("-c", it) } + "--no-replace-objects"
+
+    internal fun minimalGitEnv(baseEnv: Map<String, String>): Map<String, String> =
+        baseEnv.filterKeys { it in KEPT_ENV || it.startsWith("LC_") } +
+            mapOf(
+                "GIT_TERMINAL_PROMPT" to "0",
+                "GIT_GRAFT_FILE" to "/dev/null",
+            )
 
     internal data class GitResult(
         val stdout: String,
@@ -140,8 +178,16 @@ internal object ProtectedRootsCheck {
             if (hashError != null) {
                 return hashError
             }
-            if (onDiskMode != baseEntry.mode || onDiskSha != baseEntry.sha) {
+            if (onDiskMode != baseEntry.mode) {
                 return "protected_workspace_root: added or modified workspace customization file ${file.relPath}"
+            }
+            if (onDiskSha != baseEntry.sha) {
+                val crlfMatch =
+                    !Files.isSymbolicLink(file.path) &&
+                        matchesStrictCrlfNormalizedBlob(repoRoot, file.path, baseEntry.sha, gitTimeoutSeconds)
+                if (!crlfMatch) {
+                    return "protected_workspace_root: added or modified workspace customization file ${file.relPath}"
+                }
             }
         }
 
@@ -201,7 +247,13 @@ internal object ProtectedRootsCheck {
                 } catch (e: IOException) {
                     return DiskHash(null, null, "protected_workspace_root: could not read symbolic link ${file.relPath}: ${e.message}")
                 }
-            val result = runGit(repoRoot, listOf("hash-object", "--stdin"), timeoutSeconds, stdinBytes = targetBytes)
+            val result =
+                runGit(
+                    repoRoot,
+                    listOf("hash-object", "--no-filters", "--stdin"),
+                    timeoutSeconds,
+                    stdinBytes = targetBytes,
+                )
             if (result == null || result.exitCode != 0) {
                 return DiskHash(
                     null,
@@ -216,7 +268,7 @@ internal object ProtectedRootsCheck {
         val result =
             runGit(
                 repoRoot,
-                listOf("hash-object", "--", file.path.toAbsolutePath().toString()),
+                listOf("hash-object", "--no-filters", "--", file.path.toAbsolutePath().toString()),
                 timeoutSeconds,
             )
         if (result == null || result.exitCode != 0) {
@@ -227,6 +279,88 @@ internal object ProtectedRootsCheck {
             )
         }
         return DiskHash(mode, result.stdout.trim(), error = null)
+    }
+
+    /**
+     * Accepts an on-disk regular file whose raw `--no-filters` hash differed from [baseSha] only when
+     * it is an exact CRLF checkout of an LF-only base blob:
+     * - `baseSize < diskSize <= 2 * baseSize` (prevents unbounded reads of huge agent-written files),
+     * - every `\n` on disk is preceded by `\r` and no lone `\r` appears anywhere on disk,
+     * - streaming the CRLF-to-LF normalized bytes produces length `baseSize` and a git blob digest
+     *   equal to [baseSha] (which also proves the base blob contained zero `\r` bytes).
+     */
+    private fun matchesStrictCrlfNormalizedBlob(
+        repoRoot: Path,
+        filePath: Path,
+        baseSha: String,
+        timeoutSeconds: Long,
+    ): Boolean {
+        val algorithm =
+            when (baseSha.length) {
+                SHA1_HEX_LENGTH -> "SHA-1"
+                SHA256_HEX_LENGTH -> "SHA-256"
+                else -> return false
+            }
+        val baseSize =
+            gitOk(repoRoot, listOf("cat-file", "-s", baseSha), timeoutSeconds)
+                ?.toLongOrNull()
+                ?.takeIf { it > 0L }
+                ?: return false
+        val diskSize =
+            try {
+                Files.size(filePath)
+            } catch (e: IOException) {
+                return false
+            }
+        if (diskSize <= baseSize || (diskSize - baseSize) > baseSize) {
+            return false
+        }
+
+        val digest = MessageDigest.getInstance(algorithm)
+        digest.update("blob $baseSize\u0000".toByteArray(Charsets.US_ASCII))
+
+        var normalizedLength = 0L
+        var pendingCr = false
+        var sawCrlf = false
+        val buf = ByteArray(STREAM_BUFFER_BYTES)
+
+        try {
+            BufferedInputStream(Files.newInputStream(filePath), STREAM_BUFFER_BYTES).use { stream ->
+                while (true) {
+                    val read = stream.read(buf)
+                    if (read < 0) break
+                    for (i in 0 until read) {
+                        val b = buf[i].toInt() and 0xFF
+                        if (pendingCr) {
+                            if (b == '\n'.code) {
+                                pendingCr = false
+                                sawCrlf = true
+                                digest.update('\n'.code.toByte())
+                                normalizedLength++
+                            } else {
+                                return false
+                            }
+                        } else {
+                            when (b) {
+                                '\r'.code -> pendingCr = true
+                                '\n'.code -> return false
+                                else -> {
+                                    digest.update(buf[i])
+                                    normalizedLength++
+                                }
+                            }
+                        }
+                        if (normalizedLength > baseSize) return false
+                    }
+                }
+            }
+        } catch (e: IOException) {
+            return false
+        }
+
+        if (pendingCr || !sawCrlf || normalizedLength != baseSize) return false
+        val computedHex = HexFormat.of().formatHex(digest.digest())
+        return computedHex == baseSha.lowercase(Locale.ROOT)
     }
 
     private fun parseLsTree(output: String): Map<String, TreeEntry> {
@@ -340,8 +474,9 @@ internal object ProtectedRootsCheck {
     }
 
     /**
-     * Runs `git` with separate daemon threads draining stdout and stderr before [Process.waitFor]
-     * so a hung git command always honors [timeoutSeconds] and is killed with [Process.destroyForcibly].
+     * Runs `git` with [GIT_PINS] before the subcommand, a minimal environment ([minimalGitEnv]), and
+     * separate daemon threads draining stdout and stderr before [Process.waitFor] so a hung git
+     * command always honors [timeoutSeconds] and is killed with [Process.destroyForcibly].
      * Returns null when the command times out, fails to launch, or a drain thread stays alive past join.
      */
     internal fun runGit(
@@ -350,13 +485,18 @@ internal object ProtectedRootsCheck {
         timeoutSeconds: Long = GIT_TIMEOUT_SECONDS,
         gitCommand: String = "git",
         stdinBytes: ByteArray? = null,
+        baseEnv: Map<String, String> = System.getenv(),
     ): GitResult? =
         try {
-            val process =
-                ProcessBuilder(listOf(gitCommand) + args)
+            val builder =
+                ProcessBuilder(listOf(gitCommand) + GIT_PINS + args)
                     .directory(repoRoot.toFile())
                     .redirectErrorStream(false)
-                    .start()
+            builder.environment().apply {
+                clear()
+                putAll(minimalGitEnv(baseEnv))
+            }
+            val process = builder.start()
             if (stdinBytes != null) {
                 process.outputStream.use { it.write(stdinBytes) }
             } else {
