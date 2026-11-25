@@ -65,6 +65,12 @@ data class ClaudeCodeSettings(
         /** The `runner.kind` of the Claude Code runner, and the key of its section under `runners`. */
         const val KIND = "claude-code"
 
+        /**
+         * The Claude Code release the runner is built against (bl-210), as `claude --version` prints it. `loop run`
+         * refuses another major version at startup, see [ClaudeCodePreflight].
+         */
+        const val PINNED_VERSION: String = "2.1.330"
+
         /** The longest `turn_timeout_ms` and `read_timeout_ms`, one day (m3-05). */
         const val MAX_TIMEOUT_MS: Long = 86_400_000
 

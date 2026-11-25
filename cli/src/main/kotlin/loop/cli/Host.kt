@@ -711,16 +711,23 @@ fun dollarBudgetWarning(
 
 /**
  * The startup checks of the runner named by `runner.kind` on this machine: an error that stops the run, and warnings.
- * `claude-code` checks root uid and managed settings; `acp` with `preset: agy` checks binary reachability, pinned
- * major version `1`, and warns on login or model list issues. The check of a plugin's section against its profile
- * (m3-05) is the loader's, on every load.
+ * `claude-code` checks root uid, managed settings and, since bl-210, that `<command> --version` is of the pinned major
+ * version, the preflight built by [claudeCode] from `runners.claude-code.command` and [hostEnv]; `acp` with
+ * `preset: agy` checks binary reachability, pinned major version `1`, and warns on login or model list issues. The
+ * check of a plugin's section against its profile (m3-05) is the loader's, on every load.
  */
 fun runnerPreflight(
     workflow: WorkflowFile,
     hostEnv: Map<String, String> = System.getenv(),
+    claudeCode: (command: String, hostEnv: Map<String, String>) -> ClaudeCodePreflight = { command, env ->
+        ClaudeCodePreflight(command, hostEnv = env)
+    },
 ): PreflightResult =
     when (workflow.runner.kind) {
-        ClaudeCodeSettings.KIND -> ClaudeCodePreflight().check()
+        ClaudeCodeSettings.KIND -> {
+            val settings = ClaudeCodeSettings.of(workflow.runner.section(ClaudeCodeSettings.KIND))
+            claudeCode(settings.command, hostEnv).check()
+        }
         AcpSettings.KIND -> {
             val settings = AcpSettings.of(workflow.runner.section(AcpSettings.SECTION))
             if (settings.isAgyPreset) {
