@@ -3,7 +3,7 @@ package loop.core.reactions
 /**
  * The `reactions:` key of `WORKFLOW.md` (m4-34, PLAN 6.7): what Loop does when something happens to a pull request it
  * opened while the issue waits. Each key is null when it is absent, and absent means no reaction. [mergeConflict],
- * since m4-35 [ciFailed] and since m4-36 [changesRequested] act; [approvedGreen] parses and does nothing until m4-37.
+ * since m4-35 [ciFailed], since m4-36 [changesRequested] and since m4-37 [approvedGreen] act.
  */
 data class ReactionsConfig(
     val ciFailed: Reaction? = null,
@@ -56,6 +56,9 @@ enum class ReactionAction(
     /** The wait ends and the issue's workspace resumes with a continuation turn, then the result is verified again. */
     SendToAgent("send_to_agent"),
 
-    /** A human is told. In M4 nothing is sent for a reaction: Loop records `reaction_skipped`. */
+    /**
+     * A human is told. In M4 nothing is sent for `ci_failed`, `changes_requested` and `merge_conflict`: Loop records
+     * `reaction_skipped`. `approved_green` (m4-37) tells the human through the human channel.
+     */
     NotifyHuman("notify_human"),
 }
