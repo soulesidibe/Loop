@@ -12,10 +12,14 @@ import loop.api.ActionsRuns
 import loop.api.ActionsStep
 import loop.api.Mergeability
 import loop.api.PullRequest
+import loop.api.PullRequestReview
+import loop.api.PullRequestReviews
 import loop.api.PullRequestState
+import loop.api.ReviewComment
 import loop.api.TrackerError
 import java.net.URI
 import java.net.URLEncoder
+import kotlin.time.Instant
 
 /**
  * The pull requests of [owner]/[repo] through [client] (m2-25), opened against [base] from a branch of the same
@@ -227,18 +231,98 @@ class GitHubPullRequests(
         )
     }
 
+    /**
+     * The reviews of the pull request [number] (m4-36): its current head, `head.sha` of `GET /repos/<owner>/<repo>/pulls/<n>`,
+     * and its reviews, `GET .../pulls/<n>/reviews?per_page=100`, every page, following the `Link` header up to
+     * [MAX_REVIEW_PAGES] pages, in GitHub's order, oldest first, so the newest reviews of a long thread are read. A 403 or
+     * a 404 on any of them names the "Pull requests: read" permission. An answer that cannot be read, a pull request
+     * without its head or a review without its id or state fails with [TrackerError.Malformed], too many pages or a
+     * link that repeats or leaves the API with [TrackerError.Pagination]; other failures, a rate limit included, are
+     * those of [GitHubClient.send].
+     */
+    suspend fun reviews(number: Long): PullRequestReviews {
+        val pullUrl = URI("$pullsPath/$number")
+        val pull =
+            GitHubClient.parse(permissionRead(pullUrl, PULL_REQUESTS_READ, "read pull request #$number of $owner/$repo").body, pullUrl)
+                as? JsonObject ?: throw TrackerError.Malformed(pullUrl.toString())
+        val head =
+            (pull["head"] as? JsonObject)?.string("sha")?.takeIf { it.isNotBlank() } ?: throw TrackerError.Malformed(pullUrl.toString())
+        val reviews = mutableListOf<PullRequestReview>()
+        val seen = mutableSetOf<String>()
+        var url: URI? = URI("$pullsPath/$number/reviews?per_page=$PER_PAGE")
+        while (url != null) {
+            if (seen.size == MAX_REVIEW_PAGES) throw TrackerError.Pagination("more than $MAX_REVIEW_PAGES pages of reviews")
+            if (!seen.add(url.toString())) throw TrackerError.Pagination("the next page link repeats $url")
+            val response = permissionRead(url, PULL_REQUESTS_READ, "read the reviews of pull request #$number of $owner/$repo")
+            val items = GitHubClient.parse(response.body, url) as? JsonArray ?: throw TrackerError.Malformed(url.toString())
+            items.forEachIndexed { index, item ->
+                reviews += readReview(item as? JsonObject) ?: throw TrackerError.Malformed("$url, item $index")
+            }
+            url = GitHubClient.nextPage(response, url, client.apiUrl)
+        }
+        return PullRequestReviews(head, pull.string("html_url"), reviews)
+    }
+
+    /**
+     * The review comments of the pull request [number] (m4-36), `GET .../pulls/<n>/comments?sort=created&direction=desc&per_page=100`,
+     * one page, newest first, so the comments of the latest reviews are read. A comment GitHub marks outdated has a
+     * null `line` and keeps its `original_line`. A comment without its id, path or body is left out, so one bad item
+     * does not hide the others. A 403 or a 404 names the "Pull requests: read" permission; an answer that is not a JSON
+     * array fails with [TrackerError.Malformed]; other failures are those of [GitHubClient.send].
+     */
+    suspend fun reviewComments(number: Long): List<ReviewComment> {
+        val url = URI("$pullsPath/$number/comments?sort=created&direction=desc&per_page=$PER_PAGE")
+        val response = permissionRead(url, PULL_REQUESTS_READ, "read the review comments of pull request #$number of $owner/$repo")
+        val items = GitHubClient.parse(response.body, url) as? JsonArray ?: throw TrackerError.Malformed(url.toString())
+        return items.mapNotNull { readComment(it as? JsonObject) }
+    }
+
+    /** [item] as a review, null when its id or state is missing; a review whose author is gone is `ghost`, as GitHub shows it. */
+    private fun readReview(item: JsonObject?): PullRequestReview? {
+        if (item == null) return null
+        return PullRequestReview(
+            id = item.long("id") ?: return null,
+            reviewer = (item["user"] as? JsonObject)?.string("login") ?: GHOST,
+            state = item.string("state") ?: return null,
+            commitId = item.string("commit_id"),
+            body = item.string("body").orEmpty(),
+            submittedAt = item.string("submitted_at")?.let { runCatching { Instant.parse(it) }.getOrNull() },
+            association = item.string("author_association"),
+        )
+    }
+
+    /** [item] as a review comment, null when its id, path or body is missing; its line is `line`, else `original_line`. */
+    private fun readComment(item: JsonObject?): ReviewComment? {
+        if (item == null) return null
+        return ReviewComment(
+            id = item.long("id") ?: return null,
+            reviewId = item.long("pull_request_review_id"),
+            path = item.string("path") ?: return null,
+            line = item.long("line") ?: item.long("original_line"),
+            body = item.string("body") ?: return null,
+            association = item.string("author_association"),
+        )
+    }
+
     /** A GET of the Actions API at [url], a 403 or a 404 turned into a refusal naming "Actions: read" to [what]. */
     private suspend fun actionsRead(
         url: URI,
         what: String,
+    ): GitHubResponse = permissionRead(url, ACTIONS_READ, what)
+
+    /** A GET at [url], a 403 or a 404 turned into a refusal saying the token needs [permission] to [what]. */
+    private suspend fun permissionRead(
+        url: URI,
+        permission: String,
+        what: String,
     ): GitHubResponse =
         try {
-            client.send("GET", url, absent = emptySet()) ?: error("no status is absent for an Actions read")
+            client.send("GET", url, absent = emptySet()) ?: error("no status is absent for a read")
         } catch (e: TrackerError.Status) {
             if (e.status != FORBIDDEN && e.status != NOT_FOUND) throw e
             throw TrackerError.Status(
                 e.status,
-                "the token needs the Actions: read permission to $what. GitHub said: ${e.message.orEmpty().substringAfter(": ")}",
+                "the token needs the $permission permission to $what. GitHub said: ${e.message.orEmpty().substringAfter(": ")}",
             )
         }
 
@@ -324,6 +408,18 @@ class GitHubPullRequests(
         private const val NOT_FOUND = 404
 
         private const val NOT_ALLOWED = 405
+
+        /** The permission the Actions reads need, named by a 403 or a 404 on them. */
+        private const val ACTIONS_READ = "Actions: read"
+
+        /** The permission the reviews read needs (m4-36), named by a 403 or a 404 on it. */
+        const val PULL_REQUESTS_READ: String = "Pull requests: read"
+
+        /** The most pages of reviews one read follows (m4-36), 1000 reviews at 100 a page. */
+        const val MAX_REVIEW_PAGES: Int = 10
+
+        /** The login GitHub shows for an author whose account is gone. */
+        private const val GHOST = "ghost"
 
         private const val CONFLICT = 409
 

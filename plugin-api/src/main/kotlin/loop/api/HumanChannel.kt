@@ -47,7 +47,10 @@ public data class HumanNotice(
 public value class HumanEvent(
     public val wire: String,
 ) {
-    /** The command, without its issue, that answers this event, null for an event this Loop does not know. */
+    /**
+     * The command, without its issue, that answers this event, null for an event this Loop does not know and for
+     * [ChangesRequested], which the human answers on the pull request.
+     */
     public val command: String?
         get() =
             when (this) {
@@ -70,7 +73,13 @@ public value class HumanEvent(
         /** An agent asked the human a question with `ask` (m4-31), answered with `loop answer` (m4-52). */
         public val Question: HumanEvent = HumanEvent("question")
 
+        /**
+         * Changes are still requested on a pull request Loop sent back to its agent, `escalate_after` after the
+         * `changes_requested` reaction (m4-36): Loop stops sending, the human reads the pull request. No command answers it.
+         */
+        public val ChangesRequested: HumanEvent = HumanEvent("changes_requested")
+
         /** Every event this Loop knows, in this order. */
-        public val KNOWN: List<HumanEvent> = listOf(Parked, ApprovalWaiting, DeliveryFailed, Question)
+        public val KNOWN: List<HumanEvent> = listOf(Parked, ApprovalWaiting, DeliveryFailed, Question, ChangesRequested)
     }
 }

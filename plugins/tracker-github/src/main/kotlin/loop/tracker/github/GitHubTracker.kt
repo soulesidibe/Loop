@@ -381,22 +381,7 @@ class GitHubTracker(
     private fun nextPage(
         response: GitHubResponse,
         current: URI,
-    ): URI? {
-        val link = response.header("link") ?: return null
-        val next =
-            link.split(",").firstNotNullOfOrNull { part ->
-                val target = LINK_PART.matchEntire(part.trim()) ?: return@firstNotNullOfOrNull null
-                target.groupValues[1].takeIf { target.groupValues[2].split(" ").contains("next") }
-            } ?: return null
-        val uri =
-            try {
-                current.resolve(next)
-            } catch (e: IllegalArgumentException) {
-                throw TrackerError.Pagination("the next page link is not an address: $next")
-            }
-        if (!sameOrigin(uri, settings.apiUrl)) throw TrackerError.Pagination("the next page link leaves ${settings.apiUrl}: $uri")
-        return uri
-    }
+    ): URI? = GitHubClient.nextPage(response, current, settings.apiUrl)
 
     private fun normalize(item: JsonObject): Issue? {
         val number = item.number() ?: return null
@@ -599,24 +584,5 @@ class GitHubTracker(
         private val NEWLINE = Regex("\\r\\n|\\r|\\n")
 
         private val PRIORITY_LABEL = Regex("priority:\\s*(\\d+)")
-
-        private val LINK_PART = Regex("<([^>]*)>\\s*;\\s*rel=\"([^\"]*)\"")
-
-        private fun sameOrigin(
-            a: URI,
-            b: URI,
-        ): Boolean =
-            a.scheme.equals(b.scheme, ignoreCase = true) &&
-                a.host.equals(b.host, ignoreCase = true) &&
-                effectivePort(a) == effectivePort(b)
-
-        private fun effectivePort(uri: URI): Int =
-            if (uri.port != -1) {
-                uri.port
-            } else if (uri.scheme.equals("https", ignoreCase = true)) {
-                443
-            } else {
-                80
-            }
     }
 }
