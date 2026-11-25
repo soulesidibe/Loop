@@ -20,16 +20,21 @@ import kotlin.time.Instant
  * of [ResourceLimits] is under its limit; else it waits, and [ResourceGrant.Queued.reason] says why. Requests are
  * granted in queue order, so of two requests a pool limit keeps waiting, the oldest is granted first, whatever its
  * resource. A request of a group ([ResourceRequest.anyOfKind]) waits on each resource of its kind at once, and the
- * first one granted drops the others.
+ * first one granted drops the others. A dirty resource is granted to a recheck holder alone, which checks it again
+ * and counts in its pool like any holder.
  *
  * Every function first grants each waiting request that can be granted, which only rows written outside these rules
  * can hold, so a new request never jumps a request that was there before it.
  */
 object ResourceQueue {
-    /** The rows after a request, in [change], and what the request got, in [grant]. */
+    /**
+     * The rows after a request, in [change], and what the request got, in [grant]; for a request of a group that waits
+     * (m4-26), [places] holds each resource id with its place.
+     */
     data class Requested(
         val change: ResourceChange,
         val grant: ResourceGrant,
+        val places: List<Pair<String, ResourceGrant.Queued>> = emptyList(),
     )
 
     /**
@@ -81,8 +86,8 @@ object ResourceQueue {
         val places =
             change.rows.queue
                 .filter { it.anyOfKind && ofHolder(it.kind, it.attemptId) }
-                .map { queued(change.rows, it) }
-        return Requested(change, places.minBy { it.position })
+                .map { it.resourceId to queued(change.rows, it) }
+        return Requested(change, places.minBy { it.second.position }.second, places)
     }
 
     /**
@@ -144,6 +149,45 @@ object ResourceQueue {
         return free(rows, now, lockGoes = { it.projectId in dead }, requestGoes = { it.projectId in dead })
     }
 
+    /**
+     * Every lock and queue row of the attempt [attemptId] whose kind is one of [kinds] goes at [now], each freed lock
+     * to the oldest request of its queue, and the resources of [dirty] are marked dirty in the same change (m4-26). A
+     * check that holds a resource frees this way what its own attempt holds in the pool of its kind, which the attempt
+     * would otherwise keep until its end, after the check.
+     */
+    fun freeKinds(
+        rows: ResourceLockRows,
+        attemptId: AttemptId,
+        kinds: Set<String>,
+        now: Instant,
+        dirty: List<DirtyResource> = emptyList(),
+    ): ResourceChange =
+        free(
+            rows,
+            now,
+            lockGoes = { it.attemptId == attemptId && it.kind in kinds },
+            requestGoes = { it.attemptId == attemptId && it.kind in kinds },
+            dirty = dirty,
+        )
+
+    /**
+     * The recheck holder [holder] of the dirty resource of [kind] and [resourceId] is done at [now] (m4-26): its lock
+     * and requests go, and when the check [passed] while it held the lock the dirty mark goes too, in the same change,
+     * so the resource goes to the oldest request of its queue.
+     */
+    fun endRecheck(
+        rows: ResourceLockRows,
+        holder: AttemptId,
+        kind: String,
+        resourceId: String,
+        passed: Boolean,
+        now: Instant,
+    ): ResourceChange {
+        val held = rows.locks.any { it.attemptId == holder && it.kind == kind && it.resourceId == resourceId }
+        val left = if (passed && held) rows.copy(dirty = rows.dirty.filterNot { it.kind == kind && it.resourceId == resourceId }) else rows
+        return free(left, now, lockGoes = { it.attemptId == holder }, requestGoes = { it.attemptId == holder })
+    }
+
     /** The dirty mark of [kind] and [resourceId] goes at [now] (m4-26), and the resource goes to the oldest request of its queue. */
     fun clearDirty(
         rows: ResourceLockRows,
@@ -185,7 +229,7 @@ object ResourceQueue {
         val queue = rows.queue.toMutableList()
         val granted = mutableListOf<ResourceLock>()
         for (waiting in rows.queue) {
-            if (waiting !in queue || blockedBy(waiting.kind, waiting.resourceId, locks, rows.dirty) != null) continue
+            if (waiting !in queue || blockedBy(waiting, locks, rows.dirty) != null) continue
             val lock = waiting.granted(now)
             locks += lock
             granted += lock
@@ -199,15 +243,20 @@ object ResourceQueue {
         return change.copy(rows = settled, granted = change.granted + granted)
     }
 
-    /** Why the resource of [kind] and [resourceId] cannot be granted now, a reason of `resource_queued`, null when it can. */
+    /**
+     * Why the resource of [request] cannot be granted now, a reason of `resource_queued`, null when it can. A dirty
+     * resource is granted to a recheck holder alone (m4-26), `recheck-<uuid>`, which checks it again.
+     */
     private fun blockedBy(
-        kind: String,
-        resourceId: String,
+        request: ResourceRequest,
         locks: List<ResourceLock>,
         dirty: List<DirtyResource>,
     ): String? {
+        val kind = request.kind
+        val resourceId = request.resourceId
         if (locks.any { it.kind == kind && it.resourceId == resourceId }) return ResourceQueued.HELD
-        if (dirty.any { it.kind == kind && it.resourceId == resourceId }) return ResourceQueued.DIRTY
+        val recheck = request.attemptId.value.startsWith(ResourceGrants.RECHECK_HOLDER)
+        if (!recheck && dirty.any { it.kind == kind && it.resourceId == resourceId }) return ResourceQueued.DIRTY
         val pool = ResourceLimits.poolOf(kind) ?: return null
         return if (locks.count { it.kind in pool.kinds } >= pool.limit) ResourceQueued.LIMIT else null
     }
@@ -220,7 +269,7 @@ object ResourceQueue {
         val waiting = rows.queue.filter { it.isOf(request) }
         val place = waiting.indexOfFirst { it.attemptId == request.attemptId }
         val holder = rows.locks.firstOrNull { it.isOf(request) }
-        val reason = blockedBy(request.kind, request.resourceId, rows.locks, rows.dirty) ?: ResourceQueued.HELD
+        val reason = blockedBy(request, rows.locks, rows.dirty) ?: ResourceQueued.HELD
         return ResourceGrant.Queued(place + 1, holder, reason)
     }
 

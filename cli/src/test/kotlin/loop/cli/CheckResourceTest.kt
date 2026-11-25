@@ -103,8 +103,12 @@ class CheckResourceTest {
         assertEquals(setOf("fake-$first", "fake-$second"), serials.take(2).toSet(), "$lines")
         assertTrue(lines.indexOf(starts[2]) > lines.indexOfFirst { it.startsWith("end ") }, "the third ran after one released: $lines")
 
-        val waiting = queued().single()
-        assertEquals("held", waiting["reason"], "$waiting")
+        // The third check waits on each resource of the kind, one event per resource id.
+        val queuedEvents = queued()
+        assertEquals(setOf(first, second), queuedEvents.map { it["resource"] }.toSet(), "$queuedEvents")
+        assertEquals(1, queuedEvents.map { it["issue"] }.distinct().size, "$queuedEvents")
+        assertTrue(queuedEvents.all { it["reason"] == "held" }, "$queuedEvents")
+        val waiting = queuedEvents.first()
         val finished = fixture.query("SELECT issue_identifier, data FROM events WHERE kind = 'check_finished' ORDER BY seq")
         assertEquals(3, finished.size, "one check per attempt, no rerun and no failure: $finished")
         assertTrue(finished.all { "\"exit_code\":\"0\"" in it["data"].orEmpty() && "rerun" !in it["data"].orEmpty() }, "$finished")
@@ -119,6 +123,50 @@ class CheckResourceTest {
         val ops = FakeResourceProvider.calls.filter { it.id == first || it.id == second }.map { it.op }
         assertEquals(3, ops.count { it == "prepare" }, "$ops")
         assertEquals(3, ops.count { it == "release" }, "$ops")
+    }
+
+    @Test
+    fun `a check whose attempt still holds the only resource of its kind takes it back and runs`() {
+        fixture.issue("t-1")
+        val seen = root.resolve("seen.log")
+        fixture.writeWorkflow(
+            extra =
+                """
+                |agent:
+                |  max_turns: 1
+                |retries:
+                |  max_attempts: 1
+                |resources:
+                |  - { kind: fake-device, id: $first }
+                |kinds:
+                |  code:
+                |    verify:
+                |      checks:
+                |        - { type: command, run: "echo ${'$'}LOOP_RESOURCE_SERIAL >> $seen", resource: fake-device, timeout_ms: 60000 }
+                """.trimMargin(),
+        )
+        // The agent takes the only resource and submits without releasing it.
+        ResourceAgent.write(
+            fixture,
+            """
+            |call request_resource $first
+            |until_granted $first
+            |finish
+            """.trimMargin(),
+        )
+
+        val run = fixture.inProcess("run", "--once", fixture.workflow.toString())
+
+        assertEquals(0, run.exitCode, "$run\n${ResourceAgent.transcripts(fixture, "t-1")}")
+        assertEquals(listOf("fake-$first"), seen.readLines(), "the check ran with the resource")
+        val finished = fixture.query("SELECT data FROM events WHERE kind = 'check_finished'").single()["data"].orEmpty()
+        assertContains(finished, "\"exit_code\":\"0\"")
+        val released = fixture.query("SELECT attempt_id, data FROM events WHERE kind = 'resource_released' ORDER BY seq")
+        assertEquals(2, released.size, "$released")
+        assertTrue(released.first()["attempt_id"] != null, "$released")
+        assertContains(released.first()["data"].orEmpty(), "\"reason\":\"check\"")
+        assertEquals(emptyList(), fixture.query("SELECT kind FROM resource_locks"))
+        assertEquals(listOf("prepare", "release", "check", "prepare", "release", "check"), calls(first))
     }
 
     @Test
@@ -183,12 +231,13 @@ class CheckResourceTest {
         return script
     }
 
-    /** Each `resource_queued` event: the issue, its resource ids and its reason. */
+    /** Each `resource_queued` event: the issue, its resource id and its reason. */
     private fun queued(): List<Map<String, String>> =
         fixture.query("SELECT issue_identifier, data FROM events WHERE kind = 'resource_queued' ORDER BY seq").map { row ->
             val data = Json.parseToJsonElement(row["data"].orEmpty()).jsonObject
             mapOf(
                 "issue" to row["issue_identifier"].orEmpty(),
+                "resource" to data["resource_id"]?.jsonPrimitive?.content.orEmpty(),
                 "reason" to data["reason"]?.jsonPrimitive?.content.orEmpty(),
             )
         }

@@ -64,7 +64,8 @@ object ResourceGranted : EventDefinition("resource_granted") {
 /**
  * m4-50: the lock the attempt of the event held on the resource of [KIND] and [RESOURCE_ID] was freed, and why:
  * [RELEASED] by its holder, [ATTEMPT_ENDED] at the end of the attempt, whatever the end, or [ABANDONED] by the startup
- * sweep of a later run, for a lock a dead process left.
+ * sweep of a later run, for a lock a dead process left. Since m4-26 [CHECK]: a check of the attempt's verification
+ * that holds a resource of the same pool took it back, so the check never waits on its own attempt.
  */
 object ResourceReleased : EventDefinition("resource_released") {
     const val KIND = ResourceGranted.KIND
@@ -72,6 +73,7 @@ object ResourceReleased : EventDefinition("resource_released") {
     const val REASON = "reason"
     const val RELEASED = "released"
     const val ATTEMPT_ENDED = "attempt_ended"
+    const val CHECK = "check"
     const val ABANDONED = AttemptFinished.ABANDONED
 
     override val trace = TraceShow.TIMELINE

@@ -9,8 +9,9 @@ import java.nio.file.Path
 /**
  * Runs the `read_only_check` and `restore` commands of a resource (m4-26) with `sh -lc` in the folder [cwd] gives,
  * with exactly the env [base] gives plus the `LOOP_RESOURCE_<KEY>` env of the resource, nothing inherited, and a
- * [timeoutMs] past which the command fails. `loop tool mcp` runs the check of a release in the agent's own env and
- * folder; `loop run` runs the check and the restore at the end of an attempt with the agent env policy.
+ * [timeoutMs] past which the command fails. Both processes run them in the folder of `WORKFLOW.md`: `loop tool mcp`
+ * runs the check of a release with the agent's own env, `loop run` the check and the restore at the end of an attempt
+ * or of a check with the agent env policy.
  */
 internal class ShellResourceCommands(
     private val cwd: () -> Path,
@@ -32,7 +33,10 @@ internal class ShellResourceCommands(
     }
 
     companion object {
-        /** How long a resource command may run before it fails: 5 minutes. */
-        const val TIMEOUT_MS: Long = 300_000
+        /**
+         * How long a resource command may run before it fails: 60 s, since `loop run` runs it under the lock of its
+         * resource calls and at the end of a check.
+         */
+        const val TIMEOUT_MS: Long = 60_000
     }
 }

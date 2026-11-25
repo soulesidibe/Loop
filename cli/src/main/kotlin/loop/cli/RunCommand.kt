@@ -56,6 +56,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Clock
+import kotlin.time.Duration
 
 /**
  * `loop run [path-to-WORKFLOW.md] [--once]` (plan D15). A daemon until SIGINT or
@@ -279,8 +280,9 @@ class RunCommand(
         // m4-25: this process prepares and gives back the resources its attempts take with request_resource, so a
         // booted device is its child, never the tool process's; the entries follow each reload.
         val resourcesAt = AtomicReference(workflow.config.resources)
-        // m4-26: the read only check and the restore of a resource at the end of an attempt run like a check, with the
-        // agent env policy of the current workflow, in the folder of WORKFLOW.md.
+        // m4-26: the read only check and the restore of a resource at the end of an attempt run with the agent env
+        // policy of the current workflow, in the folder of WORKFLOW.md, the `workflow_dir` the tool process runs the
+        // check of a release in.
         val removedAt = AtomicReference(agentEnvRemovedNames(workflow))
         val resourceCommands =
             ShellResourceCommands(
@@ -320,7 +322,11 @@ class RunCommand(
                 env,
                 ->
                 // m4-26: a command check that declares `resource:` holds a resource of that kind while it runs.
-                withCheckResource(resourceGrants, check, env) { resourceEnv ->
+                val waiting = { kind: String, waited: Duration ->
+                    val ids = context.copy(issueIdentifier = env["LOOP_ISSUE_IDENTIFIER"])
+                    log.log(LogLevel.WARN, "check", LogOutcome.PARKED, ids, fields = mapOf("kind" to kind), reason = "waits for a $kind resource, $waited")
+                }
+                withCheckResource(resourceGrants, check, env, waiting) { resourceEnv ->
                     runner.run(check, cwd, agentEnvironment(overrides = env + resourceEnv, removed = removed, host = host.rawEnv))
                 }
             }

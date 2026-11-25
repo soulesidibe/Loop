@@ -54,6 +54,22 @@ class ResourceLimitsTest {
             val granted: List<String>,
         ) : Step
 
+        /** The recheck [holder] of a dirty [kind] [id] ends, the mark cleared when [passed]; [granted] as above. */
+        data class EndRecheck(
+            val holder: String,
+            val kind: String,
+            val id: String,
+            val passed: Boolean,
+            val granted: List<String>,
+        ) : Step
+
+        /** [attempt] gives back its locks and requests of [kinds] for its check; [granted] as above. */
+        data class TakeBack(
+            val attempt: String,
+            val kinds: Set<String>,
+            val granted: List<String>,
+        ) : Step
+
         /** The holders, `kind/id=attempt` in row order, and the queue, `kind/id<-attempt` oldest first. */
         data class Holds(
             val locks: List<String>,
@@ -158,6 +174,46 @@ class ResourceLimitsTest {
                     Step.Holds(listOf("ios-simulator/iphone-15=a2", "ios-simulator/sim-1=c1")),
                 ),
             ),
+            Case(
+                "a recheck holder is granted a dirty resource and counts in its pool, a pass clears the mark and grants the head",
+                listOf(
+                    Step.Request("a1", "ios-simulator", "iphone-16", "granted"),
+                    Step.Request("a2", "ios-simulator", "iphone-16", "queued 1 $held"),
+                    Step.Release("a1", "ios-simulator", "iphone-16", granted = emptyList(), dirty = true),
+                    Step.Request("recheck-1", "ios-simulator", "iphone-16", "granted"),
+                    Step.Request("recheck-2", "ios-simulator", "iphone-16", "queued 2 $held"),
+                    Step.Request("a3", "ios-simulator", "iphone-15", "granted"),
+                    Step.Request("a4", "ios-simulator", "ipad", "queued 1 $limit"),
+                    Step.EndRecheck("recheck-2", "ios-simulator", "iphone-16", passed = false, granted = emptyList()),
+                    Step.EndRecheck("recheck-1", "ios-simulator", "iphone-16", passed = true, granted = listOf("a2=ios-simulator/iphone-16")),
+                    Step.Holds(listOf("ios-simulator/iphone-15=a3", "ios-simulator/iphone-16=a2"), listOf("ios-simulator/ipad<-a4")),
+                ),
+            ),
+            Case(
+                "a failed recheck keeps the mark",
+                listOf(
+                    Step.Request("a1", "avd", "api35", "granted"),
+                    Step.Release("a1", "avd", "api35", granted = emptyList(), dirty = true),
+                    Step.Request("a2", "avd", "api35", "queued 1 $dirty"),
+                    Step.Request("recheck-1", "avd", "api35", "granted"),
+                    Step.EndRecheck("recheck-1", "avd", "api35", passed = false, granted = emptyList()),
+                    Step.Request("a3", "avd", "api35", "queued 2 $dirty"),
+                    Step.Holds(emptyList(), listOf("avd/api35<-a2", "avd/api35<-a3")),
+                ),
+            ),
+            Case(
+                "an attempt gives back its locks and requests of a pool for its check, which then gets one",
+                listOf(
+                    Step.Request("a1", "android-device", "pixel-8", "granted"),
+                    Step.Request("a1", "avd", "api35", "granted"),
+                    Step.Request("a1", "ios-simulator", "iphone-16", "granted"),
+                    Step.Request("a2", "avd", "api34", "queued 1 $limit"),
+                    Step.Request("a1", "avd", "api33", "queued 1 $limit"),
+                    Step.RequestAny("c1", "avd", listOf("api35"), "queued 1 $held"),
+                    Step.TakeBack("a1", setOf("android-device", "avd"), granted = listOf("a2=avd/api34", "c1=avd/api35")),
+                    Step.Holds(listOf("ios-simulator/iphone-16=a1", "avd/api34=a2", "avd/api35=c1")),
+                ),
+            ),
         )
 
     @Test
@@ -188,6 +244,16 @@ class ResourceLimitsTest {
                     }
                     is Step.Clear -> {
                         val change = ResourceQueue.clearDirty(rows, step.kind, step.id, now)
+                        rows = change.rows
+                        assertEquals(step.granted, change.granted.map { "${it.attemptId.value}=${it.kind}/${it.resourceId}" }, at)
+                    }
+                    is Step.EndRecheck -> {
+                        val change = ResourceQueue.endRecheck(rows, AttemptId(step.holder), step.kind, step.id, step.passed, now)
+                        rows = change.rows
+                        assertEquals(step.granted, change.granted.map { "${it.attemptId.value}=${it.kind}/${it.resourceId}" }, at)
+                    }
+                    is Step.TakeBack -> {
+                        val change = ResourceQueue.freeKinds(rows, AttemptId(step.attempt), step.kinds, now)
                         rows = change.rows
                         assertEquals(step.granted, change.granted.map { "${it.attemptId.value}=${it.kind}/${it.resourceId}" }, at)
                     }
@@ -259,6 +325,7 @@ class ResourceLimitsTest {
             assertEquals(true, count <= pool.limit, "$at: ${pool.name} holds $count")
         }
         val dirty = rows.dirty.map { it.kind to it.resourceId }
-        assertEquals(emptyList(), keys.filter { it in dirty }, "$at: a dirty resource was lent")
+        val lent = rows.locks.filterNot { it.attemptId.value.startsWith(ResourceGrants.RECHECK_HOLDER) }.map { it.kind to it.resourceId }
+        assertEquals(emptyList(), lent.filter { it in dirty }, "$at: a dirty resource was lent")
     }
 }
