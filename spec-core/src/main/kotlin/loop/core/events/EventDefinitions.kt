@@ -91,6 +91,7 @@ object EventDefinitions {
             ResourceQueued,
             ResourceGranted,
             ResourceReleased,
+            ResourceCheckFailed,
             // The run.
             Preflight,
             ConfigReloaded,

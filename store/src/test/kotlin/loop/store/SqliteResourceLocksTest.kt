@@ -3,6 +3,7 @@ package loop.store
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import loop.api.AttemptId
+import loop.api.DirtyResource
 import loop.api.ProjectId
 import loop.api.Redactor
 import loop.api.ResourceLock
@@ -214,8 +215,9 @@ class SqliteResourceLocksTest {
                 DriverManager.getConnection("jdbc:sqlite:${loopHome.resolve(SqliteEventStore.FILE_NAME)}").use { conn ->
                     conn.createStatement().use { st -> st.executeQuery("PRAGMA user_version").use { it.getInt(1) } }
                 }
-            // m4-25: version 9 since the lock row keeps its prepare error, its answer and its release request.
-            assertEquals(9, version)
+            // m4-25: version 9 since the lock row keeps its prepare error, its answer and its release request; m4-26:
+            // version 10 since the dirty marks and the groups of check requests.
+            assertEquals(10, version)
         }
 
     @Test
@@ -264,6 +266,53 @@ class SqliteResourceLocksTest {
                 val answered = asking("a1").lock(prepared = mapOf("serial" to "emulator-5554")).copy(answered = true)
                 store.updateResourceLocks { ResourceLockUpdate(ResourceLockRows(locks = listOf(answered)), Unit) }.getOrThrow()
                 assertEquals(listOf(answered), store.resourceLockRows().getOrThrow().locks)
+            }
+        }
+
+    @Test
+    fun `m4-26 the dirty marks and the group requests of a check survive a reopen, a dirty difference redacted`() =
+        runTest {
+            val secret = "ghp_" + "a".repeat(36)
+            val mark = DirtyResource("ios-simulator", "iphone-16", first, "provider", "app installed", at)
+            val rows =
+                ResourceLockRows(
+                    queue =
+                        listOf(
+                            asking("check-1", kind = "ios-simulator", id = "sim-1").copy(anyOfKind = true),
+                            asking("check-1", kind = "ios-simulator", id = "sim-2").copy(anyOfKind = true),
+                            asking("a2", kind = "ios-simulator", id = "iphone-16"),
+                        ),
+                    dirty = listOf(mark, mark.copy(resourceId = "iphone-15", difference = "token $secret left")),
+                )
+            val redactor = Redactor { it.replace(secret, "[redacted]") }
+            open(redactor = redactor).use { store -> store.updateResourceLocks { ResourceLockUpdate(rows, Unit) }.getOrThrow() }
+
+            val read = open().use { it.resourceLockRows().getOrThrow() }
+            assertEquals(rows.queue, read.queue)
+            assertEquals(mark, read.dirty[0])
+            assertEquals("token [redacted] left", read.dirty[1].difference)
+        }
+
+    @Test
+    fun `m4-26 a version nine store gains the dirty table and the group column, its queue kept`() =
+        runTest {
+            open().use { store ->
+                store.updateResourceLocks { ResourceLockUpdate(ResourceLockRows(queue = listOf(asking("a1"))), Unit) }.getOrThrow()
+            }
+            DriverManager.getConnection("jdbc:sqlite:${loopHome.resolve(SqliteEventStore.FILE_NAME)}").use { conn ->
+                conn.createStatement().use { st ->
+                    // The version 9 tables of the m4-25 build: no dirty table and no group column.
+                    st.execute("DROP TABLE resource_dirty")
+                    st.execute("ALTER TABLE resource_queue DROP COLUMN any_of_kind")
+                    st.execute("PRAGMA user_version = 9")
+                }
+            }
+
+            open().use { store ->
+                assertEquals(ResourceLockRows(queue = listOf(asking("a1"))), store.resourceLockRows().getOrThrow())
+                val mark = DirtyResource("avd", "api35", first, "read_only_check", "exit code 1", at)
+                store.updateResourceLocks { rows -> ResourceLockUpdate(rows.copy(dirty = listOf(mark)), Unit) }.getOrThrow()
+                assertEquals(listOf(mark), store.resourceLockRows().getOrThrow().dirty)
             }
         }
 }
