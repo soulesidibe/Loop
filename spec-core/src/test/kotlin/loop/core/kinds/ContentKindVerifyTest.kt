@@ -363,16 +363,14 @@ class ContentKindVerifyTest {
         """.trimMargin()
 
     @Test
-    fun `preflight refuses policy auto on a kind with deliverable files, whatever the kind is called`() {
+    fun `preflight refuses policy auto on a kind with deliverable files without the attach opt in, whatever the kind is called`() {
+        // m4-22: auto is defined by the attach delivery and its own opt in, auto_merge.enabled does not count.
         for (name in listOf("content", "posts")) {
-            refused(
-                kind(name, "{ files: [out/**/*.md] }", "    delivery: { policy: auto, auto_merge: { enabled: true } }"),
-                "kinds.$name.delivery.policy is auto, which a kind with deliverable.files does not support yet, use policy: human",
-            )
-            refused(
-                kind(name, "{ files: [out/**/*.md] }", "    delivery: { policy: auto }"),
-                "kinds.$name.delivery.policy is auto, which a kind with deliverable.files does not support yet, use policy: human",
-            )
+            val expected =
+                "kinds.$name.delivery.policy is auto, which a kind with deliverable.files supports only with " +
+                    "kinds.$name.delivery.attach: true and the opt in kinds.$name.delivery.attach_auto.enabled: true, or use policy: human"
+            refused(kind(name, "{ files: [out/**/*.md] }", "    delivery: { policy: auto, auto_merge: { enabled: true } }"), expected)
+            refused(kind(name, "{ files: [out/**/*.md] }", "    delivery: { policy: auto }"), expected)
         }
     }
 

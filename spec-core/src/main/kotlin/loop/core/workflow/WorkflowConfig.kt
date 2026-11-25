@@ -166,6 +166,13 @@ data class DeliveryConfig(
     val autoMerge: AutoMergeConfig = AutoMergeConfig(),
     /** `delivery.risk` (m2-28): the merge risk assessment of an auto merge, its reviewer and the paths its facts read. */
     val risk: RiskConfig = RiskConfig(),
+    /**
+     * `delivery.attach` (m4-22): a verified result's deliverable files are posted on the issue as one comment, and the
+     * delivery moves the issue to [onDeliveredMoveTo], or to its handoff state when absent. Needs `deliverable.files`.
+     */
+    val attach: Boolean = false,
+    /** `delivery.attach_auto.enabled` (m4-22): the opt in of `policy: auto` on a kind with [attach], off by default. */
+    val attachAutoEnabled: Boolean = false,
 )
 
 /**

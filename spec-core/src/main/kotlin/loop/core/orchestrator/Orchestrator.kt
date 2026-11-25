@@ -59,6 +59,7 @@ import loop.api.WaitingIssues
 import loop.core.delivery.AutoMerge
 import loop.core.delivery.DeliveryFacts
 import loop.core.delivery.DeliveryOutcome
+import loop.core.delivery.AttachDelivery
 import loop.core.delivery.EvidenceSummary
 import loop.core.delivery.MergeCheck
 import loop.core.delivery.PullRequestDelivery
@@ -124,6 +125,7 @@ import loop.core.events.TurnInputRequired
 import loop.core.events.TurnStarted
 import loop.core.events.Usage
 import loop.core.events.Verdict
+import loop.core.kinds.DeliverableFile
 import loop.core.kinds.DeliverableFiles
 import loop.core.kinds.DeliverableListing
 import loop.core.kinds.IssueKind
@@ -3993,6 +3995,9 @@ class Orchestrator(
         private var verifiedFingerprint: String = UNKNOWN_FINGERPRINT
         private val passed = mutableListOf<EvidenceSummary.Check>()
 
+        /** The deliverable files the last [verify] listed (m4-21), which the attach delivery posts (m4-22). */
+        private var deliverableFiles: List<DeliverableFile>? = null
+
         /**
          * Runs the kind's checks in order, then its holdouts (m2-14), stopping at the first failure; true only
          * when there is one and all passed. A holdout's index follows the visible checks'. A check that ran and
@@ -4117,6 +4122,7 @@ class Orchestrator(
                 unverified = redactor.redact(deliverable.reason).take(REASON_MAX)
             }
             val listedFiles = (deliverable as? DeliverableListing.Listed)?.files
+            deliverableFiles = listedFiles
             val deliverableEvidence = listedFiles?.let { saveDeliverable(DeliverableEvidence(fingerprint, it)) }
             val listed = all.count { (check, _) -> !diffPolicyOnly || check is CheckConfig.DiffPolicy }
             failingChecks = listed - passed.size + (if (uncommitted != null) 1 else 0) + (if (missing != null) 1 else 0)
@@ -4258,7 +4264,10 @@ class Orchestrator(
          */
         suspend fun deliver(to: String): String? {
             val delivery = kind?.config?.delivery ?: DeliveryConfig()
-            if (delivery.policy != DeliveryPolicy.Auto) return requestApproval(to)
+            // m4-22: an attach delivery ends in on_delivered.move_to, its handoff state when absent.
+            val target = if (delivery.attach) delivery.onDeliveredMoveTo ?: to else to
+            if (delivery.policy != DeliveryPolicy.Auto) return requestApproval(target)
+            if (delivery.attach) return deliverAttached(target)
             // m2-28: an auto merge goes through the m2-25 delivery and the m2-26 merge check, approved by `auto` itself;
             // the auto merge gate decides right before the merge.
             if (delivery.pullRequest?.merge != null) return requestAutoMerge(to)
@@ -4364,6 +4373,8 @@ class Orchestrator(
                 if (!ownMove(from)) record(HumanTouched, mapOf(HumanTouched.TOUCH to HumanTouch.MOVE, HumanTouched.TO_STATE to from))
                 return "the issue is no longer active, it is in $from"
             }
+            // m4-22: the deliverable first, so the evidence summary and its approval stay the last comment.
+            if (kind?.config?.delivery?.attach == true) postDeliverable(current)
             postSummary(current, to)
             startApprovalWait(to, approvedBy = null, pullRequest = pullRequest)
             record(
@@ -4372,6 +4383,36 @@ class Orchestrator(
             )
             log.log(LogLevel.INFO, DELIVERY, LogOutcome.STARTED, logContext(), mapOf("wait_reason" to WaitReason.Approval.wire, "to" to to))
             return null
+        }
+
+        /**
+         * Delivers the verified result under `auto` with `delivery.attach` and its opt in (m4-22): the issue is read again
+         * first, like for a move, then the deliverable is posted on it and the issue moves to [to], with no approval. A
+         * comment that failed moves nothing. The failure's reason, null when it delivered or was already there.
+         */
+        private suspend fun deliverAttached(to: String): String? {
+            val current =
+                withContext(io) { tracker.fetchIssuesByIds(listOf(issueId)) }
+                    .getOrElse { return it.describe() }
+                    .firstOrNull()
+                    ?: return "no issue $identifier in the tracker"
+            val from = current.state
+            if (from.normalized() == to.normalized()) return null
+            if (!workflow.trackers.entryOf(issueId).isActive(from)) {
+                if (!ownMove(from)) record(HumanTouched, mapOf(HumanTouched.TOUCH to HumanTouch.MOVE, HumanTouched.TO_STATE to from))
+                return "the issue is no longer active, it is in $from"
+            }
+            postDeliverable(current)?.let { return it }
+            return move(to)
+        }
+
+        /** Posts the deliverable files of the last [verify] on [issue] (m4-22); the failure, logged at warn, null otherwise. */
+        private suspend fun postDeliverable(issue: Issue): String? {
+            val files = deliverableFiles ?: return null
+            val attempt = attemptId?.value ?: return null
+            val failure = AttachDelivery(tracker, redactor, clock, io, record).post(issue, identifier, attempt, workspace, files) ?: return null
+            log.log(LogLevel.WARN, DELIVERY, LogOutcome.FAILED, logContext(), reason = failure)
+            return failure
         }
 
         /**
