@@ -123,13 +123,6 @@ Loop rotated your session because its context grew past the limit. The work so f
 
 {{ loop.session_brief }}
 {% endif %}
-{% if loop.answer %}
-# Your question was answered
-
-You asked a human a question with `ask` in an earlier attempt. The question and the answer are below. Act on the answer and do not ask the same question again.
-
-{{ loop.answer }}
-{% endif %}
 # Your workspace
 
 - The current directory is a git worktree on the branch `loop/{{ issue.identifier }}`, already checked out by Loop's workspace hooks. Work and commit on this branch only.
