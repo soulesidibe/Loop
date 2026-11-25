@@ -10,6 +10,7 @@ import loop.api.SecretRedactor
 import loop.api.TrackerAdapter
 import loop.api.TrackerContext
 import loop.api.TrackerError
+import loop.core.resources.ResourceCheck
 import loop.core.trackers.TrackerEntry
 import loop.core.trackers.TrackerRegistry
 import loop.core.verify.Holdouts
@@ -99,8 +100,17 @@ class Host(
     }
 
     /**
-     * The [WorkflowLoader] every command uses: this env and home, [trackerPlugins] and [runnerPlugins]. Plugins that
-     * could not be found fail every load with the reason. With [deferSecrets] (bl-70), an unset secret is named in
+     * The resource plugins of this host (m4-24), found like [runnerPlugins]: none on the classpath until the providers
+     * of m4-27 and m4-28, then the JARs'. A `resources:` kind none serves is a plain lock.
+     */
+    val resourcePlugins: Result<ResourcePlugins> by lazy {
+        pluginFolder.fold(onSuccess = { ResourcePlugins.discover(it) }, onFailure = { Result.failure(it) })
+    }
+
+    /**
+     * The [WorkflowLoader] every command uses: this env and home, [trackerPlugins], [runnerPlugins] and
+     * [resourcePlugins]. Plugins that could not be found fail every load with the reason, resource plugins only when
+     * `resources:` declares a resource. With [deferSecrets] (bl-70), an unset secret is named in
      * the loaded workflow instead of failing the load, see [WorkflowLoader].
      */
     fun workflowLoader(deferSecrets: Boolean = false): WorkflowLoader =
@@ -112,6 +122,12 @@ class Host(
             trackers =
                 trackerPlugins.fold({ it }, { error ->
                     TrackerCheck { _ ->
+                        Result.failure(IllegalStateException(error.sentence()))
+                    }
+                }),
+            resources =
+                resourcePlugins.fold({ it }, { error ->
+                    ResourceCheck { _ ->
                         Result.failure(IllegalStateException(error.sentence()))
                     }
                 }),
@@ -156,8 +172,9 @@ fun projectIdOf(workflowRealPath: Path): ProjectId {
 }
 
 /**
- * A [WorkflowLoader] over [env] and [home] that selects the tracker with [trackers] (m3-05) and checks the runner with
- * [runners] (m3-04), both the classpath's plugins by default, requiring every secret unless [deferSecrets] (bl-70).
+ * A [WorkflowLoader] over [env] and [home] that selects the tracker with [trackers] (m3-05), checks the runner with
+ * [runners] (m3-04) and tells the resource kinds a provider serves with [resources] (m4-24), all the classpath's plugins
+ * by default, requiring every secret unless [deferSecrets] (bl-70).
  */
 fun workflowLoader(
     env: Map<String, String>,
@@ -165,7 +182,16 @@ fun workflowLoader(
     runners: RunnerCheck = RunnerPlugins.classpath,
     trackers: TrackerCheck = TrackerPlugins.classpath,
     deferSecrets: Boolean = false,
-): WorkflowLoader = WorkflowLoader(env = env, home = home, trackerCheck = trackers, runnerCheck = runners, deferSecrets = deferSecrets)
+    resources: ResourceCheck = ResourcePlugins.classpath,
+): WorkflowLoader =
+    WorkflowLoader(
+        env = env,
+        home = home,
+        trackerCheck = trackers,
+        runnerCheck = runners,
+        deferSecrets = deferSecrets,
+        resourceCheck = resources,
+    )
 
 /**
  * The tracker named by `tracker.kind` (m3-05): the provider of [plugins] whose kind matches builds it from the

@@ -1,0 +1,100 @@
+package loop.cli
+
+import loop.api.ResourceDeclaration
+import loop.api.ResourceHolder
+import loop.api.ResourceProvider
+import org.junit.jupiter.api.io.TempDir
+import java.nio.file.Path
+import kotlin.io.path.readText
+import kotlin.io.path.writeText
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertIs
+import kotlin.test.assertNull
+
+/**
+ * m4-24: resource providers are found with `ServiceLoader` on `loop.api.ResourceProvider`, like the runner and tracker
+ * plugins. [FakeResourceProvider] registers through the test resource `META-INF/services/loop.api.ResourceProvider`.
+ */
+class ResourcePluginsTest {
+    @TempDir
+    lateinit var root: Path
+
+    private val fixture by lazy { LoopFixture(root) }
+
+    @Test
+    fun `a fake provider registered through a test services file is loaded and serves its kinds`() {
+        val plugins = ResourcePlugins.discover(root.resolve("no-plugins")).getOrThrow()
+
+        assertEquals(listOf("fake-device", "fake-emulator"), plugins.kinds)
+        assertIs<FakeResourceProvider>(plugins.provider("fake-device"))
+        assertIs<FakeResourceProvider>(plugins.provider("fake-emulator"))
+        assertNull(plugins.provider("avd"))
+        assertEquals(true, plugins.serves("fake-emulator").getOrThrow())
+        assertEquals(false, plugins.serves("avd").getOrThrow())
+        assertEquals(
+            mapOf("serial" to "fake-pixel"),
+            plugins.provider("fake-device")!!.prepare(ResourceDeclaration("fake-device", "pixel")),
+        )
+    }
+
+    @Test
+    fun `two providers serving one kind fail startup naming both, and a provider serving no kind fails too`() {
+        val other =
+            object : ResourceProvider by FakeResourceProvider() {
+                override val kinds = setOf("fake-emulator", "avd")
+            }
+        val none =
+            object : ResourceProvider by FakeResourceProvider() {
+                override val kinds = emptySet<String>()
+            }
+
+        val twice =
+            ResourcePlugins.of(
+                listOf(ResourcePlugins.Found(FakeResourceProvider(), "classpath"), ResourcePlugins.Found(other, "/p/other.jar")),
+            )
+        val empty = ResourcePlugins.of(listOf(ResourcePlugins.Found(none, "/p/none.jar")))
+
+        assertEquals(
+            "two resource plugins serve the resource kind \"fake-emulator\": loop.cli.FakeResourceProvider from the classpath and " +
+                "${other.javaClass.name} from /p/other.jar",
+            twice.exceptionOrNull()?.message,
+        )
+        assertEquals("the resource plugin ${none.javaClass.name} from /p/none.jar serves no kind", empty.exceptionOrNull()?.message)
+    }
+
+    @Test
+    fun `the host's workflow loader names a resource kind no provider serves and stays quiet for a served one`() {
+        val text = fixture.workflow.readText()
+        fixture.workflow.writeText(
+            text.replace("polling:\n", "resources:\n  - { kind: fake-device, id: pixel }\n  - { kind: avd, id: api35 }\npolling:\n"),
+        )
+        val host =
+            Host(
+                mapOf("LOOP_HOME" to fixture.loopHome.toString(), "HOME" to fixture.homeDir.toString()),
+                launcherProperty = null,
+                userHome = "/tmp",
+            )
+
+        val workflow = host.workflowLoader().load(fixture.workflow).getOrThrow()
+
+        assertEquals(listOf("fake-device", "avd"), workflow.config.resources.map { it.kind })
+        assertEquals(
+            listOf("resources kind \"avd\" has no resource provider, Loop holds its resources as plain locks"),
+            workflow.configWarnings,
+        )
+    }
+}
+
+/** A resource provider of the cli tests, registered on the test classpath, serving two kinds. */
+class FakeResourceProvider : ResourceProvider {
+    override val kinds: Set<String> = setOf("fake-device", "fake-emulator")
+
+    override fun prepare(resource: ResourceDeclaration): Map<String, String> = mapOf("serial" to "fake-${resource.id}")
+
+    override fun release(resource: ResourceDeclaration) = Unit
+
+    override fun readOnlyCheck(resource: ResourceDeclaration): List<String> = emptyList()
+
+    override fun recover(liveHolders: List<ResourceHolder>) = Unit
+}
