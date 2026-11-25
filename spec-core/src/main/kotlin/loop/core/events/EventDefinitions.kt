@@ -22,6 +22,9 @@ object EventDefinitions {
             PromptRecordFailed,
             RunnerOutputRecordFailed,
             HookFinished,
+            // m4-30: a human told that a run needs them, and a hook that failed without stopping the run.
+            HumanNotified,
+            HookFailed,
             // Context occupancy and rate limits, apart from spend.
             ContextUsage,
             ContextWindowUnknown,

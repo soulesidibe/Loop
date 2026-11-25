@@ -260,6 +260,7 @@ class WorkflowLoader(
         val budgets = parseBudgets(config.child("budgets"))
         val context = parseContext(config.child("context"))
         val observability = parseObservability(config.child("observability"))
+        val channel = parseChannel(config.child("channel"))
         val kinds = parseKinds(config, folder, tracker.kind, listOf(tracker.id) + extraTrackers.map { it.id }, deferred)
 
         val workspaceRoot =
@@ -308,6 +309,7 @@ class WorkflowLoader(
                     envRefs = envRefs.toList(),
                     referencedEnvNames = config?.referencedEnvNames().orEmpty(),
                     resources = resources,
+                    channel = channel,
                 ),
             sourceHash = workflowHash(text),
             sourceText = text,
@@ -361,7 +363,22 @@ class WorkflowLoader(
             timeoutMs = hooks.positiveLong("hooks.timeout_ms", "timeout_ms") ?: defaults.timeoutMs,
             onTokenThreshold = hooks.string("hooks.on_token_threshold", "on_token_threshold"),
             onBudgetWarning = hooks.string("hooks.on_budget_warning", "on_budget_warning"),
+            onHumanNeeded = hooks.string("hooks.on_human_needed", "on_human_needed"),
         )
+    }
+
+    /** m4-30: `channel:` is a map whose `kind` is one Loop knows, `terminal` when the key is absent. */
+    private fun parseChannel(channel: YamlMap?): ChannelConfig {
+        if (channel == null) return ChannelConfig()
+        val kind =
+            channel.string("channel.kind", "kind")?.trim()?.takeIf { it.isNotEmpty() }
+                ?: throw WorkflowError.InvalidConfig("channel.kind is required, use ${ChannelConfig.KINDS.joinToString(", ")}")
+        if (kind !in ChannelConfig.KINDS) {
+            throw WorkflowError.InvalidConfig(
+                "channel.kind is \"$kind\", which is not a channel Loop knows, use ${ChannelConfig.KINDS.joinToString(", ")}",
+            )
+        }
+        return ChannelConfig(kind)
     }
 
     /** [trackerIds] are the ids of the workflow's trackers, the only keys `max_concurrent_agents_by_tracker` takes (m4-15). */

@@ -36,6 +36,8 @@ import loop.api.DeliveryExecutor
 import loop.api.EventSink
 import loop.api.FrozenAcceptanceCommands
 import loop.api.FrozenCommands
+import loop.api.HumanChannel
+import loop.api.HumanEvent
 import loop.api.HumanTouch
 import loop.api.Issue
 import loop.api.IssueComment
@@ -57,6 +59,8 @@ import loop.api.TurnId
 import loop.api.TurnLedger
 import loop.api.WaitReason
 import loop.api.WaitingIssues
+import loop.core.channel.HumanNotices
+import loop.core.channel.NoticeSettings
 import loop.core.delivery.AttachDelivery
 import loop.core.delivery.AutoMerge
 import loop.core.delivery.DeliveryFacts
@@ -151,6 +155,7 @@ import loop.core.resources.ResourceLocks
 import loop.core.template.Template
 import loop.core.template.TemplateEngine
 import loop.core.trackers.AreaLock
+import loop.core.trackers.IssueIdDisplay
 import loop.core.trackers.NamespacedId
 import loop.core.trackers.TrackerPoll
 import loop.core.trackers.TrackerSlots
@@ -429,6 +434,8 @@ class Orchestrator(
     private val resourceLockStore: ResourceLockStore = ResourceLockStore.NONE,
     /** m4-25: the resource grants of `loop run`, which give back what an attempt prepared before its locks are freed. */
     private val resourceGrants: ResourceGrants? = null,
+    /** m4-30: the channel through which a human is told that a run needs them; the cli gives the terminal channel. */
+    private val channel: HumanChannel = HumanChannel.NONE,
 ) {
     /** The HEAD and working tree reads for the progress between rotations (bl-136), bounded and cancellable (bl-149). */
     private val workspaceFacts = WorkspaceFacts(workspaceGit)
@@ -469,6 +476,7 @@ class Orchestrator(
             removeWorkspace = { removeWorkspace(it) },
             wake = { attemptEnded.trySend(Unit) },
             onCiTimeout = { pauseQueue(it) },
+            notices = notices,
             sink = this.sink,
             sinkName = sinkName,
             log = log,
@@ -543,7 +551,43 @@ class Orchestrator(
     private val trackers = TrackerPoll.of(tracker, workflow.trackerId)
 
     private val retries =
-        RetryCoordinator(trackers, parked, this.sink, sinkName, log, clock, runId, projectId, ::onTerminalRetryDropped, retryStates)
+        RetryCoordinator(
+            trackers,
+            parked,
+            this.sink,
+            sinkName,
+            log,
+            clock,
+            runId,
+            projectId,
+            ::onTerminalRetryDropped,
+            retryStates,
+        ) { park, reason ->
+            notices.parked(park, reason)
+        }
+
+    /**
+     * m4-30: the notices to a human of a park and of an approval wait, through [channel] and `hooks.on_human_needed`, as
+     * the workflow in effect says at each notice. See [HumanNotices] for the never twice rule.
+     */
+    private val notices: HumanNotices by lazy {
+        HumanNotices(
+            channel = channel,
+            settings = {
+                val config = effective.config
+                NoticeSettings(
+                    hook = config.hooks.onHumanNeeded,
+                    timeoutMs = config.hooks.timeoutMs,
+                    folder = effective.path.toAbsolutePath().parent,
+                    display = IssueIdDisplay.of(effective.trackers),
+                    channel = config.channel.kind,
+                )
+            },
+            env = mapOf("LOOP_PROJECT_ID" to projectId.value, "LOOP_WORKFLOW" to effective.path.toString()),
+            recorder = NoticeRecording(this.sink, sinkName, log, clock, projectId, runId, ::HookRecorder),
+            redact = redactor::redact,
+        )
+    }
 
     /** bl-39: the run level hold of a runner that cannot reach its model; it gates every dispatch. */
     private val hold = RunnerHold(clock)
@@ -4588,8 +4632,11 @@ class Orchestrator(
                     pullRequest = pullRequest,
                     kind = kind?.name,
                 )
-            waits.hold(wait)
-            storeWaiting(wait) { waits.save(wait) }
+            // m4-30: an unapproved wait tells the human once, its notice key saved with it.
+            notices.waiting(wait, HumanEvent.ApprovalWaiting, "a verified result waits for approval to move to $to") { noticed ->
+                waits.hold(noticed)
+                storeWaiting(noticed) { waits.save(noticed) }
+            }
         }
 
         /** Posts the evidence summary of the last [verify] on [issue], redacted; a failure is logged at warn. */
@@ -5152,7 +5199,7 @@ class Orchestrator(
                 val reason = redactor.redact(stale).take(REASON_MAX)
                 recordWaitEvent(wait, DeliveryFailed, mapOf(Delivery.STEP to PlainWorkspace.STEP_FINGERPRINT, Delivery.REASON to reason))
                 log.log(LogLevel.WARN, DELIVERY, LogOutcome.FAILED, context, reason = "cannot deliver the approved result: $reason")
-                clearApproval(wait)
+                clearApproval(wait, "${PlainWorkspace.STEP_FINGERPRINT}: $reason")
                 return false
             }
         }
@@ -5245,7 +5292,7 @@ class Orchestrator(
             is DeliveryOutcome.Failed -> {
                 val reason = "cannot deliver the approved result, ${outcome.step}: ${outcome.reason}"
                 log.log(LogLevel.WARN, DELIVERY, LogOutcome.FAILED, context, reason = reason)
-                clearApproval(kept)
+                clearApproval(kept, "${outcome.step}: ${outcome.reason}")
             }
             is DeliveryOutcome.Delivered -> Unit
         }
@@ -5412,9 +5459,15 @@ class Orchestrator(
             Result.failure(e)
         }
 
-    /** Writes [wait] back without its approval (m2-25): only a new `loop approve` delivers it now. */
-    private suspend fun clearApproval(wait: Wait.Approval) {
-        storeWait(wait.unapproved(), waitContext(wait))
+    /**
+     * Writes [wait] back without its approval (m2-25): only a new `loop approve` delivers it now. The human is told,
+     * `delivery_failed` for [reason] (m4-30).
+     */
+    private suspend fun clearApproval(
+        wait: Wait.Approval,
+        reason: String,
+    ) {
+        notices.waiting(wait.unapproved(), HumanEvent.DeliveryFailed, reason) { storeWait(it, waitContext(wait)) }
     }
 
     /**

@@ -3,8 +3,8 @@ package loop.core.workspace
 import java.nio.file.Path
 
 /**
- * The four workspace hooks of spec 9.4 and Loop's own `on_token_threshold` (m1-38) and `on_budget_warning` (m2-20),
- * with their front matter names.
+ * The four workspace hooks of spec 9.4 and Loop's own `on_token_threshold` (m1-38), `on_budget_warning` (m2-20) and
+ * `on_human_needed` (m4-30), with their front matter names.
  */
 enum class HookName(
     val id: String,
@@ -15,6 +15,7 @@ enum class HookName(
     BEFORE_REMOVE("before_remove"),
     ON_TOKEN_THRESHOLD("on_token_threshold"),
     ON_BUDGET_WARNING("on_budget_warning"),
+    ON_HUMAN_NEEDED("on_human_needed"),
 }
 
 /**

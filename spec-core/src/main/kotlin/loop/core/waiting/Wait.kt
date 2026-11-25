@@ -90,8 +90,18 @@ sealed class Wait(
         /** This wait holding the [url] of the pull request a delivery commented on the issue (m2-25). */
         fun commented(url: String): Approval = Approval(with(data = data + (WaitKeys.PULL_REQUEST to url)))
 
-        /** This wait without its approval (m2-25): only a new `loop approve` delivers it now. */
-        fun unapproved(): Approval = Approval(with(data = data - WaitingIssue.APPROVED_BY - WaitingIssue.APPROVED_AT))
+        /** The key of the notice a human was sent for this wait (m4-30), null before one was sent. */
+        val humanNotice: String? get() = data[WaitKeys.HUMAN_NOTICE]
+
+        /** This wait holding [key], the key of the notice a human was sent for it (m4-30). */
+        fun noticed(key: String): Approval = Approval(with(data = data + (WaitKeys.HUMAN_NOTICE to key)))
+
+        /**
+         * This wait without its approval (m2-25): only a new `loop approve` delivers it now. It is a new wait for the
+         * human, so the key of the notice of the earlier one goes too (m4-30).
+         */
+        fun unapproved(): Approval =
+            Approval(with(data = data - WaitingIssue.APPROVED_BY - WaitingIssue.APPROVED_AT - WaitKeys.HUMAN_NOTICE))
 
         /**
          * The `Waiting(merge)` of pull request [number] at [url] that follows this approved delivery (m2-26), since
@@ -261,14 +271,14 @@ sealed class Wait(
         /**
          * The unapproved `Waiting(approval)` a refused merge falls back to, since [since]: the merge keys and the
          * approval go, the fingerprint stays the one this wait holds, the merged one after a passing check, so a new
-         * approval replays it.
+         * approval replays it. The key of the earlier notice goes too (m4-30): the human is told again.
          */
         fun refused(since: Instant): Approval =
             Approval(
                 with(
                     reason = WaitReason.Approval,
                     since = since,
-                    data = data - WaitKeys.MERGE_KEYS - WaitingIssue.APPROVED_BY - WaitingIssue.APPROVED_AT,
+                    data = data - WaitKeys.MERGE_KEYS - WaitingIssue.APPROVED_BY - WaitingIssue.APPROVED_AT - WaitKeys.HUMAN_NOTICE,
                 ),
             )
 
