@@ -10,7 +10,7 @@ import com.charleskorn.kaml.YamlTaggedNode
 import loop.api.MergeMethod
 import loop.api.PluginProfile
 import loop.api.ProfileProblem
-import loop.core.kinds.DeliverableFiles
+import loop.core.delivery.AttachDelivery
 import loop.core.kinds.KindWorkspaces
 import loop.core.trackers.TrackerEntry
 import loop.core.trackers.TrackerParser
@@ -495,16 +495,8 @@ class WorkflowLoader(
                 "$kindKey.delivery.pull_request is not supported yet, only the code kind delivers a pull request",
             )
         }
-        // m4-21: refused before the auto_merge opt in, so the message names the real reason.
         val deliverable = parseDeliverable(kindKey, kind)
-        val auto =
-            kind
-                .child("delivery", "$kindKey.delivery")
-                .string("$kindKey.delivery.policy", "policy")
-                ?.trim()
-                ?.lowercase() == "auto"
-        DeliverableFiles.refusal(kindKey, deliverable.files, auto)?.let { throw WorkflowError.InvalidConfig(it) }
-        val delivery = parseDelivery(kindKey, kind, trackerKind, deferred)
+        val delivery = parseDelivery(kindKey, kind, trackerKind, deferred, deliverable)
         val match = parseMatch(kindKey, kind, trackerIds) ?: if (name == KindsConfig.CODE) KindMatch.DEFAULT else null
         return KindConfig(
             checks,
@@ -826,6 +818,7 @@ class WorkflowLoader(
         code: YamlMap?,
         trackerKind: String,
         deferred: MutableList<DeferredSecret>,
+        deliverable: KindDeliverable,
     ): DeliveryConfig {
         val entry = code?.entries?.entries?.firstOrNull { it.key.content == "delivery" } ?: return DeliveryConfig()
         val delivery = entry.value as? YamlMap ?: throw WorkflowError.InvalidConfig("$kindKey.delivery must be a map")
@@ -839,8 +832,18 @@ class WorkflowLoader(
             } ?: DeliveryPolicy.Human
         val autoMerge = parseAutoMerge(kindKey, delivery)
         val risk = parseRisk(kindKey, delivery)
-        // m2-28: off unless the project opts in, so `auto` alone never delivers without a human.
-        if (policy == DeliveryPolicy.Auto && !autoMerge.enabled) {
+        // m4-22: the attach delivery and its own opt in, checked before the auto_merge opt in, so the message names the
+        // real reason (m4-21).
+        val attach = delivery.boolean("$kindKey.delivery.attach", "attach") ?: false
+        val attachAuto =
+            delivery.mapEntry("attach_auto", "$kindKey.delivery.attach_auto")?.boolean("$kindKey.delivery.attach_auto.enabled", "enabled")
+                ?: false
+        AttachDelivery
+            .refusal(kindKey, deliverable.files, attach, attachAuto, pullRequest != null, policy == DeliveryPolicy.Auto)
+            ?.let { throw WorkflowError.InvalidConfig(it) }
+        // m2-28: off unless the project opts in, so `auto` alone never delivers without a human. m4-22: an attach kind
+        // opts in with attach_auto, which the refusal above already required.
+        if (policy == DeliveryPolicy.Auto && !autoMerge.enabled && !attach) {
             throw WorkflowError.InvalidConfig(
                 "$kindKey.delivery.policy is auto, which needs the opt in $kindKey.delivery.auto_merge.enabled: true",
             )
@@ -858,8 +861,21 @@ class WorkflowLoader(
                 )
             }
         }
-        return DeliveryConfig(policy, pullRequest, moveTo, autoMerge, risk)
+        return DeliveryConfig(policy, pullRequest, moveTo, autoMerge, risk, attach, attachAuto)
     }
+
+    /** m4-22: the boolean under [key], null when absent; present, `true` or `false`, so a misspelled value is refused. */
+    private fun YamlMap.boolean(
+        name: String,
+        key: String,
+    ): Boolean? =
+        string(name, key)?.let { written ->
+            when (written.trim().lowercase()) {
+                "true" -> true
+                "false" -> false
+                else -> throw WorkflowError.InvalidConfig("$name must be true or false, got \"$written\"")
+            }
+        }
 
     /**
      * m2-28: `kinds.<kind>.delivery.auto_merge`, off when absent. Present, a map whose `enabled` is `true` or `false`,

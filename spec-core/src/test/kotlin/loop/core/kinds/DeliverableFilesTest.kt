@@ -1,5 +1,6 @@
 package loop.core.kinds
 
+import loop.core.delivery.AttachDelivery
 import loop.core.workflow.CheckConfig
 import loop.core.workflow.KindConfig
 import loop.core.workflow.KindDeliverable
@@ -144,11 +145,29 @@ class DeliverableFilesTest {
 
     @Test
     fun `policy auto is refused on a kind with deliverable files, and human or no deliverable is accepted`() {
+        // m4-22: the rule moved to the attach delivery, which defines what auto means for such a kind.
         assertEquals(
-            "kinds.posts.delivery.policy is auto, which a kind with deliverable.files does not support yet, use policy: human",
-            DeliverableFiles.refusal("kinds.posts", listOf("out/**/*.md"), autoPolicy = true),
+            "kinds.posts.delivery.policy is auto, which a kind with deliverable.files supports only with " +
+                "kinds.posts.delivery.attach: true and the opt in kinds.posts.delivery.attach_auto.enabled: true, or use policy: human",
+            AttachDelivery.refusal(
+                "kinds.posts",
+                listOf("out/**/*.md"),
+                attach = false,
+                attachAuto = false,
+                pullRequest = false,
+                auto = true,
+            ),
         )
-        assertNull(DeliverableFiles.refusal("kinds.posts", listOf("out/**/*.md"), autoPolicy = false))
-        assertNull(DeliverableFiles.refusal("kinds.code", emptyList(), autoPolicy = true))
+        assertNull(
+            AttachDelivery.refusal(
+                "kinds.posts",
+                listOf("out/**/*.md"),
+                attach = false,
+                attachAuto = false,
+                pullRequest = false,
+                auto = false,
+            ),
+        )
+        assertNull(AttachDelivery.refusal("kinds.code", emptyList(), attach = false, attachAuto = false, pullRequest = false, auto = true))
     }
 }

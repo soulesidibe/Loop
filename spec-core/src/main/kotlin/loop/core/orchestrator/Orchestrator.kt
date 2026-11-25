@@ -56,6 +56,7 @@ import loop.api.TurnId
 import loop.api.TurnLedger
 import loop.api.WaitReason
 import loop.api.WaitingIssues
+import loop.core.delivery.AttachDelivery
 import loop.core.delivery.AutoMerge
 import loop.core.delivery.DeliveryFacts
 import loop.core.delivery.DeliveryOutcome
@@ -124,6 +125,7 @@ import loop.core.events.TurnInputRequired
 import loop.core.events.TurnStarted
 import loop.core.events.Usage
 import loop.core.events.Verdict
+import loop.core.kinds.DeliverableFile
 import loop.core.kinds.DeliverableFiles
 import loop.core.kinds.DeliverableListing
 import loop.core.kinds.IssueKind
@@ -551,6 +553,12 @@ class Orchestrator(
      * `loop.verify_findings` of its next attempt (m2-06). Taken by the next render; kept in memory only.
      */
     private val verifyFindings = mutableMapOf<String, String>()
+
+    /**
+     * The deliverable comments posted and not yet followed by their move or wait, by issue, attempt and fingerprint
+     * (m4-22), so a retry after a failed move never posts the same deliverable twice. Kept in memory only.
+     */
+    private val postedDeliverables: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     /**
      * What each attempt running in this process spent so far, by attempt id, for the day budgets (m2-20): an
@@ -1953,6 +1961,7 @@ class Orchestrator(
             if (!directoryCreated) return false
             keepToolOutputs()
             submitted = null
+            submittedVerification = null
             drainFindings = null
             drainFailures.clear()
             resultFailure = null
@@ -2086,6 +2095,9 @@ class Orchestrator(
         /** Whether the checks passed for a result submitted earlier in this drain, null before one; reset per drain. */
         private var submitted: Boolean? = null
 
+        /** The verification of that result (m4-22), whose verified state a second result of the drain delivers. */
+        private var submittedVerification: Verification? = null
+
         /** The findings of a refutation in this drain, for the guidance of the next turn (m2-06); reset per drain. */
         private var drainFindings: VerifyFindings? = null
 
@@ -2140,8 +2152,8 @@ class Orchestrator(
             data: Map<String, String> = emptyMap(),
         ): String? {
             record(ResultSubmitted, data = mapOf(Results.TO to to) + data)
-            val verification = verification()
-            submitted?.let { passed -> return if (passed) verification?.deliver(to) else null }
+            submitted?.let { passed -> return if (passed) submittedVerification?.deliver(to) else null }
+            val verification = verification().also { submittedVerification = it }
             if (verification == null) {
                 submitted = false
                 return null
@@ -3993,6 +4005,12 @@ class Orchestrator(
         private var verifiedFingerprint: String = UNKNOWN_FINGERPRINT
         private val passed = mutableListOf<EvidenceSummary.Check>()
 
+        /** The deliverable files the last [verify] listed (m4-21), which the attach delivery posts (m4-22). */
+        private var deliverableFiles: List<DeliverableFile>? = null
+
+        /** True when the last [verify] saved its deliverable evidence (m4-22). */
+        private var deliverableSaved = false
+
         /**
          * Runs the kind's checks in order, then its holdouts (m2-14), stopping at the first failure; true only
          * when there is one and all passed. A holdout's index follows the visible checks'. A check that ran and
@@ -4117,7 +4135,9 @@ class Orchestrator(
                 unverified = redactor.redact(deliverable.reason).take(REASON_MAX)
             }
             val listedFiles = (deliverable as? DeliverableListing.Listed)?.files
+            deliverableFiles = listedFiles
             val deliverableEvidence = listedFiles?.let { saveDeliverable(DeliverableEvidence(fingerprint, it)) }
+            deliverableSaved = deliverableEvidence != null
             val listed = all.count { (check, _) -> !diffPolicyOnly || check is CheckConfig.DiffPolicy }
             failingChecks = listed - passed.size + (if (uncommitted != null) 1 else 0) + (if (missing != null) 1 else 0)
             record(
@@ -4258,7 +4278,11 @@ class Orchestrator(
          */
         suspend fun deliver(to: String): String? {
             val delivery = kind?.config?.delivery ?: DeliveryConfig()
-            if (delivery.policy != DeliveryPolicy.Auto) return requestApproval(to)
+            // m4-22: an attach delivery ends in on_delivered.move_to, its handoff state when absent.
+            val target = if (delivery.attach) delivery.onDeliveredMoveTo ?: to else to
+            if (delivery.policy != DeliveryPolicy.Auto) return requestApproval(target)
+            // The loader refuses attach under auto without its opt in; a config built past it waits for approval.
+            if (delivery.attach) return if (delivery.attachAutoEnabled) deliverAttached(target) else requestApproval(target)
             // m2-28: an auto merge goes through the m2-25 delivery and the m2-26 merge check, approved by `auto` itself;
             // the auto merge gate decides right before the merge.
             if (delivery.pullRequest?.merge != null) return requestAutoMerge(to)
@@ -4350,6 +4374,7 @@ class Orchestrator(
         private suspend fun requestApproval(
             to: String,
             pullRequest: String? = null,
+            deliverable: AttachDelivery.Prepared.Comment? = null,
         ): String? {
             if (waits.awaitsApproval(issueId)) return null
             val current =
@@ -4364,8 +4389,23 @@ class Orchestrator(
                 if (!ownMove(from)) record(HumanTouched, mapOf(HumanTouched.TOUCH to HumanTouch.MOVE, HumanTouched.TO_STATE to from))
                 return "the issue is no longer active, it is in $from"
             }
-            postSummary(current, to)
+            // m4-22: the deliverable first, so the evidence summary and its approval stay the last comment. A deliverable
+            // that cannot be built starts no wait; one that could not be posted is named in the summary.
+            val notes =
+                if (kind?.config?.delivery?.attach == true) {
+                    val comment =
+                        deliverable ?: when (val prepared = prepareDeliverable()) {
+                            is AttachDelivery.Prepared.Comment -> prepared
+                            is AttachDelivery.Prepared.Failed -> return prepared.reason
+                        }
+                    attachNotes(current, comment, fallback = deliverable != null)
+                } else {
+                    emptyList()
+                }
+            val policy = if (deliverable != null) DeliveryPolicy.Auto.wire else DeliveryPolicy.Human.wire
+            postSummary(current, to, notes, policy)
             startApprovalWait(to, approvedBy = null, pullRequest = pullRequest)
+            postedDeliverables -= deliverableKey()
             record(
                 ApprovalRequested,
                 mapOf(Delivery.TO to to, Delivery.POLICY to DeliveryPolicy.Human.wire, Delivery.FINGERPRINT to verifiedFingerprint),
@@ -4373,6 +4413,77 @@ class Orchestrator(
             log.log(LogLevel.INFO, DELIVERY, LogOutcome.STARTED, logContext(), mapOf("wait_reason" to WaitReason.Approval.wire, "to" to to))
             return null
         }
+
+        /**
+         * Delivers the verified result under `auto` with `delivery.attach` and its opt in (m4-22): the issue is read again
+         * first, like for a move, then the deliverable is posted on it and the issue moves to [to], with no approval. A
+         * deliverable that cannot be built or posted moves nothing; one with a file only listed, not inlined, falls back
+         * to the approval wait, as an auto merge falls back to human, so the workspace stays. The failure's reason, null
+         * when it delivered, waits or was already there.
+         */
+        private suspend fun deliverAttached(to: String): String? {
+            val current =
+                withContext(io) { tracker.fetchIssuesByIds(listOf(issueId)) }
+                    .getOrElse { return it.describe() }
+                    .firstOrNull()
+                    ?: return "no issue $identifier in the tracker"
+            val from = current.state
+            if (from.normalized() == to.normalized()) return null
+            if (!workflow.trackers.entryOf(issueId).isActive(from)) {
+                if (!ownMove(from)) record(HumanTouched, mapOf(HumanTouched.TOUCH to HumanTouch.MOVE, HumanTouched.TO_STATE to from))
+                return "the issue is no longer active, it is in $from"
+            }
+            val comment =
+                when (val prepared = prepareDeliverable()) {
+                    is AttachDelivery.Prepared.Comment -> prepared
+                    is AttachDelivery.Prepared.Failed -> return prepared.reason
+                }
+            if (comment.listed > 0) return requestApproval(to, deliverable = comment)
+            postDeliverable(current, comment)?.let { return it }
+            return move(to).also { if (it == null) postedDeliverables -= deliverableKey() }
+        }
+
+        /** The deliverable comment of the last [verify] (m4-22), or why there is none: a verified attach kind lists its files. */
+        private suspend fun prepareDeliverable(): AttachDelivery.Prepared {
+            val files = deliverableFiles ?: return AttachDelivery.Prepared.Failed("the verification listed no deliverable files")
+            return attachDelivery().prepare(identifier, attemptId?.value, workspace, files, deliverableSaved)
+        }
+
+        /**
+         * Posts the deliverable [comment] on [issue] (m4-22), once for an attempt and fingerprint; the failure, logged at
+         * warn, null when it was posted now or before.
+         */
+        private suspend fun postDeliverable(
+            issue: Issue,
+            comment: AttachDelivery.Prepared.Comment,
+        ): String? {
+            val key = deliverableKey()
+            if (key in postedDeliverables) return null
+            val failure = attachDelivery().post(issue, comment)
+            if (failure == null) {
+                postedDeliverables += key
+                return null
+            }
+            log.log(LogLevel.WARN, DELIVERY, LogOutcome.FAILED, logContext(), reason = failure)
+            return failure
+        }
+
+        /**
+         * Posts the deliverable [comment] before an approval wait (m4-22); the lines the evidence summary adds: why an
+         * auto delivery waits when it is a [fallback], and a post that failed.
+         */
+        private suspend fun attachNotes(
+            issue: Issue,
+            comment: AttachDelivery.Prepared.Comment,
+            fallback: Boolean,
+        ): List<String> {
+            val failure = postDeliverable(issue, comment)
+            return listOfNotNull(AttachDelivery.fallbackNote(comment.listed).takeIf { fallback }, failure?.let(AttachDelivery::failureNote))
+        }
+
+        private fun attachDelivery() = AttachDelivery(tracker, redactor, clock, io, record)
+
+        private fun deliverableKey() = "$issueId/${attemptId?.value}/$verifiedFingerprint"
 
         /**
          * Writes the `Waiting(approval)` of the verified result, in memory and in the store, with the target state and
@@ -4417,9 +4528,12 @@ class Orchestrator(
         private suspend fun postSummary(
             issue: Issue,
             to: String,
+            notes: List<String> = emptyList(),
+            policy: String = DeliveryPolicy.Human.wire,
         ) {
             val attempt = attemptId?.value ?: return
-            val text = redactor.redact(EvidenceSummary.text(identifier, attempt, to, verifiedFingerprint, passed.toList())).trim()
+            val summary = EvidenceSummary.text(identifier, attempt, to, verifiedFingerprint, passed.toList(), notes, policy)
+            val text = redactor.redact(summary).trim()
             val comment = IssueComment(LOOP_AUTHOR, clock.now(), text)
             val failure =
                 try {

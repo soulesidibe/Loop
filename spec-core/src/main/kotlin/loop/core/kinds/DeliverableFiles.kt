@@ -117,19 +117,6 @@ object DeliverableFiles {
     }
 
     /**
-     * Why the kind at [kindKey] cannot run, as a sentence for preflight, or null when it can: `policy: auto` ([autoPolicy])
-     * on a kind with deliverable [files], until the attach delivery defines what auto means for it.
-     */
-    fun refusal(
-        kindKey: String,
-        files: List<String>,
-        autoPolicy: Boolean,
-    ): String? {
-        if (files.isEmpty() || !autoPolicy) return null
-        return "$kindKey.delivery.policy is auto, which a kind with deliverable.files does not support yet, use policy: human"
-    }
-
-    /**
      * The folder of [workspace] that holds every match of [glob]: its segments before the first one with a wildcard,
      * the last one aside. Null when that folder is not there, is reached through a symlink or is not a folder.
      */

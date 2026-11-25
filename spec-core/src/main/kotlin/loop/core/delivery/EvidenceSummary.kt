@@ -9,6 +9,8 @@ import kotlin.time.Duration.Companion.milliseconds
  * from the verification's facts, never from the agent's words. The caller redacts the text before it writes it.
  */
 object EvidenceSummary {
+    private const val HUMAN = "human"
+
     /** A command is shown by its first line, cut to this many characters. */
     const val COMMAND_MAX = 200
 
@@ -26,13 +28,19 @@ object EvidenceSummary {
         val holdout: Boolean = false,
     )
 
-    /** The summary of the verified result of [attemptId] on [identifier], waiting to move to [to]. */
+    /**
+     * The summary of the verified result of [attemptId] on [identifier], waiting to move to [to]. [notes] are lines on
+     * the delivery shown before the approval line (m4-22), and [policy] names the delivery policy that waits, `auto`
+     * when an attach delivery fell back to the approval.
+     */
     fun text(
         identifier: String,
         attemptId: String,
         to: String,
         fingerprint: String,
         checks: List<Check>,
+        notes: List<String> = emptyList(),
+        policy: String = HUMAN,
     ): String =
         buildString {
             appendLine("Loop verified the result of attempt ${attemptId.take(SHORT_ID)}: every check passed.")
@@ -41,8 +49,9 @@ object EvidenceSummary {
             appendLine("Checks:")
             lines(checks).forEach { appendLine(it) }
             appendLine()
+            notes.forEach { appendLine(it) }
             // Addressed to the operator, with no command to run: an agent reads this comment on its issue (m2-24).
-            appendLine("The delivery policy is human: $identifier moves to $to once an operator approves it.")
+            appendLine("The delivery policy is $policy: $identifier moves to $to once an operator approves it.")
             append("`loop show $attemptId --evidence --check <n>` prints the evidence of check n.")
         }
 
