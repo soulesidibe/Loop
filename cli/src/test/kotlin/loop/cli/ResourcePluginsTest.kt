@@ -89,15 +89,21 @@ class ResourcePluginsTest {
 
 /**
  * A resource provider of the cli tests, registered on the test classpath, serving two kinds. Every instance adds the
- * holders of each `recover` call to [recovered], shared by the tests of the JVM, which run in parallel: a test finds
- * its own calls by a resource id only it uses.
+ * holders of each `recover` call to [recovered], and each `prepare` and `release` to [calls] with the id of the process
+ * that ran it (m4-25), both shared by the tests of the JVM, which run in parallel: a test finds its own calls by a
+ * resource id only it uses.
  */
 class FakeResourceProvider : ResourceProvider {
     override val kinds: Set<String> = setOf("fake-device", "fake-emulator")
 
-    override fun prepare(resource: ResourceDeclaration): Map<String, String> = mapOf("serial" to "fake-${resource.id}")
+    override fun prepare(resource: ResourceDeclaration): Map<String, String> {
+        calls += Call("prepare", resource.id, ProcessHandle.current().pid())
+        return mapOf("serial" to "fake-${resource.id}")
+    }
 
-    override fun release(resource: ResourceDeclaration) = Unit
+    override fun release(resource: ResourceDeclaration) {
+        calls += Call("release", resource.id, ProcessHandle.current().pid())
+    }
 
     override fun readOnlyCheck(resource: ResourceDeclaration): List<String> = emptyList()
 
@@ -108,5 +114,15 @@ class FakeResourceProvider : ResourceProvider {
     companion object {
         /** The holders of each `recover` call of any instance, in call order. */
         val recovered: MutableList<List<ResourceHolder>> = CopyOnWriteArrayList()
+
+        /** Each `prepare` and `release` of any instance, in call order (m4-25). */
+        val calls: MutableList<Call> = CopyOnWriteArrayList()
     }
+
+    /** One provider call: `prepare` or `release` of the resource [id], run by the process [pid]. */
+    data class Call(
+        val op: String,
+        val id: String,
+        val pid: Long,
+    )
 }
