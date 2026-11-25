@@ -152,7 +152,7 @@ class SqliteMachineSlotsTest {
         }
 
     @Test
-    fun `a version six store is migrated to the current version with the machine slots table`() =
+    fun `a version six store is migrated to version seven with the machine slots table`() =
         runTest {
             open().use { store -> store.recordAttempt(row("a1", first, Instant.parse("2026-11-15T09:00:00Z"))).getOrThrow() }
             // A store left at version 6 by the m2-19 build: no machine_slots.
@@ -171,6 +171,7 @@ class SqliteMachineSlotsTest {
                 DriverManager.getConnection("jdbc:sqlite:${loopHome.resolve(SqliteEventStore.FILE_NAME)}").use { conn ->
                     conn.createStatement().use { st -> st.executeQuery("PRAGMA user_version").use { it.getInt(1) } }
                 }
+            // Version seven adds machine_slots; the migration then goes on to the current version (8 since m4-50).
             assertEquals(SqliteEventStore.SCHEMA_VERSION, version)
         }
 
