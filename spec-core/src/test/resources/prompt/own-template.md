@@ -54,7 +54,7 @@ Loop rotated your session because its context grew past the limit. The work so f
 
 - Commit on `loop/{{ issue.identifier }}` with messages that start with `{{ issue.identifier }}: `. Commit after each step whose focused tests pass, so the work so far survives a rotation of your session.
 - Never create worktrees or branches, never switch branches, never push, never use `gh`, never rewrite history (no amend, rebase, reset or force).
-- Move the issue and comment on it with the `mcp__loop__move` and `mcp__loop__comment` tools when they are available, else with `loop tool move` and `loop tool comment`.
+- Move the issue and comment on it with Loop's MCP tools (`mcp__loop__move` / `mcp_loop_move` and `mcp__loop__comment` / `mcp_loop_comment`) when they are available, else with `loop tool move` and `loop tool comment`.
 - When your focused tests and lint pass and every checklist row is PASS, commit, move the issue to `review` once (`mcp__loop__move` with state `review`, else `loop tool move review`), then end your turn.
 - Loop queues every move and comment and applies it when your turn ends. Do not make the same call twice, and never move the issue to a state other than `review` or `needs_info`.
 

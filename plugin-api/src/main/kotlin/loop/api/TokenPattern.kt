@@ -9,12 +9,14 @@ public data class TokenPattern(
     public val regex: Regex,
 ) {
     public companion object {
-        /** GitHub, Anthropic and OpenAI style keys. Anthropic comes before OpenAI, whose `sk-` prefix it shares. */
+        /** GitHub, Anthropic, OpenAI and Google style keys. Anthropic comes before OpenAI, whose `sk-` prefix it shares. */
         public val DEFAULTS: List<TokenPattern> =
             listOf(
                 TokenPattern("github-token", Regex("""gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,}""")),
                 TokenPattern("anthropic-key", Regex("""sk-ant-[A-Za-z0-9_-]{20,}""")),
                 TokenPattern("openai-key", Regex("""sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}""")),
+                TokenPattern("google-api-key", Regex("""AIza[0-9A-Za-z_-]{35}""")),
+                TokenPattern("google-oauth-token", Regex("""ya29\.[0-9A-Za-z._-]{20,}""")),
             )
     }
 }

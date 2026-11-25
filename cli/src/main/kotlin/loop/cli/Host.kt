@@ -20,6 +20,8 @@ import loop.core.workflow.RunnerCheck
 import loop.core.workflow.TrackerCheck
 import loop.core.workflow.WorkflowFile
 import loop.core.workflow.WorkflowLoader
+import loop.runner.acp.AcpSettings
+import loop.runner.acp.AgyPreflight
 import loop.runner.claudecode.ClaudeCodePreflight
 import loop.runner.claudecode.ClaudeCodeRiskReviewer
 import loop.runner.claudecode.ClaudeCodeSettings
@@ -53,7 +55,7 @@ class Host(
     env: Map<String, String>,
     private val launcherProperty: String?,
     userHome: String,
-    val runnerPreflight: (WorkflowFile) -> PreflightResult = ::runnerPreflight,
+    val runnerPreflight: (WorkflowFile) -> PreflightResult = { runnerPreflight(it, env) },
     /** The running build's version (m1-12), recorded on every attempt; tests can fake it. */
     val loopVersion: String = BuildInfo.UNKNOWN,
     /** m4-09: what starts `loop run`'s sleep assertion, `caffeinate` on macOS, null on other systems; tests fake it. */
@@ -540,8 +542,8 @@ private const val KEPT_ENV_PREFIX = "LC_"
 /**
  * The secrets Loop redacts (m1-11), env name to host env value: every `tracker.provider` value, and since m4-11 every
  * `provider` value of an extra tracker of `trackers:`, that is exactly `$NAME`, except the path keys ([PATH_KEYS]), the variable of
- * `kinds.code.delivery.pull_request.token` (m2-25), plus `ANTHROPIC_API_KEY`
- * and `ANTHROPIC_AUTH_TOKEN`. A `workspace.root` or `tracker.provider.dir` path stays visible.
+ * `kinds.code.delivery.pull_request.token` (m2-25), plus `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `GEMINI_API_KEY`
+ * and `GOOGLE_API_KEY`. A `workspace.root` or `tracker.provider.dir` path stays visible.
  * Unset and blank values are skipped, and so are values under
  * [SecretRedactor.MIN_SECRET_LENGTH] characters, see [shortSecretNames].
  */
@@ -581,7 +583,7 @@ fun secretValues(
  * A [SecretRedactor] for a command about to load the `WORKFLOW.md` at [path]. It learns the
  * [secretValues] of a best effort read of its `tracker.provider` map and of each extra tracker's `provider` (m4-11), so a load or preflight
  * failure message is covered even when validation fails. When the front matter does not parse,
- * only the Anthropic keys and the token patterns apply.
+ * only the Anthropic and Google keys and the token patterns apply.
  */
 fun startupRedactor(
     path: Path,
@@ -648,7 +650,7 @@ private fun secretRefs(
                 .filterKeys { it !in PATH_KEYS }
                 .values
                 .flatMap { it.credentialRefs() }
-        } + ANTHROPIC_KEYS
+        } + ANTHROPIC_KEYS + GOOGLE_KEYS
     return envValues(names.distinct(), env)
 }
 
@@ -674,6 +676,9 @@ private fun envValues(
 
 /** The Anthropic credentials the Claude Code runner drops from the agent env, redacted wherever they show up. */
 private val ANTHROPIC_KEYS = listOf("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+
+/** The Google API keys the agy preset drops from the agent env, redacted wherever they show up. */
+private val GOOGLE_KEYS = listOf("GEMINI_API_KEY", "GOOGLE_API_KEY")
 
 /** `tracker.provider` keys that hold a path, not a credential. */
 private val PATH_KEYS = setOf("dir")
@@ -706,11 +711,27 @@ fun dollarBudgetWarning(
 
 /**
  * The startup checks of the runner named by `runner.kind` on this machine: an error that stops the run, and warnings.
- * Only the `claude-code` runner has some so far. The check of a plugin's section against its profile (m3-05) is the
- * loader's, on every load.
+ * `claude-code` checks root uid and managed settings; `acp` with `preset: agy` checks binary reachability, pinned
+ * major version `1`, and warns on login or model list issues. The check of a plugin's section against its profile
+ * (m3-05) is the loader's, on every load.
  */
-fun runnerPreflight(workflow: WorkflowFile): PreflightResult =
-    if (workflow.runner.kind == ClaudeCodeSettings.KIND) ClaudeCodePreflight().check() else PreflightResult()
+fun runnerPreflight(
+    workflow: WorkflowFile,
+    hostEnv: Map<String, String> = System.getenv(),
+): PreflightResult =
+    when (workflow.runner.kind) {
+        ClaudeCodeSettings.KIND -> ClaudeCodePreflight().check()
+        AcpSettings.KIND -> {
+            val settings = AcpSettings.of(workflow.runner.section(AcpSettings.SECTION))
+            if (settings.isAgyPreset) {
+                val result = AgyPreflight(settings.command, settings.model, hostEnv).check()
+                PreflightResult(error = result.error, warnings = result.warnings)
+            } else {
+                PreflightResult()
+            }
+        }
+        else -> PreflightResult()
+    }
 
 /**
  * The tracker check of the preflight (plan D2), run at startup and every tick:

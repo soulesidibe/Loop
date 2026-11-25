@@ -203,6 +203,11 @@ class BaseFetchOrchestratorTest {
                         .first.env,
                 "the agent's env does not get it, only the hooks",
             )
+            assertEquals(
+                listOf<String?>(fetchedSha, moved),
+                runner.calls.map { it.first.baseRef },
+                "AttemptContext.baseRef carries the host-fetched base without exporting LOOP_BASE_REF",
+            )
         }
 
     @Test
@@ -297,5 +302,48 @@ class BaseFetchOrchestratorTest {
 
             assertEquals(before, branches())
             assertEquals(first, git(root, "rev-parse", "main"))
+        }
+
+    @Test
+    fun `without pull request delivery AttemptContext baseRef resolves the configured base name or origin HEAD to a commit sha`() =
+        runTest {
+            val baseSha = projectRepository()
+            val runner = FakeRunner()
+
+            // No pull request delivery: guards.base ("main") is resolved host-side to its commit SHA.
+            orchestrator(remote = null, pullRequest = null, runner = runner).tick()
+            assertEquals(baseSha, runner.calls.single().let { it.first.baseRef })
+
+            // Workflow with kinds = null on a repo with only origin/HEAD (no main or master) resolves origin/HEAD to a SHA.
+            git(root, "branch", "-m", "main", "develop")
+            git(root, "update-ref", "refs/remotes/origin/develop", baseSha)
+            git(root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop")
+            val bareWorkflow = workflow(pullRequest = null).copy(config = WorkflowConfig(hooks = hooks, kinds = null))
+            val bareRunner = FakeRunner()
+            val clock = SchedulerClock(testScheduler)
+            var next = 0
+            val bareOrchestrator =
+                Orchestrator(
+                    workflow = bareWorkflow,
+                    tracker = FakeTracker(listOf(issue("t-2"))),
+                    runner = bareRunner,
+                    sink = sink,
+                    log = KeyValueLog(out = { logLines += it }, clock = clock, redactor = Redactor.NONE),
+                    clock = clock,
+                    workspaces = WorkspaceManager(Workspaces(bareWorkflow.workspaceRoot), hooks, hookRunner),
+                    newId = { "b${++next}" },
+                    runId = RunId("r2"),
+                    projectId = ProjectId("p1"),
+                    launcher = root.resolve("install/bin/loop"),
+                    loopHome = root.resolve("home"),
+                    hostPath = "/usr/bin",
+                    parked = FakeParkedIssues(),
+                    redactor = SecretRedactor(),
+                    secretsOf = { emptyMap() },
+                    deliveryFor = { null },
+                )
+
+            bareOrchestrator.tick()
+            assertEquals(baseSha, bareRunner.calls.single().let { it.first.baseRef })
         }
 }

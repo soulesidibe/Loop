@@ -231,7 +231,7 @@ class ExporterPluginsTest {
         val plugins = off.stderr.lines().single { "event=plugins" in it }
         // Not `completed`: that outcome is the end of a run.
         assertContains(plugins, "outcome=found")
-        assertContains(plugins, "runners=claude-code,codex-app-server,command")
+        assertContains(plugins, "runners=acp,claude-code,codex-app-server,command")
         assertContains(plugins, "trackers=files,github")
         assertContains(plugins, "exporters=otel")
         assertContains(plugins, "enabled_exporters=none")

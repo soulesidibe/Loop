@@ -59,6 +59,23 @@ class RealIntegrationTest {
     }
 
     @Test
+    fun `agy is a known real integration target`() {
+        assertTrue("agy" in RealIntegration.TARGETS)
+        assertThrows<TestAbortedException> {
+            RealIntegration.require("agy", mapOf(RealIntegration.VARIABLE to "codex")) { emptyList() }
+        }
+        val error =
+            assertThrows<AssertionError> {
+                RealIntegration.require("agy", mapOf(RealIntegration.VARIABLE to " AGY ")) {
+                    listOf("the command agy on PATH")
+                }
+            }
+        assertTrue("LOOP_REAL_INTEGRATION names agy" in error.message!!, error.message)
+        assertTrue("the command agy on PATH" in error.message!!, error.message)
+        RealIntegration.require("agy", mapOf(RealIntegration.VARIABLE to "agy")) { emptyList() }
+    }
+
+    @Test
     fun `run ids are fresh and prefixed`() {
         val first = RealIntegration.runId()
 

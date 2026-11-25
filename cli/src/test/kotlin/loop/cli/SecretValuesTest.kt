@@ -89,6 +89,32 @@ class SecretValuesTest {
     }
 
     @Test
+    fun `the google keys of the host env are secrets and short ones are named`() {
+        val env = paths + mapOf("GEMINI_API_KEY" to "gemini-key-value", "GOOGLE_API_KEY" to "google-key-value")
+
+        val secrets = secretValues(workflow(env), env)
+
+        assertEquals(mapOf("GEMINI_API_KEY" to "gemini-key-value", "GOOGLE_API_KEY" to "google-key-value"), secrets)
+
+        val shortEnv = paths + mapOf("GEMINI_API_KEY" to "abc", "GOOGLE_API_KEY" to "   ")
+        assertEquals(emptyMap(), secretValues(workflow(shortEnv), shortEnv))
+        assertEquals(listOf("GEMINI_API_KEY"), shortSecretNames(workflow(shortEnv), shortEnv))
+    }
+
+    @Test
+    fun `the startup redactor learns the google keys before any load`() {
+        val env = paths + mapOf("GEMINI_API_KEY" to "gemini-key-value", "GOOGLE_API_KEY" to "google-key-value")
+        workflow(env)
+        val loader = WorkflowLoader(env = env, home = root)
+
+        val redacted =
+            startupRedactor(root.resolve("WORKFLOW.md"), loader, env)
+                .redact("keys gemini-key-value and google-key-value")
+
+        assertEquals("keys [redacted:GEMINI_API_KEY] and [redacted:GOOGLE_API_KEY]", redacted)
+    }
+
+    @Test
     fun `a value under 4 characters is not a secret but a short name, and unset or blank values are neither`() {
         val env = paths + mapOf("LOOP_SHORT_TOKEN" to "abc", "LOOP_BLANK_TOKEN" to "  ")
         val provider = "    short: \$LOOP_SHORT_TOKEN\n    blank: \$LOOP_BLANK_TOKEN\n    unset: \$LOOP_UNSET_TOKEN\n"
