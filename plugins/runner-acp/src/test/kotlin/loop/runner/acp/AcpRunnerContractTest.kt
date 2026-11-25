@@ -26,7 +26,7 @@ class AcpRunnerContractTest : AgentRunnerContract() {
             while IFS= read -r line; do
               case "${'$'}line" in
                 *'"method":"initialize"'*)
-                  printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"name":"Antigravity ACP Server","version":"1.5.16"}}}'
+                  printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"name":"Antigravity ACP Server","version":"1.5.16"},"agentCapabilities":{"loadSession":true}}}'
                   ;;
                 *'"method":"session/new"'*)
                   printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"contract-session-1"}}'

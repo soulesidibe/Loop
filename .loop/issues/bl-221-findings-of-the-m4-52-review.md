@@ -3,7 +3,7 @@ id: bl-221
 title: "Findings of the m4-52 review, an answer can be lost before the agent reads it"
 state: todo
 priority: 1
-labels: [ready-for-agent]
+labels: [ready-for-agent, needs-info]
 blocked_by: []
 ---
 
@@ -39,6 +39,8 @@ Filed from the merge risk review of m4-52. Triage decides which findings are wor
 2026-11-25 soule: extended after the merge risk reviews of pull request #71 (m4-32, `loop send-back`), Sonnet 5.5 then Fable 5.2. Finding 1 also covers `sentBack?.let { endWaiting(it) }` (branch `Orchestrator.kt`, around line 2777) and `dispatchSentBacks`: fix the answer and the send back in one change, keeping the wait in the store until the attempt has at least one completed turn, so `budgetEnd(turns = 0)`, a failed open, a `loop stop`, a crash or a first turn that errors all leave it; tests after a send back and after an answer. Correction to finding 1: the answer is not lost to the agent entirely, the comment is in `issue.description` on the files tracker (`FilesTracker.kt`, around line 382) and on GitHub (`GitHubTracker.kt`, around lines 23 to 24 and 124), and `WORKFLOW.md` renders the description; what is lost is `loop.answer`, `loop.verify_findings` and the retry kind. The budget path cannot happen on Loop's own repository, which has no budgets. Finding 3 also covers `SendBackCommand`, which uses `project.tracker()` the same way. Finding 2's PLAN 8.9 rows: add `sent_back` beside `answer` to the `loop.retry_kind` row (around line 546) and the send back to the `loop.verify_findings` row (around line 544).
 
 2026-11-25 soule: triaged ready-for-agent, with bl-222 finding 1 folded in (`loop approve` on a sent back wait). Finding 2's `WORKFLOW.md` block is already on main (a9f1e95); its preflight warning and PLAN rows are in the brief.
+
+2026-11-25 21:29Z loop: Loop did not dispatch this issue because it is not ready: its description needs a non empty `## Acceptance criteria` section. Add it and Loop picks the issue up on a later poll.
 
 ## Agent Brief
 

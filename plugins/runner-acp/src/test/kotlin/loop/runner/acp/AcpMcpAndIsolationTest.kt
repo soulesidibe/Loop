@@ -95,11 +95,12 @@ class AcpMcpAndIsolationTest {
             AgyIsolationDir.create(
                 homeDir = home,
                 loopHome = insideLoopHome,
-                projectId = "proj-1",
                 attemptId = "att-1",
                 uniqueId = "abcd1234",
             )
-        assertEquals(".loop/attempts/proj-1/att-1/agy-gemini-abcd1234", inside.relativePath)
+        // bl-213: outside the attempt directory, which Loop deletes when the attempt ends, so a kept folder outlives it.
+        assertEquals(".loop/agy/att-1-abcd1234", inside.relativePath)
+        assertTrue(inside.path.resolve(".loop-pid").exists(), "the owner pid is written under LOOP_HOME too, for the sweep")
         assertFalse(Path.of(inside.relativePath).isAbsolute)
         val settingsJson =
             AcpFraming.json
@@ -115,7 +116,6 @@ class AcpMcpAndIsolationTest {
             AgyIsolationDir.create(
                 homeDir = home,
                 loopHome = outsideLoopHome,
-                projectId = "proj-1",
                 attemptId = "att-2",
                 uniqueId = "ef567890",
             )
@@ -176,7 +176,6 @@ class AcpMcpAndIsolationTest {
             AgyIsolationDir.create(
                 homeDir = home,
                 loopHome = outsideLoopHome,
-                projectId = "p",
                 attemptId = "att-collide",
                 uniqueId = "fixedid1",
             )
@@ -221,7 +220,6 @@ class AcpMcpAndIsolationTest {
                                 AgyIsolationDir.create(
                                     homeDir = home,
                                     loopHome = outsideLoopHome,
-                                    projectId = "p",
                                     attemptId = "w$worker-$i",
                                 )
                             assertTrue(
@@ -301,13 +299,13 @@ class AcpMcpAndIsolationTest {
         val relGeminiDir = argv[geminiDirIdx + 1]
         assertFalse(relGeminiDir.startsWith("/"), relGeminiDir)
         assertFalse(relGeminiDir.startsWith(".."), relGeminiDir)
-        assertTrue(relGeminiDir.startsWith(".loop/attempts/project-1/attempt-1/agy-gemini-"), relGeminiDir)
+        assertTrue(relGeminiDir.startsWith(".loop/agy/attempt-1-"), relGeminiDir)
 
-        // The settings file existed with strict permissions while agy ran, and was deleted on stop().
+        // The settings file existed with strict permissions while agy ran, and the folder is kept past stop() (bl-213).
         val settingsObj = AcpFraming.json.parseToJsonElement(capturedSettings.readText()).jsonObject
         assertEquals("strict", settingsObj.string("toolPermission"))
         assertFalse(settingsObj["allowNonWorkspaceAccess"]!!.jsonPrimitive.boolean)
-        assertFalse(Files.exists(home.resolve(relGeminiDir)))
+        assertTrue(Files.exists(home.resolve(relGeminiDir).resolve("antigravity-cli/settings.json")))
 
         // session/new received Loop's MCP server with all 8 PASSED env vars including turn 1's ids.
         val started = assertIs<RunnerEvent.SessionStarted>(events.first())
@@ -323,6 +321,12 @@ class AcpMcpAndIsolationTest {
         assertEquals(AcpMcpConfig.PASSED.toSet(), mcpEnv.keys)
         assertEquals(started.sessionId.value, mcpEnv["LOOP_SESSION_ID"])
         assertEquals(started.turnId.value, mcpEnv["LOOP_TURN_ID"])
+
+        // Since bl-213 the stop keeps the folder for a resume, and the cleanup comes when the next session of the
+        // issue opens: Loop only resumes the last session of an issue, so the kept folder can never be loaded again.
+        val next = runBlocking { withTimeout(20.seconds) { runner.run(context(loopEnv(loopHome)), "Work").toList() } }
+        assertIs<RunnerEvent.TurnCompleted>(next.last())
+        assertFalse(Files.exists(home.resolve(relGeminiDir)), "the next session of the issue removes the kept folder")
     }
 
     @Test
