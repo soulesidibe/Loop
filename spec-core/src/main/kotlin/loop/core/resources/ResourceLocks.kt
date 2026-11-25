@@ -245,7 +245,13 @@ class ResourceLocks(
     private fun event(
         event: RecordedEvent,
         lock: ResourceLock,
-    ): RecordedEvent = event.copy(runId = runId, issueId = lock.issueId, issueIdentifier = lock.issueIdentifier, attemptId = lock.attemptId)
+    ): RecordedEvent = event.copy(runId = runId, issueId = lock.issueId, issueIdentifier = lock.issueIdentifier, attemptId = lock.attemptId.ofEvent())
+
+    /**
+     * The attempt id an event of a lock of this holder carries: none for a check's holder (m4-26), `check-<uuid>`,
+     * which is no attempt, so its events belong to the issue and the run alone.
+     */
+    private fun AttemptId.ofEvent(): AttemptId? = takeUnless { it.value.startsWith(ResourceGrants.CHECK_HOLDER) }
 
     private fun ResourceRequest.granted(): ResourceLock =
         ResourceLock(kind, resourceId, projectId, issueId, issueIdentifier, attemptId, grantedAt = requestedAt)
@@ -278,7 +284,7 @@ class ResourceLocks(
             runId = runId,
             issueId = lock.issueId,
             issueIdentifier = lock.issueIdentifier,
-            attemptId = lock.attemptId,
+            attemptId = lock.attemptId.ofEvent(),
         )
 
     /** `resource_check_failed` of [mark], with the ids of the holder whose lock of it is among [released]. */
@@ -300,7 +306,7 @@ class ResourceLocks(
             runId = runId,
             issueId = holder?.issueId,
             issueIdentifier = holder?.issueIdentifier,
-            attemptId = holder?.attemptId,
+            attemptId = holder?.attemptId?.ofEvent(),
         )
     }
 
@@ -312,6 +318,6 @@ class ResourceLocks(
             runId = runId,
             issueId = lock.issueId,
             issueIdentifier = lock.issueIdentifier,
-            attemptId = lock.attemptId,
+            attemptId = lock.attemptId.ofEvent(),
         )
 }

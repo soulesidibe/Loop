@@ -176,7 +176,8 @@ class StatusCommand(
      * The resource lines (m4-50): each resource of [declared], in the order written, then each other resource whose
      * lock or queue holds an issue of [projectId], with its holder, its attempt, since when it holds the lock, and its
      * queue, oldest first. Locks are shared by the machine, so a holder or a request of another project shows with
-     * that project's id before its issue.
+     * that project's id before its issue. Since m4-26 a dirty resource shows `dirty` with the check that failed, when,
+     * and the first line of the difference it found.
      */
     private fun resourceLines(
         declared: List<ResourceDeclaration>,
@@ -202,20 +203,34 @@ class StatusCommand(
                 rows.queue
                     .filter { it.kind == kind && it.resourceId == resourceId }
                     .joinToString(",") { issue(it.projectId, it.issueId, it.issueIdentifier) }
+            val dirty = rows.dirty.firstOrNull { it.kind == kind && it.resourceId == resourceId }
             val state =
-                if (lock == null) {
-                    "free"
-                } else {
-                    details(
-                        "held_by" to issue(lock.projectId, lock.issueId, lock.issueIdentifier),
-                        "attempt" to id(lock.attemptId.value),
-                        "since" to seconds(lock.grantedAt),
-                        "queue" to queue.ifEmpty { null },
-                    )
+                when {
+                    lock != null ->
+                        details(
+                            "held_by" to issue(lock.projectId, lock.issueId, lock.issueIdentifier),
+                            "attempt" to id(lock.attemptId.value),
+                            "since" to seconds(lock.grantedAt),
+                            "queue" to queue.ifEmpty { null },
+                        )
+                    // m4-26: a dirty resource is lent to nobody until a check of it passes again.
+                    dirty != null ->
+                        "dirty " +
+                            details(
+                                "check" to dirty.check,
+                                "since" to seconds(dirty.markedAt),
+                                "difference" to dirty.difference.lineSequence().first().take(DIFFERENCE_SHOWN),
+                                "queue" to queue.ifEmpty { null },
+                            )
+                    // m4-26: free with a queue, the requests wait for a machine limit.
+                    else -> listOf("free", details("queue" to queue.ifEmpty { null })).filter { it.isNotEmpty() }.joinToString(" ")
                 }
             "Resource $kind $resourceId  $state"
         }
     }
+
+    /** The most of a dirty mark's difference a resource line shows (m4-26). */
+    private val DIFFERENCE_SHOWN = 120
 
     private fun of(limit: String?): String = limit?.let { " of $it" } ?: ""
 

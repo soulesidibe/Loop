@@ -89,7 +89,7 @@ class ResourcePluginsTest {
 
 /**
  * A resource provider of the cli tests, registered on the test classpath, serving two kinds. Every instance adds the
- * holders of each `recover` call to [recovered], and each `prepare` and `release` to [calls] with the id of the process
+ * holders of each `recover` call to [recovered], and each `prepare`, `release` and `check` to [calls] with the id of the process
  * that ran it (m4-25), both shared by the tests of the JVM, which run in parallel: a test finds its own calls by a
  * resource id only it uses.
  */
@@ -105,7 +105,10 @@ class FakeResourceProvider : ResourceProvider {
         calls += Call("release", resource.id, ProcessHandle.current().pid())
     }
 
-    override fun readOnlyCheck(resource: ResourceDeclaration): List<String> = emptyList()
+    override fun readOnlyCheck(resource: ResourceDeclaration): List<String> {
+        calls += Call("check", resource.id, ProcessHandle.current().pid())
+        return if (resource.id in changed) listOf("fake difference on ${resource.id}") else emptyList()
+    }
 
     override fun recover(liveHolders: List<ResourceHolder>) {
         recovered += listOf(liveHolders.toList())
@@ -115,11 +118,14 @@ class FakeResourceProvider : ResourceProvider {
         /** The holders of each `recover` call of any instance, in call order. */
         val recovered: MutableList<List<ResourceHolder>> = CopyOnWriteArrayList()
 
-        /** Each `prepare` and `release` of any instance, in call order (m4-25). */
+        /** Each `prepare`, `release` and, since m4-26, `check` of any instance, in call order (m4-25). */
         val calls: MutableList<Call> = CopyOnWriteArrayList()
+
+        /** The resource ids whose read only check finds a difference (m4-26), the others pass. */
+        val changed: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     }
 
-    /** One provider call: `prepare` or `release` of the resource [id], run by the process [pid]. */
+    /** One provider call: `prepare`, `release` or `check` of the resource [id], run by the process [pid]. */
     data class Call(
         val op: String,
         val id: String,
