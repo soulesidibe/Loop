@@ -49,7 +49,7 @@ object AttachComment {
     /** At most this many files are listed one a line; the others are counted on a last line. */
     const val MAX_LISTED: Int = 100
 
-    /** A path longer than this many characters is cut in the listing, which the evidence of the verdict holds whole. */
+    /** A path longer than this many characters is cut in the listing; the workspace holds the file whole. */
     const val PATH_MAX: Int = 200
 
     /** A reason longer than this many characters is cut in the listing. */
@@ -59,20 +59,40 @@ object AttachComment {
     const val OVER_CAP = "over the $MAX_CHARS character cap of a comment"
     const val NO_ROOM = "no room left under the $MAX_CHARS character cap of a comment"
 
+    private const val MORE_SAVED = "listed in the deliverable evidence of the verdict"
+    private const val MORE_UNSAVED = "not listed here, the workspace holds them"
+
     /** The room kept for the last line of a listing cut at [MAX_LISTED]. */
     private const val MORE_ROOM = 100
 
-    /**
-     * The comment of the deliverable [files] of [identifier], verified in [attempt]: a first line, then each file
-     * inlined in order while the rest still fits when listed, then the files listed, each with its reason.
-     */
+    /** The [text] of a comment and how many of its files are [listed] only, not inlined. */
+    data class Composed(
+        val text: String,
+        val listed: Int,
+    )
+
+    /** The text of [compose], for a deliverable whose evidence was saved. */
     fun build(
         identifier: String,
-        attempt: String,
+        attempt: String?,
         files: List<AttachedFile>,
-    ): String {
+    ): String = compose(identifier, attempt, files, evidence = true).text
+
+    /**
+     * The comment of the deliverable [files] of [identifier], verified in [attempt] (null when the attempt is not known):
+     * a first line, then each file inlined in order while the rest still fits when listed, then the files listed, each
+     * with its reason. [evidence] is false when the deliverable evidence of the verdict was not saved, so the count of
+     * files past [MAX_LISTED] does not point at it.
+     */
+    fun compose(
+        identifier: String,
+        attempt: String?,
+        files: List<AttachedFile>,
+        evidence: Boolean,
+    ): Composed {
         val count = if (files.size == 1) "1 file" else "${files.size} files"
-        val header = "Loop attached the deliverable of $identifier, verified in attempt $attempt: $count."
+        val verified = attempt?.let { "verified in attempt $it" } ?: "verified"
+        val header = "Loop attached the deliverable of $identifier, $verified: $count."
         // The room each file takes when listed, with the longest reason it can get, so a later file always fits.
         val reserved = files.map { listLine(it.file, it.reason ?: NO_ROOM).length + 1 }
         var used = header.length + SEPARATOR + LISTED_LEAD.length + MORE_ROOM
@@ -99,9 +119,10 @@ object AttachComment {
             listed += line
             used += line.length + 1
         }
-        if (more > 0) listed += "- and $more more files, listed in the deliverable evidence of the verdict"
+        val notInlined = listed.size + more
+        if (more > 0) listed += "- and $more more files, ${if (evidence) MORE_SAVED else MORE_UNSAVED}"
         val listing = if (listed.isEmpty()) emptyList() else listOf((listOf(LISTED_LEAD) + listed).joinToString("\n"))
-        return (listOf(header) + blocks + listing).joinToString("\n\n")
+        return Composed((listOf(header) + blocks + listing).joinToString("\n\n"), notInlined)
     }
 
     /** The fence of [text]: three backticks, or one more than its longest run of backticks. */
@@ -130,19 +151,18 @@ object AttachComment {
     ): String {
         val fence = fence(text)
         val body = if (text.endsWith("\n")) text else text + "\n"
-        return "${code(file.path)}, ${file.size} bytes:\n\n$fence\n$body$fence"
+        return "${code(oneLine(file.path))}, ${file.size} bytes:\n\n$fence\n$body$fence"
     }
+
+    /** [text] on one line, so a path holding a newline adds no markdown to the comment. */
+    private fun oneLine(text: String): String = text.lines().joinToString(" ")
 
     private fun listLine(
         file: DeliverableFile,
         reason: String,
     ): String {
-        val path =
-            file.path
-                .lines()
-                .joinToString(" ")
-                .let { if (it.length > PATH_MAX) it.take(PATH_MAX) + "..." else it }
-        val why = reason.lines().joinToString(" ").take(REASON_MAX)
+        val path = oneLine(file.path).let { if (it.length > PATH_MAX) it.take(PATH_MAX) + "..." else it }
+        val why = oneLine(reason).take(REASON_MAX)
         return "- ${code(path)}, ${file.size} bytes, sha256 ${file.sha256}, $why"
     }
 
@@ -152,9 +172,10 @@ object AttachComment {
 
 /**
  * The attach delivery of a kind with `delivery.attach: true` (m4-22, story 120): the deliverable files listed at
- * verification are read again from the workspace, each checked against its listed digest, and posted on the issue as
- * one comment through the tracker's `addComment`, redacted like every Loop comment, written by `loop`. Recorded as
- * `issue_commented` with the reason `deliverable`. Only the comment: the wait and the move stay the orchestrator's.
+ * verification are read again from the workspace, each checked against its listed digest ([prepare]), and posted on
+ * the issue as one comment through the tracker's `addComment` ([post]), redacted like every Loop comment, written by
+ * `loop`. Recorded as `issue_commented` with the reason `deliverable`. Only the comment: the wait and the move stay
+ * the orchestrator's, which moves on its own only when every file was inlined.
  */
 class AttachDelivery(
     private val tracker: TrackerAdapter,
@@ -163,31 +184,63 @@ class AttachDelivery(
     private val io: CoroutineContext = EmptyCoroutineContext,
     private val record: suspend (definition: EventDefinition, data: Map<String, String>) -> Unit,
 ) {
+    /** The deliverable comment of [prepare], or why it could not be built. */
+    sealed interface Prepared {
+        /** The redacted [text], under the cap, and how many files it only [listed], zero when every file is inlined. */
+        data class Comment(
+            val text: String,
+            val listed: Int,
+        ) : Prepared
+
+        /** Why the comment could not be built, redacted. */
+        data class Failed(
+            val reason: String,
+        ) : Prepared
+    }
+
     /**
-     * Posts the deliverable [files] of [identifier], verified in [attempt] and read from [workspace], on [issue]. The
-     * failure, its reason redacted, null when it was posted.
+     * The comment of the deliverable [files] of [identifier], verified in [attempt] and read from [workspace], with
+     * [evidence] true when the deliverable evidence of the verdict was saved. The texts and the paths are redacted
+     * before the cap is applied, so a redaction marker longer than its secret still fits; a comment that redaction of
+     * the whole still puts over the cap lists every file instead.
      */
-    suspend fun post(
-        issue: Issue,
+    suspend fun prepare(
         identifier: String,
-        attempt: String,
+        attempt: String?,
         workspace: Path,
         files: List<DeliverableFile>,
-    ): String? {
-        val text =
-            try {
-                withContext(io) {
-                    val attached = files.map { read(workspace, it) }.map { it.copy(text = it.text?.let(redactor::redact)) }
-                    redactor.redact(AttachComment.build(identifier, attempt, attached)).trim()
+        evidence: Boolean,
+    ): Prepared =
+        try {
+            withContext(io) {
+                val attached =
+                    files.map { read(workspace, it) }.map {
+                        it.copy(file = it.file.copy(path = redactor.redact(it.file.path)), text = it.text?.let(redactor::redact))
+                    }
+                val composed = AttachComment.compose(identifier, attempt, attached, evidence)
+                val text = redactor.redact(composed.text).trim()
+                if (text.length <= AttachComment.MAX_CHARS) {
+                    Prepared.Comment(text, composed.listed)
+                } else {
+                    val listing = attached.map { it.copy(text = null, reason = it.reason ?: AttachComment.OVER_CAP) }
+                    val listed = AttachComment.compose(identifier, attempt, listing, evidence)
+                    Prepared.Comment(redactor.redact(listed.text).trim(), listed.listed)
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                return redactor.redact("cannot build the deliverable comment: ${e.describe()}").take(REASON_MAX)
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Prepared.Failed(redactor.redact("cannot build the deliverable comment: ${e.describe()}").take(REASON_MAX))
+        }
+
+    /** Posts the prepared [comment] on [issue]. The failure, its reason redacted, null when it was posted. */
+    suspend fun post(
+        issue: Issue,
+        comment: Prepared.Comment,
+    ): String? {
         val failure =
             try {
-                withContext(io) { tracker.addComment(issue, IssueComment(LOOP_AUTHOR, clock.now(), text)) }.exceptionOrNull()
+                withContext(io) { tracker.addComment(issue, IssueComment(LOOP_AUTHOR, clock.now(), comment.text)) }.exceptionOrNull()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -196,7 +249,7 @@ class AttachDelivery(
         if (failure != null) return redactor.redact("cannot post the deliverable: ${failure.describe()}").take(REASON_MAX)
         record(
             IssueCommented,
-            mapOf(Tracker.CHARS to text.length.toString(), Tracker.BY to Tracker.BY_HOST, Tracker.REASON to REASON),
+            mapOf(Tracker.CHARS to comment.text.length.toString(), Tracker.BY to Tracker.BY_HOST, Tracker.REASON to REASON),
         )
         return null
     }

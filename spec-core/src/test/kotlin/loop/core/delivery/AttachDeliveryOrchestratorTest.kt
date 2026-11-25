@@ -8,8 +8,10 @@ import loop.api.ProjectId
 import loop.api.Redactor
 import loop.api.RunId
 import loop.api.SecretRedactor
+import loop.api.TrackerError
 import loop.api.WaitReason
 import loop.api.WaitingIssue
+import loop.core.kinds.DeliverableFile
 import loop.core.log.KeyValueLog
 import loop.core.orchestrator.FakeHookRunner
 import loop.core.orchestrator.FakeParkedIssues
@@ -42,6 +44,7 @@ import loop.core.workflow.WorkflowLoader
 import loop.core.workflow.commandRunner
 import loop.core.workspace.WorkspaceManager
 import loop.core.workspace.Workspaces
+import java.io.IOException
 import java.nio.file.Path
 import java.security.MessageDigest
 import kotlin.io.path.createDirectories
@@ -275,6 +278,142 @@ class AttachDeliveryOrchestratorTest {
                     .second.text
             assertContains(body, "Loop attached the deliverable of p-1")
             assertFalse(body.contains(token), body)
+        }
+
+    // The send-back of pull request #56: under auto, the issue moves only once its whole deliverable is posted.
+
+    private val attachAuto = DeliveryConfig(DeliveryPolicy.Auto, onDeliveredMoveTo = "done", attach = true, attachAutoEnabled = true)
+
+    /** The agent queues a move and writes a `done` result file, so one drain submits two results. */
+    private fun submitTwice() {
+        runner.onCall = { ctx ->
+            writes.forEach { (path, text) ->
+                ctx.workspace
+                    .resolve(path)
+                    .also { it.parent.createDirectories() }
+                    .writeText(text)
+            }
+            ToolRequestQueue(Path.of(checkNotNull(ctx.env["LOOP_TOOL_CONFIG"])).parent).enqueue(ToolRequest.Move("review"))
+            ctx.workspace
+                .resolve(".loop/result.json")
+                .also { it.parent.createDirectories() }
+                .writeText("{\"status\": \"done\"}\n")
+        }
+    }
+
+    private fun summary(): String =
+        tracker.comments
+            .map { it.second.text }
+            .single { it.startsWith("Loop verified the result") }
+
+    @Test
+    fun `under auto a second result in the same drain never moves the issue when the deliverable comment failed`() =
+        runTest {
+            submitTwice()
+            tracker.commentFailure = TrackerError.Unavailable(IOException("comments are closed"))
+            val sink = FakeSink()
+
+            orchestrator(workflow(attachAuto), FakeWaitingIssues(), sink).tick()
+
+            assertEquals(2, sink.events.count { it.kind == "result_submitted" }, "both results were submitted")
+            assertEquals(emptyList(), tracker.moves)
+            assertEquals(emptyList(), sink.commented())
+        }
+
+    @Test
+    fun `under auto a file over the cap falls back to the approval wait, so the workspace stays`() =
+        runTest {
+            writes = mapOf("out/post.md" to post, "out/big.md" to "a".repeat(70_000))
+            val waiting = FakeWaitingIssues()
+
+            orchestrator(workflow(attachAuto), waiting).tick()
+
+            assertEquals(emptyList(), tracker.moves)
+            val wait = waiting.records.values.single()
+            assertEquals(WaitReason.Approval, wait.reason)
+            assertEquals("done", wait.data["to"])
+            val deliverable = tracker.comments.first().second.text
+            assertContains(deliverable, "- `out/big.md`, 70000 bytes")
+            assertContains(summary(), "1 deliverable file is only listed, not inlined, so Loop did not move it on its own.")
+            assertContains(summary(), "The delivery policy is auto: p-1 moves to done once an operator approves it.")
+        }
+
+    @Test
+    fun `under auto a file a check changed falls back to the approval wait`() =
+        runTest {
+            checks =
+                CheckRunner { _, cwd, _ ->
+                    cwd.resolve("out/post.md").writeText("# Rewritten by a check\n")
+                    CheckResult(0, timedOut = false, durationMs = 1, output = "ok")
+                }
+            val waiting = FakeWaitingIssues()
+
+            orchestrator(workflow(attachAuto), waiting).tick()
+
+            assertEquals(emptyList(), tracker.moves)
+            assertEquals(WaitReason.Approval, waiting.records.values.single().reason)
+            assertContains(tracker.comments.first().second.text, "changed since its verification")
+        }
+
+    @Test
+    fun `under human a failed deliverable comment is named in the evidence summary, and the wait starts`() =
+        runTest {
+            tracker.commentFailureFor = { comment ->
+                if (comment.text.startsWith("Loop attached")) TrackerError.Unavailable(IOException("comments are closed")) else null
+            }
+            val waiting = FakeWaitingIssues()
+
+            orchestrator(workflow(attachHuman), waiting).tick()
+
+            assertEquals(WaitReason.Approval, waiting.records.values.single().reason)
+            assertContains(summary(), "The deliverable could not be posted: cannot post the deliverable: ")
+            assertContains(summary(), "comments are closed")
+        }
+
+    @Test
+    fun `attach under auto without the opt in waits for approval, even past the loader`() =
+        runTest {
+            val waiting = FakeWaitingIssues()
+
+            orchestrator(workflow(attachAuto.copy(attachAutoEnabled = false)), waiting).tick()
+
+            assertEquals(emptyList(), tracker.moves)
+            assertEquals(WaitReason.Approval, waiting.records.values.single().reason)
+            assertContains(summary(), "The delivery policy is human")
+        }
+
+    @Test
+    fun `under auto a move that failed after the post never posts the same deliverable twice`() =
+        runTest {
+            submitTwice()
+            tracker.moveFailure = TrackerError.Status(503, "unavailable")
+            val sink = FakeSink()
+
+            orchestrator(workflow(attachAuto), FakeWaitingIssues(), sink).tick()
+
+            assertEquals(2, sink.events.count { it.kind == "result_submitted" }, "both results were submitted")
+            assertEquals(listOf("deliverable"), sink.commented().map { it["reason"] })
+            assertEquals(1, tracker.comments.size)
+        }
+
+    @Test
+    fun `the cap applies to the redacted comment, a path that redaction makes longer included`() =
+        runTest {
+            val workspace = root.resolve("prepare").createDirectories()
+            val text = "x".repeat(AttachComment.MAX_CHARS - 200)
+            workspace.resolve("out").createDirectories()
+            workspace.resolve("out/KEY.md").writeText(text)
+            val file = DeliverableFile("out/KEY.md", text.length.toLong(), sha256(text))
+            val marker = "[redacted:" + "N".repeat(500) + "]"
+            val delivery =
+                AttachDelivery(tracker, { it.replace("KEY", marker) }, SchedulerClock(testScheduler)) { _, _ -> }
+
+            val prepared = delivery.prepare("p-1", "a1", workspace, listOf(file), evidence = true)
+
+            assertIs<AttachDelivery.Prepared.Comment>(prepared)
+            assertTrue(prepared.text.length <= AttachComment.MAX_CHARS, "${prepared.text.length}")
+            assertEquals(1, prepared.listed)
+            assertFalse(prepared.text.contains("KEY"), prepared.text.take(300))
         }
 
     // The loader and preflight.

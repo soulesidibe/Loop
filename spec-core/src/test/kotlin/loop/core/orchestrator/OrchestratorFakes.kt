@@ -278,11 +278,15 @@ class FakeTracker(
     /** When set, [addComment] records nothing and returns it as a failure. */
     var commentFailure: TrackerError? = null
 
+    /** When it returns an error for a comment, [addComment] fails with it for that comment only (m4-22). */
+    var commentFailureFor: (IssueComment) -> TrackerError? = { null }
+
     override suspend fun addComment(
         issueId: String,
         comment: IssueComment,
     ): Result<Unit> {
         commentFailure?.let { return Result.failure(it) }
+        commentFailureFor(comment)?.let { return Result.failure(it) }
         if (issues.none { it.id == issueId }) return Result.failure(TrackerError.NotFound(issueId))
         comments += issueId to comment
         return Result.success(Unit)

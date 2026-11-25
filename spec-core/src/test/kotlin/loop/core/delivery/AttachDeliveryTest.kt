@@ -151,4 +151,43 @@ class AttachDeliveryTest {
 
         assertContains(text, "`` out/a`b.md ``, 10 bytes:\n\n```\nno newline\n```")
     }
+
+    @Test
+    fun `a path holding a newline is shown on one line, so it cannot add markdown to the comment`() {
+        val text = AttachComment.build("p-1", "a1", listOf(file("out/a\n# Injected\n.md", "# Post\n")))
+
+        assertContains(text, "`out/a # Injected .md`, 7 bytes:\n\n```\n# Post\n```")
+        assertFalse(text.lines().any { it.startsWith("# Injected") }, text)
+    }
+
+    @Test
+    fun `the listing counts the files left over, and says when the deliverable evidence was not saved`() {
+        val files = (1..400).map { file("out/post-${it.toString().padStart(3, '0')}.md", "x".repeat(1_000)) }
+
+        val saved = AttachComment.compose("p-1", "a1", files, evidence = true)
+        val unsaved = AttachComment.compose("p-1", "a1", files, evidence = false)
+
+        assertContains(saved.text, "more files, listed in the deliverable evidence of the verdict")
+        assertFalse(unsaved.text.contains("deliverable evidence of the verdict"), unsaved.text.takeLast(300))
+        assertContains(unsaved.text, "more files, not listed here, the workspace holds them")
+        val inlined = saved.text.lines().count { it.startsWith("`out/post-") }
+        assertEquals(400 - inlined, saved.listed, "every file not inlined is counted as listed")
+    }
+
+    @Test
+    fun `compose counts the files only listed, zero when every file is inlined`() {
+        val inlined = AttachComment.compose("p-1", "a1", listOf(file("out/a.md", "# A\n")), evidence = true)
+        val over = AttachComment.compose("p-1", "a1", listOf(file("out/a.md", "# A\n"), file("out/big.md", "a".repeat(70_000))), evidence = true)
+
+        assertEquals(0, inlined.listed)
+        assertEquals(1, over.listed)
+        assertEquals(AttachComment.build("p-1", "a1", listOf(file("out/a.md", "# A\n"))), inlined.text)
+    }
+
+    @Test
+    fun `with no attempt id the first line says only that it was verified`() {
+        val text = AttachComment.build("p-1", null, listOf(file("out/a.md", "# A\n")))
+
+        assertTrue(text.startsWith("Loop attached the deliverable of p-1, verified: 1 file.\n\n"), text)
+    }
 }
