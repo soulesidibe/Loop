@@ -79,15 +79,17 @@ class ChangesRequestedReaction(
     private val skipped = mutableSetOf<Pair<String, String>>()
 
     /**
-     * Reads the reviews of the watched wait [one] through [executor] and reacts as [reaction] says. True when the issue
-     * was sent back, so the wait ended.
+     * Reads the reviews of the watched wait [one], through [reviews], which [Reactions.poll] shares with
+     * `approved_green` (m4-37), and reacts as [reaction] says; the comments are read through [executor]. True when the
+     * issue was sent back, so the wait ended.
      */
     suspend fun poll(
         one: Reactions.Watched,
         reaction: Reaction,
         executor: DeliveryExecutor,
+        reviews: suspend () -> Result<PullRequestReviews> = { executor.pullRequestReviews(one.number) },
     ): Boolean {
-        val read = read(one, "reviews") { executor.pullRequestReviews(one.number) } ?: return false
+        val read = read(one, "reviews") { reviews() } ?: return false
         val trusted = (reaction.trustedAssociations ?: ReactionsConfig.DEFAULT_TRUSTED_ASSOCIATIONS).toSet()
         val standing = standing(read, trusted)
         if (standing.isEmpty()) return false
@@ -283,14 +285,26 @@ class ChangesRequestedReaction(
             read: PullRequestReviews,
             trusted: Set<String>,
         ): List<PullRequestReview> =
+            latestDecisive(read, trusted)
+                .filter { it.state.uppercase() == CHANGES_REQUESTED && it.commitId == read.headSha }
+                .sortedBy { it.id }
+
+        /**
+         * Among the reviews of [read] whose author's association is in [trusted], the latest decisive review of each
+         * reviewer, `APPROVED`, `CHANGES_REQUESTED` or `DISMISSED`, by submission time then id, on any head. A review of
+         * any other author, one with no association included, is dropped first. Shared with `approved_green` (m4-37).
+         */
+        fun latestDecisive(
+            read: PullRequestReviews,
+            trusted: Set<String>,
+        ): List<PullRequestReview> =
             read.reviews
                 .filter { it.association.trusted(trusted) && it.state.uppercase() in DECISIVE }
                 .groupBy { it.reviewer }
                 .values
                 .map { reviews ->
                     reviews.maxWith(compareBy<PullRequestReview, Instant?>(nullsFirst()) { it.submittedAt }.thenBy { it.id })
-                }.filter { it.state.uppercase() == CHANGES_REQUESTED && it.commitId == read.headSha }
-                .sortedBy { it.id }
+                }
 
         /**
          * The reviews of [issueId] the `changes_requested` reactions among [events] sent, each with the time of the first

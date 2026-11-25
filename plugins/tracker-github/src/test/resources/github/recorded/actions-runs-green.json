@@ -1,0 +1,67 @@
+{
+  "total_count": 2,
+  "workflow_runs": [
+    {
+      "id": 30433710,
+      "name": "build",
+      "node_id": "WFR_kwLOA30433710",
+      "head_branch": "loop/t-1",
+      "head_sha": "6dcb09b5b57875f334f61aebed695e2e4193db5e",
+      "path": ".github/workflows/build.yml",
+      "display_title": "build",
+      "run_number": 43,
+      "event": "push",
+      "status": "completed",
+      "conclusion": "success",
+      "workflow_id": 161335,
+      "check_suite_id": 30434700,
+      "url": "https://api.github.com/repos/octocat/Hello-World/actions/runs/30433710",
+      "html_url": "https://github.com/octocat/Hello-World/actions/runs/30433710",
+      "pull_requests": [],
+      "created_at": "2026-11-24T10:40:00Z",
+      "updated_at": "2026-11-24T10:52:00Z",
+      "run_attempt": 1,
+      "run_started_at": "2026-11-24T10:40:05Z",
+      "jobs_url": "https://api.github.com/repos/octocat/Hello-World/actions/runs/30433710/jobs",
+      "head_commit": {
+        "id": "6dcb09b5b57875f334f61aebed695e2e4193db5e",
+        "message": "t-1: the empty list case"
+      },
+      "repository": {
+        "id": 1296269,
+        "full_name": "octocat/Hello-World"
+      }
+    },
+    {
+      "id": 30433711,
+      "name": "lint",
+      "node_id": "WFR_kwLOA30433711",
+      "head_branch": "loop/t-1",
+      "head_sha": "6dcb09b5b57875f334f61aebed695e2e4193db5e",
+      "path": ".github/workflows/build.yml",
+      "display_title": "lint",
+      "run_number": 14,
+      "event": "pull_request",
+      "status": "completed",
+      "conclusion": "success",
+      "workflow_id": 161336,
+      "check_suite_id": 30434701,
+      "url": "https://api.github.com/repos/octocat/Hello-World/actions/runs/30433711",
+      "html_url": "https://github.com/octocat/Hello-World/actions/runs/30433711",
+      "pull_requests": [],
+      "created_at": "2026-11-24T10:40:00Z",
+      "updated_at": "2026-11-24T10:52:00Z",
+      "run_attempt": 1,
+      "run_started_at": "2026-11-24T10:40:05Z",
+      "jobs_url": "https://api.github.com/repos/octocat/Hello-World/actions/runs/30433711/jobs",
+      "head_commit": {
+        "id": "6dcb09b5b57875f334f61aebed695e2e4193db5e",
+        "message": "t-1: the empty list case"
+      },
+      "repository": {
+        "id": 1296269,
+        "full_name": "octocat/Hello-World"
+      }
+    }
+  ]
+}

@@ -102,6 +102,19 @@ class HumanNotices(
         tell(wait.issueId, wait.identifier, HumanEvent.ChangesRequested, reason, url, at)
     }
 
+    /**
+     * Tells the human that the pull request at [url] of [wait]'s issue is approved and green (m4-37), for [reason], at
+     * [at]. Called once per head, where the `approved_green` reaction records it.
+     */
+    suspend fun approvedGreen(
+        wait: Wait.Approval,
+        reason: String,
+        url: String?,
+        at: Instant,
+    ) {
+        tell(wait.issueId, wait.identifier, HumanEvent.ApprovedGreen, reason, url, at)
+    }
+
     /** Tells the human that [park] parked its issue, for [reason]. Called once per park, where the park is recorded. */
     suspend fun parked(
         park: ParkedIssue,

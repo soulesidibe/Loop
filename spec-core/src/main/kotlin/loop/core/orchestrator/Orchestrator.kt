@@ -442,6 +442,11 @@ class Orchestrator(
      * has none, so the count is this process's.
      */
     private val reactionsBefore: suspend () -> Result<List<RecordedEvent>> = { Result.success(emptyList()) },
+    /**
+     * m4-37: the `merge_check_finished` events of the project in the run store, every run, which say whether the merge
+     * check passed on a pull request's head, green under `ci: none` for `approved_green`; the default has none.
+     */
+    private val mergeChecksBefore: suspend () -> Result<List<RecordedEvent>> = { Result.success(emptyList()) },
     /** m4-10: true once `loop drain` asked this run to drain, read at each dispatch. */
     private val drainRequested: () -> Boolean = { false },
     /** m4-50: the resource locks of the shared store, freed at the end of each attempt. */
@@ -522,6 +527,8 @@ class Orchestrator(
             io = io,
             reactionsBefore = reactionsBefore,
             escalate = notices::changesRequested,
+            mergeChecksBefore = mergeChecksBefore,
+            approvedGreen = notices::approvedGreen,
         )
     }
 

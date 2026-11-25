@@ -1,5 +1,8 @@
 package loop.core.events
 
+import loop.core.events.HumanText.SHORT_SHA
+import loop.core.reactions.ReactionsConfig
+
 /** The keys the reaction events share (m4-34). */
 object ReactionKeys {
     /** The reaction, a key of `reactions:` such as `merge_conflict`. */
@@ -34,6 +37,18 @@ object ReactionKeys {
 
     /** m4-36: what the provider said when the reviews could not be read, redacted and cut. */
     const val DETAIL = "detail"
+
+    /**
+     * m4-37: which green the `approved_green` reaction found, [GREEN_ACTIONS], the Actions runs of the head under
+     * `ci: actions`, or [GREEN_MERGE_CHECK], the merge check passed on the head under `ci: none`.
+     */
+    const val GREEN = "green"
+
+    /** m4-37: green by the Actions runs of the head. */
+    const val GREEN_ACTIONS = "actions"
+
+    /** m4-37: green by the merge check passed on the head. */
+    const val GREEN_MERGE_CHECK = "merge_check"
 }
 
 /**
@@ -41,7 +56,8 @@ object ReactionKeys {
  * ended and the issue goes back to its agent with the conflict findings, on a `max_attempts` slot. Since m4-35
  * `ci_failed` does the same after a red verdict of the CI wait, with [ReactionKeys.RETRY] and [ReactionKeys.RETRIES].
  * Since m4-36 `changes_requested` does it for the change requests on the pull request's head, with [ReactionKeys.REVIEW]
- * and [ReactionKeys.HEAD].
+ * and [ReactionKeys.HEAD]. Since m4-37 `approved_green` records it with `notify_human` when it told the human that the
+ * pull request is approved and green on [ReactionKeys.HEAD], with [ReactionKeys.GREEN]; the wait goes on.
  */
 object ReactionTriggered : KeyedEvent(
     "reaction_triggered",
@@ -53,6 +69,7 @@ object ReactionTriggered : KeyedEvent(
     ReactionKeys.RETRIES,
     ReactionKeys.REVIEW,
     ReactionKeys.HEAD,
+    ReactionKeys.GREEN,
 ) {
     override val sample =
         mapOf(
@@ -65,8 +82,13 @@ object ReactionTriggered : KeyedEvent(
     override fun humanSentence(
         data: Map<String, String>,
         facts: HumanFacts,
-    ) = "pull request #${data[ReactionKeys.PULL_REQUEST]} triggered the ${data[ReactionKeys.REACTION]} reaction, " +
-        "${data[ReactionKeys.ACTION]}, the issue goes back to its agent"
+    ) = if (data[ReactionKeys.REACTION] == ReactionsConfig.APPROVED_GREEN) {
+        "pull request #${data[ReactionKeys.PULL_REQUEST]} is approved and green (${data[ReactionKeys.GREEN]}) on " +
+            "${data[ReactionKeys.HEAD]?.take(SHORT_SHA)}, Loop told the human"
+    } else {
+        "pull request #${data[ReactionKeys.PULL_REQUEST]} triggered the ${data[ReactionKeys.REACTION]} reaction, " +
+            "${data[ReactionKeys.ACTION]}, the issue goes back to its agent"
+    }
 }
 
 /**
