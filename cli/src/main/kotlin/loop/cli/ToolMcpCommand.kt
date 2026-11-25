@@ -17,6 +17,7 @@ import loop.mcp.CommentHandler
 import loop.mcp.LoopMcpServer
 import loop.mcp.MoveHandler
 import loop.mcp.ReplyTrimmer
+import loop.mcp.ResourceHandler
 import loop.mcp.SubmitResultHandler
 import loop.mcp.ToolReply
 
@@ -39,6 +40,10 @@ import loop.mcp.ToolReply
  *
  * Since m3-14 every reply, a refusal included, is trimmed to the attempt's `context.tool_output_tokens`, read from the
  * snapshot, and the full text of a trimmed one goes to the attempt file.
+ *
+ * Since m4-25, when the snapshot holds resources, it also serves `request_resource` and `release_resource`
+ * ([ResourceTools]), answered inside the turn: this process takes, queues or marks the lock in the store itself, while
+ * `loop run` runs every provider.
  */
 class ToolMcpCommand(
     private val host: Host,
@@ -57,6 +62,7 @@ class ToolMcpCommand(
                 MoveHandler { state -> call(scope) { queueMove(env, state) } },
                 CommentHandler { text -> call(scope) { queueComment(env, text) } },
                 ReplyTrimmer { tool, reply -> trim(env, tool, reply) },
+                resourceHandler(scope, env),
             )
         }
     }
@@ -107,6 +113,42 @@ class ToolMcpCommand(
             }
             "Queued a $status result for ${env.issueName}. ${appliedWhen(result.status)} Do not call submit_result again."
         }
+
+    /** The resource tools of the attempt (m4-25), null when its workflow declares no resource, so none is advertised. */
+    private fun resourceHandler(
+        scope: RedactorScope,
+        env: AttemptTool.Env,
+    ): ResourceHandler? {
+        if (env.config.resources.isEmpty()) return null
+        return object : ResourceHandler {
+            override val names = env.config.resources.map { it.id }
+
+            override suspend fun request(name: String) = answered(scope) { ResourceTools(this, env).request(name) }
+
+            override suspend fun release(name: String) = answered(scope) { ResourceTools(this, env).release(name) }
+        }
+    }
+
+    /**
+     * Runs one resource call with a fresh [AttemptTool] (m4-25): its answer, or the refusal it printed, such as an
+     * attempt that is not live, as a tool error.
+     */
+    private suspend fun answered(
+        scope: RedactorScope,
+        block: suspend AttemptTool.() -> ToolReply,
+    ): ToolReply {
+        var refusal: String? = null
+        val tool =
+            AttemptTool(NAME, host, scope) { line ->
+                refusal = line
+                echo(line, err = true)
+            }
+        return try {
+            tool.block()
+        } catch (e: ProgramResult) {
+            ToolReply(refusal ?: "loop tool $NAME: the call failed. ${AttemptTool.NOTHING_QUEUED}", isError = true)
+        }
+    }
 
     /**
      * Runs one tool call with a fresh [AttemptTool]: its line once the request is queued, or the refusal it printed

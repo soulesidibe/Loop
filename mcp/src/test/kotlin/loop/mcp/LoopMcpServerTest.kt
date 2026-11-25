@@ -35,6 +35,7 @@ class LoopMcpServerTest {
         move: MoveHandler = MoveHandler { ToolReply("moved") },
         comment: CommentHandler = CommentHandler { ToolReply("commented") },
         trimmer: ReplyTrimmer = ReplyTrimmer.NONE,
+        resources: ResourceHandler? = null,
     ) {
         private val input = Pipe.open()
         private val output = Pipe.open()
@@ -47,7 +48,7 @@ class LoopMcpServerTest {
         val serving =
             Thread {
                 try {
-                    runBlocking { LoopMcpServer.serve(serverIn, serverOut, "test", handler, move, comment, trimmer) }
+                    runBlocking { LoopMcpServer.serve(serverIn, serverOut, "test", handler, move, comment, trimmer, resources) }
                 } finally {
                     serverOut.close()
                 }
@@ -95,9 +96,10 @@ class LoopMcpServerTest {
         move: MoveHandler = MoveHandler { ToolReply("moved") },
         comment: CommentHandler = CommentHandler { ToolReply("commented") },
         trimmer: ReplyTrimmer = ReplyTrimmer.NONE,
+        resources: ResourceHandler? = null,
         block: suspend Client.() -> Unit,
     ) {
-        val client = Client(handler, move, comment, trimmer)
+        val client = Client(handler, move, comment, trimmer, resources)
         try {
             runBlocking { client.block() }
         } finally {
@@ -374,6 +376,96 @@ class LoopMcpServerTest {
             assertEquals(true, missing.getValue("isError").jsonPrimitive.boolean)
             assertEquals(listOf("submit_result", "move", "comment"), trimmed.map { it.first })
             assertEquals("the result is invalid: " + "x".repeat(500), trimmed.first().second, "the trimmer gets the full text")
+        }
+    }
+
+    /** A resource handler of the m4-25 tests: [calls] gets `request <name>` or `release <name>`. */
+    private class Resources(
+        val calls: MutableList<String> = mutableListOf(),
+    ) : ResourceHandler {
+        override val names = listOf("api35", "iphone-16")
+
+        override suspend fun request(name: String): ToolReply = ToolReply("""{"status":"granted"}""").also { calls += "request $name" }
+
+        override suspend fun release(name: String): ToolReply = ToolReply("""{"status":"released"}""").also { calls += "release $name" }
+    }
+
+    private suspend fun Client.tools(): List<JsonObject> =
+        request("tools/list", "{}")
+            .getValue("result")
+            .jsonObject
+            .getValue("tools")
+            .jsonArray
+            .map { it.jsonObject }
+
+    @Test
+    fun `m4-25 without resources the server lists no resource tool`() =
+        withClient {
+            initialize()
+            assertEquals(listOf("submit_result", "move", "comment"), tools().map { it.getValue("name").jsonPrimitive.content })
+            val call = request("tools/call", """{"name":"request_resource","arguments":{"name":"api35"}}""")
+            val refused =
+                call["error"] != null ||
+                    call["result"]
+                        ?.jsonObject
+                        ?.get("isError")
+                        ?.jsonPrimitive
+                        ?.boolean == true
+            assertTrue(refused, "an unlisted tool is refused: $call")
+        }
+
+    @Test
+    fun `m4-25 with resources the server lists request_resource and release_resource with a required string name`() =
+        withClient(resources = Resources()) {
+            initialize()
+            val tools = tools()
+            assertEquals(
+                listOf("submit_result", "move", "comment", "request_resource", "release_resource"),
+                tools.map { it.getValue("name").jsonPrimitive.content },
+            )
+            for (name in listOf("request_resource", "release_resource")) {
+                val tool = tools.single { it.getValue("name").jsonPrimitive.content == name }
+                val schema = tool.getValue("inputSchema").jsonObject
+                assertEquals("object", schema.getValue("type").jsonPrimitive.content)
+                assertEquals(JsonArray(listOf(JsonPrimitive("name"))), schema["required"])
+                val properties = schema.getValue("properties").jsonObject
+                assertEquals(listOf("name"), properties.keys.toList())
+                val property = properties.getValue("name").jsonObject
+                assertEquals("string", property.getValue("type").jsonPrimitive.content)
+                assertContains(property.getValue("description").jsonPrimitive.content, "api35, iphone-16")
+            }
+            val request =
+                tools
+                    .single { it.getValue("name").jsonPrimitive.content == "request_resource" }
+                    .getValue("description")
+                    .jsonPrimitive.content
+            listOf("granted", "preparing", "queued", "call request_resource again", "release_resource").forEach {
+                assertContains(request, it)
+            }
+        }
+
+    @Test
+    fun `m4-25 a resource call hands its name to the handler, one without a name reaches no handler`() {
+        val resources = Resources()
+        withClient(resources = resources) {
+            initialize()
+            val granted =
+                request(
+                    "tools/call",
+                    """{"name":"request_resource","arguments":{"name":"api35"}}""",
+                ).getValue("result").jsonObject
+            val released =
+                request(
+                    "tools/call",
+                    """{"name":"release_resource","arguments":{"name":"api35"}}""",
+                ).getValue("result").jsonObject
+            val missing = request("tools/call", """{"name":"request_resource","arguments":{}}""").getValue("result").jsonObject
+
+            assertEquals(listOf("request api35", "release api35"), resources.calls)
+            assertEquals("""{"status":"granted"}""", granted.text())
+            assertEquals("""{"status":"released"}""", released.text())
+            assertEquals(true, missing.getValue("isError").jsonPrimitive.boolean)
+            assertEquals("name is required, a string. Nothing queued.", missing.text())
         }
     }
 

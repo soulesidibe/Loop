@@ -77,6 +77,14 @@ internal class AttemptTool(
 
     fun redact(text: String): String = scope.redactor.redact(text)
 
+    /** The Loop home of the machine, where the store and the run files are (m4-25). */
+    val loopHome: Path get() = host.loopHome
+
+    /** Prints one redacted warning line to stderr, which fails nothing (m4-25). */
+    fun warn(message: String) {
+        echoErr(redact("loop tool $name: $message"))
+    }
+
     /** Reads the attempt environment and the tool config snapshot at `LOOP_TOOL_CONFIG`. */
     fun env(): Env {
         val attemptId = host.env(ENV_ATTEMPT_ID) ?: refuse(NOT_IN_ATTEMPT, EXIT_NOT_IN_ATTEMPT)

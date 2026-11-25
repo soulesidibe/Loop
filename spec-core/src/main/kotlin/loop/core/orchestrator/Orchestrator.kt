@@ -146,6 +146,7 @@ import loop.core.merge.Merges
 import loop.core.merge.Recheck
 import loop.core.merge.RecheckOutcome
 import loop.core.merge.WorkspaceMergeGit
+import loop.core.resources.ResourceGrants
 import loop.core.resources.ResourceLocks
 import loop.core.template.Template
 import loop.core.template.TemplateEngine
@@ -426,6 +427,8 @@ class Orchestrator(
     private val drainRequested: () -> Boolean = { false },
     /** m4-50: the resource locks of the shared store, freed at the end of each attempt. */
     private val resourceLockStore: ResourceLockStore = ResourceLockStore.NONE,
+    /** m4-25: the resource grants of `loop run`, which give back what an attempt prepared before its locks are freed. */
+    private val resourceGrants: ResourceGrants? = null,
 ) {
     /** The HEAD and working tree reads for the progress between rotations (bl-136), bounded and cancellable (bl-149). */
     private val workspaceFacts = WorkspaceFacts(workspaceGit)
@@ -1452,7 +1455,11 @@ class Orchestrator(
                 } finally {
                     try {
                         // m4-50: every lock and queue row of the attempt goes at its end, whatever the end.
-                        resourceLocks.freeAttempt(attempt.attemptId, ResourceReleased.ATTEMPT_ENDED).onFailure {
+                        // m4-25: through the grants of loop run when it has them, so each provider releases first.
+                        (
+                            resourceGrants?.endAttempt(attempt.attemptId, ResourceReleased.ATTEMPT_ENDED)
+                                ?: resourceLocks.freeAttempt(attempt.attemptId, ResourceReleased.ATTEMPT_ENDED)
+                        ).onFailure {
                             log.log(LogLevel.WARN, "resource", LogOutcome.FAILED, attempt.logContext(), reason = it.describe())
                         }
                         // Whatever a canceled or failed turn queued is never applied (m1-23).

@@ -11,7 +11,9 @@ import loop.api.ResourceLockUpdate
 import loop.api.ResourceRequest
 import loop.api.RunId
 import loop.core.events.ResourceGranted
+import loop.core.events.ResourceQueued
 import loop.core.events.ResourceReleased
+import loop.core.events.ResourceRequested
 import kotlin.time.Clock
 
 /**
@@ -47,6 +49,87 @@ class ResourceLocks(
         }
     }
 
+    /**
+     * `request_resource` (m4-25): the attempt [attemptId] of the issue [issueId] in [projectId] asks for the resource of
+     * [kind] and [resourceId], or checks a request it made before, by the rules of [ResourceAnswers.ask]. A new request
+     * records `resource_requested`, then `resource_granted` or `resource_queued` with its position. First, in the same
+     * change, the rows of every other project that [live] says has no live run are freed as abandoned (bl-204), so a
+     * request never waits behind a dead holder.
+     */
+    suspend fun ask(
+        projectId: ProjectId,
+        issueId: String,
+        issueIdentifier: String,
+        attemptId: AttemptId,
+        kind: String,
+        resourceId: String,
+        live: (ProjectId) -> Boolean = { true },
+    ): Result<ResourceAnswer> {
+        val request = ResourceRequest(kind, resourceId, projectId, issueId, issueIdentifier, attemptId, clock.now())
+        val ids = mapOf(ResourceRequested.KIND to kind, ResourceRequested.RESOURCE_ID to resourceId)
+        val subject = request.granted()
+        return change(
+            reason = ResourceReleased.ABANDONED,
+            first = { answer ->
+                if (answer.requested) listOf(event(ResourceRequested.event(clock.now(), projectId, ids), subject)) else emptyList()
+            },
+            last = { answer ->
+                if (answer is ResourceAnswer.Queued && answer.requested) {
+                    val data = ids + (ResourceQueued.POSITION to answer.position.toString())
+                    listOf(event(ResourceQueued.event(clock.now(), projectId, data), subject))
+                } else {
+                    emptyList()
+                }
+            },
+        ) { rows ->
+            val swept = ResourceQueue.freeAbandoned(rows, projectId, live, clock.now())
+            val asked = ResourceAnswers.ask(swept.rows, request, clock.now())
+            val change =
+                asked.change.copy(
+                    released = swept.released + asked.change.released,
+                    granted = swept.granted + asked.change.granted,
+                )
+            change to asked.answer
+        }
+    }
+
+    /**
+     * Frees the rows of every project other than [own] that [live] says has no live run (bl-204), each freed lock
+     * recorded with the reason `abandoned` and granted to the oldest request of its queue left. Rows of [own] alone
+     * change nothing, so they are only read.
+     */
+    suspend fun freeAbandoned(
+        own: ProjectId,
+        live: (ProjectId) -> Boolean,
+    ): Result<ResourceChange> {
+        val rows = rows().getOrElse { return Result.failure(it) }
+        if (rows.locks.all { it.projectId == own } && rows.queue.all { it.projectId == own }) return Result.success(ResourceChange(rows))
+        return change(
+            ResourceReleased.ABANDONED,
+        ) { current -> ResourceQueue.freeAbandoned(current, own, live, clock.now()).let { it to it } }
+    }
+
+    /**
+     * `release_resource` (m4-25): the attempt [attemptId] marks its lock of [kind] and [resourceId] for release, by the
+     * rules of [ResourceAnswers.release]. Nothing is freed or recorded here: `loop run` gives the resource back and
+     * frees the lock on its next tick, which records `resource_released`.
+     */
+    suspend fun requestRelease(
+        attemptId: AttemptId,
+        kind: String,
+        resourceId: String,
+    ): Result<ReleaseAnswer> =
+        change(reason = ResourceReleased.RELEASED) { rows ->
+            ResourceAnswers.release(rows, kind, resourceId, attemptId, clock.now()).let { it.change to it.answer }
+        }
+
+    /** Writes on [lock] what `loop run` got from its prepare (m4-25), when the same attempt still holds it unprepared. */
+    suspend fun prepared(
+        lock: ResourceLock,
+        outcome: Result<Map<String, String>>,
+    ): Result<Boolean> =
+        change(reason = ResourceReleased.RELEASED) { rows -> ResourceAnswers.prepared(rows, lock, outcome).let { it.change to it.answer } }
+
     /** The attempt [attemptId] releases its lock of [kind] and [resourceId], which goes to the oldest request of its queue. */
     suspend fun release(
         attemptId: AttemptId,
@@ -69,9 +152,14 @@ class ResourceLocks(
         reason: String,
     ): Result<ResourceChange> = change(reason) { rows -> ResourceQueue.freeProject(rows, projectId, clock.now()).let { it to it } }
 
-    /** Applies [apply] to the rows in one store change, then records what it released, with [reason], and granted. */
+    /**
+     * Applies [apply] to the rows in one store change, then records what it released, with [reason], the events
+     * [first] gives for its value, what it granted, and the events [last] gives.
+     */
     private suspend fun <T> change(
         reason: String,
+        first: (T) -> List<RecordedEvent> = { emptyList() },
+        last: (T) -> List<RecordedEvent> = { emptyList() },
         apply: (ResourceLockRows) -> Pair<ResourceChange, T>,
     ): Result<T> {
         var applied: ResourceChange? = null
@@ -81,13 +169,32 @@ class ResourceLocks(
                 applied = change
                 ResourceLockUpdate(change.rows, value)
             }
-        result.onSuccess {
+        result.onSuccess { value ->
             val change = checkNotNull(applied)
             change.released.forEach { record(released(it, reason)) }
+            first(value).forEach { record(it) }
             change.granted.forEach { record(granted(it)) }
+            last(value).forEach { record(it) }
         }
         return result
     }
+
+    /** [event] given the run and the holder ids of [lock]. */
+    private fun event(
+        event: RecordedEvent,
+        lock: ResourceLock,
+    ): RecordedEvent = event.copy(runId = runId, issueId = lock.issueId, issueIdentifier = lock.issueIdentifier, attemptId = lock.attemptId)
+
+    private fun ResourceRequest.granted(): ResourceLock =
+        ResourceLock(kind, resourceId, projectId, issueId, issueIdentifier, attemptId, grantedAt = requestedAt)
+
+    private val ResourceAnswer.requested: Boolean
+        get() =
+            when (this) {
+                is ResourceAnswer.Preparing -> requested
+                is ResourceAnswer.Queued -> requested
+                else -> false
+            }
 
     private suspend fun record(event: RecordedEvent) {
         sink.record(event).onFailure { unrecorded(event, it) }

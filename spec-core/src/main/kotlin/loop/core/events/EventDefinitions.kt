@@ -87,6 +87,8 @@ object EventDefinitions {
             IssueUnparked,
             CandidateSkipped,
             // Resources.
+            ResourceRequested,
+            ResourceQueued,
             ResourceGranted,
             ResourceReleased,
             // The run.

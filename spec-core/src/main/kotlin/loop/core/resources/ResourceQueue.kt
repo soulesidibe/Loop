@@ -76,6 +76,22 @@ object ResourceQueue {
         now: Instant,
     ): ResourceChange = free(rows, now, lockGoes = { it.projectId == projectId }, requestGoes = { it.projectId == projectId })
 
+    /**
+     * Every lock and queue row of the projects other than [own] that [live] says have no live run goes at [now]
+     * (bl-204), each freed lock to the oldest request of its queue left. [live] is asked once per such project.
+     */
+    fun freeAbandoned(
+        rows: ResourceLockRows,
+        own: ProjectId,
+        live: (ProjectId) -> Boolean,
+        now: Instant,
+    ): ResourceChange {
+        val others = (rows.locks.map { it.projectId } + rows.queue.map { it.projectId }).toSet() - own
+        val dead = others.filterNot(live).toSet()
+        if (dead.isEmpty()) return ResourceChange(rows)
+        return free(rows, now, lockGoes = { it.projectId in dead }, requestGoes = { it.projectId in dead })
+    }
+
     /** Drops the requests [requestGoes] picks and the locks [lockGoes] picks, then grants each free resource to its oldest request. */
     private fun free(
         rows: ResourceLockRows,
