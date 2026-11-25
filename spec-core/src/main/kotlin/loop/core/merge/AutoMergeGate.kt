@@ -79,7 +79,8 @@ internal sealed interface GateOutcome {
  * ledger as a row so the spend budgets count it. The score and band are computed in code. The CI condition is read
  * last, after the review (send back 5 of PR #75), and only when every hard condition held. Every failure of the
  * reviewer, a timeout, a crash, an answer that is not valid JSON or a missing dimension, falls back: the gate fails
- * closed.
+ * closed. It reads the code kind's delivery (m4-18): only a code issue reaches a merge wait, since no other kind may
+ * declare `delivery.pull_request` and the approval wait pins the kind its issue was dispatched under.
  */
 internal class AutoMergeGate(
     private val git: MergeGit,

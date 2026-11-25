@@ -37,6 +37,9 @@ class Waits(
     /** The ids of the issues waiting in this process: never dispatched, their retries never fire. */
     val busy: Set<String> get() = held.keys.toSet()
 
+    /** The ids of the issues whose verification runs in this process (m4-17): their area stays busy. */
+    val verifying: Set<String> get() = held.filterValues { it == WaitReason.Verify }.keys.toSet()
+
     /** True while [issueId] waits in this process, for any reason. */
     fun isBusy(issueId: String): Boolean = issueId in held
 

@@ -1,6 +1,7 @@
 package loop.core.workflow
 
 import loop.api.MergeMethod
+import loop.api.ResourceDeclaration
 import java.math.BigDecimal
 
 /**
@@ -31,15 +32,36 @@ data class WorkflowConfig(
      * resolved by the loader or left as written (m1-23, kept out of the agent env).
      */
     val referencedEnvNames: Set<String> = emptySet(),
+    /**
+     * m4-24: the entries of `resources:`, in the order written, none when it is absent. A kind no provider serves is a
+     * plain lock, which the load names in one warning per kind.
+     */
+    val resources: List<ResourceDeclaration> = emptyList(),
 )
 
 /**
- * Loop mode (m2-03, plan 6.0 and 6.2). For now one kind, `code`, matches every issue. Its verify
- * contract is a list of [checks], run host side when the agent submits its result.
+ * Loop mode (m2-03, plan 6.0 and 6.2). Since m4-18 a map of named kinds, [named], in the order written, which always
+ * holds the `code` kind. Each issue gets the first kind whose match holds, else the default kind
+ * (`loop.core.kinds.KindMatcher`). [code] reads the `code` kind, for the paths that are code only so far.
  */
 data class KindsConfig(
-    val code: KindConfig,
-)
+    val named: Map<String, KindConfig>,
+) {
+    /** A workflow whose only kind is `code`, the default. */
+    constructor(code: KindConfig) : this(mapOf(CODE to code))
+
+    init {
+        require(CODE in named) { "kinds must hold a $CODE kind: ${named.keys}" }
+    }
+
+    /** The kind named `code`. */
+    val code: KindConfig get() = named.getValue(CODE)
+
+    companion object {
+        /** The kind every workflow in Loop mode has, the default when it has no `match`. */
+        const val CODE = "code"
+    }
+}
 
 /**
  * One kind: its verify contract and its readiness check. An empty [checks] list is valid config: nothing
@@ -47,7 +69,11 @@ data class KindsConfig(
  * `verify.guards` key (m2-12); its protected paths are already in each [CheckConfig.DiffPolicy] of [checks].
  * [holdout] holds the hidden checks (m2-14), run after every visible check passed, from the holdout folder
  * outside every workspace; empty when the kind declares none. [delivery] is how a verified result is delivered
- * (m2-24), `human` by default.
+ * (m2-24), `human` by default. [match] says which issues the kind takes (m4-18), the default kind by default.
+ * [context] holds the kind's context sources and [template] its own prompt template, null to render the
+ * `WORKFLOW.md` body (m4-19). [workspace] says whether Loop reads the workspace with git, and [populate] who fills it
+ * (m4-20). [deliverable] names the files the work produces (m4-21) or its report (m4-23), none by default.
+ * [requireSections] is `verify.require_sections`, the sections the report must hold (m4-23), none by default.
  */
 data class KindConfig(
     val checks: List<CheckConfig>,
@@ -55,7 +81,88 @@ data class KindConfig(
     val guards: GuardsConfig? = null,
     val holdout: List<CheckConfig> = emptyList(),
     val delivery: DeliveryConfig = DeliveryConfig(),
+    val match: KindMatch = KindMatch.DEFAULT,
+    val context: KindContext = KindContext(),
+    val template: KindTemplate? = null,
+    val workspace: KindWorkspace = KindWorkspace.Git,
+    val populate: KindPopulate = KindPopulate.Hooks,
+    val deliverable: KindDeliverable = KindDeliverable(),
+    val requireSections: List<String> = emptyList(),
 )
+
+/**
+ * A kind's `deliverable` (m4-21): [files], globs relative to the workspace and anchored at its root like the globs of
+ * `guards.protect`. When it holds any, verification lists the files that match and records them with the verdict, and
+ * no match refutes the result. Behavior follows this key, never the kind's name. Empty when the kind declares none.
+ * [report] is `deliverable.report` instead (m4-23): one file, a path relative to the workspace, listed like a file of
+ * [files] and read, so a missing or empty report, or one missing a required section, refutes the result. A kind
+ * declares one of the two.
+ */
+data class KindDeliverable(
+    val files: List<String> = emptyList(),
+    val report: String? = null,
+) {
+    /** What verification lists: the [report] path alone, which holds no wildcard, else the globs of [files]. */
+    val globs: List<String> get() = report?.let { listOf(it) } ?: files
+}
+
+/**
+ * A kind's `workspace` (m4-20), decided by the declaration, never by looking at the folder. [Git], the default, is a git
+ * work tree: verification, `diff_policy`, the restore and the pinned base read it with git. [Plain] is a folder Loop
+ * never reads with git, fingerprinted `tree:<hash>` even inside a work tree.
+ */
+enum class KindWorkspace(
+    val wire: String,
+) {
+    Git("git"),
+    Plain("plain"),
+}
+
+/**
+ * A kind's `populate` (m4-20): [Hooks], the default, runs the workflow's workspace hooks. [Empty] gets a folder Loop
+ * creates and runs none of `after_create`, `before_run`, `after_run` and `before_remove` for it; only a
+ * [KindWorkspace.Plain] kind may declare it.
+ */
+enum class KindPopulate(
+    val wire: String,
+) {
+    Hooks("hooks"),
+    Empty("empty"),
+}
+
+/**
+ * A kind's `context` (m4-19, plan 8.6): [files], paths relative to the workspace that the agent reads on demand, in the
+ * order written. Loop lists them in the prompt where the template places `loop.context_sources`, never their text.
+ */
+data class KindContext(
+    val files: List<String> = emptyList(),
+)
+
+/**
+ * A kind's own prompt template (m4-19): [path] as `kinds.<kind>.template` writes it, relative to the folder of
+ * `WORKFLOW.md`, and [text], the file read with the workflow. It is rendered instead of the `WORKFLOW.md` body for the
+ * issues of the kind.
+ */
+data class KindTemplate(
+    val path: String,
+    val text: String,
+)
+
+/**
+ * A kind's `match` (m4-18, plan 6.2): [default] for the kind an issue gets when no other kind matches, alone in its
+ * match; otherwise every key set must hold: the issue carries the [label], comes from the tracker of id [tracker], or
+ * is in the [state]. The loader keeps [label] lowercase like the labels of an issue, and [state] trimmed.
+ */
+data class KindMatch(
+    val default: Boolean = false,
+    val label: String? = null,
+    val tracker: String? = null,
+    val state: String? = null,
+) {
+    companion object {
+        val DEFAULT = KindMatch(default = true)
+    }
+}
 
 /**
  * A kind's delivery (m2-24, plan 6.5, story 77): with [DeliveryPolicy.Human] a verified result waits for
@@ -74,6 +181,13 @@ data class DeliveryConfig(
     val autoMerge: AutoMergeConfig = AutoMergeConfig(),
     /** `delivery.risk` (m2-28): the merge risk assessment of an auto merge, its reviewer and the paths its facts read. */
     val risk: RiskConfig = RiskConfig(),
+    /**
+     * `delivery.attach` (m4-22): a verified result's deliverable files are posted on the issue as one comment, and the
+     * delivery moves the issue to [onDeliveredMoveTo], or to its handoff state when absent. Needs `deliverable.files`.
+     */
+    val attach: Boolean = false,
+    /** `delivery.attach_auto.enabled` (m4-22): the opt in of `policy: auto` on a kind with [attach], off by default. */
+    val attachAutoEnabled: Boolean = false,
 )
 
 /**

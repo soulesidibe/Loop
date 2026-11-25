@@ -169,7 +169,8 @@ class LoopModeWaitingTest {
             assertEquals("m2-04", record.identifier)
             assertEquals(AttemptId("a1"), record.attemptId)
             assertEquals(RunId("r1"), record.runId)
-            assertEquals(mapOf("to" to "review"), record.data)
+            // m4-18: the wait holds the kind the issue was dispatched under.
+            assertEquals(mapOf("to" to "review", "kind" to "code"), record.data)
 
             advanceTimeBy(POLL_MS * 5)
             runCurrent()

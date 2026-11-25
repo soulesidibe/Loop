@@ -13,10 +13,5 @@ object Readiness {
     fun missingSections(
         description: String?,
         ready: ReadyConfig,
-    ): List<String> {
-        val lines = description.orEmpty().lines()
-        return ready.requireSections.filter { name ->
-            MarkdownSections.sections(lines, name).none { section -> section.any { lines[it].isNotBlank() } }
-        }
-    }
+    ): List<String> = RequiredSections.missing(description.orEmpty(), ready.requireSections)
 }

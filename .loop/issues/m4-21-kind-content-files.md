@@ -1,7 +1,7 @@
 ---
 id: m4-21
 title: "Kind content: files deliverable, command checks on a worktree"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-20]
@@ -43,3 +43,15 @@ Story 120, first half (PLAN 6.2). Lane A, runs on the claude-code runner. Split 
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-25 02:15Z loop: Loop opened pull request #55 for this issue: https://github.com/soulesidibe/Loop/pull/55
+
+2026-11-25 02:19Z loop: Loop did not merge pull request #55, ci: Actions runs did not pass: build (failure). The pull request stays open and the result waits for a new approval.
+  Failed runs:
+  - build (failure): https://github.com/soulesidibe/Loop/actions/runs/45531689756
+  Rerun the runs on GitHub or fix the branch, then approve again with loop approve.
+
+2026-11-25 02:36Z loop: Loop did not merge pull request #55, ci: Actions runs did not pass: build (failure). The pull request stays open and the result waits for a new approval.
+  Failed runs:
+  - build (failure): https://github.com/soulesidibe/Loop/actions/runs/45533771952
+  Rerun the runs on GitHub or fix the branch, then approve again with loop approve.

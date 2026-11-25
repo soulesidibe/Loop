@@ -30,6 +30,11 @@ import loop.api.ProjectId
 import loop.api.QueuedRetry
 import loop.api.RecordedEvent
 import loop.api.Redactor
+import loop.api.ResourceLock
+import loop.api.ResourceLockRows
+import loop.api.ResourceLockStore
+import loop.api.ResourceLockUpdate
+import loop.api.ResourceRequest
 import loop.api.RetryState
 import loop.api.RetryStates
 import loop.api.RunId
@@ -54,7 +59,7 @@ import kotlin.time.Instant
  * The machine level event store, one SQLite file at `<loopHome>/store.db` shared
  * by every project (ADR 0001). It also holds the Project state that survives a restart: parked issues (m1-07),
  * claims and retry states (m2-02), waiting issues (m2-04), frozen acceptance command lists (m2-09) and the ledger's
- * attempt rows (m2-19), and the machine slots (m3-16). One connection per
+ * attempt rows (m2-19), the machine slots (m3-16) and the resource locks with their queue (m4-50). One connection per
  * instance, WAL mode, autocommit single statement inserts, so several Loop processes can write to the same file. A
  * write of several statements, the schema migration included, runs in a transaction that takes the write lock before
  * it reads (bl-41), so a command beside a running Loop waits on `busy_timeout` instead of failing on a stale snapshot.
@@ -62,8 +67,8 @@ import kotlin.time.Instant
  * Every text a writer hands in goes through the [Redactor] before the insert (m1-11): event
  * data values, the issue identifier and the phase, a parked issue's identifier, state and
  * labels, a claim's identifier and runtime session id, a retry state's identifier and error, a waiting
- * issue's identifier and data values, a frozen command list's identifier, and an attempt row's identifier, model,
- * reason and issue state.
+ * issue's identifier and data values, a frozen command list's identifier, an attempt row's identifier, model,
+ * reason and issue state, and a resource lock's identifier and prepared values and a queue row's identifier.
  * Ids are Loop's own and left alone. Reads return what was stored, never redact again.
  */
 class SqliteEventStore private constructor(
@@ -77,6 +82,7 @@ class SqliteEventStore private constructor(
     WaitingIssues,
     AttemptLedger,
     FrozenAcceptanceCommands,
+    ResourceLockStore,
     AutoCloseable {
     override suspend fun record(event: RecordedEvent): Result<Unit> =
         withContext(Dispatchers.IO) {
@@ -574,6 +580,73 @@ class SqliteEventStore private constructor(
             }
         }
 
+    override suspend fun resourceLockRows(): Result<ResourceLockRows> =
+        withContext(Dispatchers.IO) {
+            sql { synchronized(connection) { selectResourceRows() } }
+        }
+
+    /**
+     * Reads every lock and queue row of the machine (m4-50) and writes the rows [change] returns in their place, in one
+     * `BEGIN IMMEDIATE` transaction, so of several processes changing them at once each sees the rows the one before it
+     * wrote. Rows equal to those read are not written again. A queue row's place is its index in the list returned. A
+     * change that holds two locks of one kind and resource id, or one attempt twice in one queue, fails whole on the
+     * table's key and writes nothing.
+     */
+    override suspend fun <T> updateResourceLocks(change: (ResourceLockRows) -> ResourceLockUpdate<T>): Result<T> =
+        transaction {
+            val before = selectResourceRows()
+            val update = change(before)
+            if (update.rows != before) writeResourceRows(update.rows)
+            update.value
+        }
+
+    /** Every lock row, then every queue row in its place, read on the caller's connection lock. */
+    private fun selectResourceRows(): ResourceLockRows {
+        val locks =
+            connection.prepareStatement(SELECT_RESOURCE_LOCKS).use { st ->
+                st.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toResourceLock()) } }
+            }
+        val queue =
+            connection.prepareStatement(SELECT_RESOURCE_QUEUE).use { st ->
+                st.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toResourceRequest()) } }
+            }
+        return ResourceLockRows(locks, queue)
+    }
+
+    /** Replaces every lock and queue row with [rows], on the caller's connection lock, inside its transaction. */
+    private fun writeResourceRows(rows: ResourceLockRows) {
+        connection.createStatement().use { st ->
+            st.executeUpdate("DELETE FROM resource_locks")
+            st.executeUpdate("DELETE FROM resource_queue")
+        }
+        connection.prepareStatement(INSERT_RESOURCE_LOCK).use { st ->
+            for (lock in rows.locks) {
+                st.setString(1, lock.kind)
+                st.setString(2, lock.resourceId)
+                st.setString(3, lock.projectId.value)
+                st.setString(4, lock.issueId)
+                st.setString(5, redactor.redact(lock.issueIdentifier))
+                st.setString(6, lock.attemptId.value)
+                st.setString(7, lock.grantedAt.toString())
+                st.setNullable(8, encodeData(lock.prepared.mapValues { (_, value) -> redactor.redact(value) }))
+                st.executeUpdate()
+            }
+        }
+        connection.prepareStatement(INSERT_RESOURCE_REQUEST).use { st ->
+            for ((place, request) in rows.queue.withIndex()) {
+                st.setString(1, request.kind)
+                st.setString(2, request.resourceId)
+                st.setString(3, request.projectId.value)
+                st.setString(4, request.issueId)
+                st.setString(5, redactor.redact(request.issueIdentifier))
+                st.setString(6, request.attemptId.value)
+                st.setString(7, request.requestedAt.toString())
+                st.setLong(8, place.toLong())
+                st.executeUpdate()
+            }
+        }
+    }
+
     /** Every slot row, read on the caller's connection lock. */
     private fun selectSlots(): List<MachineSlot> =
         connection.prepareStatement(SELECT_SLOTS).use { st ->
@@ -706,7 +779,7 @@ class SqliteEventStore private constructor(
 
     companion object {
         const val FILE_NAME: String = "store.db"
-        const val SCHEMA_VERSION: Int = 7
+        const val SCHEMA_VERSION: Int = 8
 
         private const val COLUMNS =
             "ts, run_id, project_id, issue_id, issue_identifier, attempt_id, session_id, turn_id, kind, phase, data"
@@ -801,6 +874,15 @@ class SqliteEventStore private constructor(
         private const val DELETE_SLOT = "DELETE FROM machine_slots WHERE project_id = ? AND holder = ?"
         private const val SELECT_MACHINE_ATTEMPTS_SINCE =
             "SELECT $ATTEMPT_COLUMNS, attempt_number, human_touches FROM attempts WHERE finished_at >= ? ORDER BY seq"
+        private const val RESOURCE_LOCK_COLUMNS =
+            "kind, resource_id, project_id, issue_id, identifier, attempt_id, granted_at, prepared"
+        private const val SELECT_RESOURCE_LOCKS = "SELECT $RESOURCE_LOCK_COLUMNS FROM resource_locks ORDER BY rowid"
+        private const val INSERT_RESOURCE_LOCK = "INSERT INTO resource_locks ($RESOURCE_LOCK_COLUMNS) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        private const val RESOURCE_QUEUE_COLUMNS =
+            "kind, resource_id, project_id, issue_id, identifier, attempt_id, requested_at, place"
+        private const val SELECT_RESOURCE_QUEUE = "SELECT $RESOURCE_QUEUE_COLUMNS FROM resource_queue ORDER BY place"
+        private const val INSERT_RESOURCE_REQUEST =
+            "INSERT INTO resource_queue ($RESOURCE_QUEUE_COLUMNS) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         private const val FROZEN_COLUMNS = "project_id, issue_id, identifier, digest, count, frozen_at, changed_digest, changed_count"
         private const val INSERT_FROZEN =
             "INSERT INTO acceptance_commands (project_id, issue_id, identifier, digest, count, frozen_at) " +
@@ -953,6 +1035,35 @@ class SqliteEventStore private constructor(
                     pid INTEGER NOT NULL,
                     claimed_at TEXT NOT NULL,
                     PRIMARY KEY (project_id, holder)
+                )
+                """.trimIndent(),
+                // Version 8 (m4-50): the resource locks, keyed by kind and resource id and never by project, so every
+                // project of the machine shares them, and the requests that wait, in their place. prepared is a JSON
+                // object of strings, null until the provider's prepare ran (m4-25).
+                """
+                CREATE TABLE IF NOT EXISTS resource_locks (
+                    kind TEXT NOT NULL CHECK (kind <> ''),
+                    resource_id TEXT NOT NULL CHECK (resource_id <> ''),
+                    project_id TEXT NOT NULL CHECK (project_id <> ''),
+                    issue_id TEXT NOT NULL,
+                    identifier TEXT NOT NULL,
+                    attempt_id TEXT NOT NULL,
+                    granted_at TEXT NOT NULL,
+                    prepared TEXT,
+                    PRIMARY KEY (kind, resource_id)
+                )
+                """.trimIndent(),
+                """
+                CREATE TABLE IF NOT EXISTS resource_queue (
+                    kind TEXT NOT NULL CHECK (kind <> ''),
+                    resource_id TEXT NOT NULL CHECK (resource_id <> ''),
+                    project_id TEXT NOT NULL CHECK (project_id <> ''),
+                    issue_id TEXT NOT NULL,
+                    identifier TEXT NOT NULL,
+                    attempt_id TEXT NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    place INTEGER NOT NULL,
+                    PRIMARY KEY (kind, resource_id, attempt_id)
                 )
                 """.trimIndent(),
             )
@@ -1236,6 +1347,29 @@ class SqliteEventStore private constructor(
                 changedCount = changedDigest?.let { changedCount },
             )
         }
+
+        private fun ResultSet.toResourceLock(): ResourceLock =
+            ResourceLock(
+                kind = getString("kind"),
+                resourceId = getString("resource_id"),
+                projectId = ProjectId(getString("project_id")),
+                issueId = getString("issue_id"),
+                issueIdentifier = getString("identifier"),
+                attemptId = AttemptId(getString("attempt_id")),
+                grantedAt = Instant.parse(getString("granted_at")),
+                prepared = decodeData(getString("prepared")),
+            )
+
+        private fun ResultSet.toResourceRequest(): ResourceRequest =
+            ResourceRequest(
+                kind = getString("kind"),
+                resourceId = getString("resource_id"),
+                projectId = ProjectId(getString("project_id")),
+                issueId = getString("issue_id"),
+                issueIdentifier = getString("identifier"),
+                attemptId = AttemptId(getString("attempt_id")),
+                requestedAt = Instant.parse(getString("requested_at")),
+            )
 
         private fun ResultSet.toStoredEvent(ids: IssueIdForms): StoredEvent =
             StoredEvent(

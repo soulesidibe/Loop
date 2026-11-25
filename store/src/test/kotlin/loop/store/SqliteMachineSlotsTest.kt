@@ -171,7 +171,8 @@ class SqliteMachineSlotsTest {
                 DriverManager.getConnection("jdbc:sqlite:${loopHome.resolve(SqliteEventStore.FILE_NAME)}").use { conn ->
                     conn.createStatement().use { st -> st.executeQuery("PRAGMA user_version").use { it.getInt(1) } }
                 }
-            assertEquals(7, version)
+            // Version seven adds machine_slots; the migration then goes on to the current version (8 since m4-50).
+            assertEquals(SqliteEventStore.SCHEMA_VERSION, version)
         }
 
     private fun row(

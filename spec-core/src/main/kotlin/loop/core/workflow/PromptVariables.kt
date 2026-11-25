@@ -7,8 +7,8 @@ import loop.core.trackers.NamespacedId
 /**
  * The variables the prompt template renders with: the spec's `issue` and
  * `attempt` (5.4), and Loop's own under `loop` (plan 8.9), so far
- * `loop.verify_findings` (m2-06), `loop.workspace_reused` (bl-19), `loop.session_brief` (m3-10) and `loop.retry_kind`
- * (m3-11), and Loop's `issue.tracker` (m4-12). The Orchestrator
+ * `loop.verify_findings` (m2-06), `loop.workspace_reused` (bl-19), `loop.session_brief` (m3-10), `loop.retry_kind`
+ * (m3-11) and `loop.context_sources` (m4-19), and Loop's `issue.tracker` (m4-12). The Orchestrator
  * and [Preflight] both build
  * them here, and the static check's [schema] is derived from the same map, so
  * they cannot drift.
@@ -35,6 +35,9 @@ object PromptVariables {
     const val SAMPLE_SESSION_BRIEF: String =
         "### Goal and acceptance criteria\nSAMPLE-1: Sample title\n\n### Agent notes, unverified\nNo notes."
 
+    /** A sample of `loop.context_sources`, so preflight also renders the branch a template shows with sources (m4-19). */
+    const val SAMPLE_CONTEXT_SOURCES: String = "- docs/sample.md\n- docs/samples/ (missing from the workspace)"
+
     /** `loop.retry_kind` after a continuation retry, a normal exit with the issue still active (m3-11). */
     const val RETRY_CONTINUATION: String = "continuation"
 
@@ -51,7 +54,13 @@ object PromptVariables {
     val RETRY_KINDS: List<String> = listOf(RETRY_CONTINUATION, RETRY_ROTATION, RETRY_ERROR, RETRY_REFUTED)
 
     val schema: TemplateSchema =
-        TemplateSchema(mapOf(ISSUE to issueFields(SAMPLE_ISSUE).keys, ATTEMPT to null, LOOP to loopFields(null, false, null, null).keys))
+        TemplateSchema(
+            mapOf(
+                ISSUE to issueFields(SAMPLE_ISSUE).keys,
+                ATTEMPT to null,
+                LOOP to loopFields(null, false, null, null, null).keys,
+            ),
+        )
 
     /**
      * [attempt] is null on a first run, else the retry attempt (set by the retry queue, m1-07). [verifyFindings]
@@ -60,7 +69,8 @@ object PromptVariables {
      * [workspaceReused] is true when the issue's workspace already existed when the attempt prepared it, false
      * when the attempt created it (bl-19): a fact about the folder, whatever [attempt] is. [sessionBrief] is the
      * [SessionBrief] of a retry, a reused workspace or a rotation, null on a fresh first dispatch (m3-10). [retryKind]
-     * is one of [RETRY_KINDS], null on a first dispatch (m3-11).
+     * is one of [RETRY_KINDS], null on a first dispatch (m3-11). [contextSources] is the list of the kind's context
+     * sources, null when the kind declares none (m4-19).
      */
     fun of(
         issue: Issue,
@@ -69,11 +79,12 @@ object PromptVariables {
         workspaceReused: Boolean = false,
         sessionBrief: String? = null,
         retryKind: String? = null,
+        contextSources: String? = null,
     ): Map<String, Any?> =
         mapOf(
             ISSUE to issueFields(issue),
             ATTEMPT to attempt,
-            LOOP to loopFields(verifyFindings, workspaceReused, sessionBrief, retryKind),
+            LOOP to loopFields(verifyFindings, workspaceReused, sessionBrief, retryKind, contextSources),
         )
 
     private fun loopFields(
@@ -81,12 +92,14 @@ object PromptVariables {
         workspaceReused: Boolean,
         sessionBrief: String?,
         retryKind: String?,
+        contextSources: String?,
     ): Map<String, Any?> =
         mapOf(
             VERIFY_FINDINGS to verifyFindings,
             WORKSPACE_REUSED to workspaceReused,
             SESSION_BRIEF to sessionBrief,
             RETRY_KIND to retryKind,
+            CONTEXT_SOURCES to contextSources,
         )
 
     /**
@@ -110,9 +123,14 @@ object PromptVariables {
 
     private const val ISSUE = "issue"
     private const val ATTEMPT = "attempt"
-    private const val LOOP = "loop"
     private const val VERIFY_FINDINGS = "verify_findings"
     private const val WORKSPACE_REUSED = "workspace_reused"
     private const val SESSION_BRIEF = "session_brief"
     private const val RETRY_KIND = "retry_kind"
+
+    /** The root of Loop's own variables. */
+    const val LOOP = "loop"
+
+    /** `loop.context_sources`, the kind's context sources (m4-19). */
+    const val CONTEXT_SOURCES = "context_sources"
 }

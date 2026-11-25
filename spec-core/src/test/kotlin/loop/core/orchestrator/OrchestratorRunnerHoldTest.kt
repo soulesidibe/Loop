@@ -418,6 +418,27 @@ class OrchestratorRunnerHoldTest {
             )
         }
 
+    @Test
+    fun `the skips of a probe tick are recorded in slot order (bl-101)`() =
+        runTest {
+            val sink = FakeSink()
+            val runner = FakeRunner { _, _ -> unavailableTurn() }
+            val tracker = FakeTracker(listOf(issue("m1-02")))
+            val orchestrator = orchestrator(tracker, runner, sink)
+
+            orchestrator.tick()
+            advanceTimeBy(1.minutes)
+            tracker.issues += listOf(issue("m1-03"), issue("m1-04"), issue("m1-05"))
+            orchestrator.tick()
+
+            // Two agent slots: the probe m1-02 and m1-03, which waits for the probe; m1-04 and m1-05 find no slot.
+            val skips = sink.ofKind("candidate_skipped").map { it.issueIdentifier to it.data["reason"] }
+            assertEquals(
+                listOf("m1-03" to "runner_unavailable", "m1-04" to "no_available_slots", "m1-05" to "no_available_slots"),
+                skips,
+            )
+        }
+
     private fun unavailableTurn(retryAfter: Duration? = null): Flow<RunnerEvent> =
         flow {
             emit(RunnerEvent.SessionStarted(SESSION, threadId = "th1", turnId = TURN))

@@ -6,7 +6,7 @@ Issues for this repo live in Loop's own `files` tracker, which Loop reads to dis
 
 - Pull request numbers up to #119 named in issues and specs (for example "pull request #115") belong to the old private repository, which this one replaced in November 2026. Do not look them up here.
 - One file per issue: `.loop/issues/<id>-<slug>.md`, in the main checkout, versioned in git.
-- Front matter: `id`, `title`, `state`, `priority`, `labels`, `blocked_by` (a list of issue ids).
+- Front matter: `id`, `title`, `state`, `priority`, `labels`, `blocked_by` (a list of issue ids), and the optional `area` (a list of repository relative paths, see [areas](#areas)).
 - Body sections: `## Parent` (link to the spec), `## What`, `## Acceptance criteria`, `## Comments`.
 - States: `todo`, `in_progress` (active); `review`, `needs_info` (handoff states); `done`, `canceled` (terminal).
 - Acceptance criteria are checkable, each with the command that checks it where one exists. Judgment calls are marked as prose. See [runnable criteria](#runnable-criteria).
@@ -26,6 +26,29 @@ Blocked by gh:12, local:m4-03
 - The line starts at column 0 with `Blocked by `, followed only by `<tracker>:<id>` items separated by commas. Any other `Blocked by` line is prose and blocks nothing, such as `Blocked by bl-54 so the two never run side by side`. Lines in fenced code blocks are ignored.
 - The issue waits while any blocker is not in a terminal state of its own tracker, and the dispatch records `candidate_skipped` with `blocked_cross_tracker` naming the blocker.
 - Fail closed: a tracker id that is not in the workflow, such as `lin` in `Blocked by lin:MKT-12` with no `lin` tracker, keeps the issue blocked with the reason naming the unknown tracker. So does a blocker its tracker cannot read or does not find.
+
+## Areas
+
+`area` lists the folders and files an issue edits, as repository relative paths, no globs (m4-17). Loop never works two issues of overlapping areas at once:
+
+```markdown
+---
+id: m4-17
+title: Minimal area lock
+state: todo
+priority: 1
+labels: [ready-for-agent]
+blocked_by: []
+area: [spec-core/src/main/kotlin/loop/core/trackers, plugin-api/src/main/kotlin/loop/api/Issue.kt, docs]
+---
+```
+
+- Two areas overlap when an entry equals another or is a parent folder of it, on whole path segments after normalizing: `spec-core` overlaps `spec-core/src`, not `spec-core-x`. `./docs/` is `docs`.
+- A candidate whose area overlaps the area of a claimed issue (running, verifying, or queued for a retry) waits in its place, and the dispatch records `candidate_skipped` with `area_busy <holder> (<entry>)`. It runs on the first tick its area is free.
+- An issue with no `area` never blocks and is never blocked. One path can be written alone, `area: cli`.
+- Paths compare case folded and in Unicode NFC, so `Docs` overlaps `docs`. An entry holds no space, and an area holds at most 64 entries.
+- A malformed value, such as a glob (`spec-core/*`), an absolute path, a `..` segment or a space inside an entry, makes the issue malformed: Loop skips it and logs it.
+- On GitHub, write a column 0 line in the body with paths only, `Area: spec-core, docs`. A prose `Area:` line, such as ``Area: the `Issue` model``, is malformed. A malformed line is ignored with a warning, every `Area:` line of the body with it, and the issue runs with no area. Lines in code fences and HTML comments do not count.
 
 ## Runnable criteria
 

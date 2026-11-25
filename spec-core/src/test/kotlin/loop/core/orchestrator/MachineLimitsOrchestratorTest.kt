@@ -2,12 +2,16 @@ package loop.core.orchestrator
 
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.yield
 import loop.api.AttemptId
 import loop.api.LedgerAttempt
 import loop.api.LedgerRow
@@ -354,6 +358,123 @@ class MachineLimitsOrchestratorTest {
             assertEquals(1, runner.calls.size, "the retry found no machine slot")
             val scheduled = sink.events.filter { it.kind == "retry_scheduled" }.map { it.data["error"] }
             assertEquals("no available machine slots", scheduled.last(), scheduled.toString())
+        }
+
+    @Test
+    fun `a failed release is retried at the next tick while the machine config is malformed (bl-101)`() =
+        runTest {
+            machine.limits = MachineLimits(maxConcurrentAgents = 2)
+            machine.releaseFailure = IllegalStateException("database is locked")
+            val orchestrator = orchestrator(FakeTracker(listOf(issue("t-1"))))
+
+            assertEquals(listOf("t-1"), orchestrator.tick().attempts.map { it.issueIdentifier })
+            val holder = machine.slots.single()
+
+            // The store answers again, but config.yaml broke meanwhile: the preflight fails, the release still goes.
+            machine.releaseFailure = null
+            machine.limitsFailure =
+                MachineConfigError(
+                    "machine.max_concurrent_agents",
+                    "/home/.loop/config.yaml: machine.max_concurrent_agents must be a positive integer, got 0",
+                )
+            assertEquals(emptyList(), orchestrator.tick().attempts)
+
+            assertEquals(emptyList(), machine.slots, "the slot is not held while config.yaml stays malformed")
+            assertEquals(listOf("claimed $holder", "released $holder"), machine.log)
+        }
+
+    @Test
+    fun `an attempt whose launch lands on a cancelled tick releases its machine slot and its claim (bl-101)`() =
+        runTest {
+            machine.limits = MachineLimits(maxConcurrentAgents = 1)
+            val runner = FakeRunner()
+            val orchestrator = orchestrator(FakeTracker(listOf(issue("t-1"))), runner)
+            lateinit var stopped: Job
+            // A stop that lands between the machine slot claim and the start of the attempt.
+            machine.onClaimed = { stopped.cancel() }
+
+            stopped = launch { orchestrator.tick() }
+            stopped.join()
+
+            assertEquals(0, runner.calls.size, "the cancelled tick starts no agent")
+            val holder = machine.log.first().removePrefix("claimed ")
+            assertEquals(emptyList(), machine.slots, "the machine slot of the attempt that never ran is released")
+            assertEquals(listOf("claimed $holder", "released $holder"), machine.log)
+
+            machine.onClaimed = {}
+            assertEquals(listOf("t-1"), orchestrator.tick().attempts.map { it.issueIdentifier }, "no claim is left behind")
+            assertEquals(emptyList(), machine.slots)
+        }
+
+    @Test
+    fun `a failed first read of the machine day budget holds dispatch until a read succeeds (bl-101)`() =
+        runTest {
+            machine.limits = MachineLimits(perDayUsd = 5.0)
+            machine.rowsFailure = IllegalStateException("database is locked")
+            val sink = FakeSink()
+            val runner = FakeRunner()
+            val orchestrator = orchestrator(FakeTracker(listOf(issue("t-1"))), runner, sink)
+
+            assertEquals(emptyList(), orchestrator.tick().attempts)
+            assertEquals(0, runner.calls.size, "no spend was ever read, so the budget fails closed like the slot claim")
+            assertEquals(listOf<String?>("machine_budget"), sink.skipReasons())
+
+            machine.rowsFailure = null
+            assertEquals(listOf("t-1"), orchestrator.tick().attempts.map { it.issueIdentifier })
+        }
+
+    @Test
+    fun `a failed read after a good one keeps the sum read last (bl-101)`() =
+        runTest {
+            machine.limits = MachineLimits(perDayUsd = 5.0)
+            val tracker = FakeTracker(listOf(issue("t-1")))
+            val orchestrator = orchestrator(tracker)
+
+            assertEquals(listOf("t-1"), orchestrator.tick().attempts.map { it.issueIdentifier })
+
+            machine.rowsFailure = IllegalStateException("database is locked")
+            tracker.issues += issue("t-2")
+            assertEquals(listOf("t-2"), orchestrator.tick().attempts.map { it.issueIdentifier })
+        }
+
+    @Test
+    fun `a runner hold that starts during a machine slot claim stops that launch and releases its slot (bl-101)`() =
+        runTest {
+            machine.limits = MachineLimits(maxConcurrentAgents = 2)
+            val sink = FakeSink()
+            val runner =
+                FakeRunner { ctx, _ ->
+                    if (ctx.issue.identifier == "t-1") unavailableTurn() else succeedingTurn()
+                }
+            val orchestrator = orchestrator(FakeTracker(listOf(issue("t-1"), issue("t-2"))), runner, sink)
+            var claims = 0
+            // The second claim waits in the store while the first attempt fails runner_unavailable and starts the hold.
+            machine.beforeClaim = {
+                if (++claims == 2) {
+                    var spins = 0
+                    while (sink.events.none { it.kind == "runner_hold_started" } && spins++ < 10_000) yield()
+                }
+            }
+
+            orchestrator.tick()
+
+            assertEquals(listOf("t-1"), runner.calls.map { it.first.issue.identifier }, "t-2 waits for the probe")
+            assertEquals(listOf<String?>("runner_unavailable"), sink.skipReasons())
+            assertEquals(emptyList(), machine.slots, "the slot t-2 claimed is released")
+        }
+
+    private fun unavailableTurn(): Flow<RunnerEvent> =
+        flow {
+            emit(RunnerEvent.SessionStarted(SESSION, threadId = "th1", turnId = TURN))
+            emit(
+                RunnerEvent.TurnFailed(
+                    SESSION,
+                    TURN,
+                    exitCode = 1,
+                    reason = "the model cannot be reached",
+                    category = RunnerEvent.TurnFailed.Category.RunnerUnavailable,
+                ),
+            )
         }
 
     private companion object {

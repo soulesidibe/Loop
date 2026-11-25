@@ -1,7 +1,7 @@
 ---
 id: m4-23
 title: "Kind research: report posted on the issue, required sections, sources reachable"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-22]
@@ -39,3 +39,15 @@ Story 121 (PLAN 6.2). Lane A, runs on the claude-code runner. Builds on the plai
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-25 04:13Z loop: Loop opened pull request #57 for this issue: https://github.com/soulesidibe/Loop/pull/57
+
+2026-11-25 04:17Z loop: Loop did not merge pull request #57 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.27.
+  - alignment: aligned, The diff covers each acceptance item (report deliverable, require_sections, sources example under docs/, attach delivery, docs), and the orchestrator edit is limited to call sites. The Readiness refactor is a small shared-code change that serves the issue.
+  - impact: medium, It touches the shared verification path, the workflow loader, the verdict event and the readiness check, but the new behavior only applies to kinds that declare deliverable.report.
+  - verification: strong, Pure-function tests, verify tests, an end-to-end CLI run on the files tracker with approve, and a script test against a local server cover each acceptance criterion and the edge cases (empty, non-UTF-8, missing, closed port, 404).
+  - rollback_cost: two_way, The change is additive code, config keys and docs, with no migrations or persisted schema change. The only new stored data is an optional event field (report_findings), so a revert is clean.
+  - error_detection: loud, Every report failure refutes with a named finding, loader errors are explicit, an unreadable report leaves the result unverified, and the sources script exits 1 and prints each bad link.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 4 of 17 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.

@@ -192,6 +192,7 @@ fun issue(
     createdAt: Instant? = null,
     blockedReason: String? = null,
     description: String? = null,
+    area: List<String> = emptyList(),
 ): Issue =
     Issue(
         id = "id-$identifier",
@@ -204,6 +205,7 @@ fun issue(
         description = description,
         createdAt = createdAt,
         blockedReason = blockedReason,
+        area = area,
     )
 
 /**
@@ -276,11 +278,15 @@ class FakeTracker(
     /** When set, [addComment] records nothing and returns it as a failure. */
     var commentFailure: TrackerError? = null
 
+    /** When it returns an error for a comment, [addComment] fails with it for that comment only (m4-22). */
+    var commentFailureFor: (IssueComment) -> TrackerError? = { null }
+
     override suspend fun addComment(
         issueId: String,
         comment: IssueComment,
     ): Result<Unit> {
         commentFailure?.let { return Result.failure(it) }
+        commentFailureFor(comment)?.let { return Result.failure(it) }
         if (issues.none { it.id == issueId }) return Result.failure(TrackerError.NotFound(issueId))
         comments += issueId to comment
         return Result.success(Unit)
@@ -662,6 +668,11 @@ class FakeMachine(
 ) : Machine {
     var limitsFailure: Throwable? = null
     var claimFailure: Throwable? = null
+    var releaseFailure: Throwable? = null
+    var rowsFailure: Throwable? = null
+
+    /** Called before each claim with its holder (bl-101: a claim that suspends while an attempt ends). */
+    var beforeClaim: suspend (String) -> Unit = {}
 
     /** Called after each claim that took a slot, with its holder (bl-180: cancels the tick right after the claim). */
     var onClaimed: (String) -> Unit = {}
@@ -675,6 +686,7 @@ class FakeMachine(
         holder: String,
         cap: Int,
     ): Result<Boolean> {
+        beforeClaim(holder)
         claimFailure?.let { return Result.failure(it) }
         if (slots.size >= cap) {
             log += "refused $holder"
@@ -687,11 +699,12 @@ class FakeMachine(
     }
 
     override suspend fun releaseSlot(holder: String): Result<Unit> {
+        releaseFailure?.let { return Result.failure(it) }
         slots -= holder
         log += "released $holder"
         return Result.success(Unit)
     }
 
     override suspend fun attemptRowsSince(since: Instant): Result<List<LedgerRow>> =
-        Result.success(rows.filter { it.attempt.finishedAt > since })
+        rowsFailure?.let { Result.failure(it) } ?: Result.success(rows.filter { it.attempt.finishedAt > since })
 }

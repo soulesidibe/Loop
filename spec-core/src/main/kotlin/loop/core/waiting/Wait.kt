@@ -27,6 +27,9 @@ sealed class Wait(
     val runId: RunId? get() = record.runId
     val since: Instant get() = record.since
 
+    /** The name of the kind the issue was dispatched under (m4-18), null when the record holds none. */
+    val kind: String? get() = record.data[WaitKeys.KIND]
+
     protected val data: Map<String, String> get() = record.data
 
     /** The record this wait is in the store. */
@@ -288,7 +291,10 @@ sealed class Wait(
                 else -> Other(record)
             }
 
-        /** The `Waiting(verify)` of a submitted result whose checks run, moving the issue to [to] once they pass. */
+        /**
+         * The `Waiting(verify)` of a submitted result whose checks run, moving the issue to [to] once they pass, under
+         * the [kind] the issue was dispatched under (m4-18), null in Symphony mode.
+         */
         fun verify(
             projectId: ProjectId,
             issueId: String,
@@ -297,13 +303,17 @@ sealed class Wait(
             runId: RunId?,
             since: Instant,
             to: String,
-        ): Verify =
-            Verify(WaitingIssue(projectId, issueId, identifier, WaitReason.Verify, attemptId, runId, since, mapOf(WaitKeys.TO to to)))
+            kind: String? = null,
+        ): Verify {
+            val data = mapOf(WaitKeys.TO to to) + listOfNotNull(kind?.let { WaitKeys.KIND to it })
+            return Verify(WaitingIssue(projectId, issueId, identifier, WaitReason.Verify, attemptId, runId, since, data))
+        }
 
         /**
          * The `Waiting(approval)` of a result verified on [fingerprint] (m2-24), delivered to [to]. With pull request
          * delivery (m2-25) [checks] is the rendered check lines and [judgmentCalls] their number; [approvedBy] and
-         * [approvedAt] approve it at once, for the auto policy; [pullRequest] is the URL already commented.
+         * [approvedAt] approve it at once, for the auto policy; [pullRequest] is the URL already commented. [kind] is
+         * the kind the issue was dispatched under (m4-18), null in Symphony mode.
          */
         fun approval(
             projectId: ProjectId,
@@ -319,6 +329,7 @@ sealed class Wait(
             approvedBy: String? = null,
             approvedAt: Instant? = null,
             pullRequest: String? = null,
+            kind: String? = null,
         ): Approval {
             val data =
                 mapOf(WaitKeys.TO to to, WaitKeys.FINGERPRINT to fingerprint) +
@@ -328,6 +339,7 @@ sealed class Wait(
                         approvedBy?.let { WaitingIssue.APPROVED_BY to it },
                         approvedAt?.let { WaitingIssue.APPROVED_AT to it.toString() },
                         pullRequest?.let { WaitKeys.PULL_REQUEST to it },
+                        kind?.let { WaitKeys.KIND to it },
                     )
             return Approval(WaitingIssue(projectId, issueId, identifier, WaitReason.Approval, attemptId, runId, since, data))
         }

@@ -7,9 +7,12 @@ import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.option
 import kotlinx.coroutines.runBlocking
 import loop.api.HumanTouch
+import loop.api.Issue
 import loop.core.events.ApprovalGiven
 import loop.core.events.Delivery
 import loop.core.events.HumanTouched
+import loop.core.kinds.KindLookup
+import loop.core.kinds.PinnedKind
 import loop.core.waiting.Wait
 import loop.core.waiting.Waits
 import loop.core.workflow.WorkflowFile
@@ -82,7 +85,7 @@ class ApproveCommand(
             val waiting = record ?: fail("$identifier is not waiting for approval. Nothing changed", EXIT_NOT_WAITING)
             val current = checkApproval(identifier, waiting)
             // bl-69: under `merge` the issue never stops at the wait's handoff state, it ends in `on_delivered.move_to`.
-            val mergeTo = mergeMoveTo(workflow)
+            val mergeTo = mergeMoveTo(workflow, waiting.kind, found)
             if (current.approved) {
                 echo("$identifier is already approved, ${outcome(current.to.orEmpty(), mergeTo)}. Nothing changed.")
                 return
@@ -127,12 +130,28 @@ class ApproveCommand(
     /**
      * The state an approved issue ends in under `delivery.pull_request.merge` (bl-69): `delivery.on_delivered.move_to`,
      * which the loader requires with `merge`. Null without `merge`, where the delivery moves it to the wait's own state.
+     * Since m4-18 the delivery is that of the kind [pinned] the issue was dispatched under, which the wait holds; for a
+     * wait stored without one, the kind [issue] matches now, the code kind's when the tracker did not give the issue. A
+     * kind that left the workflow is warned about: Loop keeps the wait until it is back.
      */
-    private fun mergeMoveTo(workflow: WorkflowFile): String? {
-        val delivery =
-            workflow.config.kinds
-                ?.code
-                ?.delivery ?: return null
+    private fun mergeMoveTo(
+        workflow: WorkflowFile,
+        pinned: String?,
+        issue: Issue?,
+    ): String? {
+        val kind =
+            when (val found = KindLookup.pinned(workflow, pinned, issue)) {
+                is PinnedKind.Found -> found.kind
+                is PinnedKind.Gone -> {
+                    echo(
+                        "loop approve: the kind ${found.name} the issue was dispatched under is no longer in the workflow, " +
+                            "Loop delivers it once the kind is back.",
+                        err = true,
+                    )
+                    null
+                }
+            }
+        val delivery = kind?.config?.delivery ?: return null
         return delivery.onDeliveredMoveTo.takeIf { delivery.pullRequest?.merge != null }
     }
 

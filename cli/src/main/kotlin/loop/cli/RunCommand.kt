@@ -29,6 +29,7 @@ import loop.core.orchestrator.Orchestrator
 import loop.core.orchestrator.TickResult
 import loop.core.orchestrator.attemptFile
 import loop.core.orchestrator.highestRecordedThreshold
+import loop.core.resources.ResourceLocks
 import loop.core.template.TemplateEngine
 import loop.core.verify.CheckRunner
 import loop.core.verify.CoreCheckRunner
@@ -263,6 +264,23 @@ class RunCommand(
         pruneAttemptFiles(host.loopHome, projectId, runId, workflow.config.observability.retentionDays, log, clock)
         // m1-36: for the same reason every open attempt of this Project belongs to a dead process; it closes as abandoned.
         runBlocking { closeAbandonedAttempts(projectId, runId, store, log, clock) }
+        // m4-50: and every resource lock of this Project; then each provider recovers what no live lock holds.
+        val resourcePlugins =
+            host.resourcePlugins.getOrElse { error ->
+                log.log(
+                    LogLevel.WARN,
+                    "resource",
+                    LogOutcome.FAILED,
+                    context,
+                    reason = "no resource provider recovers: ${error.sentence()}",
+                )
+                null
+            }
+        val startupLocks =
+            ResourceLocks(store, store, clock, runId) { event, error ->
+                log.log(LogLevel.WARN, "store", LogOutcome.FAILED, context.copy(attemptId = event.attemptId), reason = error.sentence())
+            }
+        runBlocking { freeAbandonedLocks(projectId, startupLocks, resourcePlugins?.providers.orEmpty(), log, context) }
         // m2-02: and every stored claim was left by a dead process; it is released and recorded.
         runBlocking { releaseAbandonedClaims(projectId, runId, store, log, clock) }
         val sink = exportingSink(workflow, store, log, context, runnerPlugins, redactor)
@@ -339,8 +357,21 @@ class RunCommand(
                 attemptEvents = { attempt -> store.eventsForAttempt(attempt).map { events -> events.map { it.event } } },
                 riskReviewerFor = { wf -> riskReviewerFor(wf, host.rawEnv, agentEnvRemovedNames(wf), holdoutDir) },
                 // m3-16: the machine limits of <LOOP_HOME>/config.yaml and the machine slots of the shared store.
-                machine = StoreMachine(host.loopHome, store, projectId, runId, ProcessHandle.current().pid(), clock),
+                // bl-101: a run file a claim cannot read counts its slots, with a warning once until it reads again.
+                machine =
+                    StoreMachine(host.loopHome, store, projectId, runId, ProcessHandle.current().pid(), clock) { other, error ->
+                        log.log(
+                            LogLevel.WARN,
+                            "machine_slot",
+                            LogOutcome.FAILED,
+                            context,
+                            fields = mapOf("project" to other.value),
+                            reason = "run file unreadable, its slots count: ${error.message ?: error::class.simpleName}",
+                        )
+                    },
                 // bl-175: a pause of the delivery queue an earlier run left, which this restart ends.
+                // m4-50: the resource locks of the shared store; an attempt's go at its end.
+                resourceLockStore = store,
                 queuePausedBefore = {
                     store.eventsOfKinds(projectId, DeliveryQueuePaused.QUEUE_KINDS).getOrNull()?.let { stored ->
                         DeliveryQueuePaused.openIn(stored.map { it.event })

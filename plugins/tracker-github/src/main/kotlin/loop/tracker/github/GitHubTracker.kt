@@ -24,7 +24,8 @@ import kotlin.time.Instant
  * prompt is rendered (bl-06). Only authors in `trusted_associations` reach the agent (bl-157): an issue by another
  * author is blocked, a comment by one is left out. A candidate with native blockers is blocked until each one is closed as
  * completed, see [GitHubBlockers] (bl-158). Writes (m2-23): a move to a handoff state is a label change, a move to `open` or
- * `closed` patches the issue state, a comment is posted as given. A write is never retried inside a call.
+ * `closed` patches the issue state, a comment is posted as given. A write is never retried inside a call. A column 0
+ * `Area:` line of the body is the issue's area (m4-17), see [GitHubArea]; a malformed one is ignored with a warning.
  */
 class GitHubTracker(
     private val settings: GitHubTrackerSettings,
@@ -41,6 +42,8 @@ class GitHubTracker(
      * rate limit hold with pull request delivery and every other tracker of that origin and token. Its own by default.
      */
     clients: GitHubClients = GitHubClients(transport, clock),
+    /** Gets one operator warning for a malformed `Area:` line of an issue (m4-17), the first time it is read, see [GitHubArea]. */
+    private val onWarning: (String) -> Unit = {},
 ) : TrackerAdapter {
     init {
         require(pageSize in 1..MAX_PAGE_SIZE) { "pageSize must be 1 to $MAX_PAGE_SIZE, got $pageSize" }
@@ -60,6 +63,13 @@ class GitHubTracker(
     private val scope = settings.scopeLabels.map { it.lowercase() }
 
     private val trusted = settings.trustedAssociations.map { it.uppercase() }.toSet()
+
+    /**
+     * The malformed `Area:` line each issue was last warned about, by issue number, as its line number and fingerprint
+     * (m4-17), so a line is warned once and an edit to it warns again. A read with no malformed line forgets the issue,
+     * and the map is emptied when it reaches [MAX_WARNED_AREAS], so it never outgrows that.
+     */
+    private val warnedAreas = ConcurrentHashMap<String, Pair<Int, Int>>()
 
     /** GitHub's comment count of every issue this tracker read, by id, as of its latest read (bl-06). */
     private val commentCounts = ConcurrentHashMap<String, Long>()
@@ -377,9 +387,12 @@ class GitHubTracker(
                     ?.toIntOrNull() != null
             }
         val association = item.association()
+        val identifier = "${settings.repo}-$number"
+        val area = GitHubArea.read(item.string("body"))
+        warnArea(number, identifier, area)
         return Issue(
             id = "$number",
-            identifier = "${settings.repo}-$number",
+            identifier = identifier,
             title = title,
             state = state,
             priority = priorities.minOrNull(),
@@ -396,7 +409,34 @@ class GitHubTracker(
                     (item["id"] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull?.let { put("database_id", "$it") }
                     item.string("html_url")?.let { put("url", it) }
                 },
+            area = area.area,
         ).also { issue -> item.commentCount()?.let { commentCounts[issue.id] = it } ?: commentCounts.remove(issue.id) }
+    }
+
+    /**
+     * One operator warning for the malformed `Area:` line [area] found in issue [number], unless it was the last one
+     * warned about for that issue (m4-17). It names the line by number and never quotes the body, which an untrusted
+     * author may have written.
+     */
+    private fun warnArea(
+        number: Long,
+        identifier: String,
+        area: GitHubArea.Read,
+    ) {
+        val key = "$number"
+        val line = area.malformed
+        if (line == null) {
+            warnedAreas.remove(key)
+            return
+        }
+        val seen = line to area.fingerprint
+        if (warnedAreas[key] == seen) return
+        if (warnedAreas.size >= MAX_WARNED_AREAS) warnedAreas.clear()
+        warnedAreas[key] = seen
+        onWarning(
+            "$identifier: line $line of its body is an Area line that is no list of repository relative paths, " +
+                "so every Area line of the body is ignored and $identifier runs with no area.",
+        )
     }
 
     /** GitHub's `comments` count; null when it is missing or not a count. */
@@ -493,6 +533,9 @@ class GitHubTracker(
         const val MAX_PAGES: Int = 100
 
         const val MAX_PAGE_SIZE: Int = 100
+
+        /** The most issues whose malformed `Area:` line [GitHubTracker] remembers having warned about (m4-17). */
+        const val MAX_WARNED_AREAS: Int = 10_000
 
         const val API_VERSION: String = GitHubClient.API_VERSION
 

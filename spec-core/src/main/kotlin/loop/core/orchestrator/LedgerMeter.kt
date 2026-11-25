@@ -4,6 +4,7 @@ import loop.api.LedgerSetup
 import loop.api.LedgerTokens
 import loop.api.RunnerEvent
 import loop.core.events.Verdict
+import loop.core.workflow.KindsConfig
 import loop.core.workflow.WorkflowFile
 import loop.core.workflow.workflowHash
 
@@ -134,25 +135,33 @@ internal class LedgerMeter {
     )
 
     companion object {
-        /** The issue kind of Loop mode (m2-03), the only one so far. */
-        private const val CODE = "code"
-
         /**
          * What the ledger records of [workflow]'s setup on every line and row of an attempt: `runner.kind`, and
          * [model], the model of the attempt's runner (m3-04: its settings belong to its plugin). Since m4-13 `tracker`
          * is the id of the tracker of [issueId], the primary one's when it is null, so `loop report` groups by tracker.
+         * Since m4-18 `kind` is [kind], the kind the issue matched; it defaults to `code` in Loop mode, for the code
+         * only paths, and is null in Symphony mode. Since m4-19 `template_version` is the hash of the template that kind
+         * renders, its own `template` or the body.
          */
         fun setupOf(
             workflow: WorkflowFile,
             model: String? = null,
             issueId: String? = null,
+            kind: String? = workflow.config.kinds?.let { KindsConfig.CODE },
         ): LedgerSetup =
             LedgerSetup(
                 tracker = issueId?.let { workflow.trackers.entryOf(it).id } ?: workflow.trackerId,
-                kind = workflow.config.kinds?.let { CODE },
+                kind = kind,
                 runner = workflow.runner.kind,
                 model = model,
-                templateVersion = workflowHash(workflow.promptTemplate),
+                templateVersion =
+                    workflowHash(
+                        workflow.config.kinds
+                            ?.named
+                            ?.get(kind)
+                            ?.template
+                            ?.text ?: workflow.promptTemplate,
+                    ),
                 configVersion = workflow.sourceHash.ifEmpty { null },
             )
     }

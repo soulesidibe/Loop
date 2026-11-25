@@ -43,3 +43,8 @@ Story 122, tools part (PLAN 6.9 and 6.10). Lane A, runs on the claude-code runne
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-25 05:35Z soule: scope added before merge, from bl-204 finding 1 (merge risk reviews of m4-50). It is part of this issue's acceptance:
+  - A lock or queue row whose project has no live run file is freed with reason `abandoned`, on the tick of `loop run` and before a `request` answers `queued`. Use `RunFiles(loopHome, projectId).peek(retry = false)` like `slotLive` in `StoreMachine.kt`: never peek the caller's own project (that drops its POSIX run lock), and treat `Unreadable` as live. No schema change.
+  - A failed free at attempt end (`freeAttempt`, `Orchestrator.kt` around line 1455) is retried on the tick, or rows whose attempt is not running in this run are swept.
+  - Acceptance test: project A killed while holding a lock, project B's queued request is granted without A restarting.

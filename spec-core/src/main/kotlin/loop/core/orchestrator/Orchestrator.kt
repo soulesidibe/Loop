@@ -45,6 +45,7 @@ import loop.api.ParkReason
 import loop.api.ParkedIssues
 import loop.api.ProjectId
 import loop.api.RecordedEvent
+import loop.api.ResourceLockStore
 import loop.api.RetryStates
 import loop.api.RiskReviewer
 import loop.api.RunId
@@ -56,6 +57,7 @@ import loop.api.TurnId
 import loop.api.TurnLedger
 import loop.api.WaitReason
 import loop.api.WaitingIssues
+import loop.core.delivery.AttachDelivery
 import loop.core.delivery.AutoMerge
 import loop.core.delivery.DeliveryFacts
 import loop.core.delivery.DeliveryOutcome
@@ -80,9 +82,11 @@ import loop.core.events.CheckFinished
 import loop.core.events.CheckStarted
 import loop.core.events.ConfigReloadFailed
 import loop.core.events.ConfigReloaded
+import loop.core.events.ContextSourceMissing
 import loop.core.events.ContextUsage
 import loop.core.events.ContextWindowUnknown
 import loop.core.events.Delivery
+import loop.core.events.DeliveryFailed
 import loop.core.events.DeliveryQueuePaused
 import loop.core.events.DeliveryQueueResumed
 import loop.core.events.DiffBaseUnpinned
@@ -99,6 +103,7 @@ import loop.core.events.MergeRequeued
 import loop.core.events.Phase
 import loop.core.events.PromptRecordFailed
 import loop.core.events.RateLimit
+import loop.core.events.ResourceReleased
 import loop.core.events.ResultDiscarded
 import loop.core.events.ResultInvalid
 import loop.core.events.ResultSubmitted
@@ -122,6 +127,14 @@ import loop.core.events.TurnInputRequired
 import loop.core.events.TurnStarted
 import loop.core.events.Usage
 import loop.core.events.Verdict
+import loop.core.kinds.DeliverableFile
+import loop.core.kinds.DeliverableFiles
+import loop.core.kinds.DeliverableListing
+import loop.core.kinds.IssueKind
+import loop.core.kinds.KindLookup
+import loop.core.kinds.KindPrompt
+import loop.core.kinds.KindWorkspaces
+import loop.core.kinds.PinnedKind
 import loop.core.kinds.Readiness
 import loop.core.log.KeyValueLog
 import loop.core.log.LogContext
@@ -133,8 +146,10 @@ import loop.core.merge.Merges
 import loop.core.merge.Recheck
 import loop.core.merge.RecheckOutcome
 import loop.core.merge.WorkspaceMergeGit
+import loop.core.resources.ResourceLocks
 import loop.core.template.Template
 import loop.core.template.TemplateEngine
+import loop.core.trackers.AreaLock
 import loop.core.trackers.NamespacedId
 import loop.core.trackers.TrackerPoll
 import loop.core.trackers.TrackerSlots
@@ -142,11 +157,13 @@ import loop.core.verify.AcceptanceCriteria
 import loop.core.verify.AcceptanceCriterion
 import loop.core.verify.CheckResult
 import loop.core.verify.CheckRunner
+import loop.core.verify.DeliverableEvidence
 import loop.core.verify.Evidence
 import loop.core.verify.EvidenceWriter
 import loop.core.verify.Fingerprinter
 import loop.core.verify.Holdouts
 import loop.core.verify.JudgmentCalls
+import loop.core.verify.PlainWorkspace
 import loop.core.verify.ResultFile
 import loop.core.verify.SubmittedResult
 import loop.core.verify.UncommittedFiles
@@ -166,6 +183,8 @@ import loop.core.workflow.DeliveryConfig
 import loop.core.workflow.DeliveryPolicy
 import loop.core.workflow.FilledPrompt
 import loop.core.workflow.GuardsConfig
+import loop.core.workflow.KindConfig
+import loop.core.workflow.KindsConfig
 import loop.core.workflow.PreflightCheck
 import loop.core.workflow.PreflightResult
 import loop.core.workflow.PromptBudget
@@ -405,6 +424,8 @@ class Orchestrator(
     private val queuePausedBefore: suspend () -> RecordedEvent? = { null },
     /** m4-10: true once `loop drain` asked this run to drain, read at each dispatch. */
     private val drainRequested: () -> Boolean = { false },
+    /** m4-50: the resource locks of the shared store, freed at the end of each attempt. */
+    private val resourceLockStore: ResourceLockStore = ResourceLockStore.NONE,
 ) {
     /** The HEAD and working tree reads for the progress between rotations (bl-136), bounded and cancellable (bl-149). */
     private val workspaceFacts = WorkspaceFacts(workspaceGit)
@@ -465,6 +486,13 @@ class Orchestrator(
     /** m3-16: the machine slot each running attempt holds, by issue id; none without a machine cap. */
     private val machineSlots = mutableMapOf<String, String>()
 
+    /** m4-50: the resource lock calls, over the shared store. */
+    private val resourceLocks =
+        ResourceLocks(resourceLockStore, this.sink, clock, runId) { event, error ->
+            val context = LogContext(runId, event.projectId, event.issueId, event.issueIdentifier, event.attemptId)
+            log.log(LogLevel.WARN, "sink", LogOutcome.FAILED, context, fields = mapOf("sink" to sinkName), reason = error.describe())
+        }
+
     /** How many attempts this orchestrator saw canceled, for the run level `run_stopped` event. */
     var attemptsCanceled: Int = 0
         private set
@@ -480,6 +508,9 @@ class Orchestrator(
     private var rejected: PreflightResult.Failed? = null
 
     private val claimed = mutableSetOf<String>()
+
+    /** The area lock of the dispatch (m4-17): two issues whose areas overlap are never worked at once. */
+    private val areas = AreaLock()
 
     /**
      * The waits of the project (m2-04, m2-24, m2-26, bl-79): a waiting issue is never dispatched and its retries never
@@ -534,6 +565,12 @@ class Orchestrator(
      * `loop.verify_findings` of its next attempt (m2-06). Taken by the next render; kept in memory only.
      */
     private val verifyFindings = mutableMapOf<String, String>()
+
+    /**
+     * The deliverable comments posted and not yet followed by their move or wait, by issue, attempt and fingerprint
+     * (m4-22), so a retry after a failed move never posts the same deliverable twice. Kept in memory only.
+     */
+    private val postedDeliverables: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     /**
      * What each attempt running in this process spent so far, by attempt id, for the day budgets (m2-20): an
@@ -601,8 +638,9 @@ class Orchestrator(
         reconcile()
         // m4-10: from the first dispatch after `loop drain`, no candidate and no retry of another issue starts.
         drain.notice(drainFacts())
-        if (!passesPreflight()) return Dispatched(candidates = 0, attempts = emptyList())
+        // bl-101: before the preflight, so a slot whose release failed is not held while config.yaml stays malformed.
         machineGate.retryReleases(pollContext)
+        if (!passesPreflight()) return Dispatched(candidates = 0, attempts = emptyList())
         // m4-13: each tracker polled with its own active states; one that fails is skipped this tick, the others go on.
         val polled = trackers.poll(effective.trackers)
         polled.failures.forEach { (id, error) ->
@@ -622,7 +660,7 @@ class Orchestrator(
         val parkedIds =
             retries.stillParked(issues) ?: return Dispatched(candidates = issues.size, attempts = emptyList(), verifications)
         // bl-39: while the runner hold waits for its probe, no attempt or retry is dispatched; at the probe, only one.
-        val gate = hold.gate()
+        var gate = hold.gate()
         if (gate == RunnerHold.Gate.Closed) return Dispatched(candidates = issues.size, attempts = emptyList(), verifications)
         val held = drain.heldBack(retries.queued().keys)
         val fire =
@@ -670,7 +708,18 @@ class Orchestrator(
         for (issue in dispatchable.filter { it.id in notReady }) {
             skips[issue] = "$NOT_READY (missing ${notReady.getValue(issue.id).joinToString(", ")})"
         }
-        val eligible = dispatchable.filter { it.id !in notReady }
+        // m4-17: a candidate whose area overlaps a claimed issue's is skipped in its place.
+        val eligible =
+            areas.admit(
+                dispatchable.filter { it.id !in notReady },
+                holders = claimed + waits.verifying + retries.queued().keys,
+                seen = executions.values.map { it.issue } + issues,
+                skips = skips,
+            )
+        // m4-17: a due retry held by its area or a cross tracker blocker waits a poll interval, like one with no slot.
+        for ((issue, reason) in skips.filterKeys { it.id in retryAttempts }) {
+            retries.requeueNoSlot(issue, effective, reason.substringBefore(' '))
+        }
         if (eligible.isEmpty()) {
             bounceNotReady(dispatchable.filter { it.id in notReady }, notReady)
             recordSkips(skips)
@@ -698,6 +747,7 @@ class Orchestrator(
                 due = fire.dispatch.filter { it.issue.id in eligibleIds },
                 candidates = eligible.filter { it.id !in retryAttempts },
                 trackerOf = { effective.trackers.trackerOf(it)?.id },
+                held = areas::heldBy,
             )
         val attempts = mutableListOf<Deferred<AttemptSummary?>>()
         // Due retries with no slot, each with the error its `retry_scheduled` gives, null for the orchestrator's own.
@@ -709,9 +759,12 @@ class Orchestrator(
         // m3-16: a crossed machine day budget holds every new dispatch of this tick, a due retry included.
         val launches =
             if (machineGate.budgetHolds(liveSpend.toMap(), pollContext)) {
-                (slots.launches + slots.requeues + slots.skips).forEach { skip(it, MachineGate.MACHINE_BUDGET, MachineGate.MACHINE_BUDGET) }
+                (slots.launches + slots.requeues + slots.skips + slots.held.keys).forEach {
+                    skip(it, MachineGate.MACHINE_BUDGET, MachineGate.MACHINE_BUDGET)
+                }
                 emptyList()
             } else {
+                slots.held.forEach { (issue, reason) -> skip(issue, reason, AreaLock.REASON) }
                 slots.skips.forEach { skips[it] = NO_AVAILABLE_SLOTS }
                 slots.requeues.forEach { noSlotRetries += it to null }
                 slots.launches
@@ -723,19 +776,25 @@ class Orchestrator(
             // A launch is a proposal: an issue claimed or running since the plan read its inputs is left out.
             if (issue.id in claimed || issue.id in running) continue
             // bl-39: the probe of the runner hold is the first launch in slot order, the next due retry; the rest wait for it.
-            if (probing) {
+            if (probing || gate == RunnerHold.Gate.Closed) {
                 skip(issue, RUNNER_UNAVAILABLE, RUNNER_UNAVAILABLE)
                 continue
             }
+            val context = pollContext.copy(issueId = issue.id, issueIdentifier = issue.identifier)
             // m3-16: the plan's launch then claims a machine slot in the shared store; none free turns it into a skip.
-            when (val slot = machineGate.claim(pollContext.copy(issueId = issue.id, issueIdentifier = issue.identifier))) {
-                SlotClaim.Refused -> {
-                    skip(issue, MachineGate.NO_MACHINE_SLOT, MachineGate.NO_MACHINE_SLOTS)
-                    continue
-                }
-                is SlotClaim.Held -> machineSlots[issue.id] = slot.holder
-                SlotClaim.NoCap -> Unit
+            val slot = machineGate.claim(context)
+            if (slot == SlotClaim.Refused) {
+                skip(issue, MachineGate.NO_MACHINE_SLOT, MachineGate.NO_MACHINE_SLOTS)
+                continue
             }
+            // bl-101: an attempt that ended during the claim may have started the runner hold, so the gate is read again.
+            gate = hold.gate()
+            if (gate == RunnerHold.Gate.Closed) {
+                if (slot is SlotClaim.Held) machineGate.release(slot.holder, context)
+                skip(issue, RUNNER_UNAVAILABLE, RUNNER_UNAVAILABLE)
+                continue
+            }
+            if (slot is SlotClaim.Held) machineSlots[issue.id] = slot.holder
             claimed += issue.id
             running[issue.id] = issue.state.normalized()
             executions[issue.id] = Execution(issue)
@@ -745,13 +804,19 @@ class Orchestrator(
                 hold.probeStarted(issue.id)
                 probing = true
             }
-            attempts += scope.async { attemptAndRelease(issue) }
+            // bl-101: started atomically, like a merge check's job (bl-180), so a scope cancelled since the claim still
+            // runs its finally, which releases the machine slot and the claim; it runs nothing else.
+            @OptIn(DelicateCoroutinesApi::class)
+            val attempt = scope.async(start = CoroutineStart.ATOMIC) { attemptAndRelease(issue) }
+            attempts += attempt
         }
         noSlotRetries.forEach { (issue, error) ->
             if (error == null) retries.requeueNoSlot(issue, effective) else retries.requeueNoSlot(issue, effective, error)
         }
         bounceNotReady(dispatchable.filter { it.id in notReady }, notReady)
-        recordSkips(skips)
+        // bl-101: a skip of the launch loop was added after the slot plan's own, so they are recorded in slot order.
+        val slotOrder = routable.withIndex().associate { (index, issue) -> issue.id to index }
+        recordSkips(skips.entries.sortedBy { slotOrder[it.key.id] }.associate { it.toPair() })
         return Dispatched(candidates = issues.size, attempts = attempts, verifications)
     }
 
@@ -778,8 +843,9 @@ class Orchestrator(
      */
     private fun missingSections(issue: Issue): List<String> {
         val ready =
-            effective.config.kinds
-                ?.code
+            KindLookup
+                .of(effective, issue)
+                ?.config
                 ?.ready ?: return emptyList()
         return Readiness.missingSections(issue.description, ready)
     }
@@ -869,6 +935,8 @@ class Orchestrator(
     private suspend fun attemptAndRelease(issue: Issue): AttemptSummary? {
         var unavailable = false
         try {
+            // bl-101: a launch on a scope cancelled since its claim runs nothing, only the releases of the finally.
+            currentCoroutineContext().ensureActive()
             val summary = runAttempt(issue)
             val reconciled = summary.reconciled
             if (reconciled == null) {
@@ -1045,8 +1113,9 @@ class Orchestrator(
     suspend fun removeWorkspace(issue: Issue): Result<Unit> {
         val key = NamespacedId.workspaceKey(issue.id, issue.identifier, effective.trackerId)
         val context = pollContext.copy(issueId = issue.id, issueIdentifier = issue.identifier)
+        val kind = KindLookup.of(effective, issue)
         val env =
-            hookEnv(effective.path, issue.id, issue.identifier, key) +
+            hookEnv(effective.path, issue.id, issue.identifier, key, kind?.name) +
                 mapOf(
                     "LOOP_HOME" to loopHome.toString(),
                     "LOOP_PROJECT_ID" to projectId.value,
@@ -1068,7 +1137,8 @@ class Orchestrator(
                 },
                 context = { context },
             )
-        return workspacesFor(effective).remove(key, env, hooks).fold(
+        // m4-20: a kind populated empty runs no before_remove.
+        return KindWorkspaces.manager(workspacesFor(effective), kind).remove(key, env, hooks).fold(
             onSuccess = { removed ->
                 if (removed) {
                     log.log(LogLevel.INFO, "workspace", LogOutcome.COMPLETED, context, mapOf("workspace_key" to key.value))
@@ -1381,6 +1451,10 @@ class Orchestrator(
                     attempt.afterRun(canceled = cancelled || stop != null)
                 } finally {
                     try {
+                        // m4-50: every lock and queue row of the attempt goes at its end, whatever the end.
+                        resourceLocks.freeAttempt(attempt.attemptId, ResourceReleased.ATTEMPT_ENDED).onFailure {
+                            log.log(LogLevel.WARN, "resource", LogOutcome.FAILED, attempt.logContext(), reason = it.describe())
+                        }
                         // Whatever a canceled or failed turn queued is never applied (m1-23).
                         attempt.dropRequests()
                         attempt.deleteDirectory()
@@ -1593,8 +1667,11 @@ class Orchestrator(
          */
         val workflow: WorkflowFile = effective
 
+        /** The kind of the issue as dispatched (m4-18), for the whole attempt like [workflow]; null in Symphony mode. */
+        val kind: IssueKind? = KindLookup.of(workflow, issue)
+
         val runner: AgentRunner = runnerFor(workflow)
-        private val workspaces: WorkspaceManager = workspacesFor(workflow)
+        private val workspaces: WorkspaceManager = KindWorkspaces.manager(workspacesFor(workflow), kind)
 
         /** The windows of this attempt's models, and the ones with none (m4-02). */
         private val contextWindows =
@@ -1676,7 +1753,7 @@ class Orchestrator(
          * runner's configured model. A line names its session's reported model instead, the row the attempt's (bl-147).
          */
         private val ledger = LedgerMeter()
-        private val ledgerSetup = LedgerMeter.setupOf(workflow, runner.model, issue.id)
+        private val ledgerSetup = LedgerMeter.setupOf(workflow, runner.model, issue.id, kind?.name)
 
         /** m4-42: the ledger setup `attempt_started` carries, so an exporter names it on every span of the attempt. */
         fun setupData(): Map<String, String> =
@@ -1900,6 +1977,7 @@ class Orchestrator(
             if (!directoryCreated) return false
             keepToolOutputs()
             submitted = null
+            submittedVerification = null
             drainFindings = null
             drainFailures.clear()
             resultFailure = null
@@ -2005,13 +2083,20 @@ class Orchestrator(
             drainFailures.putIfAbsent(if (safe[Tracker.TO] != null) failedRequestName(safe) else notice, notice)
         }
 
-        /** Moves the issue and records `issue_moved` by host; the failure's reason, null when it moved. */
+        /**
+         * Moves the issue and records `issue_moved` by host; the failure's reason, null when it moved. A move that would
+         * put the issue under another kind is refused (m4-18), so an agent never picks a kind with laxer checks for its
+         * next attempt.
+         */
         private suspend fun applyMove(request: ToolRequest.Move): String? {
             val current =
                 withContext(io) { tracker.fetchIssuesByIds(listOf(issue.id)) }
                     .getOrElse { return it.describe() }
                     .firstOrNull()
                     ?: return "no issue ${issue.identifier} in the tracker"
+            val before = KindLookup.of(workflow, current)?.name
+            val after = KindLookup.afterMove(workflow, current, request.to)?.name
+            if (before != after) return "the move to ${request.to} would change the kind of the issue from $before to $after"
             val from = current.state
             withContext(io) { tracker.moveIssue(current, request.to) }.getOrElse { return it.describe() }
             record(IssueMoved, data = mapOf(Tracker.FROM to from, Tracker.TO to request.to, Tracker.BY to BY_HOST))
@@ -2025,6 +2110,9 @@ class Orchestrator(
 
         /** Whether the checks passed for a result submitted earlier in this drain, null before one; reset per drain. */
         private var submitted: Boolean? = null
+
+        /** The verification of that result (m4-22), whose verified state a second result of the drain delivers. */
+        private var submittedVerification: Verification? = null
 
         /** The findings of a refutation in this drain, for the guidance of the next turn (m2-06); reset per drain. */
         private var drainFindings: VerifyFindings? = null
@@ -2080,8 +2168,8 @@ class Orchestrator(
             data: Map<String, String> = emptyMap(),
         ): String? {
             record(ResultSubmitted, data = mapOf(Results.TO to to) + data)
-            val verification = verification()
-            submitted?.let { passed -> return if (passed) verification?.deliver(to) else null }
+            submitted?.let { passed -> return if (passed) submittedVerification?.deliver(to) else null }
+            val verification = verification().also { submittedVerification = it }
             if (verification == null) {
                 submitted = false
                 return null
@@ -2093,7 +2181,7 @@ class Orchestrator(
                 unverified = verification.unverified
                 return null
             }
-            val wait = Wait.verify(projectId, issue.id, issue.identifier, attemptId, runId, clock.now(), to)
+            val wait = Wait.verify(projectId, issue.id, issue.identifier, attemptId, runId, clock.now(), to, kind?.name)
             return waitingFor(wait, write = true, endOnCancel = { executions[issue.id]?.stop != null }) {
                 val passed = verification.verify().also { submitted = it }
                 progress.verified(verification.failingChecks)
@@ -2262,6 +2350,7 @@ class Orchestrator(
                 issue.description,
                 attemptId,
                 workflow,
+                kind,
                 path,
                 checkRunner,
                 { definition, data -> record(definition, data = data) },
@@ -2521,11 +2610,14 @@ class Orchestrator(
             val retryKind = dispatchRetryKinds[issue.id]
             // m3-10: a retry or a reused workspace gets a session brief built from facts, a fresh first dispatch none.
             val brief = if (attempt != null || workspaceReused) sessionBrief(issue, workspace.path, fetchedBase, findings) else null
+            // m4-19: the kind's own template or the body, and its context sources as the workspace holds them now.
+            val sources = contextSources(workspace.path)
             val (template, rendered) =
                 templates
-                    .parse(workflow.promptTemplate)
+                    .parse(KindPrompt.template(workflow, kind))
                     .mapCatching {
-                        it to it.render(PromptVariables.of(issue, attempt, findings, workspaceReused, brief, retryKind)).getOrThrow()
+                        it to
+                            it.render(PromptVariables.of(issue, attempt, findings, workspaceReused, brief, retryKind, sources)).getOrThrow()
                     }.getOrElse { error ->
                         recordPhase(AttemptPhase.BuildingPrompt)
                         return Executed(AttemptOutcome.Failed, "template error: ${error.describe()}")
@@ -2538,7 +2630,7 @@ class Orchestrator(
                 progress = RotationProgress(head, tree)
             }
             // m3-14: over its limit the prompt is filled slot by slot, each slot cut by its rule.
-            val filled = fillPrompt(template, rendered, PromptContent(issue, findings, brief), attempt, workspaceReused, retryKind)
+            val filled = fillPrompt(template, rendered, PromptContent(issue, findings, brief, sources), attempt, workspaceReused, retryKind)
             val prompt = filled.prompt
             val promptRecordError = recordPrompt(prompt)
             val promptData =
@@ -2610,8 +2702,8 @@ class Orchestrator(
             rotations: Int = 0,
         ): String {
             val base =
-                fetchedBase ?: workflow.config.kinds
-                    ?.code
+                fetchedBase ?: kind
+                    ?.config
                     ?.guards
                     ?.base ?: GuardsConfig.DEFAULT_BASE
             val brief = SessionBrief(workspaceGit, attemptLedger, attemptEvents, SessionBrief.savedResults(loopHome, projectId), redactor)
@@ -2634,7 +2726,7 @@ class Orchestrator(
          * fails the attempt: its verification freezes the same dispatched list, or parks the issue when it cannot.
          */
         private suspend fun freezeAtDispatch() {
-            if (!declaresAcceptanceCommands(workflow) || workflow.trackers.entryOf(issue.id).kind != FILES_TRACKER) return
+            if (!declaresAcceptanceCommands(kind?.config) || workflow.trackers.entryOf(issue.id).kind != FILES_TRACKER) return
             val commands = AcceptanceCriteria.of(issue.description).commands
             freezeAcceptanceCommands(issue.id, issue.identifier, commands) { definition, data -> record(definition, data = data) }
                 .onFailure { error ->
@@ -2804,6 +2896,7 @@ class Orchestrator(
                     content.sessionBrief,
                     retryKind,
                     counter,
+                    content.contextSources,
                 )
             if (slots == null) {
                 val reason = "the template does not render without the issue"
@@ -2831,6 +2924,22 @@ class Orchestrator(
             if (counter.count(rendered) <= limit.tokens) return whole
             val pointer = issuePointer(content.issue)
             return PromptFill.fill(template, content, attempt, workspaceReused, retryKind, counter, limit.tokens, pointer) ?: whole
+        }
+
+        /** The context sources of the attempt's kind as [workspace] holds them now (m4-19), each missing one recorded. */
+        private suspend fun contextSources(workspace: Path): String? {
+            val sources = KindPrompt.sources(kind, workspace)
+            sources.missing.forEach { path ->
+                record(
+                    ContextSourceMissing,
+                    data =
+                        mapOf(
+                            ContextSourceMissing.PATH to path,
+                            ContextSourceMissing.KIND to kind?.name.orEmpty(),
+                        ),
+                )
+            }
+            return sources.text
         }
 
         /**
@@ -3112,9 +3221,10 @@ class Orchestrator(
             val findings = if (verdicts) refuted?.text else inputs.findings
             val notices = drainFailures.values.toList()
             val brief = sessionBrief(issue, inputs.workspace, inputs.fetchedBase, findings, rotations)
+            val sources = contextSources(inputs.workspace)
             val (template, rendered) =
                 templates
-                    .parse(workflow.promptTemplate)
+                    .parse(KindPrompt.template(workflow, kind))
                     .mapCatching {
                         val variables =
                             PromptVariables.of(
@@ -3124,6 +3234,7 @@ class Orchestrator(
                                 inputs.workspaceReused,
                                 brief,
                                 PromptVariables.RETRY_ROTATION,
+                                sources,
                             )
                         it to it.render(variables).getOrThrow()
                     }.getOrElse { error ->
@@ -3133,7 +3244,7 @@ class Orchestrator(
                         return Rotation.Ended(Executed(AttemptOutcome.Failed, "template error: ${error.describe()}", turns = number))
                     }
             // m3-14: filled to the prompt limit like the attempt's first prompt, the notices trimmed after it.
-            val content = PromptContent(issue, findings, brief)
+            val content = PromptContent(issue, findings, brief, sources)
             val filled = fillPrompt(template, rendered, content, inputs.attempt, inputs.workspaceReused, PromptVariables.RETRY_ROTATION)
             val prompt = filled.prompt + noticesText(notices, workflow.config.context.toolOutputTokens)
             // A cut rotated prompt records its budget and its cuts on the session_rotated event, as the first prompt does
@@ -3614,8 +3725,8 @@ class Orchestrator(
          */
         private suspend fun attemptBase(): String? {
             val base =
-                workflow.config.kinds
-                    ?.code
+                kind
+                    ?.config
                     ?.delivery
                     ?.pullRequest
                     ?.base ?: return null
@@ -3711,7 +3822,7 @@ class Orchestrator(
 
         private fun env(key: WorkspaceKey): Map<String, String> {
             val launcherDir = launcher.parent.toString()
-            return hookEnv(workflow.path, issue.id, issue.identifier, key) +
+            return hookEnv(workflow.path, issue.id, issue.identifier, key, kind?.name) +
                 mapOf(
                     "LOOP_HOME" to loopHome.toString(),
                     "LOOP_PROJECT_ID" to projectId.value,
@@ -3724,10 +3835,9 @@ class Orchestrator(
         }
     }
 
-    /** Whether the kind of [workflow] declares `acceptance_commands` (m2-09). */
-    private fun declaresAcceptanceCommands(workflow: WorkflowFile): Boolean =
-        workflow.config.kinds
-            ?.code
+    /** Whether [kind] declares `acceptance_commands` (m2-09). */
+    private fun declaresAcceptanceCommands(kind: KindConfig?): Boolean =
+        kind
             ?.checks
             .orEmpty()
             .any { it is CheckConfig.AcceptanceCommands }
@@ -3771,6 +3881,11 @@ class Orchestrator(
         val description: String?,
         val attemptId: AttemptId?,
         val workflow: WorkflowFile,
+        /**
+         * The kind of the issue (m4-18), whose checks, holdouts and delivery apply, and whose name the approval wait
+         * holds; null in Symphony mode.
+         */
+        val kind: IssueKind?,
         val workspace: Path,
         val checkRunner: CheckRunner,
         val record: suspend (EventDefinition, Map<String, String>) -> Unit,
@@ -3789,18 +3904,10 @@ class Orchestrator(
          */
         val diffPolicyOnly: Boolean = false,
     ) {
-        private val configured: List<CheckConfig> =
-            workflow.config.kinds
-                ?.code
-                ?.checks
-                .orEmpty()
+        private val configured: List<CheckConfig> = kind?.config?.checks.orEmpty()
 
         /** The hidden checks (m2-14), run after every visible check passed and counted in the verdict like them. */
-        private val holdouts: List<CheckConfig> =
-            workflow.config.kinds
-                ?.code
-                ?.holdout
-                .orEmpty()
+        private val holdouts: List<CheckConfig> = kind?.config?.holdout.orEmpty()
 
         /** The issue's acceptance criteria when the kind declares `acceptance_commands`, null otherwise (m2-09). */
         private val criteria: List<AcceptanceCriterion>? =
@@ -3945,6 +4052,12 @@ class Orchestrator(
         private var verifiedFingerprint: String = UNKNOWN_FINGERPRINT
         private val passed = mutableListOf<EvidenceSummary.Check>()
 
+        /** The deliverable files the last [verify] listed (m4-21), which the attach delivery posts (m4-22). */
+        private var deliverableFiles: List<DeliverableFile>? = null
+
+        /** True when the last [verify] saved its deliverable evidence (m4-22). */
+        private var deliverableSaved = false
+
         /**
          * Runs the kind's checks in order, then its holdouts (m2-14), stopping at the first failure; true only
          * when there is one and all passed. A holdout's index follows the visible checks'. A check that ran and
@@ -3965,6 +4078,8 @@ class Orchestrator(
             val fingerprint = fingerprint()
             // m2-25: listed with the fingerprint, before a check can regenerate a file.
             val uncommittedAtStart = uncommittedFiles(fingerprint)
+            // m4-21: listed with the fingerprint too, so a file a check writes is never taken for the deliverable.
+            val deliverable = withContext(io) { DeliverableFiles.listing(kind, workspace) }
             // m2-09: a refused list uses nothing of the criteria. bl-32: a diff_policy only run reads none of them.
             val read = criteria?.takeIf { refusal == null && !diffPolicyOnly }
             val judgmentCalls = read.orEmpty().judgmentCalls
@@ -4049,15 +4164,29 @@ class Orchestrator(
                 break
             }
             // m2-25: what a check wrote is not the agent's work, so a work tree clean before the checks is clean after them.
-            if (deliversPullRequest && WorkspaceFingerprint.committedHead(fingerprint) != null) restoreWorkTree()
+            if (!plain && deliversPullRequest && WorkspaceFingerprint.committedHead(fingerprint) != null) restoreWorkTree()
             // m2-25: a pull request carries only commits, so a verified work tree that holds more is refuted.
             val uncommitted = uncommittedAtStart?.takeIf { verdict == VERIFIED }
             if (uncommitted != null) {
                 verdict = REFUTED
                 findings = VerifyFindings.uncommitted(uncommitted, redactor)
             }
+            // m4-21: a kind with deliverable.files proves nothing without one. m4-23: nor a report kind without its whole report.
+            val missing = (deliverable as? DeliverableListing.Listed)?.takeIf { it.refuted && verdict == VERIFIED }
+            if (missing != null) {
+                verdict = REFUTED
+                findings = VerifyFindings.deliverable(missing, redactor)
+            }
+            if (verdict == VERIFIED && deliverable is DeliverableListing.Failed) {
+                verdict = UNVERIFIED
+                unverified = redactor.redact(deliverable.reason).take(REASON_MAX)
+            }
+            val listedFiles = (deliverable as? DeliverableListing.Listed)?.files
+            deliverableFiles = listedFiles
+            val deliverableEvidence = listedFiles?.let { saveDeliverable(DeliverableEvidence(fingerprint, it)) }
+            deliverableSaved = deliverableEvidence != null
             val listed = all.count { (check, _) -> !diffPolicyOnly || check is CheckConfig.DiffPolicy }
-            failingChecks = listed - passed.size + (if (uncommitted != null) 1 else 0)
+            failingChecks = listed - passed.size + (if (uncommitted != null) 1 else 0) + (if (missing != null) 1 else 0)
             record(
                 Verdict,
                 mapOfNotNull(
@@ -4068,6 +4197,14 @@ class Orchestrator(
                     Verdict.REASON to unverified,
                     Verdict.JUDGMENT_CALLS to judgmentCalls.size.takeIf { it > 0 }?.toString(),
                     Verdict.UNCOMMITTED to uncommitted?.let { (it.changed.size + it.untracked.size).toString() },
+                    Verdict.DELIVERABLE to listedFiles?.size?.toString(),
+                    Verdict.DELIVERABLE_EVIDENCE to deliverableEvidence,
+                    Verdict.REPORT_FINDINGS to
+                        missing
+                            ?.problems
+                            ?.size
+                            ?.takeIf { it > 0 }
+                            ?.toString(),
                 ),
             )
             log.log(
@@ -4094,9 +4231,12 @@ class Orchestrator(
          */
         private suspend fun pinnedBase(): String? {
             if (diffBase != null) return diffBase
+            // m4-20: a plain kind has no git diff to base.
+            if (plain) return null
+            // m4-18: the issue's kind, like `attemptBase`; only the code kind delivers a pull request so far.
             val base =
-                workflow.config.kinds
-                    ?.code
+                kind
+                    ?.config
                     ?.delivery
                     ?.pullRequest
                     ?.base ?: return null
@@ -4115,11 +4255,14 @@ class Orchestrator(
             )
         }
 
+        /** True when the kind declares `workspace: plain` (m4-20): no git read, a `tree:` fingerprint. */
+        private val plain: Boolean get() = KindWorkspaces.isPlain(kind)
+
         /** True when the kind delivers a pull request (m2-25). */
         private val deliversPullRequest: Boolean
             get() =
-                workflow.config.kinds
-                    ?.code
+                kind
+                    ?.config
                     ?.delivery
                     ?.pullRequest != null
 
@@ -4148,7 +4291,7 @@ class Orchestrator(
          * empty lists, and the finding says so.
          */
         private suspend fun uncommittedFiles(fingerprint: String): UncommittedFiles? {
-            if (!deliversPullRequest) return null
+            if (plain || !deliversPullRequest) return null
             if (!fingerprint.startsWith("git:") || WorkspaceFingerprint.committedHead(fingerprint) != null) return null
             val listed =
                 try {
@@ -4169,7 +4312,7 @@ class Orchestrator(
         private suspend fun fingerprint(): String {
             val result =
                 try {
-                    withContext(io) { fingerprinter.of(workspace) }
+                    withContext(io) { PlainWorkspace.fingerprint(fingerprinter, workspace, plain) }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -4187,11 +4330,12 @@ class Orchestrator(
          * starts a `Waiting(approval)` with an evidence summary on the issue. The failure's reason, null otherwise.
          */
         suspend fun deliver(to: String): String? {
-            val delivery =
-                workflow.config.kinds
-                    ?.code
-                    ?.delivery ?: DeliveryConfig()
-            if (delivery.policy != DeliveryPolicy.Auto) return requestApproval(to)
+            val delivery = kind?.config?.delivery ?: DeliveryConfig()
+            // m4-22: an attach delivery ends in on_delivered.move_to, its handoff state when absent.
+            val target = if (delivery.attach) delivery.onDeliveredMoveTo ?: to else to
+            if (delivery.policy != DeliveryPolicy.Auto) return requestApproval(target)
+            // The loader refuses attach under auto without its opt in; a config built past it waits for approval.
+            if (delivery.attach) return if (delivery.attachAutoEnabled) deliverAttached(target) else requestApproval(target)
             // m2-28: an auto merge goes through the m2-25 delivery and the m2-26 merge check, approved by `auto` itself;
             // the auto merge gate decides right before the merge.
             if (delivery.pullRequest?.merge != null) return requestAutoMerge(to)
@@ -4283,6 +4427,7 @@ class Orchestrator(
         private suspend fun requestApproval(
             to: String,
             pullRequest: String? = null,
+            deliverable: AttachDelivery.Prepared.Comment? = null,
         ): String? {
             if (waits.awaitsApproval(issueId)) return null
             val current =
@@ -4297,8 +4442,23 @@ class Orchestrator(
                 if (!ownMove(from)) record(HumanTouched, mapOf(HumanTouched.TOUCH to HumanTouch.MOVE, HumanTouched.TO_STATE to from))
                 return "the issue is no longer active, it is in $from"
             }
-            postSummary(current, to)
+            // m4-22: the deliverable first, so the evidence summary and its approval stay the last comment. A deliverable
+            // that cannot be built starts no wait; one that could not be posted is named in the summary.
+            val notes =
+                if (kind?.config?.delivery?.attach == true) {
+                    val comment =
+                        deliverable ?: when (val prepared = prepareDeliverable()) {
+                            is AttachDelivery.Prepared.Comment -> prepared
+                            is AttachDelivery.Prepared.Failed -> return prepared.reason
+                        }
+                    attachNotes(current, comment, fallback = deliverable != null)
+                } else {
+                    emptyList()
+                }
+            val policy = if (deliverable != null) DeliveryPolicy.Auto.wire else DeliveryPolicy.Human.wire
+            postSummary(current, to, notes, policy)
             startApprovalWait(to, approvedBy = null, pullRequest = pullRequest)
+            postedDeliverables -= deliverableKey()
             record(
                 ApprovalRequested,
                 mapOf(Delivery.TO to to, Delivery.POLICY to DeliveryPolicy.Human.wire, Delivery.FINGERPRINT to verifiedFingerprint),
@@ -4306,6 +4466,77 @@ class Orchestrator(
             log.log(LogLevel.INFO, DELIVERY, LogOutcome.STARTED, logContext(), mapOf("wait_reason" to WaitReason.Approval.wire, "to" to to))
             return null
         }
+
+        /**
+         * Delivers the verified result under `auto` with `delivery.attach` and its opt in (m4-22): the issue is read again
+         * first, like for a move, then the deliverable is posted on it and the issue moves to [to], with no approval. A
+         * deliverable that cannot be built or posted moves nothing; one with a file only listed, not inlined, falls back
+         * to the approval wait, as an auto merge falls back to human, so the workspace stays. The failure's reason, null
+         * when it delivered, waits or was already there.
+         */
+        private suspend fun deliverAttached(to: String): String? {
+            val current =
+                withContext(io) { tracker.fetchIssuesByIds(listOf(issueId)) }
+                    .getOrElse { return it.describe() }
+                    .firstOrNull()
+                    ?: return "no issue $identifier in the tracker"
+            val from = current.state
+            if (from.normalized() == to.normalized()) return null
+            if (!workflow.trackers.entryOf(issueId).isActive(from)) {
+                if (!ownMove(from)) record(HumanTouched, mapOf(HumanTouched.TOUCH to HumanTouch.MOVE, HumanTouched.TO_STATE to from))
+                return "the issue is no longer active, it is in $from"
+            }
+            val comment =
+                when (val prepared = prepareDeliverable()) {
+                    is AttachDelivery.Prepared.Comment -> prepared
+                    is AttachDelivery.Prepared.Failed -> return prepared.reason
+                }
+            if (comment.listed > 0) return requestApproval(to, deliverable = comment)
+            postDeliverable(current, comment)?.let { return it }
+            return move(to).also { if (it == null) postedDeliverables -= deliverableKey() }
+        }
+
+        /** The deliverable comment of the last [verify] (m4-22), or why there is none: a verified attach kind lists its files. */
+        private suspend fun prepareDeliverable(): AttachDelivery.Prepared {
+            val files = deliverableFiles ?: return AttachDelivery.Prepared.Failed("the verification listed no deliverable files")
+            return attachDelivery().prepare(identifier, attemptId?.value, workspace, files, deliverableSaved)
+        }
+
+        /**
+         * Posts the deliverable [comment] on [issue] (m4-22), once for an attempt and fingerprint; the failure, logged at
+         * warn, null when it was posted now or before.
+         */
+        private suspend fun postDeliverable(
+            issue: Issue,
+            comment: AttachDelivery.Prepared.Comment,
+        ): String? {
+            val key = deliverableKey()
+            if (key in postedDeliverables) return null
+            val failure = attachDelivery().post(issue, comment)
+            if (failure == null) {
+                postedDeliverables += key
+                return null
+            }
+            log.log(LogLevel.WARN, DELIVERY, LogOutcome.FAILED, logContext(), reason = failure)
+            return failure
+        }
+
+        /**
+         * Posts the deliverable [comment] before an approval wait (m4-22); the lines the evidence summary adds: why an
+         * auto delivery waits when it is a [fallback], and a post that failed.
+         */
+        private suspend fun attachNotes(
+            issue: Issue,
+            comment: AttachDelivery.Prepared.Comment,
+            fallback: Boolean,
+        ): List<String> {
+            val failure = postDeliverable(issue, comment)
+            return listOfNotNull(AttachDelivery.fallbackNote(comment.listed).takeIf { fallback }, failure?.let(AttachDelivery::failureNote))
+        }
+
+        private fun attachDelivery() = AttachDelivery(tracker, redactor, clock, io, record)
+
+        private fun deliverableKey() = "$issueId/${attemptId?.value}/$verifiedFingerprint"
 
         /**
          * Writes the `Waiting(approval)` of the verified result, in memory and in the store, with the target state and
@@ -4320,8 +4551,8 @@ class Orchestrator(
         ) {
             // The check lines, redacted, and the number of judgment calls of the last [verify], for the body (m2-25).
             val pullRequestDelivery =
-                workflow.config.kinds
-                    ?.code
+                kind
+                    ?.config
                     ?.delivery
                     ?.pullRequest != null
             val checks = if (pullRequestDelivery) redactor.redact(EvidenceSummary.lines(passed.toList()).joinToString("\n")) else null
@@ -4340,6 +4571,7 @@ class Orchestrator(
                     approvedBy = approvedBy,
                     approvedAt = approvedBy?.let { clock.now() },
                     pullRequest = pullRequest,
+                    kind = kind?.name,
                 )
             waits.hold(wait)
             storeWaiting(wait) { waits.save(wait) }
@@ -4349,9 +4581,12 @@ class Orchestrator(
         private suspend fun postSummary(
             issue: Issue,
             to: String,
+            notes: List<String> = emptyList(),
+            policy: String = DeliveryPolicy.Human.wire,
         ) {
             val attempt = attemptId?.value ?: return
-            val text = redactor.redact(EvidenceSummary.text(identifier, attempt, to, verifiedFingerprint, passed.toList())).trim()
+            val summary = EvidenceSummary.text(identifier, attempt, to, verifiedFingerprint, passed.toList(), notes, policy)
+            val text = redactor.redact(summary).trim()
             val comment = IssueComment(LOOP_AUTHOR, clock.now(), text)
             val failure =
                 try {
@@ -4522,6 +4757,21 @@ class Orchestrator(
                 null
             }
         }
+
+        /** Saves the deliverable files of a verification as evidence (m4-21) and returns its reference, null when not saved. */
+        private suspend fun saveDeliverable(deliverable: DeliverableEvidence): String? =
+            attemptId?.let { attempt ->
+                try {
+                    withContext(io) { evidence.writeDeliverable(projectId, attempt, deliverable) }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    val reason = redactor.redact("cannot save the deliverable files: ${e.describe()}").take(REASON_MAX)
+                    record(EvidenceRecordFailed, mapOf(Results.REASON to reason))
+                    log.log(LogLevel.WARN, "evidence_record", LogOutcome.FAILED, logContext(), reason = reason)
+                    null
+                }
+            }
 
         /**
          * Saves the criteria of the issue that hold no command as evidence of their own (m2-09), then records
@@ -4855,7 +5105,8 @@ class Orchestrator(
      * Delivers an approved wait (m2-24): on the files tracker, the move of [issue] to [to], its handoff state, with
      * the wait's attempt id. A failed move is logged and the issue keeps waiting, so the next tick tries again.
      * With `delivery.pull_request` the pull request delivery runs instead, its move last (m2-25). True when it was
-     * delivered.
+     * delivered. The delivery is that of the kind the issue was dispatched under, which the wait holds (m4-18), not the
+     * one it matches now; a wait whose kind left the workflow keeps waiting, with a warning.
      */
     private suspend fun deliverApproved(
         wait: Wait.Approval,
@@ -4863,12 +5114,32 @@ class Orchestrator(
         to: String,
     ): Boolean {
         val context = waitContext(wait)
-        if (effective.config.kinds
-                ?.code
+        val kind =
+            when (val pinned = KindLookup.pinned(effective, wait.kind, issue)) {
+                is PinnedKind.Found -> pinned.kind
+                is PinnedKind.Gone -> {
+                    warnKindGone(wait, pinned.name)
+                    return false
+                }
+            }
+        if (kind
+                ?.config
                 ?.delivery
                 ?.pullRequest != null
         ) {
             return deliverPullRequest(wait, issue, to)
+        }
+        // m4-20: a plain workspace is delivered only while it is still at its verified fingerprint.
+        if (KindWorkspaces.isPlain(kind)) {
+            val key = NamespacedId.workspaceKey(wait.issueId, wait.identifier, effective.trackerId)
+            val stale = withContext(io) { PlainWorkspace.stale(fingerprinter, workspacesFor(effective).locate(key), wait.fingerprint) }
+            if (stale != null) {
+                val reason = redactor.redact(stale).take(REASON_MAX)
+                recordWaitEvent(wait, DeliveryFailed, mapOf(Delivery.STEP to PlainWorkspace.STEP_FINGERPRINT, Delivery.REASON to reason))
+                log.log(LogLevel.WARN, DELIVERY, LogOutcome.FAILED, context, reason = "cannot deliver the approved result: $reason")
+                clearApproval(wait)
+                return false
+            }
         }
         val failure =
             try {
@@ -4923,6 +5194,8 @@ class Orchestrator(
                 commented = wait.pullRequest,
             )
         // m2-26: with `merge`, the delivery stops after the comment and the merge wait takes over, the issue unmoved.
+        // m4-18: the code kind's, since only a code issue reaches a pull request delivery: no other kind may declare
+        // one, and the wait pins the kind the issue was dispatched under.
         val merges =
             effective.config.kinds
                 ?.code
@@ -5093,6 +5366,9 @@ class Orchestrator(
                 issue.description,
                 wait.attemptId,
                 workflow,
+                // m4-18: the merge check is code only until each kind takes it up. Only a code issue reaches it: no
+                // other kind may deliver a pull request, and the approval wait pins the kind it was dispatched under.
+                workflow.config.kinds?.let { IssueKind(KindsConfig.CODE, it.code) },
                 workspace,
                 checkRunnerFor(workflow),
                 { definition, data -> recordWaitEvent(wait, definition, data + (MergeCheck.MARK to "true")) },
@@ -5178,6 +5454,19 @@ class Orchestrator(
         log.guardSink(sinkName, waitContext(wait)) { sink.record(event).getOrThrow() }
     }
 
+    /** The issues whose wait named a kind the workflow no longer holds, warned once each for the life of this run (m4-18). */
+    private val kindGoneWarned = mutableSetOf<String>()
+
+    /** Logs at warn, once per issue, that [wait] keeps waiting because its kind [name] left the workflow (m4-18). */
+    private fun warnKindGone(
+        wait: Wait,
+        name: String,
+    ) {
+        if (!kindGoneWarned.add(wait.issueId)) return
+        val reason = "the kind $name the issue was dispatched under is no longer in the workflow, it keeps waiting until it is back"
+        log.log(LogLevel.WARN, WAITING, LogOutcome.FAILED, waitContext(wait), mapOf("wait_reason" to wait.reason.wire), reason)
+    }
+
     /** Resumes one stored wait, see [restoreWaiting]; the rerun of its checks, null when nothing runs. */
     private suspend fun resumeWait(
         scope: CoroutineScope,
@@ -5206,6 +5495,16 @@ class Orchestrator(
             log.log(LogLevel.INFO, WAITING, LogOutcome.RELEASED, waitContext(wait), mapOf("wait_reason" to wait.reason.wire), dropped)
             return null
         }
+        // m4-18: the checks of the kind the issue was dispatched under; a wait whose kind left the workflow keeps waiting.
+        val kind =
+            when (val pinned = KindLookup.pinned(workflow, wait.kind, candidate)) {
+                is PinnedKind.Found -> pinned.kind
+                is PinnedKind.Gone -> {
+                    waits.hold(wait)
+                    warnKindGone(wait, pinned.name)
+                    return null
+                }
+            }
         val context = waitContext(wait)
         val record: suspend (EventDefinition, Map<String, String>) -> Unit = { definition, data ->
             val event =
@@ -5227,6 +5526,7 @@ class Orchestrator(
                 candidate?.description,
                 wait.attemptId,
                 workflow,
+                kind,
                 checkNotNull(located.getOrNull()),
                 checkRunnerFor(workflow),
                 record,

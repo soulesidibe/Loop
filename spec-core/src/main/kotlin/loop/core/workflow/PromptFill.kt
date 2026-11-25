@@ -3,11 +3,15 @@ package loop.core.workflow
 import loop.api.Issue
 import loop.core.template.Template
 
-/** What a prompt renders from that the fill may cut (m3-14): the issue, the verify findings and the session brief. */
+/**
+ * What a prompt renders from that the fill may cut (m3-14): the issue, the verify findings, the session brief, and since
+ * m4-19 the list of the kind's context sources.
+ */
 data class PromptContent(
     val issue: Issue,
     val verifyFindings: String?,
     val sessionBrief: String?,
+    val contextSources: String? = null,
 )
 
 /**
@@ -33,7 +37,9 @@ data class FilledPrompt(
  * 4. the session brief keeps every part's heading and, each part cut to the same share of its length, the first lines
  *    of its body, or its first line and its last lines for a part whose newest facts come last
  *    ([SessionBrief.NEWEST_LAST_PARTS]: the latest findings, the newest progress);
- * 5. the lessons and 6. the context sources stay empty until M6 and M4, so they measure 0 and are never cut.
+ * 5. the lessons stay empty until M6, so they measure 0 and are never cut;
+ * 6. the context sources keep their first lines, one source each, then a line saying how many are left out; when not
+ *    even that line fits they are left out (m4-19).
  *
  * A prompt whose slots are all at their smallest can still be over its limit; it is sent so, and the caller records it.
  */
@@ -47,6 +53,16 @@ object PromptFill {
 
     /** The line that stands for the older lines of a part of the session brief whose newest lines are kept. */
     const val BRIEF_OLDER_CUT: String = "(older lines cut to fit the prompt limit)"
+
+    /** The line that ends a list of context sources cut to fit, [n] sources being left out. */
+    fun sourcesLeftOut(n: Int): String =
+        if (n ==
+            1
+        ) {
+            "(1 more context source is left out to fit the prompt limit.)"
+        } else {
+            "($n more context sources are left out to fit the prompt limit.)"
+        }
 
     /** How many lines of the findings may form their head, at most. */
     private const val FINDINGS_HEAD_MAX = 5
@@ -70,8 +86,17 @@ object PromptFill {
     ): FilledPrompt? {
         fun render(of: PromptContent): String? =
             template
-                .render(PromptVariables.of(of.issue, attempt, of.verifyFindings, workspaceReused, of.sessionBrief, retryKind))
-                .getOrNull()
+                .render(
+                    PromptVariables.of(
+                        of.issue,
+                        attempt,
+                        of.verifyFindings,
+                        workspaceReused,
+                        of.sessionBrief,
+                        retryKind,
+                        of.contextSources,
+                    ),
+                ).getOrNull()
 
         val rendered = render(content) ?: return null
         if (counter.count(rendered) <= limit) return FilledPrompt(rendered, content, null)
@@ -117,8 +142,19 @@ object PromptFill {
                     cutBrief(text) { fits(PromptContent(issue, findings, it), withFindings) }
                 }
             }
+        val withBrief = tokens(PromptContent(issue, findings, brief)) ?: return null
+        room -= withBrief - withFindings
 
-        val filled = PromptContent(issue, findings, brief)
+        val sources =
+            content.contextSources?.let { text ->
+                if (fits(PromptContent(issue, findings, brief, text), withBrief)) {
+                    text
+                } else {
+                    cutSources(text) { fits(PromptContent(issue, findings, brief, it), withBrief) }
+                }
+            }
+
+        val filled = PromptContent(issue, findings, brief, sources)
         val prompt = render(filled) ?: return null
         val before = measure(template, content, rendered, attempt, workspaceReused, retryKind, counter) ?: return null
         val after = measure(template, filled, prompt, attempt, workspaceReused, retryKind, counter) ?: return null
@@ -145,6 +181,7 @@ object PromptFill {
                 content.sessionBrief,
                 retryKind,
                 counter,
+                content.contextSources,
             )?.tokens
 
     /** The tokens each slot of this measure has more than [other], 0 for a slot that has no more. */
@@ -244,6 +281,22 @@ object PromptFill {
             }
 
         return cut(largest(PERMILLE - 1) { fits(cut(it)) } ?: 0)
+    }
+
+    /**
+     * [text], the list of context sources, with its first lines that [fits], one source each, then [sourcesLeftOut];
+     * null when not even that line fits.
+     */
+    private fun cutSources(
+        text: String,
+        fits: (String) -> Boolean,
+    ): String? {
+        val lines = text.lines()
+
+        fun cut(kept: Int): String = (lines.take(kept) + sourcesLeftOut(lines.size - kept)).joinToString("\n")
+
+        val kept = largest(lines.size - 1) { fits(cut(it)) } ?: return null
+        return cut(kept)
     }
 
     /** The first of [lines] that hold, joined by line ends, in [share] characters. */

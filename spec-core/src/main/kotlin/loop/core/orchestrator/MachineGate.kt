@@ -1,5 +1,7 @@
 package loop.core.orchestrator
 
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import loop.api.AttemptId
 import loop.core.log.KeyValueLog
 import loop.core.log.LogContext
@@ -74,6 +76,7 @@ internal class MachineGate(
     /**
      * Claims a machine slot when the machine config sets a cap, in one transaction of the shared store, before the
      * launch it guards. A store failure is a refusal, never a launch: the cap holds even when the store does not answer.
+     * A claim cancelled midway releases its holder (bl-101), since the store may have written the slot before the cancel.
      */
     suspend fun claim(context: LogContext): SlotClaim {
         val cap = limits?.maxConcurrentAgents ?: return SlotClaim.NoCap
@@ -82,6 +85,7 @@ internal class MachineGate(
             try {
                 machine.claimSlot(holder, cap)
             } catch (e: CancellationException) {
+                withContext(NonCancellable) { release(holder, context) }
                 throw e
             } catch (e: Exception) {
                 Result.failure(e)
@@ -118,7 +122,8 @@ internal class MachineGate(
      * 24 hours, plus [live], the attempts running in this process, spent more than `machine.per_day_usd` or
      * `machine.per_day_tokens`; exactly the limit is allowed, like the project budgets. The live spend of other
      * processes is not in the store until their attempts end, an overshoot that is accepted. It parks nothing and
-     * cuts no running attempt, and lifts by itself once the window has room.
+     * cuts no running attempt, and lifts by itself once the window has room. A failed read keeps the sum read last;
+     * before any read succeeded it holds (bl-101), so the budget fails closed like the slot claim.
      */
     suspend fun budgetHolds(
         live: Map<AttemptId, LiveSpend>,
@@ -142,7 +147,8 @@ internal class MachineGate(
             onSuccess = { rows -> finished = spendOf(rows, live.keys) },
             onFailure = { log.log(LogLevel.WARN, MACHINE_BUDGET, LogOutcome.FAILED, context, reason = it.message ?: it::class.simpleName) },
         )
-        val spend = live.values.fold(finished ?: Spend()) { sum, attempt -> sum + attempt.spend }
+        val known = finished ?: return true
+        val spend = live.values.fold(known) { sum, attempt -> sum + attempt.spend }
         val crossed =
             when {
                 usdLimit != null && spend.usd > usdLimit -> Triple(MachineConfig.PER_DAY_USD, print(spend.usd), print(usdLimit))

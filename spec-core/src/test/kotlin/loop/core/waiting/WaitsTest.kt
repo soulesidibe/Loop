@@ -459,4 +459,26 @@ class WaitsTest {
             assertEquals(listOf("approve"), calls)
             assertNull(Waits(FakeWaitingIssues(), project).approve("id-9", "soule", since).getOrThrow())
         }
+
+    @Test
+    fun `a verify and an approval wait hold the kind they were dispatched under, through the merge and back (m4-18)`() {
+        val verify = Wait.verify(project, "id-1", "t-1", AttemptId("a1"), RunId("r1"), since, "review", kind = "content")
+        assertEquals("content", verify.kind)
+        assertEquals(mapOf("to" to "review", "kind" to "content"), verify.toRecord().data)
+
+        val approval =
+            Wait.approval(project, "id-1", "t-1", AttemptId("a1"), RunId("r1"), since, "review", "git:abc:e:e", kind = "code")
+        assertEquals("code", approval.kind)
+        val merge = approval.merging(7, "https://github.com/acme/widgets/pull/7", later)
+        assertEquals("code", merge.kind)
+        assertEquals("code", merge.refused(later).kind)
+        assertEquals("code", merge.unmerged().kind)
+    }
+
+    @Test
+    fun `a wait stored before m4-18 holds no kind`() {
+        assertNull(Wait.of(record(WaitReason.Verify, mapOf("to" to "review"))).kind)
+        assertNull(Wait.of(record(WaitReason.Approval, approvalData)).kind)
+        assertNull(Wait.verify(project, "id-1", "t-1", null, null, since, "review").kind)
+    }
 }

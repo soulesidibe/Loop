@@ -218,4 +218,36 @@ class PromptFillTest {
             cuts.cutData,
         )
     }
+
+    @Test
+    fun `m4-19 the context sources are cut first, keeping their first lines and a line saying how many are left out`() {
+        val withSources =
+            engine
+                .parse(
+                    "$source{% if loop.context_sources %}\n# Sources\n{{ loop.context_sources }}{% endif %}",
+                    PromptVariables.schema,
+                ).getOrThrow()
+        val sources = (1..40).joinToString("\n") { "- docs/source-$it.md" }
+        val content = PromptContent(issue, null, null, sources)
+
+        fun fillTo(limit: Long) =
+            assertNotNull(
+                PromptFill.fill(withSources, content, attempt = 1, workspaceReused = true, retryKind = null, counter, limit, pointer),
+            )
+
+        val bare = counter.count(withSources.render(PromptVariables.of(issue, 1, null, true)).getOrThrow()).toLong()
+        val cut = fillTo(bare + 60)
+
+        assertEquals(issue, cut.content.issue, "the issue keeps its room")
+        val kept = assertNotNull(cut.content.contextSources).lines()
+        assertTrue(kept.size in 2..39, kept.toString())
+        assertEquals("- docs/source-1.md", kept.first())
+        assertEquals(PromptFill.sourcesLeftOut(41 - kept.size), kept.last())
+        assertTrue(counter.count(cut.prompt) <= bare + 60)
+        assertTrue(assertNotNull(cut.cuts).contextSources > 0)
+        assertEquals(0, cut.cuts.issue)
+
+        assertNull(fillTo(bare).content.contextSources, "no room for even the note: the sources are left out")
+        assertEquals(PromptFill.sourcesLeftOut(1), "(1 more context source is left out to fit the prompt limit.)")
+    }
 }

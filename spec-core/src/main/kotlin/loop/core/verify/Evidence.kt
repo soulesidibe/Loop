@@ -3,6 +3,7 @@ package loop.core.verify
 import loop.api.AttemptId
 import loop.api.ProjectId
 import loop.api.Redactor
+import loop.core.kinds.DeliverableFile
 import loop.core.orchestrator.attemptsFolder
 import java.nio.ByteBuffer
 import java.nio.file.FileAlreadyExistsException
@@ -46,6 +47,15 @@ data class JudgmentCalls(
     val criteria: List<String>,
 )
 
+/**
+ * The deliverable of one verification (m4-21): the [files] matching the kind's `deliverable.files`, in path order, and the
+ * [fingerprint] of the workspace they were listed on.
+ */
+data class DeliverableEvidence(
+    val fingerprint: String,
+    val files: List<DeliverableFile>,
+)
+
 /** Saves the evidence of a check run of an attempt; the seam between the orchestrator and the files. */
 fun interface EvidenceWriter {
     /** Writes [evidence] and returns its reference, the file name; null when nothing is kept. Throws on a failed write. */
@@ -60,6 +70,13 @@ fun interface EvidenceWriter {
         projectId: ProjectId,
         attemptId: AttemptId,
         calls: JudgmentCalls,
+    ): String? = null
+
+    /** Writes [deliverable] like [write] writes a check run (m4-21); keeps nothing unless the writer keeps files. */
+    fun writeDeliverable(
+        projectId: ProjectId,
+        attemptId: AttemptId,
+        deliverable: DeliverableEvidence,
     ): String? = null
 
     /**
@@ -116,6 +133,29 @@ class EvidenceFiles(
                 appendLine("fingerprint: ${calls.fingerprint}")
                 appendLine()
                 calls.criteria.forEach { appendLine("- ${it.lines().joinToString(" ")}") }
+            },
+            INFIX,
+            SUFFIX,
+        )
+
+    /**
+     * m4-21: the deliverable files of a verification, numbered with the check runs of the attempt: a header of `attempt`,
+     * `deliverable` (the count) and `fingerprint`, a blank line, then `- <path>, <size> bytes, sha256 <digest>` a line.
+     */
+    override fun writeDeliverable(
+        projectId: ProjectId,
+        attemptId: AttemptId,
+        deliverable: DeliverableEvidence,
+    ): String =
+        save(
+            projectId,
+            attemptId,
+            buildString {
+                appendLine("attempt: ${attemptId.value}")
+                appendLine("deliverable: ${deliverable.files.size}")
+                appendLine("fingerprint: ${deliverable.fingerprint}")
+                appendLine()
+                deliverable.files.forEach { appendLine("- ${it.path.lines().joinToString(" ")}, ${it.size} bytes, sha256 ${it.sha256}") }
             },
             INFIX,
             SUFFIX,

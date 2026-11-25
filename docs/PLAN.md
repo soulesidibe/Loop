@@ -189,13 +189,45 @@ trackers:                   # Loop extension, additional trackers
 
 A kind is matched from the issue (tracker id, label, state, or a field (not in M4)) and sets the runner, the template, the verify contract and the delivery. Loop's core knows these slots, never the work itself.
 
+`kinds:` is a map of named kinds, each with the slots of `code` (`verify`, `ready`, `delivery`) and a `match` (m4-18). The match keys are `default` (`match: { default: true }`, alone in its match), `label`, `tracker` (a tracker id of the registry, 6.1) and `state`, and every key a match sets must hold. A match on a front matter field waits for a field map in the issue model and is not in M4. An issue gets the first kind whose match holds, in the order the kinds are written, and the default kind otherwise. `code` with no `match` is the default, so a workflow whose only kind is `code` behaves as before. Preflight refuses two default kinds, no default kind, a kind other than `code` with no `match`, and an unknown match key. Every hook gets the kind's name as `LOOP_KIND`, and the ledger records the matched kind on each line and row. The verify and approval waits of an attempt hold the kind it was dispatched under, so a move or a label edit during a wait never changes how the issue is verified or delivered, and an agent's own move that would change its issue's kind is refused. Until each kind takes them up (m4-20 to m4-23), the merge check and the auto merge read the `code` kind, and only `code` may deliver a pull request.
+
+The content kind (m4-21, story 120). Behavior follows the keys a kind declares, never its name: `kinds:` is a free map and custom kinds are allowed, so `deliverable.files` gives the files deliverable whatever the kind is called, and "a content kind" means a kind that declares it. `deliverable: { files: [out/**/*.md] }` lists globs relative to the workspace, anchored at its root like `guards.protect` (`*` stays in one folder, `**` crosses any number of them). After the agent submits, Loop lists the regular files that match, with the fingerprint and before the checks, never through a symlink and never a `.git` entry, and records them with the verdict: the verdict event carries `deliverable`, the count, and `deliverable_evidence`, an evidence file listing each path, size and sha256 digest. When every check passed and no file matches, the result is `refuted` with the finding "no deliverable file", which names the globs. The workspace is a git worktree populated by `after_create` like `code`; on a `workspace: plain` kind the listing works the same, with the `tree:` fingerprint. The checks are `command` checks the workflow declares, banned words and dashes, length limits, markdown lint, with no new check type (bl-14, bl-116 and bl-118 come after M4). The banned dash example, which runs on BSD and GNU grep and exits 1 on a file with an em or en dash, printing its path and line:
+
+```yaml
+verify:
+  checks:
+    - type: command
+      run: |
+        ! grep -rnE "$(printf '\342\200\224|\342\200\223')" out/
+```
+
+A `-P` pattern is wrong here: macOS grep has no `-P`, its usage error exits non zero, and the `!` turns it into a pass on a file full of dashes. A `!` check also passes when `out/` is missing, which is why no deliverable file is a finding of its own. A content kind keeps the default `delivery.policy: human`, and preflight refuses `policy: auto` on a kind with `deliverable.files` until the attach delivery (m4-22) defines what auto means for it. `deliverable.report` is the research kind's (m4-23).
+
+The research kind (m4-23, story 121). As for content, behavior follows the keys: "a research kind" means a kind that declares `deliverable.report`. It declares `workspace: plain` and `populate: empty` (m4-20), so Loop creates an empty folder and runs none of the four workspace hooks for it, `after_create`, `before_run`, `after_run` and `before_remove`, which assume a git work tree; a workflow that prefers hooks reads `LOOP_KIND` (m4-18). `deliverable: { report: report.md }` names one file, a path relative to the workspace with no `*` or `?`, and a kind declares `files` or `report`, never both. Loop lists the report like a deliverable file, with the fingerprint and before the checks, and reads it once, never through a symlink: a missing report, an empty one, one that is not UTF-8 text or one over 8 MiB is `refuted`, the finding naming the report. `verify.require_sections: [Summary, Sources]`, allowed only beside `deliverable.report`, names the sections the report must hold, read with the heading reader of the readiness check (`loop.core.kinds.RequiredSections`): a column 0 heading outside fences whose text is the name, trimmed and case insensitive, with at least one non blank line under it. Each missing section is a finding of its own, and the verdict event counts the findings in `report_findings`. Sources are checked by a `command` check the workflow declares, with no new check type: `docs/examples/research/check-sources.sh` is the documented example, which a workflow copies into its own repository and runs by an absolute path, since the workspace is empty. It requests each http or https link of the report's Sources section once with curl, following redirects, with a timeout (`SOURCES_TIMEOUT`, 10 seconds by default), and fails on a status of 400 or more, a link nobody answers, a section with no link, or no section:
+
+```yaml
+kinds:
+  research:
+    match: { label: research }
+    workspace: plain
+    populate: empty
+    deliverable: { report: report.md }
+    delivery: { attach: true }
+    verify:
+      require_sections: [Summary, Sources]
+      checks:
+        - { type: command, run: "sh /path/to/project/tools/check-sources.sh report.md", timeout_ms: 120000 }
+```
+
+The report is delivered by the attach delivery (m4-22, 6.5): one comment on the issue, `policy: human` by default, so the operator reads it before `loop approve` moves it. `policy: auto` needs `delivery.attach` and `delivery.attach_auto.enabled: true`, as for content. A review of the report's content is M6.
+
 Gap after M4: kinds with their own runner are out of M4 (m4-45). In M4 a kind sets its template, verify contract, workspace and delivery, and every kind runs on the project's runner.
 
 | Kind | Workspace population | Deliverable | Checks (examples) | Delivery |
 |---|---|---|---|---|
 | `code` | git worktree via `after_create` | pull request | build, tests, lint, tamper guard, holdout tests | merge (policy `human` or `auto`), then move to the handoff state |
-| `content` | git worktree of a content repo, or empty | files | markdown lint, link check, length limits, banned words and dashes, review rubric | merge or attach to the issue |
-| `research` | empty | report | sources listed and reachable, required sections present, review | post on the issue |
+| `content` | git worktree of a content repo, or empty | files (`deliverable.files`, m4-21) | markdown lint, link check, length limits, banned words and dashes as `command` checks, review rubric | attach to the issue (m4-22), `human` |
+| `research` | empty (`workspace: plain`, `populate: empty`, m4-20) | report (`deliverable.report`, m4-23) | required sections present (`verify.require_sections`), sources reachable as a `command` check, review | post on the issue (attach, m4-22), `human` |
 | `ops` | empty | external action plan | plan matches a schema, dry run where possible | executed only after human approval |
 
 Every kind gets a review on top of its checks once the reviewer is available (M6), because many criteria ("the tone matches the brand voice") are not checkable by a command. Until then, `review:` is optional. Kinds with weak checks get a rubric and default to human approval.
@@ -273,6 +305,7 @@ kinds:
 - `auto`: Loop delivers directly (merge after a merge check on current main; post the report; run an allowlisted action). For `code`, `auto` is conditional and opt in per project (M2): Loop merges only when the verdict is `verified` with holdouts, the merge check on current main passes and the merged head is the verified fingerprint, CI is green and the pull request mergeable, no test was lost, no protected path is touched (`WORKFLOW.md`, `scripts/`, `.github/`, Gradle files, `build-logic/`, `gradle/`, `.loop/`, `docs/adr/`, `CONTEXT.md` by default) and the diff stays under a size limit. Otherwise it falls back to `human`.
 - The merge check always merges current main into the branch and reruns the kind's checks on the result. M1 showed why: branches that touch the same files conflict when they merge out of order (m1-17, m1-34).
 - Default `human` for each new project and always for external actions.
+- Content delivery (m4-22, story 120) is opt in per kind with `delivery.attach: true`, for a kind that declares `deliverable.files`, or `deliverable.report` since m4-23, whose report is the one file posted. A verified result's deliverable files are posted on the issue as one comment through the tracker's `addComment`, each file under its path in a fenced block longer than any backtick fence it holds, redacted like every Loop comment. The comment is capped at 60,000 characters (`AttachComment.MAX_CHARS`), below GitHub's limit of 65,536; a file that does not fit, changed since its verification or is not UTF-8 text is listed by path, size and sha256 digest instead, and the workspace is kept until the issue is delivered, so nothing is cut in silence. The default stays `human`, since kinds with weak checks default to human approval: the issue waits as `Waiting(approval)` with the comment above the evidence summary, and `loop approve` moves it to `delivery.on_delivered.move_to`, or `on_verified.move_to` when absent. `policy: auto` posts and moves at once when every file was inlined, and falls back to the approval wait when a file is only listed, so the workspace stays; preflight allows it only with the opt in `delivery.attach_auto.enabled: true`, as `delivery.auto_merge.enabled` does for code. Uploads as real attachments are out, GitHub has no issue attachment API.
 - Loop posts progress and evidence on the issue, so the tracker shows what happened.
 - `move_to` is defined per adapter: a state for Linear and Jira, label changes for GitHub (section 6.6).
 - Pull request delivery (m2-25, story 79) is opt in per kind with `delivery.pull_request` (`repo`, `token: $NAME`, `base`, `remote`). Delivering a verified result then pushes the verified commit to `loop/<workspace key>` host side, through a credential helper and never forced, opens or updates the pull request with a body built from the verification's facts, comments its URL on the issue, then moves the issue. The steps are separate and the move is the last, optional one, so m2-26 can stop after the comment. The pull request is looked up in every state, and one already merged at the verified commit counts as delivered. A push needs a clean committed fingerprint, so with `pull_request` a verified work tree that holds uncommitted or untracked files is refuted at verification, its finding naming them. The token reaches git through a credential helper that answers only the configured GitHub host over https. The push goes to an explicit `https://<host>/<owner>/<repo>.git` from a temporary repository Loop owns that borrows the project's objects, with Loop's settings pinned and no config file read, so a `.git/config` an agent writes from its worktree cannot steer it; every delivery git process gets only `PATH`, `HOME` and the locale. `api_url` must be https (http only for a loopback host, for tests). A work tree clean before the checks is restored to its commit after them. A transient failure retries at the next tick, a permanent one records `delivery_failed` and waits for a new approval. Without the key, delivery stays the move to the handoff state. The merge check and the merge came in m2-26 (2026-11-14): with `delivery.pull_request.merge` (`method` `merge` or `squash`, `ci` required) and `delivery.on_delivered.move_to` (a terminal state), an approved delivery stops after the comment and waits as `Waiting(merge)`; in the background, on an agent slot and one delivery at a time per project, Loop fetches the base host side into `refs/loop/base/<base>`, merges it in the issue's own workspace, reruns every check with `diff_policy` against the fetched base, pushes the merged head, reads the base tip again (at most 3 rounds), and merges with a sha guard, then moves the issue to `delivery.on_delivered.move_to` and removes the workspace. A conflict or a failing recheck comments the reason and sends the issue back to its agent, and its later verifications base `diff_policy` on `refs/loop/base/<base>`; a `git merge` failure that is not a conflict, like a merge refused for good, records `delivery_failed` and waits for a new approval. A stop between the merge commit and the next write is resumed from the base stored before merging. Before the merge, Loop waits for the pull request to show the pushed head, reads the issue again (a human move cancels the merge) and tries a "branch was modified" refusal once more at the next tick. Every git command Loop runs in a workspace now has hooks, fsmonitor, signature checks, gpg programs, automatic gc and maintenance and replace refs off, a minimal environment and a timeout (part of bl-55). m2-26 merges with `ci: none`; waiting for GitHub Actions is m2-30, moved to M3 on 2026-11-14 (the pilot app merges with `ci: none` in M2, Loop's merge check being the gate). m3-15 (carrying m2-30) adds `ci: actions`: after a passing merge check Loop pushes the merged head, waits as `Waiting(merge)` in phase `ci` for its Actions runs, polled once per tick, and merges only on green, or on no run when `ci_no_run` is `pass`; red CI, a failing no run rule and a timeout (`ci_timeout_ms`) record `delivery_failed` and wait for a new approval, the pull request left open. Since bl-172 the merge waits form a queue, the oldest `since` first, ties broken by issue id, and only its head runs its merge check, its CI wait and its merge, so a merge never makes another delivery's check stale; the others stay in phase `check`, a refused or fallen back delivery approved again goes to the back, and `loop status` shows each one's place (`queue=1`). Conditional auto merge came in m2-28 (story 100): `policy: auto` needs the opt in `delivery.auto_merge.enabled`, and with `merge` the drain approves for itself, the merge check runs, and right before the merge Loop reads seven hard conditions (verified with holdouts, the merged head checked and shown, GitHub `mergeable` and `clean`, every deny guard in the merge check's `diff_policy`, no protected path, a diff under `max_diff_lines`, no `diff_base_unpinned`), then a merge risk assessment: code facts set floors, a read only reviewer (`delivery.risk.reviewer`) judges five dimensions, and Loop computes the weighted score and band. It merges only on a low band with no dimension at its worst; anything else, a reviewer failure included, falls back to an unapproved `Waiting(approval)` whose comment names why. Details in `docs/spec-decisions.md`.
@@ -315,12 +348,12 @@ Each reaction resumes the issue's workspace with a continuation turn, then verif
 
 Ported from the manager skill:
 
-- Declared under `resources:`: kind (`android-device`, `avd`, `mac-app`, `display`, other), id, what it can and cannot test, restore list, read only check.
-- Agents ask with `request_resource` and release with `release_resource`. Locks live in the run store; grants are in queue order.
+- Declared under `resources:`, a list: `kind` (`android-device`, `avd`, `ios-simulator`, `mac-app`, `display` or another string), `id`, `can` and `cannot` (free text shown to the agent), `restore` (shell commands) and `read_only_check` (a shell command). The preflight refuses a missing kind or id and a duplicate id. A kind no provider serves is a plain lock: Loop grants and releases it and prepares nothing, and the preflight logs one line naming the kind, so a typo shows (m4-24). See [resources](spec-decisions.md#resources-config-and-the-provider-interface-extension-m4-24).
+- Agents ask with `request_resource` and release with `release_resource`. Locks live in the machine level run store, one row per held resource keyed by kind and resource id, never by project, so two projects of one machine share a lock, and one queue row per waiting request. Grants are in queue order, first requested first granted, and a freed lock goes to the head of its queue at once. No leak: every lock and queue row of an attempt is freed when it ends, whatever its end, and the startup of the next run frees those a dead process left, then calls each provider's `recover` once with the live holders. Each freed lock records `resource_released` with its `reason`, and `loop status` lists each resource with its holder and queue (m4-50). See [resource locks](spec-decisions.md#resource-locks-and-their-queue-extension-m4-50).
 - Limits: at most 2 Android devices and emulators together, at most 2 self-managed iOS simulators.
 - With no Android device connected, Loop boots a configured AVD and grants it.
 - After a release, Loop runs the read only check and asks the agent to fix any difference.
-- Resource providers (Android, iOS simulator) are plugins.
+- Resource providers (Android, iOS simulator) are plugins: a `ResourceProvider` serves a set of kinds and has `prepare` (returns what the agent needs, such as a UDID or a serial), `release`, its own read only check and `recover`, called at startup with the holders of every live lock (m4-24).
 
 ### 6.10 Tools Loop gives to agents
 
@@ -453,7 +486,7 @@ The slot sizes are recorded from M1 (m1-17), in characters, on the `BuildingProm
 | Verify findings | The head (the check and its exit code) and the newest lines stay, the older lines are summarized in one line. With no room for the head, one line says the findings are left out. |
 | Session brief | Every part keeps its heading and its newest lines, each part cut to the same share: the first lines of a part listed newest first, marked `(cut to fit the prompt limit)`, and the first line and the last lines of the checks and the agent's notes, whose newest facts come last, marked `(older lines cut to fit the prompt limit)`. |
 | Lessons | Empty until M6, size 0. |
-| Context sources of the kind | Empty until M4, size 0. |
+| Context sources of the kind | Since m4-19: the first sources, one per line, then a line saying how many are left out; left out whole when not even that line fits. |
 
 - **Recorded.** `prompt_chars`, the slot sizes and `prompt_tokens` are those of the prompt sent, `over_limit` says whether it is still over, and a prompt that was over adds `cut_<slot>_tokens` for each slot, which `loop trace` prints last. A rotated session's prompt that was over records its budget and cuts on its `session_rotated` event. The human log names what each slot lost.
 
@@ -464,12 +497,19 @@ Each kind declares where its context comes from, so non-code issues get what the
 ```yaml
 kinds:
   content:
+    match: { label: content }
+    template: .loop/templates/content.md               # rendered instead of the WORKFLOW.md body
     context:
       files: [docs/brand/voice.md, posts/published/]   # pointers, read on demand
-  code:
-    context:
-      files: [ARCHITECTURE.md, docs/technical/patterns/]
 ```
+
+**Since m4-19.** Details in [spec decisions](spec-decisions.md#context-sources-and-per-kind-templates-extension-m4-19).
+
+- **`context.files`** is a list of paths relative to the workspace, never absolute and never through `..`. Loop renders them as a short list, one `- <path>` line each, never their text, and the list counts in the `context_sources` slot of the prompt budget (8.5). An empty or absent list renders nothing.
+- **A missing path.** A path that is not in the workspace when the prompt renders is listed with `(missing from the workspace)` after it, and a `context_source_missing` event names it. It never fails the attempt.
+- **Only where the template places it.** The list is the prompt variable `loop.context_sources` (8.9). Loop never inserts it by itself: the sources appear only where the template uses the variable. Preflight refuses a kind that declares `context.files` with a template that never uses `loop.context_sources`, and renders every kind's template with the variable null and set.
+- **A per kind template.** A kind may set `template`, a path relative to the folder of `WORKFLOW.md`, rendered instead of the `WORKFLOW.md` body for the issues of that kind, so a content or research issue does not get the code prompt. Without it the body is used. Preflight refuses a template path that does not exist. The file is read with `WORKFLOW.md`, so an edit of it alone reaches attempts at the next reload of `WORKFLOW.md` or the next start.
+- **`code` unchanged.** Loop's own `code` kind declares no `context.files` and no `template`, so its `WORKFLOW.md` needs no edit.
 
 ### 8.7 Tool outputs and manager agents
 
@@ -495,7 +535,7 @@ The template is rendered with the spec's strict rules. Loop adds variables under
 | `issue`, `attempt` (S) | As in the spec |
 | `loop.kind` | The matched kind and its deliverable |
 | `loop.checks` | The visible checks, so the agent can run them first |
-| `loop.context_files` | The kind's context sources |
+| `loop.context_sources` | Since m4-19: the kind's context sources as a short list of paths, one `- <path>` line each, a path missing from the workspace marked so; null when the kind declares none. Preflight renders it null and set for every kind (8.6) |
 | `loop.lessons` | Active lessons relevant to this issue's area |
 | `loop.session_brief` | On a retry, on a reused workspace and after a rotation (m3-11); null on a fresh first dispatch. Built from facts in five bounded parts (section 9.2, m3-10) |
 | `loop.verify_findings` | After a refutation: what failed and why |
@@ -652,7 +692,7 @@ The plugin API is a small Kotlin module that the core depends on and plugins imp
 
 Two ways to write a plugin:
 
-- **In process:** a module on Loop's classpath or a JAR in `<LOOP_HOME>/plugins/` (each JAR with its own class loader), discovered with Java's `ServiceLoader` through a `META-INF/services` entry, selected by `kind` in config. Runners first (m3-04): a `RunnerProvider` in `plugin-api` gives its `kind` and builds an `AgentRunner` from its own `runners.<kind>` section and the host's agent env policy. An unknown kind fails preflight with `invalid_config` naming the kinds found, and two providers of one kind fail startup naming both. See [runner plugins](spec-decisions.md#runner-plugins-extension-m3-04). Trackers next (m3-05): a `TrackerProvider` gives its `kind`, its default states and settings reader, and builds the `TrackerAdapter`; `files` and `github` register the same way. See [tracker plugins](spec-decisions.md#tracker-plugins-extension-m3-05).
+- **In process:** a module on Loop's classpath or a JAR in `<LOOP_HOME>/plugins/` (each JAR with its own class loader), discovered with Java's `ServiceLoader` through a `META-INF/services` entry, selected by `kind` in config. Runners first (m3-04): a `RunnerProvider` in `plugin-api` gives its `kind` and builds an `AgentRunner` from its own `runners.<kind>` section and the host's agent env policy. An unknown kind fails preflight with `invalid_config` naming the kinds found, and two providers of one kind fail startup naming both. See [runner plugins](spec-decisions.md#runner-plugins-extension-m3-04). Trackers next (m3-05): a `TrackerProvider` gives its `kind`, its default states and settings reader, and builds the `TrackerAdapter`; `files` and `github` register the same way. See [tracker plugins](spec-decisions.md#tracker-plugins-extension-m3-05). Resource providers (m4-24): a `ResourceProvider` registers on `loop.api.ResourceProvider` and serves a set of `resources[].kind` values, found by `ResourcePlugins` in `cli`; two providers serving one kind fail startup, and a kind none serves is a plain lock. `ResourceProviderContract` is its contract. See [resources](spec-decisions.md#resources-config-and-the-provider-interface-extension-m4-24). The lock and its queue stay Loop's (m4-50): `ResourceLockStore` in `plugin-api` keeps the rows in the machine level store, keyed by kind and resource id, and `loop.core.resources.ResourceLocks` holds the calls `loop run` and `loop tool mcp` share; a provider only prepares, releases, checks and recovers, and `recover` runs once at each startup with the holders of every live lock on the machine. See [resource locks](spec-decisions.md#resource-locks-and-their-queue-extension-m4-50).
 - **Out of process:** any executable that speaks a small JSON-RPC protocol over stdio, for plugins written in another language. One generic adapter per interface wraps it.
 
 Each plugin has a profile (its config keys, defaults, secrets and limits), as the spec asks of tracker adapters, and contract tests that every implementation of an interface must pass. Since m3-05 runner and tracker plugins declare it as a `PluginProfile`, which Loop checks their sections against at startup, see [plugin profiles](spec-decisions.md#plugin-profiles-extension-m3-05).
@@ -703,9 +743,12 @@ kinds:
     match: { label: content }
     runner: { kind: codex-app-server }
     template: .loop/templates/content.md
+    deliverable: { files: [out/**/*.md] }        # m4-21: the files deliverable, recorded with the verdict
     verify:
       checks:
-        - { type: command, run: "! grep -rnP '\\x{2014}|\\x{2013}' out/" }
+        - type: command                          # banned dashes, on BSD and GNU grep (m4-21)
+          run: |
+            ! grep -rnE "$(printf '\342\200\224|\342\200\223')" out/
       review: { role: reviewer, rubric: .loop/rubrics/voice.md }   # from M6
     delivery: { policy: human }
 
@@ -721,7 +764,7 @@ reactions:
 budgets: { per_attempt_usd: 10, per_issue_usd: 25, per_day_usd: 100 }
 context: { soft_limit: 0.20, hard_limit: 0.21, prompt_limit: 0.05, max_rotations: 5 }
 observability: { store: ~/.loop/, retention_days: 90, otlp: { endpoint: $OTLP_ENDPOINT } }   # machine level folder, LOOP_HOME overrides
-resources:
+resources:                                       # m4-24: kind, id, can, cannot, restore, read_only_check
   - { kind: avd, id: wallpilates_api35, cannot: [real calls, sms] }
 channel: { kind: terminal }
 ---
