@@ -2,6 +2,8 @@ package loop.cli
 
 import com.github.ajalt.clikt.testing.test
 import loop.core.workflow.WorkflowFile
+import loop.runner.claudecode.ClaudeCodePreflight
+import loop.runner.claudecode.ClaudeCodeSettings
 import loop.runner.claudecode.PreflightResult
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
@@ -419,6 +421,69 @@ class ClaudeCodeRunCommandTest {
 
         assertEquals(1, error.statusCode, error.output)
         assertContains(error.stderr, "loop run: cannot run here.")
+    }
+
+    /**
+     * A `claude` that prints `[version] (Claude Code)` for `--version` and otherwise runs [fakeClaude], each such call
+     * appended to [calls].
+     */
+    private fun versionedClaude(
+        version: String,
+        calls: Path,
+    ): Path {
+        val agent = fakeClaude()
+        val script = root.resolve("versioned-bin").createDirectories().resolve("claude")
+        script.writeText(
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo '$version (Claude Code)'; exit 0; fi\n" +
+                "echo run >> '$calls'\nexec '$agent' \"$@\"\n",
+        )
+        Files.setPosixFilePermissions(script, PosixFilePermissions.fromString("rwxr-xr-x"))
+        return script
+    }
+
+    /** The real runner preflight of [Host], on a regular uid and no managed settings, so the machine does not matter. */
+    private fun versionPreflight(env: Map<String, String>): (WorkflowFile) -> PreflightResult =
+        { workflow ->
+            runnerPreflight(workflow, env) { command, hostEnv ->
+                ClaudeCodePreflight(command, uid = { 501 }, managedSettings = root.resolve("absent.json"), hostEnv = hostEnv)
+            }
+        }
+
+    @Test
+    fun `bl-210 a claude of another major version fails loop run at startup naming the found and pinned versions`() {
+        val calls = root.resolve("calls.txt")
+        fixture.workflow.writeText(claudeWorkflow(versionedClaude("3.0.1", calls)))
+        fixture.issue("t-1")
+
+        val result =
+            LoopCommand(
+                host(preflight = versionPreflight(System.getenv())),
+            ).test(listOf("run", fixture.workflow.toString(), "--once"))
+
+        assertEquals(1, result.statusCode, result.output)
+        assertContains(
+            result.stderr,
+            "loop run: Claude Code 3.0.1 is not of the pinned major version 2 (pinned ${ClaudeCodeSettings.PINNED_VERSION}).",
+        )
+        assertFalse(Files.exists(calls), "the agent ran:\n${result.output}")
+        assertEquals("todo", fixture.stateOf("t-1"))
+    }
+
+    @Test
+    fun `bl-210 a claude of the pinned major version runs, its version on the run started log line`() {
+        val calls = root.resolve("calls.txt")
+        fixture.workflow.writeText(claudeWorkflow(versionedClaude("2.9.1", calls)))
+        fixture.issue("t-1")
+
+        val result =
+            LoopCommand(
+                host(preflight = versionPreflight(System.getenv())),
+            ).test(listOf("run", fixture.workflow.toString(), "--once"))
+
+        assertEquals(0, result.statusCode, result.output)
+        val started = result.stderr.lines().single { "event=run outcome=started" in it }
+        assertContains(started, "runner_version=2.9.1")
+        assertEquals("review", fixture.stateOf("t-1"), result.output)
     }
 
     @Test

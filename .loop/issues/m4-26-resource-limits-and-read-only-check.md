@@ -45,3 +45,19 @@ Story 123 (PLAN 6.9). Lane A, runs on the claude-code runner. Area: `loop.core.r
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-25 09:27Z loop: Loop opened pull request #63 for this issue: https://github.com/soulesidibe/Loop/pull/63
+
+2026-11-25 09:36Z loop: Loop did not merge pull request #63, ci: Actions runs did not pass: build (failure). The pull request stays open and the result waits for a new approval.
+  Failed runs:
+  - build (failure): https://github.com/soulesidibe/Loop/actions/runs/45585606802
+  Rerun the runs on GitHub or fix the branch, then approve again with loop approve.
+
+2026-11-25 09:52Z soule: sent back before merge, after the merge risk reviews of pull request #63 (Sonnet 5.5 then Fable 5.2, both medium). Fix these on the same branch, then submit again:
+  - Medium, self deadlock of a check with `resource:`. `applySubmitted` runs the verification inside the attempt, and the attempt's locks are freed only in its `finally`, so a check whose pool the attempt still holds (the agent forgot to release, or its `read_only_check` failed and it kept the lock) queues forever in `withCheckResource`. This breaks the criterion "a third waits in the queue without a failed check". Fix: `CheckResources.kt` reads `LOOP_ATTEMPT_ID` from the check env (null for the merge check) and passes it to `ResourceGrants.withCheckResource`; before the request loop, under the mutex, give back the locks that attempt holds in the pool of the kind (same kind when it has no pool) through the end of attempt path (`endCheck`, `giveBackOnce`, `locks.release`), recorded with a reason. Say it in the `request_resource` and `release_resource` descriptions and replace the spec-decisions sentence "a resource the attempt itself holds never satisfies its check". Test in `CheckResourceTest`: one declared resource, the fake agent holds it and submits, the check runs and passes. Optional: a WARN every few minutes while a check waits.
+  - Low, dirty recheck (`recheckDirty`, `fullCheck`): it runs with no lock row, outside the pool limits, from every `loop run` that declares the resource, under the mutex. Take a real holder for the recheck (a `recheck-<uuid>` the queue rules may grant on a dirty resource) so it is exclusive across processes and counts in the pool; call `provider.release` after a failed `prepare`, like `giveBack`; set `rechecked[key]` after `fullCheck` returns, not before.
+  - Low, the `read_only_check` runs in the tool process cwd with `tool.rawEnv` (`ResourceTools.kt`, around lines 42 to 43) but in `workflow.path.parent` with `agentEnvironment` on the `loop run` side (`RunCommand.kt`, around lines 284 to 289). Use one folder, `workflow_dir` of the tool config snapshot, in the default `ShellResourceCommands` of `ResourceTools`, and fix the docs sentence "run like a check".
+  - Low, `ShellResourceCommands.TIMEOUT_MS` is 5 minutes per command, held under the `ResourceGrants` mutex and in the `NonCancellable` end of a check. Lower the default to 30 to 60 s and skip the end check on cancellation.
+  - Low, the limit reply (`ResourceTools.why`) should tell the agent to release a resource it holds if it does not need both, since two attempts each holding one of a pool of 2 can wait on each other.
+  - Low, `requestAny` records `resource_requested` and `resource_queued` with the ids joined by commas as `resource_id`; record the kind or one event per id.
+  - Docs only: a lock freed as abandoned skips the `read_only_check`, restore and dirty mark (the provider's `recover` is the hook), and a v9 `loop run` left open beside a v10 one drops `any_of_kind`, so restart every `loop run` after the upgrade. One line each in spec-decisions.

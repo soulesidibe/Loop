@@ -66,7 +66,17 @@ An unknown key stays allowed, for forward compatibility: `loop run` prints the w
 
 ## Machine checks
 
-Apart from the profile, `loop run` checks at startup that Claude Code can run on this machine ([preflight for the Claude Code runner](../spec-decisions.md#preflight-for-the-claude-code-runner-extension-m1-05)): an unreadable managed settings file or an unknown uid is a warning. The merge risk reviewer (m2-28) uses the same `command`, whatever `runner.kind` is (m4-06): under another runner it reads `runners.claude-code.command` when set, else runs `claude`, and under `policy: auto` with merge `loop run` warns at startup when that command cannot be found ([the reviewer apart from the runner](../spec-decisions.md#the-reviewer-apart-from-the-runner-extension-m4-06)).
+Apart from the profile, `loop run` checks at startup that Claude Code can run on this machine ([preflight for the Claude Code runner](../spec-decisions.md#preflight-for-the-claude-code-runner-extension-m1-05)): an unreadable managed settings file or an unknown uid is a warning.
+
+Since bl-210 it also checks the Claude Code version. The runner is pinned to Claude Code 2.1.330 (`ClaudeCodeSettings.PINNED_VERSION`). At startup `loop run` runs `<command> --version` and compares the major version it prints with the pinned major, `2`:
+
+| Found | Result | Message |
+|---|---|---|
+| a version of the pinned major, such as `2.1.330` or `2.9.1` | the run goes on | none |
+| a version of another major, such as `3.0.1` | a startup error, no attempt runs | `Claude Code 3.0.1 is not of the pinned major version 2 (pinned 2.1.330)` |
+| no readable version: no version in the output, a nonzero exit, a command that cannot start or does not end within 10 seconds | a startup warning, the run goes on | `could not read a version in the output of claude --version, so the claude-code runner did not check that Claude Code is of the pinned major version 2 (pinned 2.1.330)` |
+
+The version read is recorded as `runner_version` on the operator log line `event=run outcome=started`. The merge risk reviewer (m2-28) uses the same `command`, whatever `runner.kind` is (m4-06): under another runner it reads `runners.claude-code.command` when set, else runs `claude`, and under `policy: auto` with merge `loop run` warns at startup when that command cannot be found ([the reviewer apart from the runner](../spec-decisions.md#the-reviewer-apart-from-the-runner-extension-m4-06)).
 
 ## Capabilities and telemetry
 

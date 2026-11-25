@@ -1,7 +1,7 @@
 ---
 id: bl-210
 title: "The Claude Code runner checks the claude version at startup"
-state: todo
+state: done
 priority: 3
 labels: [ready-for-agent]
 blocked_by: []
@@ -33,3 +33,5 @@ Add a startup check: run `<command> --version`, record the version, and fail sta
 Filed from the runner capability comparison of Claude, Codex and Gemini after the Gemini support landed.
 
 2026-11-25 soule: triaged ready-for-agent. Another major version fails startup, like Codex and agy.
+
+2026-11-25 09:40Z loop: Loop opened pull request #64 for this issue: https://github.com/soulesidibe/Loop/pull/64

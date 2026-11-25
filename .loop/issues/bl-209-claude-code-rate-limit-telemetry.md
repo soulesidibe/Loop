@@ -1,7 +1,7 @@
 ---
 id: bl-209
 title: "The Claude Code runner records its rate limit lines as rate_limit events"
-state: todo
+state: done
 priority: 3
 labels: [ready-for-agent]
 blocked_by: []
@@ -33,3 +33,5 @@ Map each `rate_limit_event` line to the same `rate_limit` runner event the Codex
 Filed from the runner capability comparison of Claude, Codex and Gemini after the Gemini support landed.
 
 2026-11-25 soule: triaged ready-for-agent.
+
+2026-11-25 09:22Z loop: Loop opened pull request #62 for this issue: https://github.com/soulesidibe/Loop/pull/62
