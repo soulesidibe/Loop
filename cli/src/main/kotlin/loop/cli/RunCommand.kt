@@ -428,7 +428,8 @@ class RunCommand(
             "run",
             LogOutcome.STARTED,
             context,
-            fields = mapOf("workflow" to workflow.path, "store" to project.storeFile, "once" to once),
+            // bl-210: and what the runner preflight read, such as the Claude Code version.
+            fields = mapOf("workflow" to workflow.path, "store" to project.storeFile, "once" to once) + runnerCheck.fields,
         )
         humanLog.runStarted(workflow.path)
         // Set when the run is canceled, for the run end line.
