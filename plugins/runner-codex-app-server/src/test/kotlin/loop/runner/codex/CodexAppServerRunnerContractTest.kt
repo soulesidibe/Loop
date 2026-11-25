@@ -149,6 +149,12 @@ class CodexAppServerRunnerContractTest : AgentRunnerContract() {
         const val ID = 999_999L
 
         val TOKENS =
-            TokenUsageBreakdown(cachedInputTokens = 0, inputTokens = 1_000, outputTokens = 10, reasoningOutputTokens = 0, totalTokens = 1_010)
+            TokenUsageBreakdown(
+                cachedInputTokens = 0,
+                inputTokens = 1_000,
+                outputTokens = 10,
+                reasoningOutputTokens = 0,
+                totalTokens = 1_010,
+            )
     }
 }

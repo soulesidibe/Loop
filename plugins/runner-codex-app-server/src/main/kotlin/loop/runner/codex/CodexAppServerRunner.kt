@@ -178,9 +178,17 @@ data class CodexAppServerSettings(
  * server and one thread; [run] is a session of one turn, stopped once the turn ended. Turn 1 starts the app server
  * and the session; each later turn writes one more `turn/start` on the thread of turn 1, with its input as the only
  * text, and keeps the thread id. Stdin stays open across turns. Between turns the app server is idle and no timer runs
- * on it: what it writes then is read by the next turn, right after that turn's start event. A turn whose app server is
- * gone (it exited, or an earlier turn killed it) fails at once with `port_exit`, after its `TurnStarted`: no new app
- * server is started for it.
+ * on it: what it writes then is read by the next turn, right after that turn's start event.
+ *
+ * Respawn and resume (bl-212): a continuation turn whose app server is gone, because it exited during an earlier turn
+ * or between turns, before it answered this turn's `turn/start`, or an earlier failure killed it, starts a new app
+ * server with the same startup and resumes the session's thread with `thread/resume`, after a `loop:` line on stderr,
+ * as the Claude Code runner respawns with `--resume` (m3-07). A turn does so at most once: a second exit fails it with
+ * `port_exit`. A session whose thread Codex never named fails the turn at once with `port_exit: the app server of this
+ * session is gone, ...`. [resumeSession] gives a session whose turn 1 resumes the thread of an earlier attempt the same
+ * way (m4-46). A resume runs the workspace check and the exec policy rules first, as a start does, and a failed
+ * `thread/resume` fails the turn with `response_error` and never starts a new thread in its place. Usage Codex replays
+ * on a resumed thread for the earlier attempt's turns is left out, see [Telemetry].
  *
  * Streams: stdout is the protocol stream. Each stdout line is kept as raw [RunnerEvent.Output] and read with
  * [ProtocolFraming], one JSON-RPC message per line; a line split across reads is whole once its line break arrives,
@@ -190,8 +198,8 @@ data class CodexAppServerSettings(
  * turn. Stderr is kept apart, as diagnostics: each stderr line is a raw `Output` on stderr and never reaches the
  * framing. The client's messages go to stdin, one per line.
  *
- * Startup ([StartupHandshake], spec 10.2): `initialize` with Loop's identity, `initialized`, `thread/start` and
- * `turn/start` with the prompt, each request written once the answer before it arrived, with the approval and sandbox
+ * Startup ([StartupHandshake], spec 10.2): `initialize` with Loop's identity, `initialized`, `thread/start`, or
+ * `thread/resume` for a resume (bl-212), and `turn/start` with the prompt, each request written once the answer before it arrived, with the approval and sandbox
  * settings of `docs/spec-decisions.md`. An error answer, an answer to another request or an answer that is not its
  * method's response type fails the start with the [StartupFailure]'s `response_error` reason, and the process group
  * is killed at once. So does an `initialize` answer whose codex is not of the pinned major version (bl-128). A
@@ -233,8 +241,9 @@ data class CodexAppServerSettings(
  * ms`. Stderr lines and lines that are not protocol messages do not count. Both kill the process group, so the exit
  * code is null.
  *
- * Ids (spec 10.2): [RunnerEvent.SessionStarted] carries the thread id of the `thread/start` answer and the turn id of
- * the `turn/start` answer, and the session id `<thread_id>-<turn_id>`. It comes first: what was read before it is
+ * Ids (spec 10.2): [RunnerEvent.SessionStarted] carries the thread id of the `thread/start` or `thread/resume` answer
+ * and the turn id of the `turn/start` answer, and the session id `<thread_id>-<turn_id>`. Its runtime session id is the
+ * same Codex thread id, the one [resumeSession] takes (bl-212); null when the turn ended before Codex named it. It comes first: what was read before it is
  * held and emitted right after it, in order. A run that ends before the turn started emits it with ids Loop minted,
  * two UUIDs, right before the terminal event. Turns 2..n emit [RunnerEvent.TurnStarted] the same way, with the thread
  * id of turn 1 and the turn id of their own answer, or one Loop minted. Exactly one terminal event comes last.
@@ -242,8 +251,9 @@ data class CodexAppServerSettings(
  * Strict MCP (m3-20, bl-72): with [CodexAppServerSettings.strictMcp] the startup reads the Codex config with
  * `config/read` and starts the thread with each MCP server it lists disabled and the `apps` feature off.
  *
- * Exec policy rules (bl-135): before a session starts its app server, [ExecPolicyRules] reads the Codex rules files
- * it would load; one that allows a denied command, or cannot be read, fails the first turn with `exec_policy_rule`.
+ * Exec policy rules (bl-135): before a session starts an app server, its first or a respawned one, [ExecPolicyRules]
+ * reads the Codex rules files it would load; one that allows a denied command, or cannot be read, fails the turn with
+ * `exec_policy_rule`.
  *
  * Failures: `invalid_workspace_cwd` (the workspace is not a directory, nothing is started), `exec_policy_rule` (a rules
  * file allows a denied command, nothing is started), `agent_not_found` (the

@@ -221,7 +221,12 @@ class CodexThreadResumeTest {
             },
             resume.obj("params").obj("config"),
         )
-        val tools = resume.obj("params").getValue("dynamicTools").jsonArray.map { it.jsonObject }
+        val tools =
+            resume
+                .obj("params")
+                .getValue("dynamicTools")
+                .jsonArray
+                .map { it.jsonObject }
         assertEquals(listOf("submit_result", "move", "comment", "ask", "file_followup"), tools.map { it.string("name") })
         tools.forEach { assertEquals(emptyList(), schema.problems("v2/DynamicToolSpec", it), "$it") }
         val stable = JsonObject(resume + ("params" to JsonObject(resume.obj("params") - "dynamicTools")))
