@@ -57,8 +57,9 @@ public interface ResourceProvider {
 
 /**
  * One entry of `resources:` in `WORKFLOW.md` (m4-24): its [kind], which selects the provider, its [id], unique in the
- * workflow, what it [can] and [cannot] test, free text shown to the agent, the shell commands of [restore], and the
- * shell command of [readOnlyCheck], null when none is declared.
+ * workflow, what it [can] and [cannot] test, free text shown to the agent, the shell commands of [restore], the
+ * shell command of [readOnlyCheck], null when none is declared, and since m4-27 [provider], the entry's `provider` map
+ * as text, such as the device type of a simulator, which the provider of [kind] reads and checks itself.
  */
 public data class ResourceDeclaration(
     public val kind: String,
@@ -67,6 +68,7 @@ public data class ResourceDeclaration(
     public val cannot: List<String> = emptyList(),
     public val restore: List<String> = emptyList(),
     public val readOnlyCheck: String? = null,
+    public val provider: Map<String, String> = emptyMap(),
 )
 
 /**

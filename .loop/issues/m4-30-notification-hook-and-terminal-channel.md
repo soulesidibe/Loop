@@ -48,3 +48,15 @@ Carries bl-109. Loop already runs overnight, and nothing tells the operator when
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-25 11:44Z loop: Loop opened pull request #68 for this issue: https://github.com/soulesidibe/Loop/pull/68
+
+2026-11-25 11:49Z loop: Loop did not merge pull request #68 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.27.
+  - alignment: aligned, The diff delivers HumanChannel, the terminal channel, the on_human_needed hook, the never-twice key and docs as the issue asks, and lists the three protected-file steps as human steps.
+  - impact: medium (floor medium: the diff changes 754 lines outside tests and docs, over half the limit of 1000), It adds a new plugin interface, a host hook and notice recording in the orchestrator, retry and merge paths, 754 non-test lines, but a failing channel or hook never stops the run.
+  - verification: strong, End-to-end CLI tests cover a park, an approval wait, no repeat across ticks and restarts, a new park after resume, and a failing and a hanging hook, backed by unit, preflight and contract tests; the shared contract does not yet run against the terminal channel because of the protected Gradle file.
+  - rollback_cost: two_way, A revert removes the code; the extra human_notified events and the human_notice key in wait data stay in the store but are additive and ignorable.
+  - error_detection: loud, Channel failures are logged at warn and recorded in human_notified, and hook failures and timeouts are recorded as hook_failed events.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 14 of 23 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
