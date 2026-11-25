@@ -125,6 +125,8 @@ private fun droppedData(
                 is ToolRequest.Result -> mapOf(ToolRequestEvent.REQUEST to request.kind, ToolRequestEvent.SOURCE to Tracker.MCP)
                 // m4-31: a question queued by the ask tool, named with its kind like the drain names it.
                 is ToolRequest.Ask -> mapOf(ToolRequestEvent.REQUEST to request.kind, QuestionAsked.QUESTION_KIND to request.questionKind)
+                // m4-33: a follow up queued by the file_followup tool, named like the drain names it.
+                is ToolRequest.Followup -> mapOf(ToolRequestEvent.REQUEST to request.kind)
             }
     }
 

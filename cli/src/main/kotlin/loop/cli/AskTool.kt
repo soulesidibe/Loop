@@ -26,9 +26,9 @@ internal suspend fun AttemptTool.queueAsk(
     call: AskCall,
 ): ToolReply {
     val question = redact(call.question).trim()
-    if (question.isEmpty()) return askFailure("empty_question", "The question is empty. Write the question a human must answer.")
+    if (question.isEmpty()) return structuredFailure("empty_question", "The question is empty. Write the question a human must answer.")
     if (alreadyAsked(env)) {
-        return askFailure(
+        return structuredFailure(
             "already_asked",
             "You already asked a question in this attempt, and Loop posts one question per attempt. End your turn now.",
         )
@@ -38,7 +38,7 @@ internal suspend fun AttemptTool.queueAsk(
     openStore(env).use { store -> liveAttempt(store, env) }
     enqueue(env, ToolRequest.Ask(call.kind, question, options, recommendation), "the question on ${env.issueName}")
     return ToolReply(
-        askJson(
+        structuredJson(
             STATUS_PENDING,
             "Queued your ${call.kind} question for ${env.issueName}. End your turn now: when it ends, Loop posts the " +
                 "question on the issue, ends this attempt without verification and keeps your workspace, and the issue " +
@@ -55,12 +55,14 @@ private fun alreadyAsked(env: AttemptTool.Env): Boolean =
         false
     }
 
-private fun AttemptTool.askFailure(
+/** A structured failure of a tool that answers JSON (m4-31, m4-33): status `error`, its [code] and [message], nothing queued. */
+internal fun AttemptTool.structuredFailure(
     code: String,
     message: String,
-): ToolReply = ToolReply(askJson(STATUS_ERROR, "$message ${AttemptTool.NOTHING_QUEUED}", "error" to code), isError = true)
+): ToolReply = ToolReply(structuredJson(STATUS_ERROR, "$message ${AttemptTool.NOTHING_QUEUED}", "error" to code), isError = true)
 
-private fun AttemptTool.askJson(
+/** The JSON answer of a tool that answers JSON (m4-31, m4-33), redacted: [status], the [fields], then [message]. */
+internal fun AttemptTool.structuredJson(
     status: String,
     message: String,
     vararg fields: Pair<String, String>,
