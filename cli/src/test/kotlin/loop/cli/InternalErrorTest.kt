@@ -111,6 +111,7 @@ class InternalErrorTest {
                 "send-back",
                 "report",
                 "query",
+                "replay",
                 "move",
                 "comment",
                 "mcp",
