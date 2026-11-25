@@ -23,7 +23,8 @@ class AndroidAvdContractTest : ResourceProviderContract() {
         root.toFile().deleteRecursively()
     }
 
-    override fun provider(): ResourceProvider = android.provider(stop = 1.seconds)
+    // Short, since the dirty case waits it out, and long enough for a clean release on a loaded build machine.
+    override fun provider(): ResourceProvider = android.provider(stop = 5.seconds)
 
     override fun resource(): ResourceDeclaration = ResourceDeclaration(kind = "avd", id = "pixel_api35", can = listOf("ui tests"))
 

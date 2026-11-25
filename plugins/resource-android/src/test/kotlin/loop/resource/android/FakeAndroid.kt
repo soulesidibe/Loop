@@ -45,12 +45,13 @@ class FakeAndroid(
 
     /**
      * A new provider over this machine, as a new process of Loop would be: its own owner, and every other owner seen
-     * as dead, so a provider built earlier plays a crashed run.
+     * as dead, so a provider built earlier plays a crashed run. The default timeouts are wide, since a call that
+     * succeeds ends as soon as it can and the fakes are slow on a loaded build machine.
      */
     fun provider(
-        boot: Duration = 5.seconds,
-        stop: Duration = 2.seconds,
-        command: Duration = 5.seconds,
+        boot: Duration = 30.seconds,
+        stop: Duration = 10.seconds,
+        command: Duration = 10.seconds,
     ): AndroidResourceProvider =
         AndroidResourceProvider(
             environment = mapOf("PATH" to "$bin:/usr/bin:/bin", "FAKE_ANDROID_MACHINE" to root.toString()),
@@ -82,6 +83,12 @@ class FakeAndroid(
     /** Sets the `sys.boot_completed` of the emulator on [serial] to 1, as a boot that completes. */
     fun bootCompleted(serial: String) {
         boot.resolve(serial).writeText("1\n")
+    }
+
+    /** The `sys.boot_completed` the emulator on [serial] wrote, or null before it wrote any. */
+    fun bootValue(serial: String): String? {
+        val file = boot.resolve(serial)
+        return if (file.exists()) file.readText().trim() else null
     }
 
     fun connected(serial: String): Boolean = devices.resolve(serial).exists()

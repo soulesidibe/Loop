@@ -191,12 +191,13 @@ class AndroidResourceProviderTest {
     @Test
     fun `a boot that never completes fails after the timeout naming the last sys_boot_completed value, and the emulator is stopped`() {
         android.flag("boot-never")
-        val provider = android.provider(boot = 1.seconds)
+        // Long enough for the fake emulator to connect and write its 0 on a loaded build machine.
+        val provider = android.provider(boot = 10.seconds)
 
         val failure = assertFailsWith<ResourceException> { provider.prepare(AVD, ATTEMPT) }
 
         assertEquals(
-            "avd pixel_api35: emulator-5554 did not boot in 1s, the last sys.boot_completed read was \"0\"",
+            "avd pixel_api35: emulator-5554 did not boot in 10s, the last sys.boot_completed read was \"0\"",
             failure.message,
         )
         assertTrue("adb -s emulator-5554 emu kill" in android.calls(), "${android.calls()}")
@@ -277,7 +278,11 @@ class AndroidResourceProviderTest {
         val first = Thread { runCatching { provider.prepare(AVD, ATTEMPT) } }
         first.start()
         val deadline = System.currentTimeMillis() + 5_000
-        while (android.calls().none { "getprop" in it } && System.currentTimeMillis() < deadline) Thread.sleep(20)
+        while ((android.calls().none { "getprop" in it } || android.bootValue("emulator-5554") != "0") &&
+            System.currentTimeMillis() < deadline
+        ) {
+            Thread.sleep(20)
+        }
         first.interrupt()
         first.join(5_000)
         assertFalse(first.isAlive, "the interrupted prepare did not stop")
