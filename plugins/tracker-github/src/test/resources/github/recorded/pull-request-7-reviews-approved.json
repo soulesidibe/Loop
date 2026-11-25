@@ -1,0 +1,87 @@
+[
+  {
+    "id": 80,
+    "node_id": "MDE3OlB1bGxSZXF1ZXN0UmV2aWV3ODA=",
+    "user": {
+      "login": "octocat",
+      "id": 1,
+      "type": "User",
+      "site_admin": false
+    },
+    "body": "Looks fine so far.",
+    "state": "COMMENTED",
+    "html_url": "https://github.com/octocat/Hello-World/pull/7#pullrequestreview-80",
+    "pull_request_url": "https://api.github.com/repos/octocat/Hello-World/pulls/7",
+    "author_association": "COLLABORATOR",
+    "submitted_at": "2026-11-24T09:00:00Z",
+    "commit_id": "e5bd3914e2e596debea16f433f57875b5b90bcd6"
+  },
+  {
+    "id": 81,
+    "node_id": "MDE3OlB1bGxSZXF1ZXN0UmV2aWV3ODE=",
+    "user": {
+      "login": "monalisa",
+      "id": 2,
+      "type": "User",
+      "site_admin": false
+    },
+    "body": "The README needs the new flag.",
+    "state": "CHANGES_REQUESTED",
+    "html_url": "https://github.com/octocat/Hello-World/pull/7#pullrequestreview-81",
+    "pull_request_url": "https://api.github.com/repos/octocat/Hello-World/pulls/7",
+    "author_association": "COLLABORATOR",
+    "submitted_at": "2026-11-24T09:30:00Z",
+    "commit_id": "e5bd3914e2e596debea16f433f57875b5b90bcd6"
+  },
+  {
+    "id": 83,
+    "node_id": "MDE3OlB1bGxSZXF1ZXN0UmV2aWV3ODM=",
+    "user": {
+      "login": "hubot",
+      "id": 3,
+      "type": "User",
+      "site_admin": false
+    },
+    "body": "",
+    "state": "APPROVED",
+    "html_url": "https://github.com/octocat/Hello-World/pull/7#pullrequestreview-83",
+    "pull_request_url": "https://api.github.com/repos/octocat/Hello-World/pulls/7",
+    "author_association": "COLLABORATOR",
+    "submitted_at": "2026-11-24T10:15:00Z",
+    "commit_id": "6dcb09b5b57875f334f61aebed695e2e4193db5e"
+  },
+  {
+    "id": 85,
+    "node_id": "MDE3OlB1bGxSZXF1ZXN0UmV2aWV3ODU=",
+    "user": {
+      "login": "monalisa",
+      "id": 2,
+      "type": "User",
+      "site_admin": false
+    },
+    "body": "Thanks, the empty list case is handled now.",
+    "state": "APPROVED",
+    "html_url": "https://github.com/octocat/Hello-World/pull/7#pullrequestreview-85",
+    "pull_request_url": "https://api.github.com/repos/octocat/Hello-World/pulls/7",
+    "author_association": "COLLABORATOR",
+    "submitted_at": "2026-11-24T11:00:00Z",
+    "commit_id": "6dcb09b5b57875f334f61aebed695e2e4193db5e"
+  },
+  {
+    "id": 86,
+    "node_id": "MDE3OlB1bGxSZXF1ZXN0UmV2aWV3ODY=",
+    "user": {
+      "login": "octocat",
+      "id": 1,
+      "type": "User",
+      "site_admin": false
+    },
+    "body": "Ready on my side too.",
+    "state": "COMMENTED",
+    "html_url": "https://github.com/octocat/Hello-World/pull/7#pullrequestreview-86",
+    "pull_request_url": "https://api.github.com/repos/octocat/Hello-World/pulls/7",
+    "author_association": "COLLABORATOR",
+    "submitted_at": "2026-11-24T11:05:00Z",
+    "commit_id": "6dcb09b5b57875f334f61aebed695e2e4193db5e"
+  }
+]

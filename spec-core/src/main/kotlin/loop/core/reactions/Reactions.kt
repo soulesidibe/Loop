@@ -26,15 +26,17 @@ import kotlin.time.Instant
 
 /**
  * The reactions of `reactions:` (m4-34, PLAN 6.7): what Loop does when something happens to a pull request it opened
- * while the issue waits. This class polls for `merge_conflict` and, since m4-36, for `changes_requested`, which
- * [ChangesRequestedReaction] decides; `ci_failed` is [CiFailedReaction], asked by the CI wait (m4-35).
+ * while the issue waits. This class polls for `merge_conflict`, since m4-36 for `changes_requested`, which
+ * [ChangesRequestedReaction] decides, and since m4-37 for `approved_green`, which [ApprovedGreenReaction] decides;
+ * `ci_failed` is [CiFailedReaction], asked by the CI wait (m4-35).
  *
  * The watched set is every unapproved `Waiting(approval)` that holds a pull request, not sent back, whose issue the tick
  * read active and that runs no attempt. Under the `human` policy the pull request opens after the approval, so these are
  * the fallback waits: after a `delivery_failed` that left the pull request open, or after a fallen back auto merge.
  * Each tick [poll] reads the mergeability of each watched pull request at most once, at most once every [POLL_FLOOR_MS],
  * through the run's delivery client, so a rate limit hold lasts across ticks; on the same poll, unless the conflict sent
- * the issue back, `changes_requested` reads its reviews. `mergeable_state` `dirty` with a known
+ * the issue back, `changes_requested` reads its reviews, then, unless the change request sent it back, `approved_green`
+ * reads them too, the one reviews read of the poll shared. `mergeable_state` `dirty` with a known
  * `mergeable` is a conflict; anything else, a failed read included, keeps the wait and records nothing.
  *
  * A conflict under `send_to_agent` records `reaction_triggered` and hands the wait to [sendBack] with the conflict
@@ -61,10 +63,18 @@ class Reactions(
     reactionsBefore: suspend () -> Result<List<RecordedEvent>> = { Result.success(emptyList()) },
     /** m4-36: tells the human that changes are still requested past `escalate_after`. */
     escalate: suspend (Wait.Approval, String, String?, Instant) -> Unit = { _, _, _, _ -> },
+    /** m4-37: the `merge_check_finished` events of the project in the run store, every run, for `approved_green`. */
+    mergeChecksBefore: suspend () -> Result<List<RecordedEvent>> = { Result.success(emptyList()) },
+    /** m4-37: tells the human that a pull request is approved and green. */
+    approvedGreen: suspend (Wait.Approval, String, String?, Instant) -> Unit = { _, _, _, _ -> },
 ) {
     /** m4-36: the `changes_requested` reaction, polled with the same floor and the same client. */
     private val changesRequested =
         ChangesRequestedReaction(reactionsBefore, record, sendBack, escalate, contextOf, log, redactor, clock, io)
+
+    /** m4-37: the `approved_green` reaction, polled with the same floor and the same client. */
+    private val approvedGreenReaction =
+        ApprovedGreenReaction(reactionsBefore, mergeChecksBefore, record, approvedGreen, contextOf, log, redactor, clock, io)
 
     /** When each watched pull request was last polled in this process, by issue id. */
     private val polls = mutableMapOf<String, Instant>()
@@ -81,7 +91,7 @@ class Reactions(
 
     /**
      * One tick of the reactions of [workflow] over the approval waits [approvals]: [active] are the issues the tick read
-     * in an active state, [busy] the issues that run an attempt. Nothing is read when no reaction acts.
+     * in an active state, [busy] the issues that run an attempt. Nothing is read when no reaction is configured.
      */
     suspend fun poll(
         workflow: WorkflowFile,
@@ -91,10 +101,12 @@ class Reactions(
     ) {
         val reaction = workflow.config.reactions.mergeConflict
         val review = workflow.config.reactions.changesRequested
-        val watched = if (reaction == null && review == null) emptyList() else watched(approvals, active, busy)
+        val green = workflow.config.reactions.approvedGreen
+        val acts = reaction != null || review != null || green != null
+        val watched = if (acts) watched(approvals, active, busy) else emptyList()
         polls.keys.retainAll(watched.map { it.issue.id }.toSet())
         skipped.retainAll { (issueId, since) -> watched.any { it.issue.id == issueId && it.wait.since == since } }
-        if (reaction == null && review == null) return
+        if (!acts) return
         val executor = executorFor(workflow)
         for (one in watched) {
             val now = clock.now()
@@ -102,8 +114,29 @@ class Reactions(
             if (last != null && now - last < POLL_FLOOR_MS.milliseconds) continue
             polls[one.issue.id] = now
             if (reaction != null && conflictSentBack(one, reaction, workflow, executor)) continue
-            if (review != null && changesRequested.poll(one, review, executor)) polls -= one.issue.id
+            val reviews = Once { executor.pullRequestReviews(one.number) }
+            if (review != null && changesRequested.poll(one, review, executor, reviews::get)) {
+                polls -= one.issue.id
+                continue
+            }
+            if (green != null) approvedGreenReaction.poll(one, green, workflow, executor, reviews::get)
         }
+    }
+
+    /** The answer of [call], asked once: the reviews read one poll shares between its reactions (m4-37). */
+    private class Once<T>(
+        private val call: suspend () -> Result<T>,
+    ) {
+        private var answer: Result<T>? = null
+
+        suspend fun get(): Result<T> =
+            answer ?: try {
+                call()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Result.failure(e)
+            }.also { answer = it }
     }
 
     /** Reads the mergeability of [one]'s pull request and reacts to a conflict. True when the issue was sent back. */
