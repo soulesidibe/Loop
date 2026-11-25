@@ -5207,7 +5207,7 @@ class Orchestrator(
         log.guardSink(sinkName, waitContext(wait)) { sink.record(event).getOrThrow() }
     }
 
-    /** The issues whose wait names a kind the workflow no longer holds, warned once each until it is back (m4-18). */
+    /** The issues whose wait named a kind the workflow no longer holds, warned once each for the life of this run (m4-18). */
     private val kindGoneWarned = mutableSetOf<String>()
 
     /** Logs at warn, once per issue, that [wait] keeps waiting because its kind [name] left the workflow (m4-18). */
