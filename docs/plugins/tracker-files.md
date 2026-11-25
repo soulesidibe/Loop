@@ -14,7 +14,7 @@ Written 2026-11-06 in issue m1-02. Terms follow [`CONTEXT.md`](../../CONTEXT.md)
 6. [States](#states)
 7. [Sort order](#sort-order)
 8. [Malformed records](#malformed-records)
-9. [Writes and the agent tool](#writes-and-the-agent-tool), including [comments](#comments) and [labels](#labels)
+9. [Writes and the agent tool](#writes-and-the-agent-tool), including [comments](#comments), [labels](#labels) and [created issues](#created-issues)
 10. [Errors](#errors)
 11. [Known gaps](#known-gaps)
 
@@ -24,6 +24,7 @@ Written 2026-11-06 in issue m1-02. Terms follow [`CONTEXT.md`](../../CONTEXT.md)
 |---|---|---|---|
 | `tracker.kind` | `files` | required | `tracker.kind` missing or blank is a startup error (`tracker.kind is required`). |
 | `tracker.provider.dir` | path to the issues folder, or `$VAR` | `.loop/issues` | A relative path resolves against the folder that holds `WORKFLOW.md`, not the current directory. A whole value `$NAME` is read from the environment first, see below. |
+| `tracker.provider.prefix` | a lowercase letter, then lowercase letters and digits | `bl` | The id prefix of the issues the tracker creates, `<prefix>-<nn>` (m4-33), see [created issues](#created-issues). |
 | `tracker.active_states` | list of states | `todo`, `in_progress` | Profile default, see [states](#states). |
 | `tracker.terminal_states` | list of states | `done`, `canceled` | Profile default, see [states](#states). |
 | `tracker.required_labels` | list of labels | empty | Compared case insensitively. |
@@ -55,8 +56,9 @@ Since m3-05 the tracker is a plugin, `FilesTrackerProvider`, registered in `META
 | Key | Type | Required or default | Secret | Limits |
 |---|---|---|---|---|
 | `tracker.provider.dir` | string | `.loop/issues` | no | none |
+| `tracker.provider.prefix` | string | `bl` | no | none |
 
-Loop checks `tracker.provider` against it on every load of `WORKFLOW.md`, at startup, in the preflight of every tick and on every reload. A `dir` that is not a string fails with `invalid_tracker_config` and `tracker.provider.dir must be a string`. A key the profile does not list is a startup warning, `tracker.provider.<key> is not a key of the files tracker, Loop ignores it`, never a failure, for forward compatibility. Its profile defaults for the states are `todo`, `in_progress` and `done`, `canceled`, as above.
+Loop checks `tracker.provider` against it on every load of `WORKFLOW.md`, at startup, in the preflight of every tick and on every reload. A `dir` that is not a string fails with `invalid_tracker_config` and `tracker.provider.dir must be a string`. A `prefix` that is not a string or does not match fails with `invalid_tracker_config` and `tracker.provider.prefix must be a lowercase letter, then lowercase letters and digits, such as bl`. A key the profile does not list is a startup warning, `tracker.provider.<key> is not a key of the files tracker, Loop ignores it`, never a failure, for forward compatibility. Its profile defaults for the states are `todo`, `in_progress` and `done`, `canceled`, as above.
 
 ## Scope
 
@@ -193,6 +195,15 @@ A human answers by hand, as `<date> <name>: <text>`; the time is optional. Nothi
 - A comment on the entry is replaced with it: a trailing comment on the key line and a comment between the items are gone after the write. A comment after the last item stays. Keep a note that must survive on its own line before the `labels` key.
 - Read back rule: before writing, the adapter parses the new text. It must give the intended labels in order, every other front matter field unchanged and the same body. When it does not, as for a front matter written as one flow map `{...}`, the write fails with `Malformed` and the file is byte for byte what it was. Nothing is written first and repaired after.
 - Every other byte is kept, line endings included, and the file is written through a temporary file and an atomic rename under the same lock as moves and comments. When the label set does not change, nothing is written.
+
+### Created issues
+
+`createIssue` (m4-33), the optional issue create of `TrackerAdapter`, writes the follow ups an agent files with `file_followup` (see [file_followup](../spec-decisions.md#file_followup-files-a-follow-up-issue-extension-m4-33)).
+
+- The file is `<prefix>-<nn>-<slug>.md` in `tracker.provider.dir`. `<prefix>` is `tracker.provider.prefix`, `bl` when absent. `<nn>` is one more than the highest number of that prefix, at least two digits, read from the front matter ids and the file names alike, so a file that does not parse still holds its number; the first is `01`. `<slug>` is the title in lowercase letters and digits, every other run one `-`, at most 60 characters, `issue` when nothing is left.
+- The front matter is `id`, the title double quoted, `state` the tracker's first active state, `priority: null`, `labels` as one flow list (trimmed, blanks dropped, a label given twice kept once) and `blocked_by: []`; the body follows, trimmed.
+- Read back rule: the text must parse back to that id, title, state and labels before anything is written; otherwise the call fails with `Malformed`. A blank title fails with `Rejected`, and so does a name an existing file already holds. Nothing is written in either case.
+- The file is written whole through a temporary file and an atomic rename, under the same lock as moves, comments and label writes, so two creates never take the same number. It never goes through the label write.
 
 ## Errors
 
