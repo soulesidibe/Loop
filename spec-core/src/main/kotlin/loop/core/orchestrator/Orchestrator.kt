@@ -4591,11 +4591,6 @@ class Orchestrator(
             }
         }
 
-        /**
-         * Saves the criteria of the issue that hold no command as evidence of their own (m2-09), then records
-         * `judgment_calls` with their count and the evidence reference, absent when none was saved. A failed
-         * write records `evidence_record_failed` without a check index and never stops the verification.
-         */
         /** Saves the deliverable files of a verification as evidence (m4-21) and returns its reference, null when not saved. */
         private suspend fun saveDeliverable(deliverable: DeliverableEvidence): String? =
             attemptId?.let { attempt ->
@@ -4611,6 +4606,11 @@ class Orchestrator(
                 }
             }
 
+        /**
+         * Saves the criteria of the issue that hold no command as evidence of their own (m2-09), then records
+         * `judgment_calls` with their count and the evidence reference, absent when none was saved. A failed
+         * write records `evidence_record_failed` without a check index and never stops the verification.
+         */
         private suspend fun saveJudgmentCalls(
             criteria: List<String>,
             fingerprint: String,

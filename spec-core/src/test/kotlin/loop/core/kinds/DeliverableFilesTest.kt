@@ -109,7 +109,8 @@ class DeliverableFilesTest {
 
     // What verification gets.
 
-    private fun kind(files: List<String>) = IssueKind("anything", KindConfig(listOf(CheckConfig.Command("true")), deliverable = KindDeliverable(files)))
+    private fun kind(files: List<String>) =
+        IssueKind("anything", KindConfig(listOf(CheckConfig.Command("true")), deliverable = KindDeliverable(files)))
 
     @Test
     fun `a kind with no deliverable files gets no listing, whatever its name`() {

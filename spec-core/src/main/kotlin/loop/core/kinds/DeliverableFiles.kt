@@ -100,7 +100,12 @@ object DeliverableFiles {
         kind: IssueKind?,
         workspace: Path,
     ): DeliverableListing? {
-        val globs = kind?.config?.deliverable?.files.orEmpty()
+        val globs =
+            kind
+                ?.config
+                ?.deliverable
+                ?.files
+                .orEmpty()
         if (globs.isEmpty()) return null
         return try {
             DeliverableListing.Listed(globs, list(workspace, globs))
@@ -132,7 +137,12 @@ object DeliverableFiles {
         workspace: Path,
         glob: String,
     ): Path? {
-        val segments = glob.trim().removePrefix("/").split('/').dropLast(1)
+        val segments =
+            glob
+                .trim()
+                .removePrefix("/")
+                .split('/')
+                .dropLast(1)
         var folder = workspace
         for (segment in segments.takeWhile { '*' !in it && '?' !in it }) {
             folder = folder.resolve(segment)

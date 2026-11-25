@@ -497,7 +497,12 @@ class WorkflowLoader(
         }
         // m4-21: refused before the auto_merge opt in, so the message names the real reason.
         val deliverable = parseDeliverable(kindKey, kind)
-        val auto = kind.child("delivery", "$kindKey.delivery").string("$kindKey.delivery.policy", "policy")?.trim()?.lowercase() == "auto"
+        val auto =
+            kind
+                .child("delivery", "$kindKey.delivery")
+                .string("$kindKey.delivery.policy", "policy")
+                ?.trim()
+                ?.lowercase() == "auto"
         DeliverableFiles.refusal(kindKey, deliverable.files, auto)?.let { throw WorkflowError.InvalidConfig(it) }
         val delivery = parseDelivery(kindKey, kind, trackerKind, deferred)
         val match = parseMatch(kindKey, kind, trackerIds) ?: if (name == KindsConfig.CODE) KindMatch.DEFAULT else null

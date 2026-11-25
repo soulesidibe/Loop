@@ -108,6 +108,10 @@ _Avoid_: Triage (the judgment a triage agent adds on top), validation
 What verification concludes about a submitted result from its checks: `verified` (every check passed, the only verdict that is delivered), `refuted` (a check failed) or `unverified` (no check, or a check could not run).
 _Avoid_: Result, status, outcome
 
+**Deliverable**:
+What a kind's work produces, decided by the keys the kind declares, never by its name. With `deliverable.files`, globs relative to the workspace, verification lists the matching files with their sizes and digests and records them with the verdict, and a result with no matching file is refuted with "no deliverable file" (m4-21). A kind with that key is called a content kind. `deliverable.report` is the research kind's report (m4-23).
+_Avoid_: Output, artifact
+
 **Judgment call**:
 An acceptance criterion with no command, which no check can pass. When a kind runs the commands of the acceptance criteria (`acceptance_commands`), Loop lists the judgment calls in the evidence for a human and never counts them as passed.
 _Avoid_: Manual check, prose criterion

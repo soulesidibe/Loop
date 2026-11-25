@@ -30,7 +30,7 @@ class ContentKindRunTest {
     private val post = "# Post\n\nA plain line, with commas, and periods.\n"
 
     @Test
-    fun `a content issue is dispatched under content, its deliverable files are recorded with the verdict and its checks run in the worktree`() {
+    fun `a content issue runs under content, its deliverable files are recorded with the verdict, its checks run in the worktree`() {
         fixture.issue("c-1", labels = listOf("ready-for-agent", "content"))
         fixture.agentScript.writeText(
             """

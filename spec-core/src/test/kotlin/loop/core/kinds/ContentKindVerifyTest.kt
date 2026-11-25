@@ -7,12 +7,14 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
+import loop.api.ProjectId
 import loop.api.Redactor
 import loop.api.RunId
 import loop.api.SecretRedactor
 import loop.api.WaitReason
 import loop.core.events.Verdict
 import loop.core.log.KeyValueLog
+import loop.core.orchestrator.FakeHookRunner
 import loop.core.orchestrator.FakeParkedIssues
 import loop.core.orchestrator.FakeRunner
 import loop.core.orchestrator.FakeSink
@@ -45,8 +47,6 @@ import loop.core.workflow.WorkflowLoader
 import loop.core.workflow.commandRunner
 import loop.core.workspace.WorkspaceManager
 import loop.core.workspace.Workspaces
-import loop.core.orchestrator.FakeHookRunner
-import loop.api.ProjectId
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
@@ -163,7 +163,11 @@ class ContentKindVerifyTest {
     private fun FakeSink.verdicts(): List<Map<String, String>> = events.filter { it.kind == "verdict" }.map { it.data }
 
     private fun evidence(name: String): String =
-        Files.walk(loopHome).use { files -> files.filter { it.name == name }.toList() }.single().readText()
+        Files
+            .walk(loopHome)
+            .use { files -> files.filter { it.name == name }.toList() }
+            .single()
+            .readText()
 
     private fun sha256(text: String): String =
         MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }
@@ -189,7 +193,13 @@ class ContentKindVerifyTest {
                 assertContains(listed, "- out/2026/second.md, 9 bytes, sha256 ${sha256("# Second\n")}")
                 assertContains(listed, "- out/post.md, 7 bytes, sha256 ${sha256("# Post\n")}")
                 assertFalse(listed.contains("notes.txt"), listed)
-                assertEquals(WaitReason.Approval, waiting.records.values.single().reason, name)
+                assertEquals(
+                    WaitReason.Approval,
+                    waiting.records.values
+                        .single()
+                        .reason,
+                    name,
+                )
                 Files.walk(loopHome).use { files -> files.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
                 Files.walk(root.resolve("workspaces")).use { files -> files.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
             }
@@ -259,7 +269,7 @@ class ContentKindVerifyTest {
     fun `a banned dash in a deliverable fails the example check, and the finding names the file and the line`() =
         runTest {
             checks = realChecks
-            writes = mapOf("out/post.md" to "# Post\n\nA line with an em dash — here.\n", "out/clean.md" to "# Clean\n")
+            writes = mapOf("out/post.md" to "# Post\n\nA line with an em dash \u2014 here.\n", "out/clean.md" to "# Clean\n")
             val sink = FakeSink()
             val orchestrator = orchestrator(workflow(mapOf("code" to code, "content" to content(listOf(dashCheck)))), sink = sink)
 
@@ -280,7 +290,7 @@ class ContentKindVerifyTest {
     fun `an en dash fails the example check too, and a deliverable with no dash passes it`() =
         runTest {
             checks = realChecks
-            writes = mapOf("out/post.md" to "From 2026 – 2027.\n")
+            writes = mapOf("out/post.md" to "From 2026 \u2013 2027.\n")
             val dashed = FakeSink()
             orchestrator(workflow(mapOf("code" to code, "content" to content(listOf(dashCheck)))), sink = dashed).tick()
             assertEquals("refuted", dashed.verdicts().single()["verdict"])
@@ -374,7 +384,10 @@ class ContentKindVerifyTest {
         val posts = kinds.named.getValue("posts")
         assertEquals(KindDeliverable(listOf("out/**/*.md", "README.md")), posts.deliverable)
         assertEquals(DeliveryPolicy.Human, posts.delivery.policy)
-        assertEquals("! grep -rnE \"\$(printf '\\342\\200\\224|\\342\\200\\223')\" out/", (posts.checks.single() as CheckConfig.Command).run)
+        assertEquals(
+            "! grep -rnE \"\$(printf '\\342\\200\\224|\\342\\200\\223')\" out/",
+            (posts.checks.single() as CheckConfig.Command).run,
+        )
         assertEquals(KindDeliverable(), kinds.code.deliverable)
         assertTrue(preflight(kind("posts", "{ files: [out/**/*.md] }", "    delivery: { policy: human }")) is PreflightResult.Ok)
     }
