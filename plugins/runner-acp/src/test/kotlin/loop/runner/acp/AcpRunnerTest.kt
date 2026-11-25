@@ -373,7 +373,7 @@ class AcpRunnerTest {
     }
 
     @Test
-    fun `agy preset resumeSession returns null while generic ACP resumeSession sends session load and handles unknown session errors`() {
+    fun `agy resumeSession is null without a kept folder, generic resumeSession loads and handles unknown session errors`() {
         val agyServer = FakeAcpServer.write(dir.resolve("agy-no-resume")) { agyHandshake() }
         assertNull(agyRunner(agyServer).resumeSession(context(), "prev-acp-session"))
 

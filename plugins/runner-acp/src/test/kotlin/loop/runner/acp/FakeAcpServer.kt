@@ -34,12 +34,16 @@ class FakeAcpServer private constructor(
         private val body = StringBuilder()
         private var files = 0
 
-        /** Reads `initialize` and responds with [protocolVersion] and [agentVersion]. */
+        /**
+         * Reads `initialize` and responds with [protocolVersion] and [agentVersion], and with
+         * `agentCapabilities.loadSession` when [loadSession] is set.
+         */
         fun initialize(
             id: Long = 1,
             protocolVersion: Int = 1,
             agentName: String = "Antigravity ACP Server",
             agentVersion: String? = AcpSettings.PINNED_AGY_VERSION,
+            loadSession: Boolean? = null,
         ) {
             awaitClient()
             response(
@@ -53,6 +57,7 @@ class FakeAcpServer private constructor(
                             if (agentVersion != null) put("version", agentVersion)
                         },
                     )
+                    if (loadSession != null) put("agentCapabilities", buildJsonObject { put("loadSession", loadSession) })
                 },
             )
         }

@@ -4,6 +4,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -60,6 +61,15 @@ internal sealed interface AcpHandshakeFailure {
     ) : AcpHandshakeFailure {
         override val reason: String get() = "response_error: session/set_model selected $actual instead of $expected"
     }
+
+    /** Under `preset: agy`, a session to load, but `initialize` did not advertise `agentCapabilities.loadSession` (bl-213). */
+    data object LoadUnsupported : AcpHandshakeFailure {
+        override val reason: String
+            get() = "response_error: the initialize response does not advertise agentCapabilities.loadSession"
+    }
+
+    /** True when the agent refused to load a session: it cannot load one, or `session/load` answered an error. */
+    fun refusesLoad(): Boolean = this is LoadUnsupported || (this is ErrorAnswer && method == AcpHandshake.METHOD_SESSION_LOAD)
 }
 
 /**
@@ -305,6 +315,9 @@ internal class AcpHandshake(
                 return Step.Failed(AcpHandshakeFailure.WrongAgyMajorVersion(agentVersion, pinnedAgyVersion))
             }
             notes += "agy ACP server version $agentVersion"
+            if (resumeFrom != null && !advertisesLoadSession(result)) {
+                return Step.Failed(AcpHandshakeFailure.LoadUnsupported)
+            }
         } else if (agentVersion != null) {
             val agentName =
                 (agentInfo["name"] as? JsonPrimitive)
@@ -470,6 +483,12 @@ internal class AcpHandshake(
         const val METHOD_SESSION_CANCEL: String = "session/cancel"
         const val METHOD_SESSION_UPDATE: String = "session/update"
         const val METHOD_REQUEST_PERMISSION: String = "session/request_permission"
+
+        private fun advertisesLoadSession(result: JsonObject): Boolean {
+            val capabilities = result["agentCapabilities"] as? JsonObject ?: return false
+            val loadSession = capabilities["loadSession"] as? JsonPrimitive ?: return false
+            return !loadSession.isString && loadSession.booleanOrNull == true
+        }
 
         fun matchesId(
             element: JsonElement,
