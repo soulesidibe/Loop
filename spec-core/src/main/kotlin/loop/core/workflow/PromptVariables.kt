@@ -59,8 +59,15 @@ object PromptVariables {
      */
     const val RETRY_SENT_BACK: String = "sent_back"
 
+    /**
+     * `loop.retry_kind` on the retry a reaction of `reactions:` scheduled (m4-34, PLAN 6.7): the reaction's findings are
+     * `loop.verify_findings`, the conflict findings of the merge check for `merge_conflict`. It takes a `max_attempts` slot.
+     */
+    const val RETRY_REACTION: String = "reaction"
+
     /** Every value of `loop.retry_kind` Loop produces, which preflight renders (m3-11); null on a first dispatch. */
-    val RETRY_KINDS: List<String> = listOf(RETRY_CONTINUATION, RETRY_ROTATION, RETRY_ERROR, RETRY_REFUTED, RETRY_ANSWER, RETRY_SENT_BACK)
+    val RETRY_KINDS: List<String> =
+        listOf(RETRY_CONTINUATION, RETRY_ROTATION, RETRY_ERROR, RETRY_REFUTED, RETRY_ANSWER, RETRY_SENT_BACK, RETRY_REACTION)
 
     /** A sample of `loop.answer`, so preflight also renders the branch a template shows after an answer (m4-52). */
     const val SAMPLE_ANSWER: String = "Question for a human (product): Sample question?\n\nAnswer from sample: Sample answer."

@@ -152,6 +152,7 @@ import loop.core.merge.Merges
 import loop.core.merge.Recheck
 import loop.core.merge.RecheckOutcome
 import loop.core.merge.WorkspaceMergeGit
+import loop.core.reactions.Reactions
 import loop.core.resources.ResourceGrants
 import loop.core.resources.ResourceLocks
 import loop.core.template.Template
@@ -494,6 +495,26 @@ class Orchestrator(
         )
     }
 
+    /**
+     * m4-34: the reactions of `reactions:` to the waiting pull requests, in their own module. A reaction that sends the
+     * issue back ends its wait and takes a `max_attempts` slot through the retry coordinator.
+     */
+    private val reactions: Reactions by lazy {
+        Reactions(
+            executorFor = ::executorFor,
+            record = ::recordWaitEvent,
+            sendBack = { wait, issue, findings ->
+                endWaiting(wait)
+                if (retries.onReaction(issue, wait.attemptId, effective)) verifyFindings[wait.issueId] = findings
+            },
+            contextOf = ::waitContext,
+            log = log,
+            redactor = redactor,
+            clock = clock,
+            io = io,
+        )
+    }
+
     /** The sink every event goes through, the retry coordinator's too; the observer sees each one first. */
     private val sink: EventSink = ObservedSink(sink, observer)
 
@@ -716,6 +737,8 @@ class Orchestrator(
         val delivered = syncApprovals(issues)
         // m4-31: the ask waits a human ended by moving the issue.
         syncAsks(issues)
+        // m4-34: the reactions to the waiting pull requests, before the due retries fire.
+        reactions.poll(effective, waits.current(WaitReason.Approval).filterIsInstance<Wait.Approval>(), issues, claimed + running.keys)
         // m2-26, bl-172: the merge waits, one delivery at a time, the head of the queue on a free agent slot.
         val verifications = restored + syncMerges(scope, issues)
         val parkedIds =

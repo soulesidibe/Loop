@@ -2,6 +2,7 @@ package loop.core.workflow
 
 import loop.api.MergeMethod
 import loop.api.ResourceDeclaration
+import loop.core.reactions.ReactionsConfig
 import java.math.BigDecimal
 
 /**
@@ -39,6 +40,8 @@ data class WorkflowConfig(
     val resources: List<ResourceDeclaration> = emptyList(),
     /** m4-30: the `channel:` key, the channel through which Loop tells a human that a run needs them. */
     val channel: ChannelConfig = ChannelConfig(),
+    /** m4-34: the `reactions:` key, what Loop does when something happens to a waiting pull request; none when absent. */
+    val reactions: ReactionsConfig = ReactionsConfig(),
 )
 
 /**

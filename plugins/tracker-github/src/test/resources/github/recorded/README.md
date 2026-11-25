@@ -52,3 +52,10 @@ Recorded for m4-07 (bl-98) on 2026-11-21 in m4-00, with `gh api -i`, from the ar
 | `actions-run-43779352010` | `GET /repos/soulesidibe/Loop-private/actions/runs/43779352010`: 200, a completed run with conclusion `failure` |
 | `actions-run-43779352010-jobs` | `GET /repos/soulesidibe/Loop-private/actions/runs/43779352010/jobs`: 200, its one job, `failure` with zero steps |
 | `actions-runs-43779352010` | `GET /repos/soulesidibe/Loop-private/actions/runs?head_sha=1c495c0359f1fb41aef31782e7221ff699f6cb8c&per_page=100`: 200, the listing the CI wait reads, with run 43779352010 alone, the same run as `actions-run-43779352010` |
+
+Written by hand for the `merge_conflict` reaction (m4-34), after the shape GitHub documents in "REST API endpoints for pull requests" for `GET /repos/<owner>/<repo>/pulls/<number>`, because a conflicting pull request cannot be recorded from a repository no test may write to. Only the fields Loop reads and their neighbours are kept:
+
+| Name | Response |
+|---|---|
+| `pull-request-7-dirty` | pull request 7, open, `mergeable` `false` and `mergeable_state` `dirty`: it conflicts with its base |
+| `pull-request-7-unknown` | the same pull request while GitHub computes it: `mergeable` `null` and `mergeable_state` `unknown` |

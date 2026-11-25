@@ -483,6 +483,47 @@ class TraceCommandTest {
     }
 
     @Test
+    fun `m4-34 reaction_triggered and reaction_skipped show in the attempt's timeline`() {
+        val lines =
+            trace(
+                event("attempt_started", "13:48:40", "a1"),
+                event("attempt_finished", "13:48:42", "a1", data = mapOf("outcome" to "succeeded", "reason" to "waiting_approval")),
+                event(
+                    "reaction_skipped",
+                    "14:35:06",
+                    "a1",
+                    data =
+                        mapOf(
+                            "reaction" to "merge_conflict",
+                            "action" to "notify_human",
+                            "issue" to "t-1",
+                            "pull_request" to "7",
+                            "reason" to "notify_human",
+                        ),
+                ),
+                event(
+                    "reaction_triggered",
+                    "14:36:06",
+                    "a1",
+                    data = mapOf("reaction" to "merge_conflict", "action" to "send_to_agent", "issue" to "t-1", "pull_request" to "7"),
+                ),
+            )
+
+        assertContains(
+            lines,
+            line(
+                "14:35:06",
+                "reaction_skipped",
+                "reaction=merge_conflict action=notify_human issue=t-1 pull_request=7 reason=notify_human",
+            ),
+        )
+        assertContains(
+            lines,
+            line("14:36:06", "reaction_triggered", "reaction=merge_conflict action=send_to_agent issue=t-1 pull_request=7"),
+        )
+    }
+
+    @Test
     fun `m2-28 the merge risk assessment and an auto merge fallback show in the attempt's timeline`() {
         val lines =
             trace(
