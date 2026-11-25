@@ -1,7 +1,7 @@
 ---
 id: m4-34
 title: "Reactions config and the merge_conflict reaction"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-33]
@@ -48,3 +48,15 @@ Out of this issue: `ci_failed`, `changes_requested` and `approved_green` (m4-35 
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-25 18:32Z loop: Loop opened pull request #74 for this issue: https://github.com/soulesidibe/Loop/pull/74
+
+2026-11-25 18:36Z loop: Loop did not merge pull request #74 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.67.
+  - alignment: aligned, The diff implements the reactions config, the merge_conflict reaction, the reaction retry kind, the events and the docs the issue asks for, with logic in loop.core.reactions and only call sites in Orchestrator.kt.
+  - impact: medium (floor medium: the diff changes 602 lines outside tests and docs, over half the limit of 1000), It adds a new tick-time poll of GitHub, a new retry path and a new retry kind in the orchestrator, but only when a reactions key is set, and the code fact floor is medium.
+  - verification: partial, Tests cover each acceptance criterion, but the in-memory reacted mark that keeps the failure counter is lost on restart, and I did not see any test for that restart case or for reacted-state cleanup.
+  - rollback_cost: two_way, A revert removes the code; the only state left behind is a stored retry error value of reaction, and an absent reactions key means no behaviour change.
+  - error_detection: partial, Failed reads are logged at warn and the wait is kept, as the issue requires, but they record no event, so a reaction that never fires because of a persistent API failure is visible only in logs.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 9 of 21 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
