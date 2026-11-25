@@ -72,7 +72,13 @@ class StatusCommand(
             store.use {
                 runBlocking {
                     machine = machineLines(store, storeFile.toString())
-                    val locks = store.resourceLockRows().getOrElse { fail("cannot read the store at $storeFile: ${it.sentence()}", EXIT_STORE) }
+                    val locks =
+                        store.resourceLockRows().getOrElse {
+                            fail(
+                                "cannot read the store at $storeFile: ${it.sentence()}",
+                                EXIT_STORE,
+                            )
+                        }
                     resources = resourceLines(workflow.config.resources, locks, projectId, project.ids)
                     val events = store.eventsOfKinds(projectId, SNAPSHOT_KINDS)
                     val parked = store.list(projectId)
@@ -179,8 +185,10 @@ class StatusCommand(
         ids: IssueIdDisplay,
     ): List<String> {
         val ours =
-            (rows.locks.filter { it.projectId == projectId }.map { it.kind to it.resourceId } +
-                rows.queue.filter { it.projectId == projectId }.map { it.kind to it.resourceId })
+            (
+                rows.locks.filter { it.projectId == projectId }.map { it.kind to it.resourceId } +
+                    rows.queue.filter { it.projectId == projectId }.map { it.kind to it.resourceId }
+            )
         val keys = (declared.map { it.kind to it.id } + ours).distinct()
 
         fun issue(

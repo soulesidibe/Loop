@@ -802,7 +802,7 @@ class StatusCommandTest {
     }
 
     @Test
-    fun `m4-50 status shows each resource of the workflow, then each other one an issue of the project holds or waits for, with its holder and queue`() {
+    fun `m4-50 status shows each declared resource, then each other one the project holds or waits for, with its holder and queue`() {
         fixture.writeWorkflow(extra = "resources:\n  - { kind: avd, id: api35 }\n  - { kind: display, id: main }\n")
         val other = ProjectId("0123456789abcdef")
         val granted = Instant.parse("2026-11-25T09:30:00.123Z")

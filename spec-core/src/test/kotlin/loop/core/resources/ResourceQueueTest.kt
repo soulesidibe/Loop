@@ -113,7 +113,10 @@ class ResourceQueueTest {
                     Step.Request("a2", "ios-simulator", "iphone-16", "queued 2"),
                     Step.Request("a4", "avd", "api35", "queued 2"),
                     Step.FreeAttempt("a1", released = listOf("avd/api35", "ios-simulator/iphone-16"), granted = listOf("a2", "a3")),
-                    Step.Holds(listOf("avd/api35=a2", "ios-simulator/iphone-16=a3"), listOf("ios-simulator/iphone-16<-a2", "avd/api35<-a4")),
+                    Step.Holds(
+                        listOf("avd/api35=a2", "ios-simulator/iphone-16=a3"),
+                        listOf("ios-simulator/iphone-16<-a2", "avd/api35<-a4"),
+                    ),
                 ),
             ),
             Case(
@@ -212,7 +215,12 @@ class ResourceQueueTest {
         val lock = change.granted.single()
         assertEquals(ResourceLock("avd", "api35", ProjectId("p2"), "issue-b1", "B-b1", AttemptId("b1"), freedAt), lock)
         assertEquals(listOf(lock), change.rows.locks)
-        assertEquals("a1", change.released.single().attemptId.value)
+        assertEquals(
+            "a1",
+            change.released
+                .single()
+                .attemptId.value,
+        )
     }
 
     @Test
@@ -225,7 +233,11 @@ class ResourceQueueTest {
 
         assertIs<ResourceGrant.Queued>(requested.grant).also { assertEquals(1, it.position) }
         assertEquals(listOf("a2"), requested.change.granted.map { it.attemptId.value })
-        assertEquals(listOf("a2"), requested.change.rows.locks.map { it.attemptId.value })
+        assertEquals(
+            listOf("a2"),
+            requested.change.rows.locks
+                .map { it.attemptId.value },
+        )
     }
 
     private fun request(

@@ -89,7 +89,11 @@ class ResourceLocksTest {
         runTest {
             val store = MemoryStore()
             val unrecorded = mutableListOf<String>()
-            val locks = ResourceLocks(store, Sink(refuse = true), clock, RunId("r1")) { event, error -> unrecorded += "${event.kind}: ${error.message}" }
+            val locks =
+                ResourceLocks(store, Sink(refuse = true), clock, RunId("r1")) { event, error ->
+                    unrecorded +=
+                        "${event.kind}: ${error.message}"
+                }
             locks.request(p1, "1", "t-1", AttemptId("a1"), "avd", "api35").getOrThrow()
             locks.request(p1, "1", "t-1", AttemptId("a1"), "display", "main").getOrThrow()
 
@@ -98,7 +102,12 @@ class ResourceLocksTest {
             assertEquals(listOf("avd", "display"), change.released.map { it.kind })
             assertTrue(store.rows.locks.isEmpty())
             assertEquals(
-                listOf("resource_granted: sink down", "resource_granted: sink down", "resource_released: sink down", "resource_released: sink down"),
+                listOf(
+                    "resource_granted: sink down",
+                    "resource_granted: sink down",
+                    "resource_released: sink down",
+                    "resource_released: sink down",
+                ),
                 unrecorded,
             )
         }

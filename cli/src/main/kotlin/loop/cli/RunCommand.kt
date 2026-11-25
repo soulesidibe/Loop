@@ -267,7 +267,13 @@ class RunCommand(
         // m4-50: and every resource lock of this Project; then each provider recovers what no live lock holds.
         val resourcePlugins =
             host.resourcePlugins.getOrElse { error ->
-                log.log(LogLevel.WARN, "resource", LogOutcome.FAILED, context, reason = "no resource provider recovers: ${error.sentence()}")
+                log.log(
+                    LogLevel.WARN,
+                    "resource",
+                    LogOutcome.FAILED,
+                    context,
+                    reason = "no resource provider recovers: ${error.sentence()}",
+                )
                 null
             }
         val startupLocks =

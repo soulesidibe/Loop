@@ -175,7 +175,12 @@ class SqliteResourceLocksTest {
                 val lock = asking("a1").copy(issueIdentifier = "T-$secret").lock(prepared = mapOf("token" to secret))
                 store.updateResourceLocks { ResourceLockUpdate(ResourceLockRows(locks = listOf(lock)), Unit) }.getOrThrow()
 
-                val read = store.resourceLockRows().getOrThrow().locks.single()
+                val read =
+                    store
+                        .resourceLockRows()
+                        .getOrThrow()
+                        .locks
+                        .single()
                 assertEquals(false, secret in read.issueIdentifier)
                 assertEquals(false, read.prepared.values.any { secret in it })
                 assertContains(read.issueIdentifier, "T-")

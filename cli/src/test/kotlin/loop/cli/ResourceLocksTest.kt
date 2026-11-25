@@ -72,7 +72,11 @@ class ResourceLocksTest {
             goFile.createFile()
             val result = run.await(60)
 
-            assertEquals(1, fixture.query("SELECT 1 FROM events WHERE kind = 'attempt_finished' AND data LIKE '%failed%'").size, result.toString())
+            assertEquals(
+                1,
+                fixture.query("SELECT 1 FROM events WHERE kind = 'attempt_finished' AND data LIKE '%failed%'").size,
+                result.toString(),
+            )
             assertFreed(attempt, "attempt_ended", result.toString())
         } finally {
             run.process.destroyForcibly()
@@ -188,9 +192,10 @@ class ResourceLocksTest {
         output: String,
         extraLocks: List<String> = emptyList(),
     ) {
-        val rows = SqliteEventStore.open(fixture.loopHome, fixture.projectDir, Redactor.NONE).getOrThrow().use { store ->
-            runBlocking { store.resourceLockRows().getOrThrow() }
-        }
+        val rows =
+            SqliteEventStore.open(fixture.loopHome, fixture.projectDir, Redactor.NONE).getOrThrow().use { store ->
+                runBlocking { store.resourceLockRows().getOrThrow() }
+            }
         assertEquals(
             (listOf("other-project display main other-attempt") + extraLocks).sorted(),
             rows.locks.map { "${it.projectId.value} ${it.kind} ${it.resourceId} ${it.attemptId.value}" }.sorted(),
