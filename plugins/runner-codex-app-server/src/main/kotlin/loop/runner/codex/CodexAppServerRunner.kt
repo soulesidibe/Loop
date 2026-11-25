@@ -196,9 +196,9 @@ data class CodexAppServerSettings(
  * Loop's tools (m3-22, 17.5 items 15 and 16): when the attempt env has `LOOP_LAUNCHER` and `LOOP_TOOL_CONFIG`, the
  * thread declares `submit_result`, `move` and `comment` as client tools, built by [LoopClientTools] from the tool
  * config snapshot, so they follow the workflow's tracker, and `request_resource` and `release_resource` when the
- * workflow declares `resources:` (m4-51), answered inside the turn by `loop tool mcp` (m4-25). A call of one is run by [LoopToolCall] through
- * `loop tool mcp`, the same queue and drain as the Claude Code runner's MCP tools, and its reply, or a structured
- * failure, answers the call; the turn goes on either way. Reading waits for the call, so its time does not count
+ * workflow declares `resources:` (m4-51). A call of one is run by [LoopToolCall] through `loop tool mcp`, the same
+ * queue and drain as the Claude Code runner's MCP tools, or for a resource tool the same answer inside the turn
+ * (m4-25), and its reply, or a structured failure, answers the call; the turn goes on either way. Reading waits for the call, so its time does not count
  * against the turn timeout.
  *
  * Telemetry (m3-21, 17.5 items 13 and 14): [Telemetry] reads `thread/tokenUsage/updated` into

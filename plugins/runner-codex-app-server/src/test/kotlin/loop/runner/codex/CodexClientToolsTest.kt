@@ -355,7 +355,9 @@ class CodexClientToolsTest {
             """{"status":"queued","resource":"pixel-7","kind":"android-device","position":2,"message":"Queued at position 2: """ +
                 """another attempt holds pixel-7. Call request_resource with the same name again later to check; your place is kept."}"""
 
-        val call = call("request_resource", buildJsonObject { put("name", "pixel-7") }, FakeLoopTool.reply(reply), config = resourcesSnapshot())
+        val arguments = buildJsonObject { put("name", "pixel-7") }
+
+        val call = call("request_resource", arguments, FakeLoopTool.reply(reply), config = resourcesSnapshot())
 
         assertEquals(success(reply), call.answer)
         assertIs<RunnerEvent.TurnCompleted>(call.events.last(), "${call.events}")
