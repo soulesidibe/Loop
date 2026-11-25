@@ -84,6 +84,13 @@ object WaitKeys {
      */
     const val CI_WAITED_MS: String = "ci_waited_ms"
 
+    /**
+     * The data key of the key of the notice a human was sent for an approval wait (m4-30), `<issue id>|<wait reason>|<since>`,
+     * so the same wait saved again on a later tick or read back after a restart never notifies twice. Dropped by the
+     * transitions that make a new wait for the human, a delivery that failed for good and a merge that fell back.
+     */
+    const val HUMAN_NOTICE: String = "human_notice"
+
     /** The merge check runs: fetch the base, merge it, run the checks again (m2-26). */
     const val PHASE_CHECK: String = "check"
 

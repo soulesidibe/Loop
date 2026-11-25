@@ -37,7 +37,25 @@ data class WorkflowConfig(
      * plain lock, which the load names in one warning per kind.
      */
     val resources: List<ResourceDeclaration> = emptyList(),
+    /** m4-30: the `channel:` key, the channel through which Loop tells a human that a run needs them. */
+    val channel: ChannelConfig = ChannelConfig(),
 )
+
+/**
+ * The `channel:` key (m4-30, PLAN 6.5 and 12): the [kind] of the channel through which Loop tells a human that a run
+ * needs them, [TERMINAL] by default, the only kind in M4.
+ */
+data class ChannelConfig(
+    val kind: String = TERMINAL,
+) {
+    companion object {
+        /** One line per notice on the `loop run` terminal, the core channel. */
+        const val TERMINAL: String = "terminal"
+
+        /** Every kind this Loop knows. */
+        val KINDS: List<String> = listOf(TERMINAL)
+    }
+}
 
 /**
  * Loop mode (m2-03, plan 6.0 and 6.2). Since m4-18 a map of named kinds, [named], in the order written, which always
@@ -595,7 +613,9 @@ data class PollingConfig(
 /**
  * Spec 5.3.4. Parsed and validated here, run by the workspace hooks. [onTokenThreshold] (m1-38) and
  * [onBudgetWarning] (m2-20) are Loop's own hooks, run on the host once per `token_threshold` or
- * `budget_warning` event; they never fail or stop the attempt.
+ * `budget_warning` event; they never fail or stop the attempt. [onHumanNeeded] (m4-30) runs on the host, in the project
+ * folder, once per notice to a human, with the notice as JSON on stdin; a failure records `hook_failed` and the run goes
+ * on.
  */
 data class HooksConfig(
     val afterCreate: String? = null,
@@ -605,6 +625,7 @@ data class HooksConfig(
     val timeoutMs: Long = 60_000L,
     val onTokenThreshold: String? = null,
     val onBudgetWarning: String? = null,
+    val onHumanNeeded: String? = null,
 )
 
 /** Spec 5.3.5, plus Loop's `agent.env` (bl-01), `agent.max_wake_turns` (m4-03) and `agent.max_concurrent_agents_by_tracker` (m4-15). */
