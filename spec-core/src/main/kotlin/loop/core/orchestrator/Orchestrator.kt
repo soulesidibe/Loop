@@ -122,6 +122,8 @@ import loop.core.events.TurnInputRequired
 import loop.core.events.TurnStarted
 import loop.core.events.Usage
 import loop.core.events.Verdict
+import loop.core.kinds.IssueKind
+import loop.core.kinds.KindLookup
 import loop.core.kinds.Readiness
 import loop.core.log.KeyValueLog
 import loop.core.log.LogContext
@@ -167,6 +169,7 @@ import loop.core.workflow.DeliveryConfig
 import loop.core.workflow.DeliveryPolicy
 import loop.core.workflow.FilledPrompt
 import loop.core.workflow.GuardsConfig
+import loop.core.workflow.KindConfig
 import loop.core.workflow.PreflightCheck
 import loop.core.workflow.PreflightResult
 import loop.core.workflow.PromptBudget
@@ -810,8 +813,9 @@ class Orchestrator(
      */
     private fun missingSections(issue: Issue): List<String> {
         val ready =
-            effective.config.kinds
-                ?.code
+            KindLookup
+                .of(effective, issue)
+                ?.config
                 ?.ready ?: return emptyList()
         return Readiness.missingSections(issue.description, ready)
     }
@@ -1080,7 +1084,7 @@ class Orchestrator(
         val key = NamespacedId.workspaceKey(issue.id, issue.identifier, effective.trackerId)
         val context = pollContext.copy(issueId = issue.id, issueIdentifier = issue.identifier)
         val env =
-            hookEnv(effective.path, issue.id, issue.identifier, key) +
+            hookEnv(effective.path, issue.id, issue.identifier, key, KindLookup.of(effective, issue)?.name) +
                 mapOf(
                     "LOOP_HOME" to loopHome.toString(),
                     "LOOP_PROJECT_ID" to projectId.value,
@@ -1627,6 +1631,9 @@ class Orchestrator(
          */
         val workflow: WorkflowFile = effective
 
+        /** The kind of the issue as dispatched (m4-18), for the whole attempt like [workflow]; null in Symphony mode. */
+        val kind: IssueKind? = KindLookup.of(workflow, issue)
+
         val runner: AgentRunner = runnerFor(workflow)
         private val workspaces: WorkspaceManager = workspacesFor(workflow)
 
@@ -1710,7 +1717,7 @@ class Orchestrator(
          * runner's configured model. A line names its session's reported model instead, the row the attempt's (bl-147).
          */
         private val ledger = LedgerMeter()
-        private val ledgerSetup = LedgerMeter.setupOf(workflow, runner.model, issue.id)
+        private val ledgerSetup = LedgerMeter.setupOf(workflow, runner.model, issue.id, kind?.name)
 
         /** m4-42: the ledger setup `attempt_started` carries, so an exporter names it on every span of the attempt. */
         fun setupData(): Map<String, String> =
@@ -2296,6 +2303,7 @@ class Orchestrator(
                 issue.description,
                 attemptId,
                 workflow,
+                kind?.config,
                 path,
                 checkRunner,
                 { definition, data -> record(definition, data = data) },
@@ -2641,8 +2649,8 @@ class Orchestrator(
             rotations: Int = 0,
         ): String {
             val base =
-                fetchedBase ?: workflow.config.kinds
-                    ?.code
+                fetchedBase ?: kind
+                    ?.config
                     ?.guards
                     ?.base ?: GuardsConfig.DEFAULT_BASE
             val brief = SessionBrief(workspaceGit, attemptLedger, attemptEvents, SessionBrief.savedResults(loopHome, projectId), redactor)
@@ -2665,7 +2673,7 @@ class Orchestrator(
          * fails the attempt: its verification freezes the same dispatched list, or parks the issue when it cannot.
          */
         private suspend fun freezeAtDispatch() {
-            if (!declaresAcceptanceCommands(workflow) || workflow.trackers.entryOf(issue.id).kind != FILES_TRACKER) return
+            if (!declaresAcceptanceCommands(kind?.config) || workflow.trackers.entryOf(issue.id).kind != FILES_TRACKER) return
             val commands = AcceptanceCriteria.of(issue.description).commands
             freezeAcceptanceCommands(issue.id, issue.identifier, commands) { definition, data -> record(definition, data = data) }
                 .onFailure { error ->
@@ -3645,8 +3653,8 @@ class Orchestrator(
          */
         private suspend fun attemptBase(): String? {
             val base =
-                workflow.config.kinds
-                    ?.code
+                kind
+                    ?.config
                     ?.delivery
                     ?.pullRequest
                     ?.base ?: return null
@@ -3714,7 +3722,7 @@ class Orchestrator(
 
         private fun env(key: WorkspaceKey): Map<String, String> {
             val launcherDir = launcher.parent.toString()
-            return hookEnv(workflow.path, issue.id, issue.identifier, key) +
+            return hookEnv(workflow.path, issue.id, issue.identifier, key, kind?.name) +
                 mapOf(
                     "LOOP_HOME" to loopHome.toString(),
                     "LOOP_PROJECT_ID" to projectId.value,
@@ -3727,10 +3735,9 @@ class Orchestrator(
         }
     }
 
-    /** Whether the kind of [workflow] declares `acceptance_commands` (m2-09). */
-    private fun declaresAcceptanceCommands(workflow: WorkflowFile): Boolean =
-        workflow.config.kinds
-            ?.code
+    /** Whether [kind] declares `acceptance_commands` (m2-09). */
+    private fun declaresAcceptanceCommands(kind: KindConfig?): Boolean =
+        kind
             ?.checks
             .orEmpty()
             .any { it is CheckConfig.AcceptanceCommands }
@@ -3774,6 +3781,8 @@ class Orchestrator(
         val description: String?,
         val attemptId: AttemptId?,
         val workflow: WorkflowFile,
+        /** The kind of the issue (m4-18), whose checks, holdouts and delivery apply; null in Symphony mode. */
+        val kind: KindConfig?,
         val workspace: Path,
         val checkRunner: CheckRunner,
         val record: suspend (EventDefinition, Map<String, String>) -> Unit,
@@ -3792,18 +3801,10 @@ class Orchestrator(
          */
         val diffPolicyOnly: Boolean = false,
     ) {
-        private val configured: List<CheckConfig> =
-            workflow.config.kinds
-                ?.code
-                ?.checks
-                .orEmpty()
+        private val configured: List<CheckConfig> = kind?.checks.orEmpty()
 
         /** The hidden checks (m2-14), run after every visible check passed and counted in the verdict like them. */
-        private val holdouts: List<CheckConfig> =
-            workflow.config.kinds
-                ?.code
-                ?.holdout
-                .orEmpty()
+        private val holdouts: List<CheckConfig> = kind?.holdout.orEmpty()
 
         /** The issue's acceptance criteria when the kind declares `acceptance_commands`, null otherwise (m2-09). */
         private val criteria: List<AcceptanceCriterion>? =
@@ -4121,8 +4122,7 @@ class Orchestrator(
         /** True when the kind delivers a pull request (m2-25). */
         private val deliversPullRequest: Boolean
             get() =
-                workflow.config.kinds
-                    ?.code
+                kind
                     ?.delivery
                     ?.pullRequest != null
 
@@ -4190,10 +4190,7 @@ class Orchestrator(
          * starts a `Waiting(approval)` with an evidence summary on the issue. The failure's reason, null otherwise.
          */
         suspend fun deliver(to: String): String? {
-            val delivery =
-                workflow.config.kinds
-                    ?.code
-                    ?.delivery ?: DeliveryConfig()
+            val delivery = kind?.delivery ?: DeliveryConfig()
             if (delivery.policy != DeliveryPolicy.Auto) return requestApproval(to)
             // m2-28: an auto merge goes through the m2-25 delivery and the m2-26 merge check, approved by `auto` itself;
             // the auto merge gate decides right before the merge.
@@ -4323,8 +4320,7 @@ class Orchestrator(
         ) {
             // The check lines, redacted, and the number of judgment calls of the last [verify], for the body (m2-25).
             val pullRequestDelivery =
-                workflow.config.kinds
-                    ?.code
+                kind
                     ?.delivery
                     ?.pullRequest != null
             val checks = if (pullRequestDelivery) redactor.redact(EvidenceSummary.lines(passed.toList()).joinToString("\n")) else null
@@ -4866,8 +4862,9 @@ class Orchestrator(
         to: String,
     ): Boolean {
         val context = waitContext(wait)
-        if (effective.config.kinds
-                ?.code
+        if (KindLookup
+                .of(effective, issue)
+                ?.config
                 ?.delivery
                 ?.pullRequest != null
         ) {
@@ -5096,6 +5093,8 @@ class Orchestrator(
                 issue.description,
                 wait.attemptId,
                 workflow,
+                // m4-18: the merge check is code only until each kind takes it up.
+                workflow.config.kinds?.code,
                 workspace,
                 checkRunnerFor(workflow),
                 { definition, data -> recordWaitEvent(wait, definition, data + (MergeCheck.MARK to "true")) },
@@ -5230,6 +5229,7 @@ class Orchestrator(
                 candidate?.description,
                 wait.attemptId,
                 workflow,
+                candidate?.let { KindLookup.of(workflow, it) }?.config,
                 checkNotNull(located.getOrNull()),
                 checkRunnerFor(workflow),
                 record,

@@ -34,27 +34,30 @@ object Holdouts {
         workflow: WorkflowFile,
         holdoutDir: Path,
     ): String? {
-        val holdouts =
+        // m4-18: every kind's holdouts, each named by its kind's key, in the order the kinds are written.
+        val kinds =
             workflow.config.kinds
-                ?.code
-                ?.holdout
+                ?.named
                 .orEmpty()
-        if (holdouts.isEmpty()) return null
-        if (!Files.isDirectory(holdoutDir)) return "$KEY needs the holdout folder $holdoutDir, which does not exist"
+                .filterValues { it.holdout.isNotEmpty() }
+        val first = kinds.keys.firstOrNull() ?: return null
+        val key = "kinds.$first.verify.holdout"
+        if (!Files.isDirectory(holdoutDir)) return "$key needs the holdout folder $holdoutDir, which does not exist"
         val dir = real(holdoutDir)
         val workspaces = real(workflow.workspaceRoot)
         val repository = repositoryOf(real(workflow.path.parent))
         return when {
-            dir.startsWith(workspaces) -> inside(holdoutDir, "workspace.root $workspaces")
-            dir.startsWith(repository) -> inside(holdoutDir, "the repository $repository")
-            workspaces.startsWith(dir) -> "$KEY: workspace.root $workspaces is inside the holdout folder $holdoutDir. $MOVE"
-            repository.startsWith(dir) -> "$KEY: the repository $repository is inside the holdout folder $holdoutDir. $MOVE"
-            else -> unreferenced(holdouts, holdoutDir, dir)
+            dir.startsWith(workspaces) -> inside(key, holdoutDir, "workspace.root $workspaces")
+            dir.startsWith(repository) -> inside(key, holdoutDir, "the repository $repository")
+            workspaces.startsWith(dir) -> "$key: workspace.root $workspaces is inside the holdout folder $holdoutDir. $MOVE"
+            repository.startsWith(dir) -> "$key: the repository $repository is inside the holdout folder $holdoutDir. $MOVE"
+            else -> kinds.firstNotNullOfOrNull { (name, kind) -> unreferenced("kinds.$name.verify.holdout", kind.holdout, holdoutDir, dir) }
         }
     }
 
     /** The problem of the first command holdout whose `run` names neither [ENV] nor a path under [dir], the real holdout folder. */
     private fun unreferenced(
+        key: String,
         holdouts: List<CheckConfig>,
         holdoutDir: Path,
         dir: Path,
@@ -64,7 +67,7 @@ object Holdouts {
                 check is CheckConfig.Command && !REFERENCE.containsMatchIn(check.run) && check.run.split(WORD_BREAK).none { under(it, dir) }
             }
         if (index < 0) return null
-        return "$KEY[$index]: run must reference \$$ENV or a path in the holdout folder $holdoutDir, where the agent cannot read the script"
+        return "$key[$index]: run must reference \$$ENV or a path in the holdout folder $holdoutDir, where the agent cannot read the script"
     }
 
     /** True when [word] is an absolute path under [dir] by real path. */
@@ -84,13 +87,13 @@ object Holdouts {
     /** What splits a shell command into words: blanks, quotes and the shell's operators. */
     private val WORD_BREAK = Regex("""[\s'"`;|&<>()=]+""")
 
-    private const val KEY = "kinds.code.verify.holdout"
     private const val MOVE = "Set LOOP_HOME outside it"
 
     private fun inside(
+        key: String,
         holdoutDir: Path,
         place: String,
-    ): String = "$KEY: the holdout folder $holdoutDir is inside $place, where the agent can read it. $MOVE"
+    ): String = "$key: the holdout folder $holdoutDir is inside $place, where the agent can read it. $MOVE"
 
     /** The nearest folder from [folder] up that holds a `.git` entry, [folder] itself when none does. */
     private fun repositoryOf(folder: Path): Path =
