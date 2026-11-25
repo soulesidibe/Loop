@@ -1,7 +1,7 @@
 ---
 id: m4-33
 title: "file_followup for both runners, a kind may override the tracker"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-32]
@@ -45,3 +45,15 @@ Out of this issue: the files tracker label write (m4-53), triage of the follow u
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-25 17:53Z loop: Loop opened pull request #72 for this issue: https://github.com/soulesidibe/Loop/pull/72
+
+2026-11-25 17:58Z loop: Loop did not merge pull request #72 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.47.
+  - alignment: aligned, The diff implements file_followup on both runners, the kind tracker override, createIssue on the files and GitHub trackers, the limit and the docs, with orchestrator edits limited to call sites.
+  - impact: medium (floor medium: the diff changes 731 lines outside tests and docs, over half the limit of 1000), It adds a new agent-facing tool that writes issues to external trackers, and it touches the plugin API, two trackers, both runners, the workflow config and the orchestrator drain, in 731 non-test lines.
+  - verification: strong, End-to-end CLI tests cover queueing, filing, the GitHub override, preflight refusal, the limit and the default prefix. Unit, contract and runner schema tests add to them.
+  - rollback_cost: costly, A revert restores the code, but issues already created in files or GitHub trackers remain, along with parent comments and events in the store.
+  - error_detection: loud, Failures are structured tool errors, tool_request_failed events or invalid_config at preflight, and the read-back check refuses a malformed file before writing.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 33 of 46 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
