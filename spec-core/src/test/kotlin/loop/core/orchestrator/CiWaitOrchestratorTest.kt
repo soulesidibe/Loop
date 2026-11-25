@@ -576,7 +576,9 @@ class CiWaitOrchestratorTest {
             val runner =
                 FakeRunner().apply {
                     onCall =
-                        { ctx -> ToolRequestQueue(Path.of(checkNotNull(ctx.env["LOOP_TOOL_CONFIG"])).parent).enqueue(ToolRequest.Move("review")) }
+                        { ctx ->
+                            ToolRequestQueue(Path.of(checkNotNull(ctx.env["LOOP_TOOL_CONFIG"])).parent).enqueue(ToolRequest.Move("review"))
+                        }
                 }
             val orchestrator = orchestrator(setup.tracker, setup.remote, setup.waiting, setup.sink, workflow, runner)
             tick(orchestrator)
@@ -602,7 +604,10 @@ class CiWaitOrchestratorTest {
             assertEquals(WaitReason.Approval, waiting.reason)
             assertFalse(waiting.sentBack)
             setup.waiting.records[PROJECT.value to "id-t-1"] =
-                waiting.copy(data = waiting.data + mapOf(WaitingIssue.APPROVED_BY to "soule", WaitingIssue.APPROVED_AT to FIXED_NOW.toString()))
+                waiting.copy(
+                    data =
+                        waiting.data + mapOf(WaitingIssue.APPROVED_BY to "soule", WaitingIssue.APPROVED_AT to FIXED_NOW.toString()),
+                )
 
             tick(orchestrator, after = 1_000)
 

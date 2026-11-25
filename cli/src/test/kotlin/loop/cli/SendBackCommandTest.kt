@@ -70,7 +70,7 @@ class SendBackCommandTest {
             |set -e
             |echo "${D}LOOP_ATTEMPT_ID" >> '${fixture.agentCallsFile}'
             |echo call >> calls.txt
-            |n=${D}(wc -l < calls.txt | tr -d ' ')
+            |n=$D(wc -l < calls.txt | tr -d ' ')
             |cat > '$root/prompt-'"${D}n"'.txt'
             |echo hello > hello.txt
             |loop tool move review
@@ -269,7 +269,12 @@ class SendBackCommandTest {
 
         val idle = sendBack("t-1", "--reason", "No.")
 
-        assertRefused(idle, 4, "loop send-back: t-1 is not waiting for approval, loop status shows where it stands. Nothing changed.", waits())
+        assertRefused(
+            idle,
+            4,
+            "loop send-back: t-1 is not waiting for approval, loop status shows where it stands. Nothing changed.",
+            waits(),
+        )
     }
 
     @Test

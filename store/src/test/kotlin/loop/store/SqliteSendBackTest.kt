@@ -45,7 +45,8 @@ class SqliteSendBackTest {
     @Test
     fun `an approved wait is sent back once, its approval dropped, and the send back survives reopening the store`() =
         runTest {
-            val wait = waiting(WaitReason.Approval, mapOf("to" to "review", WaitingIssue.APPROVED_BY to "a", WaitingIssue.APPROVED_AT to "x"))
+            val approval = mapOf(WaitingIssue.APPROVED_BY to "a", WaitingIssue.APPROVED_AT to "x")
+            val wait = waiting(WaitReason.Approval, mapOf("to" to "review") + approval)
             open().use { store ->
                 store.startWaiting(wait).getOrThrow()
                 val sent = store.sendBack(project, "1", by = "soule", reason = "Use Save.", at = at).getOrThrow()
