@@ -11,6 +11,7 @@ import loop.runner.codex.protocol.JSONRPCResponse
 import loop.runner.codex.protocol.ServerNotification
 import loop.runner.codex.protocol.ServerRequest
 import loop.runner.codex.protocol.v2.CodexErrorInfo
+import loop.runner.codex.protocol.v2.ThreadResumeResponse
 import loop.runner.codex.protocol.v2.ThreadStartResponse
 import loop.runner.codex.protocol.v2.Turn
 import loop.runner.codex.protocol.v2.TurnCompletedNotification
@@ -104,6 +105,30 @@ class FakeAppServer private constructor(
             response(3, threadStartResult(threadId))
             awaitClient()
             response(4, turnStartResult(turnId))
+        }
+
+        /**
+         * Answers the startup of a resumed thread (bl-212): reads `initialize` and answers it, reads `initialized`, then
+         * with [config] reads `config/read` and answers with it, reads `thread/resume` and answers with the thread
+         * [threadId], reads `turn/start` and answers with the turn [turnId]. Request ids 1 to 3, or 1 to 4 with [config].
+         */
+        fun resumeHandshake(
+            threadId: String = THREAD_ID,
+            turnId: String = TURN_ID,
+            config: JsonElement? = null,
+        ) {
+            awaitClient()
+            response(1, initializeResult())
+            awaitClient()
+            awaitClient()
+            var id = 2L
+            if (config != null) {
+                response(id++, config)
+                awaitClient()
+            }
+            response(id++, threadResumeResult(threadId))
+            awaitClient()
+            response(id, turnStartResult(turnId))
         }
 
         /** Writes the server request [method] with the request id [id] and [params], as the protocol frames one. */
@@ -294,6 +319,22 @@ class FakeAppServer private constructor(
             val response = CodexJson.format.decodeFromJsonElement(ThreadStartResponse.serializer(), real[1].getValue("result"))
             val renamed = response.copy(thread = response.thread.copy(id = threadId, sessionId = threadId))
             return CodexJson.format.encodeToJsonElement(ThreadStartResponse.serializer(), renamed)
+        }
+
+        /** A `thread/resume` result (bl-212), the real `thread/start` result in the resume response type, its thread id [threadId]. */
+        fun threadResumeResult(threadId: String): JsonElement {
+            val start = CodexJson.format.decodeFromJsonElement(ThreadStartResponse.serializer(), threadStartResult(threadId))
+            val resume =
+                ThreadResumeResponse(
+                    approvalPolicy = start.approvalPolicy,
+                    approvalsReviewer = start.approvalsReviewer,
+                    cwd = start.cwd,
+                    model = start.model,
+                    modelProvider = start.modelProvider,
+                    sandbox = start.sandbox,
+                    thread = start.thread,
+                )
+            return CodexJson.format.encodeToJsonElement(ThreadResumeResponse.serializer(), resume)
         }
 
         /** A `turn/start` result as the pinned schema writes it: the turn [turnId], in progress, no items yet. */

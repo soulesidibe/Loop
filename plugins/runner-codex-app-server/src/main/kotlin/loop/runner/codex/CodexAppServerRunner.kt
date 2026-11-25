@@ -304,10 +304,25 @@ class CodexAppServerRunner internal constructor(
 
     override fun openSession(ctx: AttemptContext): AgentSession = CodexSession(ctx)
 
-    /** The app server of a session while it runs: what it wrote, not read yet, and its stdin. */
+    /**
+     * bl-212: a session of the attempt [ctx] whose turn 1 starts a new app server and resumes the Codex thread
+     * [runtimeSessionId] of an earlier attempt with `thread/resume`, after a `loop:` line on stderr, so the agent goes
+     * on with the thread's history (m4-46). A resume that fails fails turn 1 and never starts a new thread in its
+     * place. Later turns and respawns behave as in any session.
+     */
+    override fun resumeSession(
+        ctx: AttemptContext,
+        runtimeSessionId: String,
+    ): AgentSession = CodexSession(ctx, resumeFrom = runtimeSessionId)
+
+    /**
+     * The app server of a session while it runs: what it wrote, not read yet, its stdin, and the [handshake] of its
+     * connection, whose request ids count from 1.
+     */
     private class LiveProcess(
         val events: Channel<ProcessEvent>,
         val stdin: Channel<String>,
+        val handshake: StartupHandshake,
     ) {
         lateinit var job: Job
         var stdoutLines = 0
@@ -316,6 +331,8 @@ class CodexAppServerRunner internal constructor(
     /** One thread on one long lived app server, its turns run one after the other. */
     private inner class CodexSession(
         private val ctx: AttemptContext,
+        /** The Codex thread of an earlier attempt that turn 1 resumes (bl-212), null for a new thread. */
+        private val resumeFrom: String? = null,
     ) : AgentSession {
         // The reading of the app server lives here, not in a turn's flow, so the app server outlives the turn.
         private val scope = CoroutineScope(SupervisorJob() + dispatcher)
@@ -324,8 +341,6 @@ class CodexAppServerRunner internal constructor(
         private val loopTools = LoopClientTools.load(ctx.env)
         private val ready = loopTools as? LoopClientTools.Loaded.Ready
         private val toolCall = ready?.let { LoopToolCall(it.launcher, loopVersion) }
-        private val handshake =
-            StartupHandshake(ctx.workspace, loopVersion, settings.strictMcp, ready?.tools?.specs, settings.model, settings.readOnly)
         private val requests =
             ServerRequestPolicy(
                 ctx.workspace,
@@ -337,7 +352,7 @@ class CodexAppServerRunner internal constructor(
         // Usage and rate limits of the whole session, kept across turns, so a later turn's usage replaces the earlier (m3-21).
         private val telemetry = Telemetry()
 
-        // Loop's own thread id, kept only while Codex has not named its thread.
+        // Loop's own thread id, kept only while Codex has not named its thread; once it did, the thread a respawn resumes.
         private var threadId = UUID.randomUUID().toString()
         private var threadKnown = false
 
@@ -369,9 +384,11 @@ class CodexAppServerRunner internal constructor(
             }
         }
 
-        /** Starts the app server; its events are read by the turns. */
+        /** Starts the app server, with a handshake of its own; its events are read by the turns. */
         private fun spawn(): LiveProcess {
-            val process = LiveProcess(Channel(Channel.UNLIMITED), Channel(Channel.UNLIMITED))
+            val handshake =
+                StartupHandshake(ctx.workspace, loopVersion, settings.strictMcp, ready?.tools?.specs, settings.model, settings.readOnly)
+            val process = LiveProcess(Channel(Channel.UNLIMITED), Channel(Channel.UNLIMITED), handshake)
             val spec =
                 LaunchSpec(
                     argv = settings.argv,
@@ -418,6 +435,9 @@ class CodexAppServerRunner internal constructor(
             private var started = false
             private var ended = false
 
+            // bl-212: this turn started a new app server to resume the thread; a turn does so at most once.
+            private var respawned = false
+
             // What was read before the start event, built at the start, so a telemetry event gets the turn's real ids.
             private val held = mutableListOf<() -> RunnerEvent>()
 
@@ -447,16 +467,14 @@ class CodexAppServerRunner internal constructor(
             }
 
             private fun sendInterrupt(process: LiveProcess) {
-                process.stdin.trySend(handshake.interrupt(threadId, turnId.value))
+                process.stdin.trySend(process.handshake.interrupt(threadId, turnId.value))
             }
 
             suspend fun run(input: String) {
                 running = this
                 try {
                     if (turn == 1) {
-                        if (!ctx.workspace.isDirectory()) return fail(null, "invalid_workspace_cwd: ${ctx.workspace}")
-                        // bl-135: a rule that allows a denied command would run it with no approval request to decline.
-                        ExecPolicyRules.refusal(ExecPolicyRules.folders(ctx.workspace, agentEnv()))?.let { return fail(null, it) }
+                        if (refused()) return
                         if (loopTools is LoopClientTools.Loaded.Unreadable) {
                             out(
                                 RunnerEvent.Output(
@@ -466,19 +484,30 @@ class CodexAppServerRunner internal constructor(
                                 ),
                             )
                         }
-                        val process = spawn()
-                        process.stdin.send(handshake.start(input))
-                        read(process)
-                    } else {
-                        val process = live
-                        if (process == null || !threadKnown || handshake.pendingMethod != null) {
-                            return fail(
-                                null,
-                                "port_exit: the app server of this session is gone, turn $turn cannot start on thread $threadId",
+                        if (resumeFrom != null) {
+                            respawned = true
+                            out(
+                                RunnerEvent.Output(
+                                    Stream.Stderr,
+                                    "${LOOP_PREFIX}turn 1 resumes the thread $resumeFrom of an earlier attempt on a new app server",
+                                ),
                             )
                         }
-                        process.stdin.send(handshake.continueOn(threadId, input))
-                        read(process)
+                        launch(input, resume = resumeFrom)
+                    } else {
+                        val process = live
+                        when {
+                            process != null && threadKnown && process.handshake.pendingMethod == null -> {
+                                process.stdin.send(process.handshake.continueOn(threadId, input))
+                                read(process, input)
+                            }
+                            threadKnown -> respawn(process, input)
+                            else ->
+                                fail(
+                                    null,
+                                    "port_exit: the app server of this session is gone, turn $turn cannot start on thread $threadId",
+                                )
+                        }
                     }
                 } finally {
                     if (running === this) running = null
@@ -487,8 +516,67 @@ class CodexAppServerRunner internal constructor(
                 }
             }
 
-            /** Reads the app server until the turn ends: its end, a failure, an exit or a timeout. */
-            private suspend fun read(process: LiveProcess) {
+            /**
+             * Fails the turn, and says so, when the workspace is not a directory or an exec policy rule allows a denied
+             * command (bl-135). It runs before every app server starts, a respawn's too, since the agent could have
+             * written a rules file during an earlier turn.
+             */
+            private suspend fun refused(): Boolean {
+                if (!ctx.workspace.isDirectory()) {
+                    fail(null, "invalid_workspace_cwd: ${ctx.workspace}")
+                    return true
+                }
+                // bl-135: a rule that allows a denied command would run it with no approval request to decline.
+                val refusal = ExecPolicyRules.refusal(ExecPolicyRules.folders(ctx.workspace, agentEnv())) ?: return false
+                fail(null, refusal)
+                return true
+            }
+
+            /**
+             * Starts a new app server and reads it: `thread/start`, or with [resume] `thread/resume` of that thread
+             * (bl-212), then `turn/start` with [input].
+             */
+            private suspend fun launch(
+                input: String,
+                resume: String?,
+            ) {
+                if (resume != null) telemetry.resume(resume)
+                val process = spawn()
+                process.stdin.send(process.handshake.start(input, resume))
+                read(process, input)
+            }
+
+            /**
+             * bl-212: the app server of this session is gone, [gone] when the session still holds it, so the turn starts
+             * a new one and resumes the session's thread with `thread/resume`, once per turn, as the Claude Code runner
+             * respawns with `--resume` (m3-07).
+             */
+            private suspend fun respawn(
+                gone: LiveProcess?,
+                input: String,
+            ) {
+                respawned = true
+                gone?.let { kill(it) }
+                if (refused()) return
+                out(
+                    RunnerEvent.Output(
+                        Stream.Stderr,
+                        "${LOOP_PREFIX}the app server of this session is gone, turn $turn starts a new one and resumes the thread $threadId",
+                    ),
+                )
+                launch(input, resume = threadId)
+            }
+
+            /**
+             * Reads the app server until the turn ends: its end, a failure, an exit or a timeout. An app server of an
+             * earlier turn that exits before it answers this continuation turn's `turn/start`, so one that died between
+             * turns, is replaced once with [respawn] (bl-212).
+             */
+            private suspend fun read(
+                process: LiveProcess,
+                input: String,
+            ) {
+                val handshake = process.handshake
                 // Since the latest request was written, or, once the turn started, since the latest protocol message.
                 var since = timeSource.markNow()
                 while (true) {
@@ -520,6 +608,7 @@ class CodexAppServerRunner internal constructor(
                         }
                         is ProcessEvent.Exited -> {
                             if (live === process) live = null
+                            if (!respawned && threadKnown && handshake.pendingMethod == TURN_START) return respawn(null, input)
                             val reason =
                                 when {
                                     event.exitCode == EXIT_COMMAND_NOT_FOUND && process.stdoutLines == 0 ->
@@ -569,7 +658,7 @@ class CodexAppServerRunner internal constructor(
                                     threadId = step.threadId
                                     threadKnown = true
                                     turnId = TurnId(step.turnId)
-                                    telemetry.startTurn(step.threadId, handshake.modelProvider, handshake.model)
+                                    telemetry.startTurn(step.threadId, step.turnId, handshake.modelProvider, handshake.model)
                                     allowInterrupt(process)
                                     start()
                                     since = timeSource.markNow()
@@ -641,7 +730,7 @@ class CodexAppServerRunner internal constructor(
                 started = true
                 val event =
                     if (turn == 1) {
-                        RunnerEvent.SessionStarted(sessionId, threadId, turnId)
+                        RunnerEvent.SessionStarted(sessionId, threadId, turnId, threadId.takeIf { threadKnown })
                     } else {
                         RunnerEvent.TurnStarted(sessionId, threadId, turnId, turn)
                     }
@@ -730,6 +819,9 @@ class CodexAppServerRunner internal constructor(
         /** The env names of the turn's ids, which `loop tool` records with a request, as for the Claude Code runner. */
         const val ENV_SESSION_ID = "LOOP_SESSION_ID"
         const val ENV_TURN_ID = "LOOP_TURN_ID"
+
+        /** The request that starts a turn. */
+        const val TURN_START = "turn/start"
 
         /** The notification that ends a turn. */
         const val TURN_COMPLETED = "turn/completed"
