@@ -1,7 +1,7 @@
 ---
 id: m4-40
 title: "loop replay renders an attempt's prompt again and diffs it"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-39]
@@ -43,3 +43,5 @@ Out of this issue: verification replay (m4-41), replay of later turns or of a ro
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-25 19:55Z loop: Loop opened pull request #77 for this issue: https://github.com/soulesidibe/Loop/pull/77
