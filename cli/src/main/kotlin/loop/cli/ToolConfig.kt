@@ -11,6 +11,7 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import loop.api.ProjectId
+import loop.api.ResourceDeclaration
 import loop.core.orchestrator.ToolConfigWriter
 import loop.core.trackers.IssueIdDisplay
 import loop.core.trackers.TrackerEntry
@@ -36,6 +37,9 @@ private const val TOOL_OUTPUT_TOKENS = "tool_output_tokens"
 private const val TRACKER_ID = "tracker_id"
 private const val TRACKER_IDS = "tracker_ids"
 
+/** The snapshot key of the resources of `resources:` (m4-25), which `loop tool mcp` grants: kind, id, can and cannot. */
+private const val RESOURCES = "resources"
+
 /** What `loop tool` reads from the snapshot: no tracker settings beyond the kind, no credential. */
 data class ToolConfig(
     val projectId: ProjectId,
@@ -49,6 +53,11 @@ data class ToolConfig(
     val trackerId: String? = null,
     /** Every tracker id of the project, the primary first (m4-47), null in a snapshot written before m4-47. */
     val trackerIds: List<String>? = null,
+    /**
+     * The resources of `resources:` (m4-25), each with its kind, id, can and cannot, never its restore or read only
+     * commands, which only `loop run` runs; none in a snapshot written before m4-25.
+     */
+    val resources: List<ResourceDeclaration> = emptyList(),
 ) {
     /** How a tool reads its issue (m4-47), null for a snapshot written before m4-47, which names no tracker. */
     val ids: IssueIdDisplay?
@@ -97,6 +106,8 @@ fun readToolConfig(path: Path): Result<ToolConfig> =
                 // m4-47: optional too, so a snapshot of a Loop before m4-47 still reads.
                 trackerId = (json[TRACKER_ID] as? JsonPrimitive)?.takeIf { it.isString }?.content,
                 trackerIds = (json[TRACKER_IDS] as? JsonArray)?.map { it.jsonPrimitive.content },
+                // m4-25: optional too, so a snapshot of a Loop before m4-25 still reads, with no resource.
+                resources = json[RESOURCES]?.let(::resources).orEmpty(),
             ),
         )
     } catch (e: ToolConfigError) {
@@ -111,12 +122,30 @@ fun readToolConfig(path: Path): Result<ToolConfig> =
         Result.failure(ToolConfigError.Unreadable("it is not a valid attempt config"))
     }
 
+private fun resources(value: JsonElement): List<ResourceDeclaration> {
+    val entries = value as? JsonArray ?: throw ToolConfigError.Unreadable("its $RESOURCES is not a list")
+    return entries.map { entry ->
+        val resource = entry as? JsonObject ?: throw ToolConfigError.Unreadable("its $RESOURCES holds an entry that is not a map")
+        ResourceDeclaration(
+            kind = resource.string("kind"),
+            id = resource.string("id"),
+            can = resource.strings("can"),
+            cannot = resource.strings("cannot"),
+        )
+    }
+}
+
+private fun JsonObject.strings(key: String): List<String> =
+    (this[key] as? JsonArray)?.map { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content ?: throw ToolConfigError.Unreadable("its $key is not a list of strings") }
+        .orEmpty()
+
 private fun JsonObject.string(key: String): String =
     (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: throw ToolConfigError.Unreadable("it has no $key")
 
 /**
  * Writes `tool-config.json` (m1-23): `version`, `project_id`, `workflow_dir`, `tracker_kind`,
- * `defined_states`, `tool_output_tokens` (m3-14), `tracker_id` and `tracker_ids` (m4-47) and `provider`, the non
+ * `defined_states`, `tool_output_tokens` (m3-14), `tracker_id` and `tracker_ids` (m4-47), `resources` (m4-25), the
+ * kind, id, can and cannot of each entry of `resources:`, and `provider`, the non
  * credential `provider` fields with `dir` resolved to an absolute path. `tracker_kind`, `defined_states` and `provider`
  * are those of the issue's own tracker (m4-14); `tracker_id` stays the primary's, which bare ids are read by. A value
  * that is exactly `$NAME`, at any depth inside `provider` and other than the `dir` path key, is a credential and is
@@ -147,6 +176,7 @@ object ToolConfigSnapshotWriter : ToolConfigWriter {
                     TOOL_OUTPUT_TOKENS to JsonPrimitive(workflow.config.context.toolOutputTokens),
                     TRACKER_ID to JsonPrimitive(workflow.trackerId),
                     TRACKER_IDS to JsonArray(workflow.trackers.ids.map(::JsonPrimitive)),
+                    RESOURCES to JsonArray(workflow.config.resources.map(::resourceJson)),
                     "provider" to JsonObject(provider),
                 ),
             )
@@ -154,6 +184,16 @@ object ToolConfigSnapshotWriter : ToolConfigWriter {
         temp.writeText(Json.encodeToString(JsonElement.serializer(), snapshot))
         Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
     }
+
+    private fun resourceJson(resource: ResourceDeclaration): JsonObject =
+        JsonObject(
+            mapOf(
+                "kind" to JsonPrimitive(resource.kind),
+                "id" to JsonPrimitive(resource.id),
+                "can" to JsonArray(resource.can.map(::JsonPrimitive)),
+                "cannot" to JsonArray(resource.cannot.map(::JsonPrimitive)),
+            ),
+        )
 
     /** The value as JSON, null when it is a credential reference (exactly `$NAME`). */
     private fun ConfigValue.toJson(): JsonElement? =

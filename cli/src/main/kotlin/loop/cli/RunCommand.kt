@@ -9,10 +9,14 @@ import com.github.ajalt.clikt.parameters.options.option
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import loop.api.EventSink
 import loop.api.Redactor
+import loop.api.ResourceDeclaration
 import loop.api.RunId
 import loop.api.SecretRedactor
 import loop.core.events.DeliveryQueuePaused
@@ -29,6 +33,7 @@ import loop.core.orchestrator.Orchestrator
 import loop.core.orchestrator.TickResult
 import loop.core.orchestrator.attemptFile
 import loop.core.orchestrator.highestRecordedThreshold
+import loop.core.resources.ResourceGrants
 import loop.core.resources.ResourceLocks
 import loop.core.template.TemplateEngine
 import loop.core.verify.CheckRunner
@@ -284,6 +289,21 @@ class RunCommand(
         // m2-02: and every stored claim was left by a dead process; it is released and recorded.
         runBlocking { releaseAbandonedClaims(projectId, runId, store, log, clock) }
         val sink = exportingSink(workflow, store, log, context, runnerPlugins, redactor)
+        // m4-25: this process prepares and gives back the resources its attempts take with request_resource, so a
+        // booted device is its child, never the tool process's; the entries follow each reload.
+        val resourcesAt = AtomicReference(workflow.config.resources)
+        val resourceGrants =
+            ResourceGrants(
+                projectId,
+                ResourceLocks(store, sink, clock, runId) { event, error ->
+                    log.log(LogLevel.WARN, "store", LogOutcome.FAILED, context.copy(attemptId = event.attemptId), reason = error.sentence())
+                },
+                resourcePlugins?.providers.orEmpty(),
+                resourcesAt::get,
+            ) { lock, reason ->
+                val fields = mapOf("kind" to lock.kind, "resource_id" to lock.resourceId)
+                log.log(LogLevel.WARN, "resource", LogOutcome.FAILED, context.copy(attemptId = lock.attemptId), fields = fields, reason = reason)
+            }
         val runner = runnerOf(workflow)
         // m3-09: a runner that declares no occupancy gets only the prompt limit and the turn cap (plan 8.3), said once
         // at startup; `loop status` says it again for each of its running attempts, whatever runner a reload picks.
@@ -336,6 +356,7 @@ class RunCommand(
                 // Called once per applied reload: the trackers' required labels follow the new effective workflow too.
                 reloadWarnings = { previous, reloaded ->
                     trackersAt.set(reloaded.trackers)
+                    resourcesAt.set(reloaded.config.resources)
                     reloadWarnings(previous, reloaded, host.rawEnv)
                 },
                 // m2-02: the retry queue, its counters and the claims survive a restart.
@@ -372,6 +393,8 @@ class RunCommand(
                 // bl-175: a pause of the delivery queue an earlier run left, which this restart ends.
                 // m4-50: the resource locks of the shared store; an attempt's go at its end.
                 resourceLockStore = store,
+                // m4-25: and each provider gives back what an attempt prepared before its locks go.
+                resourceGrants = resourceGrants,
                 queuePausedBefore = {
                     store.eventsOfKinds(projectId, DeliveryQueuePaused.QUEUE_KINDS).getOrNull()?.let { stored ->
                         DeliveryQueuePaused.openIn(stored.map { it.event })
@@ -411,12 +434,14 @@ class RunCommand(
                     try {
                         // m1-16, spec 8.6: the workspaces of terminal issues go before the first tick, in both modes.
                         orchestrator.removeTerminalWorkspaces()
-                        if (once) {
-                            broken = printSummary(orchestrator.tick(), redactor)
-                        } else {
-                            orchestrator.runUntilCancelled()
-                            // m4-10: the daemon returns only once it drained after `loop drain`.
-                            stopReason = DRAINED
+                        withResourceTicks(resourceGrants, resourcesAt::get, log, context) {
+                            if (once) {
+                                broken = printSummary(orchestrator.tick(), redactor)
+                            } else {
+                                orchestrator.runUntilCancelled()
+                                // m4-10: the daemon returns only once it drained after `loop drain`.
+                                stopReason = DRAINED
+                            }
                         }
                     } catch (e: CancellationException) {
                         // The attempts have unwound (each recorded canceled with this reason); the store is still open.
@@ -445,6 +470,37 @@ class RunCommand(
         }
         // An attempt that broke on an internal error is a failure of Loop, not an attempt outcome.
         if (broken > 0) throw ProgramResult(EXIT_INTERNAL_ERROR)
+    }
+
+    /**
+     * m4-25: runs [block] while the resource grants tick every [RESOURCE_TICK_MS], in both modes, so a lock an agent
+     * took with `request_resource` is prepared, and one it released is given back and granted to the next in its
+     * queue, while its turn goes on. A tick reads the store only while the workflow declares resources. A failed tick
+     * logs a warning and the next one tries again. The ticks stop when [block] returns or is canceled.
+     */
+    private suspend fun withResourceTicks(
+        grants: ResourceGrants,
+        resources: () -> List<ResourceDeclaration>,
+        log: KeyValueLog,
+        context: LogContext,
+        block: suspend () -> Unit,
+    ) = coroutineScope {
+        val ticks =
+            launch {
+                while (true) {
+                    if (resources().isNotEmpty()) {
+                        grants.tick().onFailure { error ->
+                            log.log(LogLevel.WARN, "resource", LogOutcome.FAILED, context, reason = "tick failed: ${error.sentence()}")
+                        }
+                    }
+                    delay(RESOURCE_TICK_MS)
+                }
+            }
+        try {
+            block()
+        } finally {
+            ticks.cancel()
+        }
     }
 
     /**
@@ -651,6 +707,9 @@ class RunCommand(
     private companion object {
         const val DEFAULT_WORKFLOW = "WORKFLOW.md"
         const val SHUTDOWN_WAIT_SECONDS = 10L
+
+        /** m4-25: how often `loop run` prepares and gives back the resources of its attempts. */
+        const val RESOURCE_TICK_MS = 500L
         const val CONTEXT_OCCUPANCY = "context_occupancy"
     }
 }

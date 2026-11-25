@@ -42,6 +42,19 @@ fun interface CommentHandler {
 }
 
 /**
+ * Handles the resource tools (m4-25): `request_resource` and `release_resource`, whose `name` is the id of a resource
+ * of `resources:` as the agent wrote it. Unlike the other tools, both are answered inside the turn.
+ */
+interface ResourceHandler {
+    /** The ids of the declared resources, which the `name` argument's description lists. */
+    val names: List<String>
+
+    suspend fun request(name: String): ToolReply
+
+    suspend fun release(name: String): ToolReply
+}
+
+/**
  * Trims a tool's reply before the agent reads it (m3-14, plan 8.7): [tool] is the tool's name, [reply] the full reply.
  * The trimmer keeps the full text where it belongs, Loop's attempt file.
  */
@@ -63,7 +76,9 @@ fun interface ReplyTrimmer {
  * ([SubmitResultSchema]), and since m2-17 the tracker tools `move` and `comment`, which take the state or the text
  * `loop tool move` and `loop tool comment` take. This module only speaks the protocol: it reads a call's arguments,
  * refuses one that lacks its required string, and leaves what a call does to the tool's handler. Since m3-14 every
- * reply, a refusal included, goes through a [ReplyTrimmer] before it is sent.
+ * reply, a refusal included, goes through a [ReplyTrimmer] before it is sent. Since m4-25 a server given a
+ * [ResourceHandler], which `loop tool mcp` gives when the workflow declares `resources:`, also serves
+ * `request_resource` and `release_resource`.
  */
 object LoopMcpServer {
     /** The server name in the runtime's MCP config; Claude Code names the tool `mcp__loop__submit_result`. */
@@ -74,6 +89,10 @@ object LoopMcpServer {
     const val MOVE = "move"
 
     const val COMMENT = "comment"
+
+    const val REQUEST_RESOURCE = "request_resource"
+
+    const val RELEASE_RESOURCE = "release_resource"
 
     private const val SUBMIT_RESULT_DESCRIPTION =
         "Submit the result of your attempt, in Loop's result shape. Loop applies it when this turn ends, " +
@@ -90,6 +109,20 @@ object LoopMcpServer {
         "Ask Loop to add a comment to your issue, like loop tool comment, for example a question for a human. " +
             "Loop queues the comment, redacted, and adds it when this turn ends. Call it once per comment."
 
+    private const val REQUEST_RESOURCE_DESCRIPTION =
+        "Ask Loop for a resource of the workflow, such as a device or a simulator, by its name, before you use it. " +
+            "Loop answers at once with a JSON object. status granted: it is yours, with what you need to use it " +
+            "(for example a udid or a serial) and what it can and cannot test. status preparing: it is yours and Loop " +
+            "is preparing it, call request_resource again with the same name in a few seconds. status queued: another " +
+            "attempt holds it and position is your place in its queue, call request_resource again later to check, " +
+            "your place is kept. Never use a resource before it is granted. Call release_resource as soon as you are " +
+            "done with it."
+
+    private const val RELEASE_RESOURCE_DESCRIPTION =
+        "Give back a resource Loop granted you, by its name, as soon as you are done with it. Stop using it now: " +
+            "Loop gives it back and grants it to the next attempt in its queue. Loop also frees it when your attempt " +
+            "ends. Releasing a resource you do not hold is an error."
+
     /**
      * A server of [version] whose `submit_result`, `move` and `comment` calls go to [submitResult], [move] and [comment],
      * every reply trimmed by [trimmer] (m3-14).
@@ -100,6 +133,7 @@ object LoopMcpServer {
         move: MoveHandler,
         comment: CommentHandler,
         trimmer: ReplyTrimmer = ReplyTrimmer.NONE,
+        resources: ResourceHandler? = null,
     ): Server {
         val server =
             Server(
@@ -119,6 +153,12 @@ object LoopMcpServer {
         }
         server.addStringTool(COMMENT, COMMENT_DESCRIPTION, TEXT, "The comment to add, for example a question for a human.", trimmer) {
             comment.comment(it)
+        }
+        // m4-25: only for a workflow that declares resources.
+        if (resources != null) {
+            val names = "The name of a resource of the workflow: ${resources.names.joinToString(", ")}."
+            server.addStringTool(REQUEST_RESOURCE, REQUEST_RESOURCE_DESCRIPTION, NAME_ARGUMENT, names, trimmer) { resources.request(it) }
+            server.addStringTool(RELEASE_RESOURCE, RELEASE_RESOURCE_DESCRIPTION, NAME_ARGUMENT, names, trimmer) { resources.release(it) }
         }
         return server
     }
@@ -158,11 +198,13 @@ object LoopMcpServer {
 
     private const val STATE = "state"
     private const val TEXT = "text"
+    private const val NAME_ARGUMENT = "name"
     private const val NOTHING_QUEUED = "Nothing queued."
 
     /**
      * Serves one session over newline delimited JSON-RPC on [input] and [output], the stdio transport an MCP
-     * runtime spawns its servers with, until [input] ends, every reply trimmed by [trimmer] (m3-14). Nothing else may
+     * runtime spawns its servers with, until [input] ends, every reply trimmed by [trimmer] (m3-14), with the resource
+     * tools when [resources] is given (m4-25). Nothing else may
      * write to [output], so kotlin-logging's startup line, which goes to stdout, is turned off. The SDK's own log goes
      * to SLF4J's no-op provider.
      */
@@ -174,9 +216,10 @@ object LoopMcpServer {
         move: MoveHandler,
         comment: CommentHandler,
         trimmer: ReplyTrimmer = ReplyTrimmer.NONE,
+        resources: ResourceHandler? = null,
     ) {
         quietLogging()
-        val server = create(version, submitResult, move, comment, trimmer)
+        val server = create(version, submitResult, move, comment, trimmer, resources)
         val transport = StdioServerTransport(input.asSource().buffered(), output.asSink().buffered())
         val closed = CompletableDeferred<Unit>()
         val session = server.createSession(transport)
