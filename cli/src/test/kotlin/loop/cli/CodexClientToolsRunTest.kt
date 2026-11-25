@@ -197,7 +197,8 @@ class CodexClientToolsRunTest {
             assertEquals(mcpSchema["required"], codexSchema["required"], name)
             val mcpProperties = mcpSchema.getValue("properties").jsonObject
             val codexProperties = codexSchema.getValue("properties").jsonObject
-            if (name == "submit_result") {
+            // m4-31: ask has the same arguments and description on both runners.
+            if (name == "submit_result" || name == "ask") {
                 assertEquals(mcpProperties, codexProperties, name)
                 assertEquals(mcp["description"], codex["description"], name)
             } else {
@@ -218,6 +219,10 @@ class CodexClientToolsRunTest {
                 .getValue("state")
                 .jsonObject
         assertEquals(states, state.getValue("enum").jsonArray.map { it.jsonPrimitive.content })
+        val ask = specs.single { it.getValue("name").jsonPrimitive.content == "ask" }
+        val description = ask.getValue("description").jsonPrimitive.content
+        assertContains(description, "Use it only for a question a human must answer")
+        assertContains(description, "Technical choices are your own")
     }
 
     @Test

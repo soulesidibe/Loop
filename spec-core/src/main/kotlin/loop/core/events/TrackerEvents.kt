@@ -172,7 +172,7 @@ object QuestionAsked : KeyedEvent("question_asked", QuestionAsked.QUESTION_KIND,
     override fun humanSentence(
         data: Map<String, String>,
         facts: HumanFacts,
-    ) = "asked a ${data[QUESTION_KIND]} question on the issue and waits for a human"
+    ) = "asked a human a question (${data[QUESTION_KIND]}) on the issue and waits for the answer"
 }
 
 /** The fields of a queued agent request Loop could not apply or dropped. */
