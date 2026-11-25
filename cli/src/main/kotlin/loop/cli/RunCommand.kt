@@ -324,7 +324,14 @@ class RunCommand(
                 // m4-26: a command check that declares `resource:` holds a resource of that kind while it runs.
                 val waiting = { kind: String, waited: Duration ->
                     val ids = context.copy(issueIdentifier = env["LOOP_ISSUE_IDENTIFIER"])
-                    log.log(LogLevel.WARN, "check", LogOutcome.PARKED, ids, fields = mapOf("kind" to kind), reason = "waits for a $kind resource, $waited")
+                    log.log(
+                        LogLevel.WARN,
+                        "check",
+                        LogOutcome.PARKED,
+                        ids,
+                        fields = mapOf("kind" to kind),
+                        reason = "waits for a $kind resource, $waited",
+                    )
                 }
                 withCheckResource(resourceGrants, check, env, waiting) { resourceEnv ->
                     runner.run(check, cwd, agentEnvironment(overrides = env + resourceEnv, removed = removed, host = host.rawEnv))

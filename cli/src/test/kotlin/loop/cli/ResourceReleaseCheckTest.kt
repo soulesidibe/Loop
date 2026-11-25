@@ -41,7 +41,8 @@ class ResourceReleaseCheckTest {
     /** The file whose presence the read only check reads as a change the agent left on the resource. */
     private val changed: Path by lazy { root.resolve("changed") }
 
-    private val failingCheck: String get() = "test ! -f $changed || { echo app installed; exit 1; }"
+    /** Fails while [changed] exists, saying where it ran. */
+    private val failingCheck: String get() = "test ! -f $changed || { echo app installed in [${'$'}(pwd -P)]; exit 1; }"
 
     @Test
     fun `a failing read only check keeps the lock and answers the difference and restore, a passing one releases it`() {
@@ -68,6 +69,11 @@ class ResourceReleaseCheckTest {
         val (failed, held, released) = answers.map { it.second }
         assertEquals("read_only_check_failed", failed["error"]?.jsonPrimitive?.content, "$failed")
         assertContains(failed.getValue("difference").jsonPrimitive.content, "app installed")
+        val folder =
+            fixture.workflow.parent
+                .toRealPath()
+                .toString()
+        assertContains(failed.getValue("difference").jsonPrimitive.content, "in [$folder]", message = "it ran in the folder of WORKFLOW.md")
         assertEquals(JsonArray(listOf(JsonPrimitive("rm -f $changed"))), failed["restore"], "$failed")
         assertContains(failed.getValue("message").jsonPrimitive.content, "rm -f $changed")
         assertEquals("already_held", held["error"]?.jsonPrimitive?.content, "the lock stayed with the attempt: $held")

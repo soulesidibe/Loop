@@ -31,16 +31,16 @@ import kotlin.time.Clock
  * the store refused the change.
  *
  * Since m4-26 `release_resource` first runs the resource's `read_only_check` here, through [commands], while the
- * resource is still up, in the folder of `WORKFLOW.md` with the agent's env and what its prepare returned as
- * `LOOP_RESOURCE_<KEY>` env: a failure is the tool error `read_only_check_failed`, with the `difference` and the
- * `restore` entries the agent must run, and the attempt keeps the lock. A pass marks the lock released, and `loop run` runs the provider's `release`, then the provider's own check.
+ * resource is still up, in the folder of `WORKFLOW.md` (`workflow_dir` of the snapshot, where `loop run` runs the
+ * same check at the end of an attempt) with the agent's env and what its prepare returned as `LOOP_RESOURCE_<KEY>`
+ * env: a failure is the tool error `read_only_check_failed`, with the `difference` and the `restore` entries the agent
+ * must run, and the attempt keeps the lock. A pass marks the lock released, and `loop run` runs the provider's
+ * `release`, then the provider's own check.
  */
 internal class ResourceTools(
     private val tool: AttemptTool,
     private val env: AttemptTool.Env,
-    private val commands: ResourceCommands =
-        // The folder of WORKFLOW.md, `workflow_dir` of the snapshot, where `loop run` runs the same check.
-        ShellResourceCommands(cwd = { env.config.workflowDir }, base = { tool.rawEnv }),
+    private val commands: ResourceCommands = ShellResourceCommands(cwd = { env.config.workflowDir }, base = { tool.rawEnv }),
 ) {
     private val resources: List<ResourceDeclaration> get() = env.config.resources
 

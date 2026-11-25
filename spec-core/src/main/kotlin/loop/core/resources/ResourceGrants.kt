@@ -99,7 +99,10 @@ class ResourceGrants(
             recheckDirty().onFailure { return@withLock Result.failure(it) }
             val unprepared =
                 mine().getOrElse { return@withLock Result.failure(it) }.filter {
-                    it.releaseRequestedAt == null && it.prepared == null && it.prepareError == null && it.attemptId !in unfreed &&
+                    it.releaseRequestedAt == null &&
+                        it.prepared == null &&
+                        it.prepareError == null &&
+                        it.attemptId !in unfreed &&
                         !it.attemptId.value.startsWith(RECHECK_HOLDER)
                 }
             for (lock in unprepared) prepareAndWrite(lock)
