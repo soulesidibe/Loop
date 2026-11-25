@@ -100,9 +100,9 @@ class ResourceAnswersTest {
                     "resource_requested a1 avd api35",
                     "resource_granted a1 avd api35",
                     "resource_requested a2 avd api35",
-                    "resource_queued a2 avd api35 1",
+                    "resource_queued a2 avd api35 1 held",
                     "resource_requested a3 avd api35",
-                    "resource_queued a3 avd api35 2",
+                    "resource_queued a3 avd api35 2 held",
                 ),
                 lines(),
             )

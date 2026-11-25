@@ -1,6 +1,7 @@
 package loop.core.resources
 
 import loop.api.AttemptId
+import loop.api.DirtyResource
 import loop.api.EventSink
 import loop.api.ProjectId
 import loop.api.RecordedEvent
@@ -10,6 +11,7 @@ import loop.api.ResourceLockStore
 import loop.api.ResourceLockUpdate
 import loop.api.ResourceRequest
 import loop.api.RunId
+import loop.core.events.ResourceCheckFailed
 import loop.core.events.ResourceGranted
 import loop.core.events.ResourceQueued
 import loop.core.events.ResourceReleased
@@ -50,6 +52,49 @@ class ResourceLocks(
     }
 
     /**
+     * A check that holds a resource (m4-26): the holder [holder] of the issue [issueId] in [projectId] asks for any
+     * resource of [kind] among [ids], or checks the request it made before, by the rules of [ResourceQueue.requestAny].
+     * A new request records `resource_requested`, then `resource_granted` or `resource_queued` with its position and
+     * reason; a call that only checks records nothing new.
+     */
+    suspend fun requestAny(
+        projectId: ProjectId,
+        issueId: String,
+        issueIdentifier: String,
+        holder: AttemptId,
+        kind: String,
+        ids: List<String>,
+    ): Result<ResourceGrant> {
+        val template = ResourceRequest(kind, ids.firstOrNull().orEmpty(), projectId, issueId, issueIdentifier, holder, clock.now())
+        var requested = false
+        return change(
+            reason = ResourceReleased.RELEASED,
+            first = { _ ->
+                val data = mapOf(ResourceRequested.KIND to kind, ResourceRequested.RESOURCE_ID to ids.joinToString(","))
+                if (requested) listOf(event(ResourceRequested.event(clock.now(), projectId, data), template.granted())) else emptyList()
+            },
+            last = { grant ->
+                if (requested && grant is ResourceGrant.Queued) {
+                    val data =
+                        mapOf(
+                            ResourceQueued.KIND to kind,
+                            ResourceQueued.RESOURCE_ID to ids.joinToString(","),
+                            ResourceQueued.POSITION to grant.position.toString(),
+                            ResourceQueued.REASON to grant.reason,
+                        )
+                    listOf(event(ResourceQueued.event(clock.now(), projectId, data), template.granted()))
+                } else {
+                    emptyList()
+                }
+            },
+        ) { rows ->
+            requested = rows.locks.none { it.kind == kind && it.attemptId == holder } &&
+                rows.queue.none { it.kind == kind && it.attemptId == holder }
+            ResourceQueue.requestAny(rows, template, ids, clock.now()).let { it.change to it.grant }
+        }
+    }
+
+    /**
      * `request_resource` (m4-25): the attempt [attemptId] of the issue [issueId] in [projectId] asks for the resource of
      * [kind] and [resourceId], or checks a request it made before, by the rules of [ResourceAnswers.ask]. A new request
      * records `resource_requested`, then `resource_granted` or `resource_queued` with its position. First, in the same
@@ -75,7 +120,7 @@ class ResourceLocks(
             },
             last = { answer ->
                 if (answer is ResourceAnswer.Queued && answer.requested) {
-                    val data = ids + (ResourceQueued.POSITION to answer.position.toString())
+                    val data = ids + (ResourceQueued.POSITION to answer.position.toString()) + (ResourceQueued.REASON to answer.reason)
                     listOf(event(ResourceQueued.event(clock.now(), projectId, data), subject))
                 } else {
                     emptyList()
@@ -130,21 +175,37 @@ class ResourceLocks(
     ): Result<Boolean> =
         change(reason = ResourceReleased.RELEASED) { rows -> ResourceAnswers.prepared(rows, lock, outcome).let { it.change to it.answer } }
 
-    /** The attempt [attemptId] releases its lock of [kind] and [resourceId], which goes to the oldest request of its queue. */
+    /**
+     * The attempt [attemptId] releases its lock of [kind] and [resourceId], which goes to the oldest request of its
+     * queue. With [dirty] (m4-26) the resource is marked dirty in the same change, which records
+     * `resource_check_failed`, and it is lent to nobody until the mark is cleared.
+     */
     suspend fun release(
         attemptId: AttemptId,
         kind: String,
         resourceId: String,
+        dirty: DirtyResource? = null,
     ): Result<ResourceChange> =
         change(reason = ResourceReleased.RELEASED) { rows ->
-            ResourceQueue.release(rows, kind, resourceId, attemptId, clock.now()).let { it to it }
+            ResourceQueue.release(rows, kind, resourceId, attemptId, clock.now(), dirty).let { it to it }
         }
 
-    /** Frees every lock and queue row of the attempt [attemptId], each freed lock recorded with [reason]. */
+    /**
+     * Frees every lock and queue row of the attempt [attemptId], each freed lock recorded with [reason], and marks the
+     * resources of [dirty] dirty in the same change (m4-26), each recorded as `resource_check_failed`.
+     */
     suspend fun freeAttempt(
         attemptId: AttemptId,
         reason: String,
-    ): Result<ResourceChange> = change(reason) { rows -> ResourceQueue.freeAttempt(rows, attemptId, clock.now()).let { it to it } }
+        dirty: List<DirtyResource> = emptyList(),
+    ): Result<ResourceChange> = change(reason) { rows -> ResourceQueue.freeAttempt(rows, attemptId, clock.now(), dirty).let { it to it } }
+
+    /** Clears the dirty mark of [kind] and [resourceId] (m4-26), a check of it passed, and grants it to the head of its queue. */
+    suspend fun clearDirty(
+        kind: String,
+        resourceId: String,
+    ): Result<ResourceChange> =
+        change(reason = ResourceReleased.RELEASED) { rows -> ResourceQueue.clearDirty(rows, kind, resourceId, clock.now()).let { it to it } }
 
     /** Frees every lock and queue row of the project [projectId], each freed lock recorded with [reason]. */
     suspend fun freeProject(
@@ -171,6 +232,7 @@ class ResourceLocks(
             }
         result.onSuccess { value ->
             val change = checkNotNull(applied)
+            change.marked.forEach { mark -> record(checkFailed(mark, change.released)) }
             change.released.forEach { record(released(it, reason)) }
             first(value).forEach { record(it) }
             change.granted.forEach { record(granted(it)) }
@@ -218,6 +280,29 @@ class ResourceLocks(
             issueIdentifier = lock.issueIdentifier,
             attemptId = lock.attemptId,
         )
+
+    /** `resource_check_failed` of [mark], with the ids of the holder whose lock of it is among [released]. */
+    private fun checkFailed(
+        mark: DirtyResource,
+        released: List<ResourceLock>,
+    ): RecordedEvent {
+        val holder = released.firstOrNull { it.kind == mark.kind && it.resourceId == mark.resourceId }
+        return ResourceCheckFailed.event(
+            ts = clock.now(),
+            projectId = mark.projectId,
+            data =
+                mapOf(
+                    ResourceCheckFailed.KIND to mark.kind,
+                    ResourceCheckFailed.RESOURCE_ID to mark.resourceId,
+                    ResourceCheckFailed.CHECK to mark.check,
+                    ResourceCheckFailed.DIFFERENCE to mark.difference,
+                ),
+            runId = runId,
+            issueId = holder?.issueId,
+            issueIdentifier = holder?.issueIdentifier,
+            attemptId = holder?.attemptId,
+        )
+    }
 
     private fun granted(lock: ResourceLock): RecordedEvent =
         ResourceGranted.event(
