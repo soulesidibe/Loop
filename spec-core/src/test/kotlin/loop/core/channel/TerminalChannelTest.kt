@@ -9,9 +9,8 @@ import kotlin.test.assertTrue
 import kotlin.time.Instant
 
 /**
- * m4-30: the terminal channel. `spec-core` tests do not see the `plugin-api` test fixtures, so the first five cases
- * repeat the cases of `loop.api.HumanChannelContract` against it, one for one; the others are its own: one line per
- * notice on the `loop run` terminal, with the identifier, the event and the next command.
+ * m4-30: the terminal channel's own cases, one line per notice on the `loop run` terminal, with the identifier, the
+ * event and the next command. The cases every channel shares run in [TerminalChannelContractTest].
  */
 class TerminalChannelTest {
     private val lines = mutableListOf<String>()
@@ -34,64 +33,6 @@ class TerminalChannelTest {
     private fun onlyLine(): String {
         assertEquals(1, lines.size, "the notice did not print exactly one line: $lines")
         return lines.single()
-    }
-
-    // The cases of HumanChannelContract.
-
-    @Test
-    fun `each event reaches the human as one message naming the issue and the event`() {
-        HumanEvent.KNOWN.forEachIndexed { index, event ->
-            val result = channel.notify(notice(event, identifier = "m4-3$index"))
-
-            assertTrue(result.isSuccess, "notify of ${event.wire} failed: ${result.exceptionOrNull()}")
-            assertEquals(index + 1, lines.size, "notify of ${event.wire} did not show exactly one message: $lines")
-            assertTrue("m4-3$index" in lines.last(), lines.last())
-            assertTrue(event.wire in lines.last(), lines.last())
-        }
-    }
-
-    @Test
-    fun `the message names the next command to type`() {
-        val expected =
-            mapOf(
-                HumanEvent.Parked to "loop resume m4-30",
-                HumanEvent.ApprovalWaiting to "loop approve m4-30",
-                HumanEvent.DeliveryFailed to "loop approve m4-30",
-                HumanEvent.Question to "loop answer m4-30",
-            )
-
-        expected.forEach { (event, command) ->
-            channel.notify(notice(event))
-
-            assertTrue(command in lines.last(), "the message of ${event.wire} does not name \"$command\": ${lines.last()}")
-        }
-    }
-
-    @Test
-    fun `the message carries the reason and the URL of the notice`() {
-        channel.notify(notice(HumanEvent.ApprovalWaiting, reason = "verified, 3 checks passed", url = "https://github.com/o/r/pull/7"))
-
-        val line = onlyLine()
-        assertTrue("verified, 3 checks passed" in line, line)
-        assertTrue("https://github.com/o/r/pull/7" in line, line)
-    }
-
-    @Test
-    fun `a notice without a URL shows no URL`() {
-        channel.notify(notice(HumanEvent.Parked, reason = "max_attempts"))
-
-        val line = onlyLine()
-        assertFalse("null" in line, line)
-        assertFalse("http" in line, line)
-    }
-
-    @Test
-    fun `a reason over several lines still reaches the human as one message`() {
-        val result = channel.notify(notice(HumanEvent.DeliveryFailed, reason = "push refused\nremote: protected branch\n"))
-
-        assertTrue(result.isSuccess, "notify failed: ${result.exceptionOrNull()}")
-        val line = onlyLine()
-        assertTrue("push refused" in line && "remote: protected branch" in line, line)
     }
 
     // The terminal channel's own cases.
