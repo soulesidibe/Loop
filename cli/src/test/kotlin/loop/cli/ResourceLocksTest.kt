@@ -30,6 +30,7 @@ import kotlin.time.Clock
  * `resource_released`; the locks of an attempt a dead process left are freed by the startup sweep of the next run,
  * which then calls each provider's `recover` once with the holders of the locks left on the machine. The tools that
  * take a lock come in m4-25, so the test takes them for the running attempt through [ResourceLocks] on the store.
+ * Its kinds, `phone` and `display`, are plain locks no provider serves, so no real `adb` runs (m4-28).
  */
 class ResourceLocksTest {
     @TempDir
@@ -111,7 +112,7 @@ class ResourceLocksTest {
         val attempt: String
         try {
             attempt = takeLocksOfRunningAttempt(crashed)
-            withLocks { it.request(other, "9", "o-9", AttemptId("other-attempt"), "avd", marker).getOrThrow() }
+            withLocks { it.request(other, "9", "o-9", AttemptId("other-attempt"), "phone", marker).getOrThrow() }
             // kill -9 of loop run mid turn: nothing of the run gets to free its locks.
             kill9(crashed.process.pid())
             assertTrue(crashed.process.waitFor(30, TimeUnit.SECONDS), "loop run outlived kill -9")
@@ -125,13 +126,13 @@ class ResourceLocksTest {
         val restarted = fixture.inProcess("run", "--once", fixture.workflow.toString())
 
         assertEquals(0, restarted.exitCode, restarted.toString())
-        assertFreed(attempt, "abandoned", restarted.toString(), extraLocks = listOf("other-project avd $marker other-attempt"))
+        assertFreed(attempt, "abandoned", restarted.toString(), extraLocks = listOf("other-project phone $marker other-attempt"))
         val calls = FakeResourceProvider.recovered.filter { holders -> holders.any { it.resourceId == marker } }
         assertEquals(1, calls.size, "recover calls with the marker: $calls")
         assertEquals(
             setOf(
                 ResourceHolder(other, "display", "main", "other-attempt"),
-                ResourceHolder(other, "avd", marker, "other-attempt"),
+                ResourceHolder(other, "phone", marker, "other-attempt"),
             ),
             calls.single().toSet(),
         )
@@ -159,7 +160,7 @@ class ResourceLocksTest {
     }
 
     /**
-     * Waits for the agent of [run], then takes for its attempt the lock of `avd api35` and a place in the queue of
+     * Waits for the agent of [run], then takes for its attempt the lock of `phone api35` and a place in the queue of
      * `display main`, which a holder of another project keeps. Returns the attempt id.
      */
     private fun takeLocksOfRunningAttempt(run: LoopFixture.RunningLoop): String {
@@ -170,7 +171,7 @@ class ResourceLocksTest {
         val issueId = fixture.query("SELECT issue_id FROM events WHERE kind = 'attempt_started'").single()["issue_id"]!!
         withLocks { locks ->
             locks.request(other, "9", "o-9", AttemptId("other-attempt"), "display", "main").getOrThrow()
-            assertIs<ResourceGrant.Granted>(locks.request(project, issueId, "t-1", AttemptId(attempt), "avd", "api35").getOrThrow())
+            assertIs<ResourceGrant.Granted>(locks.request(project, issueId, "t-1", AttemptId(attempt), "phone", "api35").getOrThrow())
             assertIs<ResourceGrant.Queued>(locks.request(project, issueId, "t-1", AttemptId(attempt), "display", "main").getOrThrow())
         }
         return attempt
@@ -183,7 +184,7 @@ class ResourceLocksTest {
     }
 
     /**
-     * The attempt [attempt] holds no lock and waits in no queue, its lock of `avd api35` recorded `resource_released`
+     * The attempt [attempt] holds no lock and waits in no queue, its lock of `phone api35` recorded `resource_released`
      * with [reason], and only the locks of the other project are left: `display main` and [extraLocks].
      */
     private fun assertFreed(
@@ -206,7 +207,10 @@ class ResourceLocksTest {
         assertEquals(1, released.size, "$released\n$output")
         assertEquals(attempt, released.single()["attempt_id"], output)
         val data = released.single()["data"]!!
-        assertTrue("\"reason\":\"$reason\"" in data && "\"resource_id\":\"api35\"" in data && "\"kind\":\"avd\"" in data, "$data\n$output")
+        assertTrue(
+            "\"reason\":\"$reason\"" in data && "\"resource_id\":\"api35\"" in data && "\"kind\":\"phone\"" in data,
+            "$data\n$output",
+        )
     }
 
     private fun kill9(pid: Long) {

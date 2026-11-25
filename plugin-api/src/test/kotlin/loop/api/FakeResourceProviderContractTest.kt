@@ -15,7 +15,7 @@ class FakeResourceProviderContractTest : ResourceProviderContract() {
 
     override fun resource(): ResourceDeclaration = SIMULATOR
 
-    override fun leftBehind(resource: ResourceDeclaration): Boolean = resource.id in machine.booted
+    override fun leftBehind(resource: ResourceDeclaration): Boolean = machine.booted.any { it.startsWith(resource.id) }
 
     override fun dirty(resource: ResourceDeclaration): Boolean = machine.changed.add(resource.id)
 
@@ -29,7 +29,7 @@ class FakeResourceProviderContractTest : ResourceProviderContract() {
 
                 override fun resource(): ResourceDeclaration = SIMULATOR
 
-                override fun leftBehind(resource: ResourceDeclaration): Boolean = resource.id in machine.booted
+                override fun leftBehind(resource: ResourceDeclaration): Boolean = machine.booted.any { it.startsWith(resource.id) }
 
                 override fun dirty(resource: ResourceDeclaration): Boolean = machine.changed.add(resource.id)
             }
@@ -52,11 +52,35 @@ class FakeResourceProviderContractTest : ResourceProviderContract() {
             val contract =
                 contract {
                     object : ResourceProvider by FakeProvider(it) {
-                        override fun prepare(resource: ResourceDeclaration) = mapOf("udid" to " ")
+                        override fun prepare(
+                            resource: ResourceDeclaration,
+                            attemptId: AttemptId,
+                        ) = mapOf("udid" to " ")
                     }
                 }
 
             assertFailsWith<AssertionError> { contract.`prepare returns what the agent needs as non blank keys and values`() }
+        }
+
+        @Test
+        fun `a provider whose second prepare for the same attempt boots another copy fails`() {
+            val contract =
+                contract { machine ->
+                    object : ResourceProvider by FakeProvider(machine) {
+                        override fun prepare(
+                            resource: ResourceDeclaration,
+                            attemptId: AttemptId,
+                        ): Map<String, String> {
+                            if (resource.id in machine.booted) machine.booted += "${resource.id}-again"
+                            machine.booted += resource.id
+                            return mapOf("udid" to "udid-${resource.id}")
+                        }
+                    }
+                }
+
+            assertFailsWith<AssertionError> {
+                contract.`a prepare run again for the same attempt, its first outcome lost, leaves nothing behind after one release`()
+            }
         }
 
         @Test
@@ -114,7 +138,7 @@ class FakeResourceProviderContractTest : ResourceProviderContract() {
         }
     }
 
-    /** A machine of simulators: the ids [booted] and those a holder [changed]. */
+    /** A machine of simulators: the ids [booted], a copy as `<id>-again`, and those a holder [changed]. */
     class FakeMachine {
         val booted = mutableSetOf<String>()
         val changed = mutableSetOf<String>()
@@ -126,7 +150,10 @@ class FakeResourceProviderContractTest : ResourceProviderContract() {
     ) : ResourceProvider {
         override val kinds: Set<String> = setOf("ios-simulator")
 
-        override fun prepare(resource: ResourceDeclaration): Map<String, String> {
+        override fun prepare(
+            resource: ResourceDeclaration,
+            attemptId: AttemptId,
+        ): Map<String, String> {
             machine.booted += resource.id
             return mapOf("udid" to "udid-${resource.id}")
         }

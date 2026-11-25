@@ -10,7 +10,8 @@ import kotlin.test.assertTrue
  * The behavior every [ResourceProvider] must show (m4-24): [ResourceProvider.prepare], [ResourceProvider.release], the
  * read only check and [ResourceProvider.recover]. A provider's test extends this class and supplies providers that
  * share one machine, a fake one for a provider tested against fake `xcrun simctl` or `adb` scripts, so a second
- * provider built by [provider] plays a restart of Loop after a crash.
+ * provider built by [provider] plays a restart of Loop after a crash. Since bl-208 a prepare runs again for the same
+ * attempt leaves nothing behind once released, as Loop calls it again when the outcome of the first was lost.
  */
 public abstract class ResourceProviderContract {
     /** A new provider over the fixture's machine. Each call plays a new process of Loop on the same machine. */
@@ -32,10 +33,13 @@ public abstract class ResourceProviderContract {
      */
     protected open fun dirty(resource: ResourceDeclaration): Boolean = false
 
+    /** The attempt each prepare of the contract is for. */
+    private val attempt = AttemptId("contract-attempt")
+
     private fun holderOf(
         resource: ResourceDeclaration,
         kind: String = resource.kind,
-    ) = ResourceHolder(ProjectId("contract-project"), kind, resource.id, "contract-attempt")
+    ) = ResourceHolder(ProjectId("contract-project"), kind, resource.id, attempt.value)
 
     @Test
     public fun `the provider serves at least one kind, the kind of the resource among them`() {
@@ -48,7 +52,7 @@ public abstract class ResourceProviderContract {
 
     @Test
     public fun `prepare returns what the agent needs as non blank keys and values`() {
-        val prepared = provider().prepare(resource())
+        val prepared = provider().prepare(resource(), attempt)
 
         assertTrue(
             prepared.all { (key, value) -> key.isNotBlank() && value.isNotBlank() },
@@ -61,12 +65,26 @@ public abstract class ResourceProviderContract {
         val provider = provider()
         val resource = resource()
 
-        val first = provider.prepare(resource)
+        val first = provider.prepare(resource, attempt)
         provider.release(resource)
-        val second = provider.prepare(resource)
+        val second = provider.prepare(resource, attempt)
         provider.release(resource)
 
         assertEquals(first.keys, second.keys, "the second prepare gave other keys")
+    }
+
+    @Test
+    public fun `a prepare run again for the same attempt, its first outcome lost, leaves nothing behind after one release`() {
+        val provider = provider()
+        val resource = resource()
+
+        val first = provider.prepare(resource, attempt)
+        val again = provider.prepare(resource, attempt)
+        provider.release(resource)
+
+        assertEquals(first.keys, again.keys, "the second prepare gave other keys")
+        assertFalse(leftBehind(resource), "a second prepare for the same attempt left what the first made after release")
+        assertEquals(emptyList(), provider.readOnlyCheck(resource), "the read only check found differences after release")
     }
 
     @Test
@@ -74,7 +92,7 @@ public abstract class ResourceProviderContract {
         val provider = provider()
         val resource = resource()
 
-        provider.prepare(resource)
+        provider.prepare(resource, attempt)
         provider.release(resource)
 
         assertEquals(emptyList(), provider.readOnlyCheck(resource), "the read only check found differences on an untouched resource")
@@ -84,7 +102,7 @@ public abstract class ResourceProviderContract {
     public fun `a difference the holder left is reported by the read only check after release`() {
         val provider = provider()
         val resource = resource()
-        provider.prepare(resource)
+        provider.prepare(resource, attempt)
         assumeTrue(dirty(resource), "the fixture cannot change this resource")
 
         provider.release(resource)
@@ -97,13 +115,13 @@ public abstract class ResourceProviderContract {
     @Test
     public fun `recover with no live holder of the resource removes what a crashed run left, and the resource prepares again`() {
         val resource = resource()
-        provider().prepare(resource)
+        provider().prepare(resource, attempt)
 
         val restarted = provider()
         restarted.recover(listOf(holderOf(resource, kind = "loop-contract-unserved-kind")))
 
         assertFalse(leftBehind(resource), "recover left what the crashed run prepared")
-        restarted.prepare(resource)
+        restarted.prepare(resource, attempt)
         restarted.release(resource)
         assertEquals(emptyList(), restarted.readOnlyCheck(resource), "the read only check found differences after recover")
     }
@@ -111,7 +129,7 @@ public abstract class ResourceProviderContract {
     @Test
     public fun `recover leaves the resource of a live holder alone`() {
         val resource = resource()
-        provider().prepare(resource)
+        provider().prepare(resource, attempt)
         val before = leftBehind(resource)
 
         provider().recover(listOf(holderOf(resource)))

@@ -43,3 +43,15 @@ Story 128, ask part (PLAN 6.6 and 6.10). Lane A, runs on the claude-code runner.
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-25 14:40Z loop: Loop opened pull request #69 for this issue: https://github.com/soulesidibe/Loop/pull/69
+
+2026-11-25 14:48Z loop: Loop did not merge pull request #69 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.27.
+  - alignment: aligned, The diff implements the ask tool on both runners, Waiting(ask), the comment, the notice, the no-slot rule, the docs and the glossary text in the result, with no visible drive-by change.
+  - impact: medium (floor medium: the diff changes 645 lines outside tests and docs, over half the limit of 1000), It adds a new wait reason and attempt exit reason, and touches the orchestrator, the retry and budget rules and both runner tool sets, 645 non-test lines in all.
+  - verification: strong, End-to-end CLI tests cover each acceptance criterion, including the counters, a human move, a second ask and the trace event, and unit tests cover the MCP server, the Codex tools, Asks and Waits.
+  - rollback_cost: two_way, A revert removes the code. Rows with reason ask in waiting_issues and the comments already posted would stay, but the wait ends when a human moves the issue, so the cost is small.
+  - error_detection: loud, Invalid arguments and a second ask return structured tool errors, a failed comment post records tool_request_failed, and dropped requests record events. A queue that cannot be read counts as no ask queued, which is a small fallback.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 22 of 31 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.

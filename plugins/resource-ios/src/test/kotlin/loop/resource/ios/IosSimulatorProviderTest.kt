@@ -1,5 +1,6 @@
 package loop.resource.ios
 
+import loop.api.AttemptId
 import loop.api.ProjectId
 import loop.api.ResourceDeclaration
 import loop.api.ResourceException
@@ -21,6 +22,8 @@ class IosSimulatorProviderTest {
 
     private val fake by lazy { FakeXcrun(root) }
 
+    private val attempt = AttemptId("a-1")
+
     private fun simulator(
         id: String = "iphone-16",
         vararg provider: Pair<String, String> = arrayOf("device_type" to "iPhone 16", "runtime" to "iOS 18.2"),
@@ -40,7 +43,7 @@ class IosSimulatorProviderTest {
 
     @Test
     fun `prepare creates the simulator from its device type and runtime, boots it, waits for it and returns its UDID`() {
-        val prepared = fake.provider().prepare(simulator())
+        val prepared = fake.provider().prepare(simulator(), attempt)
 
         val created = fake.loop("iphone-16")!!
         assertEquals(mapOf("udid" to created.udid), prepared)
@@ -48,7 +51,7 @@ class IosSimulatorProviderTest {
         assertEquals(
             listOf(
                 listOf("simctl", "list", "devices", "-j"),
-                listOf("simctl", "create", "loop-sim-iphone-16-4242", "iPhone 16", "iOS 18.2"),
+                listOf("simctl", "create", "loop-sim-iphone-16-4242@a-1", "iPhone 16", "iOS 18.2"),
                 listOf("simctl", "boot", created.udid),
                 listOf("simctl", "bootstatus", created.udid, "-b"),
             ),
@@ -57,26 +60,52 @@ class IosSimulatorProviderTest {
     }
 
     @Test
-    fun `prepare without a runtime leaves the runtime to simctl`() {
-        fake.provider().prepare(simulator(provider = arrayOf("device_type" to "iPad Air 11-inch (M2)")))
+    fun `bl-208 the simulator is named with the attempt made safe for a name, and a resource id with an at sign reads back`() {
+        val provider = fake.provider()
+        val odd = simulator(id = "lab@desk-7")
 
-        assertEquals(listOf("simctl", "create", "loop-sim-iphone-16-4242", "iPad Air 11-inch (M2)"), fake.calls()[1])
+        provider.prepare(simulator(), AttemptId("check-1/x y"))
+        provider.prepare(odd, attempt)
+        provider.release(simulator())
+        provider.release(odd)
+
+        val created = fake.calls().filter { it.getOrNull(1) == "create" }.map { it[2] }
+        assertEquals(listOf("loop-sim-iphone-16-4242@check-1_x_y", "loop-sim-lab@desk-7-4242@a-1"), created)
+        assertEquals(emptyList(), fake.simulators())
+    }
+
+    @Test
+    fun `bl-208 a prepare run again for the same attempt deletes the simulator the first made before it creates another`() {
+        val provider = fake.provider()
+
+        val first = provider.prepare(simulator(), attempt).getValue("udid")
+        val second = provider.prepare(simulator(), attempt).getValue("udid")
+
+        assertEquals(listOf(second), fake.simulators().map { it.udid })
+        assertTrue(fake.calls().contains(listOf("simctl", "delete", first)))
+    }
+
+    @Test
+    fun `prepare without a runtime leaves the runtime to simctl`() {
+        fake.provider().prepare(simulator(provider = arrayOf("device_type" to "iPad Air 11-inch (M2)")), attempt)
+
+        assertEquals(listOf("simctl", "create", "loop-sim-iphone-16-4242@a-1", "iPad Air 11-inch (M2)"), fake.calls()[1])
     }
 
     @Test
     fun `prepare clones a base given by name or UDID, and leaves the base shut down`() {
         val base = fake.seed("Base iPhone")
 
-        val byName = fake.provider().prepare(simulator(provider = arrayOf("base" to "Base iPhone")))
+        val byName = fake.provider().prepare(simulator(provider = arrayOf("base" to "Base iPhone")), attempt)
         fake.provider().release(simulator())
-        val byUdid = fake.provider().prepare(simulator(provider = arrayOf("base" to base)))
+        val byUdid = fake.provider().prepare(simulator(provider = arrayOf("base" to base)), attempt)
 
         val clone = fake.loop("iphone-16")!!
         assertEquals(mapOf("udid" to clone.udid), byUdid)
         assertTrue(byName.getValue("udid") != byUdid.getValue("udid"))
         assertEquals("Booted", clone.state)
         assertEquals("Shutdown", fake.named("Base iPhone")!!.state)
-        assertEquals(2, fake.calls().count { it == listOf("simctl", "clone", base, "loop-sim-iphone-16-4242") })
+        assertEquals(2, fake.calls().count { it == listOf("simctl", "clone", base, "loop-sim-iphone-16-4242@a-1") })
         assertTrue(fake.calls().none { it.getOrNull(1) == "create" })
     }
 
@@ -84,8 +113,9 @@ class IosSimulatorProviderTest {
     fun `prepare refuses a base that is booted or missing, and clones nothing`() {
         val base = fake.seed("Base iPhone", state = "Booted")
 
-        val booted = assertFailsWith<ResourceException> { fake.provider().prepare(simulator(provider = arrayOf("base" to base))) }
-        val missing = assertFailsWith<ResourceException> { fake.provider().prepare(simulator(provider = arrayOf("base" to "Nope"))) }
+        val booted = assertFailsWith<ResourceException> { fake.provider().prepare(simulator(provider = arrayOf("base" to base)), attempt) }
+        val missing =
+            assertFailsWith<ResourceException> { fake.provider().prepare(simulator(provider = arrayOf("base" to "Nope")), attempt) }
 
         assertEquals("the base simulator Base iPhone ($base) of iphone-16 is Booted, a clone needs it shut down", booted.message)
         assertEquals("the base simulator \"Nope\" of iphone-16 is not on the machine", missing.message)
@@ -94,13 +124,13 @@ class IosSimulatorProviderTest {
 
     @Test
     fun `prepare deletes a stale simulator of the resource, its own or a dead process's, and keeps a live process's`() {
-        val own = fake.seed("loop-sim-iphone-16-4242", state = "Booted")
-        val dead = fake.seed("loop-sim-iphone-16-17", state = "Shutdown")
-        val otherHome = fake.seed("loop-sim-iphone-16-99", state = "Booted")
+        val own = fake.seed("loop-sim-iphone-16-4242@a-0", state = "Booted")
+        val dead = fake.seed("loop-sim-iphone-16-17@a-0", state = "Shutdown")
+        val otherHome = fake.seed("loop-sim-iphone-16-99@a-0", state = "Booted")
         fake.alive += 99L
         val person = fake.seed("iPhone 16")
 
-        fake.provider().prepare(simulator())
+        fake.provider().prepare(simulator(), attempt)
 
         assertEquals(
             listOf(listOf("simctl", "shutdown", own), listOf("simctl", "delete", own), listOf("simctl", "delete", dead)),
@@ -114,7 +144,7 @@ class IosSimulatorProviderTest {
                 .map { it.udid }
                 .toSet(),
         )
-        assertEquals("Booted", fake.named("loop-sim-iphone-16-99")!!.state)
+        assertEquals("Booted", fake.named("loop-sim-iphone-16-99@a-0")!!.state)
         assertEquals("Booted", fake.loop("iphone-16")!!.state)
     }
 
@@ -123,7 +153,7 @@ class IosSimulatorProviderTest {
         val provider = fake.provider()
 
         fun refused(vararg settings: Pair<String, String>) =
-            assertFailsWith<ResourceException> { provider.prepare(simulator(provider = arrayOf(*settings))) }.message
+            assertFailsWith<ResourceException> { provider.prepare(simulator(provider = arrayOf(*settings)), attempt) }.message
 
         assertEquals("iphone-16 needs provider.device_type, such as \"iPhone 16\", or provider.base, a simulator to clone", refused())
         assertEquals(
@@ -149,13 +179,13 @@ class IosSimulatorProviderTest {
     @Test
     fun `release shuts the simulator down and deletes it, and the read only check passes only once it is gone`() {
         val provider = fake.provider()
-        val udid = provider.prepare(simulator()).getValue("udid")
+        val udid = provider.prepare(simulator(), attempt).getValue("udid")
         val before = provider.readOnlyCheck(simulator())
         val calls = fake.calls().size
 
         provider.release(simulator())
 
-        assertEquals(listOf("the simulator loop-sim-iphone-16-4242 ($udid) of iphone-16 is still on the machine, Booted"), before)
+        assertEquals(listOf("the simulator loop-sim-iphone-16-4242@a-1 ($udid) of iphone-16 is still on the machine, Booted"), before)
         assertEquals(
             listOf(
                 listOf("simctl", "list", "devices", "-j"),
@@ -171,7 +201,7 @@ class IosSimulatorProviderTest {
     @Test
     fun `release of a simulator already shut down only deletes it, and release of none deletes nothing`() {
         val provider = fake.provider()
-        val udid = provider.prepare(simulator()).getValue("udid")
+        val udid = provider.prepare(simulator(), attempt).getValue("udid")
         fake.setState(udid, "Shutdown")
 
         provider.release(simulator())
@@ -186,7 +216,7 @@ class IosSimulatorProviderTest {
         val base = fake.seed("Base iPhone")
         val resource = simulator(provider = arrayOf("base" to "Base iPhone"))
         val provider = fake.provider()
-        provider.prepare(resource)
+        provider.prepare(resource, attempt)
         fake.setState(base, "Booted")
 
         provider.release(resource)
@@ -199,16 +229,17 @@ class IosSimulatorProviderTest {
 
     @Test
     fun `recover deletes the Loop simulators no live ios-simulator holder has, and leaves every other simulator alone`() {
-        val held = fake.seed("loop-sim-held-4242", state = "Booted")
-        val crashed = fake.seed("loop-sim-crashed-17", state = "Booted")
-        val otherKind = fake.seed("loop-sim-pixel-4242", state = "Shutdown")
+        val held = fake.seed("loop-sim-held-4242@a-0", state = "Booted")
+        val crashed = fake.seed("loop-sim-crashed-17@a-0", state = "Booted")
+        val otherKind = fake.seed("loop-sim-pixel-4242@a-0", state = "Shutdown")
         val person = fake.seed("iPhone 16", state = "Booted")
         val lookalike = fake.seed("loop-iphone", state = "Booted")
         val noPid = fake.seed("loop-sim-mine", state = "Booted")
+        val noAttempt = fake.seed("loop-sim-crashed-17", state = "Booted")
 
         fake.provider().recover(listOf(holder("held"), holder("pixel", kind = "avd")))
 
-        assertEquals(listOf(held, person, lookalike, noPid), fake.simulators().map { it.udid })
+        assertEquals(listOf(held, person, lookalike, noPid, noAttempt), fake.simulators().map { it.udid })
         assertEquals(
             listOf(
                 listOf("simctl", "list", "devices", "-j"),
@@ -223,7 +254,7 @@ class IosSimulatorProviderTest {
 
     @Test
     fun `recover keeps the Loop simulator of a live process with no holder in this store, such as a run of another Loop home`() {
-        val otherHome = fake.seed("loop-sim-iphone-16-99", state = "Booted")
+        val otherHome = fake.seed("loop-sim-iphone-16-99@a-0", state = "Booted")
         fake.alive += 99L
 
         fake.provider().recover(emptyList())
@@ -234,7 +265,7 @@ class IosSimulatorProviderTest {
 
     @Test
     fun `recover does nothing when no xcrun is on the PATH, as on a host with no simulators`() {
-        fake.seed("loop-sim-crashed-17", state = "Booted")
+        fake.seed("loop-sim-crashed-17@a-0", state = "Booted")
         val provider = IosSimulatorProvider(Xcrun(fake.environment() + ("PATH" to root.resolve("empty").toString())))
 
         provider.recover(emptyList())
@@ -247,10 +278,10 @@ class IosSimulatorProviderTest {
     fun `a failing xcrun call fails with the command and its exit code`() {
         val provider = fake.provider(mapOf("FAKE_XCRUN_FAIL" to "create", "FAKE_XCRUN_FAIL_CODE" to "7"))
 
-        val failure = assertFailsWith<ResourceException> { provider.prepare(simulator()) }
+        val failure = assertFailsWith<ResourceException> { provider.prepare(simulator(), attempt) }
 
         assertEquals(
-            "xcrun simctl create loop-sim-iphone-16-4242 \"iPhone 16\" \"iOS 18.2\" exited 7: " +
+            "xcrun simctl create loop-sim-iphone-16-4242@a-1 \"iPhone 16\" \"iOS 18.2\" exited 7: " +
                 "An error was encountered processing the command (domain=com.apple.CoreSimulator.SimError, code=405)",
             failure.message,
         )
@@ -263,7 +294,7 @@ class IosSimulatorProviderTest {
 
         val failure =
             assertFailsWith<ResourceException> {
-                provider.prepare(simulator(provider = arrayOf("device_type" to "iPhone 16", "prepare_timeout_seconds" to "1")))
+                provider.prepare(simulator(provider = arrayOf("device_type" to "iPhone 16", "prepare_timeout_seconds" to "1")), attempt)
             }
 
         val udid = fake.loop("iphone-16")!!.udid
