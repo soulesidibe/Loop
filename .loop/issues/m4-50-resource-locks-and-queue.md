@@ -1,7 +1,7 @@
 ---
 id: m4-50
 title: "Resource locks in the run store, grants in queue order, no leak"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-24]
@@ -39,3 +39,15 @@ Story 122, locks part (PLAN 6.9 and 12). Lane A, runs on the claude-code runner.
 ## Comments
 
 2026-11-18 soule: written in m3-29, split from m4-24 after the Fable 5.2 review.
+
+2026-11-25 05:18Z loop: Loop opened pull request #59 for this issue: https://github.com/soulesidibe/Loop/pull/59
+
+2026-11-25 05:21Z loop: Loop did not merge pull request #59 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.60.
+  - alignment: aligned, The diff covers the lock rows, queue order, no-leak frees, startup sweep with recover, status output and docs. The orchestrator edit is one constructor parameter, one field and the free call in the attempt's finally block.
+  - impact: medium (floor medium: the diff changes 666 lines outside tests and docs, over half the limit of 1000), It adds a schema version 8 migration to the machine-wide shared store and a new free step in every attempt's end path and in run startup, over 600 non-test lines.
+  - verification: strong, Table tests cover the queue, store tests cover reopen, shared handles, shared projects, concurrency and the v7 migration, and CLI tests cover success, failure, stop and kill -9 with a fake provider's single recover call. A status test is included.
+  - rollback_cost: costly, A revert leaves the shared store migrated to schema version 8 with the new tables, and it may leave stale lock rows and resource events behind.
+  - error_detection: partial, A failed free or recover only logs a warning and the run continues, and a failed event record goes to the unrecorded callback as a warning. These are logged by design, but a leaked lock stays blocked until the next startup.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 6 of 20 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.

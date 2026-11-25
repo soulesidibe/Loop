@@ -1,5 +1,6 @@
 package loop.runner.codex
 
+import loop.runner.process.DeniedCommands
 import java.io.IOException
 import java.nio.file.Path
 import kotlin.io.path.exists

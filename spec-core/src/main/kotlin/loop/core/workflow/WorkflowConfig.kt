@@ -675,13 +675,21 @@ data class ContextConfig(
         const val DEFAULT_HARD_LIMIT = 0.21
 
         /**
-         * The windows Loop ships: the plan's Claude window (8.2), and the window of the pinned Codex model, the
-         * `modelContextWindow` codex reported in the M3 exit run (m4-02).
+         * The windows Loop ships: the plan's Claude window (8.2), the window of the pinned Codex model, the
+         * `modelContextWindow` codex reported in the M3 exit run (m4-02), and the shipped Gemini models supported
+         * through the ACP runner.
          */
         val DEFAULT_WINDOWS: Map<String, Long> =
             mapOf(
                 "anthropic/claude-opus-5-5" to 1_000_000L,
                 "openai/gpt-6.1-sol" to 475_000L,
+                "google/gemini-4-neon-high" to 1_048_576L,
+                "google/gemini-4-neon-medium" to 1_048_576L,
+                "google/gemini-4-neon-low" to 1_048_576L,
+                "google/gemini-4-neon-xhigh" to 1_048_576L,
+                "google/gemini-3.8-flash-high" to 1_048_576L,
+                "google/gemini-3.8-flash-medium" to 1_048_576L,
+                "google/gemini-3.8-flash-low" to 1_048_576L,
             )
     }
 }

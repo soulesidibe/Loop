@@ -684,7 +684,7 @@ The plugin API is a small Kotlin module that the core depends on and plugins imp
 | Interface | Core implementations | Plugins |
 |---|---|---|
 | `TrackerAdapter` (spec section 11, plus optional writes for comments, labels, follow-ups) | `files` | `github`, `linear`, `jira`, `gitlab`, `asana` |
-| `AgentRunner` | `codex-app-server`, `command` | `claude-code`, `acp`, `gemini`, `koog` |
+| `AgentRunner` | `codex-app-server`, `command` | `claude-code`, `acp` (also serves Gemini models through `preset: agy`), `koog` |
 | `CheckType` | `command`, `file_exists`, `file_matches`, `diff_policy` | `http`, `screenshot`, `maestro` |
 | `DeliveryExecutor` | `pull_request` (via the tracker or `gh`), `report`, `files` | external actions per system |
 | `HumanChannel` | `terminal` | `telegram`, `slack`, `http` (the spec's optional API and dashboard) |
@@ -932,7 +932,7 @@ Each milestone ends with real issues delivered on one of your projects. Observab
 - **Exit:** a week of runs where every non-human question was answered by the experts, and every lesson in a prompt can be traced to its source.
 
 ### M7. More integrations, best of n
-- `tracker-linear`, `tracker-jira`, `runner-acp`, out-of-process plugin protocol.
+- `tracker-linear`, `tracker-jira`, `runner-acp` (pulled ahead of M5 and M6 in `.loop/specs/gemini-support.md` to support Gemini models via `agy acp` with `preset: agy`), out-of-process plugin protocol.
 - Fan-out (best of n across runners) and engine handoff; council review.
 - **Exit:** the same issues delivered by two runners, with a published comparison.
 

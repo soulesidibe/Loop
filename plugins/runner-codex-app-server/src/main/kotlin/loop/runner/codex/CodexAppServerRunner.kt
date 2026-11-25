@@ -35,6 +35,7 @@ import loop.runner.codex.protocol.v2.CodexErrorInfo
 import loop.runner.codex.protocol.v2.TurnCompletedNotification
 import loop.runner.codex.protocol.v2.TurnError
 import loop.runner.codex.protocol.v2.TurnStatus
+import loop.runner.process.HoldoutFolder
 import loop.runner.process.LaunchSpec
 import loop.runner.process.ProcessEvent
 import loop.runner.process.ProcessGroupLauncher
