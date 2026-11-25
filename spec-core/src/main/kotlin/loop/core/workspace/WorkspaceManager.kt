@@ -46,6 +46,13 @@ class WorkspaceManager(
         return Result.failure(WorkspaceError.Hook(message + cleanup, result))
     }
 
+    /**
+     * This manager without `after_create`, `before_run`, `after_run` and `before_remove` (m4-20), for a kind declared
+     * `populate: empty`: its workspace is the folder [Workspaces] creates, and the other hooks still run.
+     */
+    fun withoutWorkspaceHooks(): WorkspaceManager =
+        WorkspaceManager(workspaces, hooks.copy(afterCreate = null, beforeRun = null, afterRun = null, beforeRemove = null), runner)
+
     /** The existing workspace of [key], null when there is none; nothing is created and no hook runs (m2-04). */
     fun locate(key: WorkspaceKey): Result<Path?> = workspaces.locate(key)
 
