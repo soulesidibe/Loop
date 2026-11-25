@@ -89,7 +89,7 @@ class AcpMcpAndIsolationTest {
     }
 
     @Test
-    fun `AgyIsolationDir uses LOOP_HOME agy when under HOME and falls back to dot loop-agy when outside HOME`() {
+    fun `AgyIsolationDir uses LOOP_HOME when under HOME and falls back to dot loop-agy when outside HOME`() {
         val insideLoopHome = home.resolve(".loop")
         val inside =
             AgyIsolationDir.create(
@@ -241,7 +241,7 @@ class AcpMcpAndIsolationTest {
     }
 
     @Test
-    fun `agy preset passes disable-telemetry, sandbox, and isolated relative gemini-dir and keeps it past stop`() {
+    fun `agy preset passes disable-telemetry, sandbox, and isolated relative gemini-dir and cleans up in stop`() {
         val capturedSettings = dir.resolve("captured-settings.json")
         val capturedArgs = dir.resolve("captured-args.txt")
         val server =
@@ -321,6 +321,12 @@ class AcpMcpAndIsolationTest {
         assertEquals(AcpMcpConfig.PASSED.toSet(), mcpEnv.keys)
         assertEquals(started.sessionId.value, mcpEnv["LOOP_SESSION_ID"])
         assertEquals(started.turnId.value, mcpEnv["LOOP_TURN_ID"])
+
+        // Since bl-213 the stop keeps the folder for a resume, and the cleanup comes when the next session of the
+        // issue opens: Loop only resumes the last session of an issue, so the kept folder can never be loaded again.
+        val next = runBlocking { withTimeout(20.seconds) { runner.run(context(loopEnv(loopHome)), "Work").toList() } }
+        assertIs<RunnerEvent.TurnCompleted>(next.last())
+        assertFalse(Files.exists(home.resolve(relGeminiDir)), "the next session of the issue removes the kept folder")
     }
 
     @Test
