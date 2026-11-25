@@ -9,7 +9,7 @@ import kotlin.time.Instant
 /**
  * The waits of one project (m2-04, m2-24, m2-26, m4-31): the `Waiting(verify | approval | merge | ask)` records in the [store]
  * and their transitions, with the copy in memory that decides for this process. Built per project from the store,
- * so the orchestrator, `loop approve` and `loop status` share it (ADR 0001); it does not do the work a wait waits
+ * so the orchestrator, `loop approve`, `loop answer` and `loop status` share it (ADR 0001); it does not do the work a wait waits
  * for: running checks and delivering stay with the orchestrator, merging is `loop.core.merge` (bl-85).
  *
  * The store is the source of truth, read once per tick by [read]: [current] then shows that read plus every write
@@ -48,8 +48,9 @@ class Waits(
 
     /**
      * Reads every wait of the project from the store, once per tick. An approval, a merge or an ask wait keeps its issue
-     * waiting from then on, a verify wait only once its own path resumes it ([hold]). A failed read shows no wait in
-     * [current] for this tick and changes nothing in memory.
+     * waiting from then on, a verify wait only once its own path resumes it ([hold]). An answered ask wait (m4-52) lets
+     * its issue go, even one this process held: it waits for its dispatch, not for a human. A failed read shows no wait
+     * in [current] for this tick and changes nothing in memory.
      */
     suspend fun read(): Result<List<Wait>> {
         val read = guarded { store.waitingIssues(projectId) }.map { records -> records.map(Wait::of) }
@@ -61,11 +62,21 @@ class Waits(
         return read
     }
 
+    /** The answered ask wait of [issueId] in the last [read] (m4-52), null when it has none. */
+    fun answered(issueId: String): Wait.Ask? = (stored[issueId] as? Wait.Ask)?.takeIf { it.answered }
+
     /** The waits of the last [read], of [reason] when given, with the writes made since. */
     fun current(reason: WaitReason? = null): List<Wait> = stored.values.filter { reason == null || it.reason == reason }
 
-    /** Keeps the issue of [wait] waiting in this process, for the wait's reason, without writing the store. */
+    /**
+     * Keeps the issue of [wait] waiting in this process, for the wait's reason, without writing the store. An answered
+     * ask wait (m4-52) lets it go instead.
+     */
     fun hold(wait: Wait) {
+        if (wait is Wait.Ask && wait.answered) {
+            held -= wait.issueId
+            return
+        }
         held[wait.issueId] = wait.reason
     }
 
@@ -103,6 +114,18 @@ class Waits(
         by: String,
         at: Instant,
     ): Result<Wait?> = guarded { store.approve(projectId, issueId, by, at) }.map { it?.let(Wait::of) }
+
+    /**
+     * Marks the ask wait of [issueId] answered by [by] at [at] with [answer] (m4-52), through the store's own
+     * [WaitingIssues.answer], one transaction in a store that has one. The wait as it is after the call, whatever its
+     * reason, null when [issueId] does not wait.
+     */
+    suspend fun answer(
+        issueId: String,
+        by: String,
+        answer: String,
+        at: Instant,
+    ): Result<Wait?> = guarded { store.answer(projectId, issueId, by, answer, at) }.map { it?.let(Wait::of) }
 
     /** The number of merge checks running now, each holding an agent slot (m2-26): phase `check` work only (bl-173). */
     val checks: Int get() = checking.count { it.value }

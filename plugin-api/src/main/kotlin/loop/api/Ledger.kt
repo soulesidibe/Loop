@@ -204,6 +204,9 @@ public object HumanTouch {
     /** `loop approve` approved a delivery. */
     public const val APPROVE: String = "approve"
 
+    /** `loop answer` answered an agent's question (m4-52). */
+    public const val ANSWER: String = "answer"
+
     /** A human changed the issue in the tracker: its state, its labels, or removed it. */
     public const val MOVE: String = "move"
 }

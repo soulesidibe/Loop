@@ -363,6 +363,38 @@ class SqliteEventStore private constructor(
         }
 
     /**
+     * Marks an ask wait answered in one write transaction (m4-52), so `loop answer` and a running Loop that ends the
+     * wait at the same time never leave half of each. The answer and who gave it are redacted. See [WaitingIssues.answer].
+     */
+    override suspend fun answer(
+        projectId: ProjectId,
+        issueId: String,
+        by: String,
+        answer: String,
+        at: Instant,
+    ): Result<WaitingIssue?> =
+        transaction {
+            val found =
+                connection.prepareStatement(SELECT_WAITING_ONE).use { st ->
+                    st.setString(1, projectId.value)
+                    st.setIssue(2, issueId)
+                    st.executeQuery().use { rs -> if (rs.next()) rs.toWaitingIssue(ids) else null }
+                }
+            if (found == null || found.reason != WaitReason.Ask || found.data[WaitingIssue.ANSWERED_AT] != null) {
+                found
+            } else {
+                val data = found.data + WaitingIssue.answerData(redactor.redact(by), redactor.redact(answer), at)
+                connection.prepareStatement(UPDATE_WAITING_DATA).use { st ->
+                    st.setNullable(1, encodeData(data))
+                    st.setString(2, projectId.value)
+                    st.setIssue(3, issueId)
+                    st.executeUpdate()
+                }
+                found.copy(data = data)
+            }
+        }
+
+    /**
      * Writes the row of [attempt] (m2-19). The same statement counts its number among the rows of its issue and
      * its human touches: the `human_touch` events of the issue after the last one an earlier row counted, so a
      * touch counts once, in the next row of its issue to be written. A row already there for the attempt id

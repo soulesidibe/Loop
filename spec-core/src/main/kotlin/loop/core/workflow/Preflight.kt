@@ -158,6 +158,7 @@ class Preflight(
                             brief,
                             retryKind,
                             sources,
+                            PromptVariables.SAMPLE_ANSWER.takeIf { retryKind == PromptVariables.RETRY_ANSWER },
                         )
                     template.render(variables).exceptionOrNull()?.let { return it }
                 }
@@ -232,7 +233,8 @@ class Preflight(
     private companion object {
         /**
          * The `attempt`, `loop.verify_findings` and `loop.retry_kind` of each sample render: a first run, then each retry
-         * kind as Loop sets it, a rotation both on a first dispatch and on a retry (m3-11).
+         * kind as Loop sets it, a rotation both on a first dispatch and on a retry (m3-11), and the dispatch after an answer,
+         * which also sets `loop.answer` (m4-52).
          */
         val SAMPLES: List<Triple<Int?, String?, String?>> =
             listOf(
@@ -242,6 +244,8 @@ class Preflight(
                 Triple(1, PromptVariables.SAMPLE_VERIFY_FINDINGS, PromptVariables.RETRY_REFUTED),
                 Triple(null, null, PromptVariables.RETRY_ROTATION),
                 Triple(1, PromptVariables.SAMPLE_VERIFY_FINDINGS, PromptVariables.RETRY_ROTATION),
+                // m4-52: the dispatch after `loop answer`, with `loop.answer` set.
+                Triple(null, null, PromptVariables.RETRY_ANSWER),
             )
 
         const val INVALID_CONFIG = "invalid_config"

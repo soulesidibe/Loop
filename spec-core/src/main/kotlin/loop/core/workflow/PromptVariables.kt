@@ -8,7 +8,7 @@ import loop.core.trackers.NamespacedId
  * The variables the prompt template renders with: the spec's `issue` and
  * `attempt` (5.4), and Loop's own under `loop` (plan 8.9), so far
  * `loop.verify_findings` (m2-06), `loop.workspace_reused` (bl-19), `loop.session_brief` (m3-10), `loop.retry_kind`
- * (m3-11) and `loop.context_sources` (m4-19), and Loop's `issue.tracker` (m4-12). The Orchestrator
+ * (m3-11), `loop.context_sources` (m4-19) and `loop.answer` (m4-52), and Loop's `issue.tracker` (m4-12). The Orchestrator
  * and [Preflight] both build
  * them here, and the static check's [schema] is derived from the same map, so
  * they cannot drift.
@@ -50,15 +50,21 @@ object PromptVariables {
     /** `loop.retry_kind` after an error retry whose failure was a refutation of the submitted result (m3-11). */
     const val RETRY_REFUTED: String = "refuted"
 
+    /** `loop.retry_kind` in the first prompt after `loop answer` answered the agent's question (m4-52). */
+    const val RETRY_ANSWER: String = "answer"
+
     /** Every value of `loop.retry_kind` Loop produces, which preflight renders (m3-11); null on a first dispatch. */
-    val RETRY_KINDS: List<String> = listOf(RETRY_CONTINUATION, RETRY_ROTATION, RETRY_ERROR, RETRY_REFUTED)
+    val RETRY_KINDS: List<String> = listOf(RETRY_CONTINUATION, RETRY_ROTATION, RETRY_ERROR, RETRY_REFUTED, RETRY_ANSWER)
+
+    /** A sample of `loop.answer`, so preflight also renders the branch a template shows after an answer (m4-52). */
+    const val SAMPLE_ANSWER: String = "Question for a human (product): Sample question?\n\nAnswer from sample: Sample answer."
 
     val schema: TemplateSchema =
         TemplateSchema(
             mapOf(
                 ISSUE to issueFields(SAMPLE_ISSUE).keys,
                 ATTEMPT to null,
-                LOOP to loopFields(null, false, null, null, null).keys,
+                LOOP to loopFields(null, false, null, null, null, null).keys,
             ),
         )
 
@@ -70,7 +76,8 @@ object PromptVariables {
      * when the attempt created it (bl-19): a fact about the folder, whatever [attempt] is. [sessionBrief] is the
      * [SessionBrief] of a retry, a reused workspace or a rotation, null on a fresh first dispatch (m3-10). [retryKind]
      * is one of [RETRY_KINDS], null on a first dispatch (m3-11). [contextSources] is the list of the kind's context
-     * sources, null when the kind declares none (m4-19).
+     * sources, null when the kind declares none (m4-19). [answer] is the agent's question and the human's answer in the
+     * first prompt after `loop answer`, null otherwise (m4-52).
      */
     fun of(
         issue: Issue,
@@ -80,11 +87,12 @@ object PromptVariables {
         sessionBrief: String? = null,
         retryKind: String? = null,
         contextSources: String? = null,
+        answer: String? = null,
     ): Map<String, Any?> =
         mapOf(
             ISSUE to issueFields(issue),
             ATTEMPT to attempt,
-            LOOP to loopFields(verifyFindings, workspaceReused, sessionBrief, retryKind, contextSources),
+            LOOP to loopFields(verifyFindings, workspaceReused, sessionBrief, retryKind, contextSources, answer),
         )
 
     private fun loopFields(
@@ -93,6 +101,7 @@ object PromptVariables {
         sessionBrief: String?,
         retryKind: String?,
         contextSources: String?,
+        answer: String?,
     ): Map<String, Any?> =
         mapOf(
             VERIFY_FINDINGS to verifyFindings,
@@ -100,6 +109,7 @@ object PromptVariables {
             SESSION_BRIEF to sessionBrief,
             RETRY_KIND to retryKind,
             CONTEXT_SOURCES to contextSources,
+            ANSWER to answer,
         )
 
     /**
@@ -127,6 +137,7 @@ object PromptVariables {
     private const val WORKSPACE_REUSED = "workspace_reused"
     private const val SESSION_BRIEF = "session_brief"
     private const val RETRY_KIND = "retry_kind"
+    private const val ANSWER = "answer"
 
     /** The root of Loop's own variables. */
     const val LOOP = "loop"

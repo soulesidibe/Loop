@@ -154,6 +154,27 @@ public interface WaitingIssues {
             approved
         }
 
+    /**
+     * Marks the [WaitReason.Ask] wait of [issueId] answered by [by] at [at] with [answer] (m4-52), in its data under
+     * [WaitingIssue.ANSWER], [WaitingIssue.ANSWERED_BY] and [WaitingIssue.ANSWERED_AT]. A wait already answered, or a
+     * wait for another reason, is left as it is. The record as it is after the call, null when [issueId] does not wait.
+     * This default reads then writes; a store that can do it in one transaction overrides it.
+     */
+    public suspend fun answer(
+        projectId: ProjectId,
+        issueId: String,
+        by: String,
+        answer: String,
+        at: Instant,
+    ): Result<WaitingIssue?> =
+        waitingIssues(projectId).mapCatching { records ->
+            val found = records.firstOrNull { it.issueId == issueId } ?: return@mapCatching null
+            if (found.reason != WaitReason.Ask || found.data[WaitingIssue.ANSWERED_AT] != null) return@mapCatching found
+            val answered = found.copy(data = found.data + WaitingIssue.answerData(by, answer, at))
+            startWaiting(answered).getOrThrow()
+            answered
+        }
+
     public companion object {
         /** Keeps nothing: every write succeeds, every read is empty. */
         public val NONE: WaitingIssues =
@@ -174,7 +195,8 @@ public interface WaitingIssues {
  * One waiting issue: what it waits for ([reason]), the [attemptId] and [runId] that started the wait, and
  * since when. [data] holds what the wait needs to go on after a restart, an opaque map the store keeps as it is:
  * the core reads and writes its keys in one place (bl-79). Once `loop approve` ran, an approval wait holds
- * [APPROVED_BY] and [APPROVED_AT] (m2-24), the two keys [WaitingIssues.approve] writes.
+ * [APPROVED_BY] and [APPROVED_AT] (m2-24), the two keys [WaitingIssues.approve] writes. Once `loop answer` ran, an ask
+ * wait holds [ANSWER], [ANSWERED_BY] and [ANSWERED_AT] (m4-52), the keys [WaitingIssues.answer] writes.
  */
 public data class WaitingIssue(
     public val projectId: ProjectId,
@@ -200,6 +222,22 @@ public data class WaitingIssue(
 
         /** The data key of when an approval wait was approved, an ISO instant. */
         public const val APPROVED_AT: String = "approved_at"
+
+        /** The data key of the answer `loop answer` gave to an ask wait (m4-52). */
+        public const val ANSWER: String = "answer"
+
+        /** The data key of who answered an ask wait (m4-52). */
+        public const val ANSWERED_BY: String = "answered_by"
+
+        /** The data key of when an ask wait was answered, an ISO instant (m4-52). */
+        public const val ANSWERED_AT: String = "answered_at"
+
+        /** The data keys [WaitingIssues.answer] writes: [answer] given by [by] at [at]. */
+        public fun answerData(
+            by: String,
+            answer: String,
+            at: Instant,
+        ): Map<String, String> = mapOf(ANSWER to answer, ANSWERED_BY to by, ANSWERED_AT to at.toString())
     }
 }
 
