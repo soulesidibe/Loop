@@ -1,7 +1,7 @@
 ---
 id: m4-37
 title: "The approved_green reaction tells me a pull request is ready to merge"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-36]
@@ -41,3 +41,15 @@ Out of this issue: merging on approval (the delivery policy decides that), chann
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-25 21:14Z loop: Loop opened pull request #79 for this issue: https://github.com/soulesidibe/Loop/pull/79
+
+2026-11-25 21:18Z loop: Loop did not merge pull request #79 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.40.
+  - alignment: aligned, The diff adds the approved_green reaction in loop.core.reactions, keeps Orchestrator.kt to call sites, and updates the docs as the criteria ask, with small supporting changes to events, notices and the CLI wiring.
+  - impact: medium (floor medium: the diff changes 576 lines outside tests and docs, over half the limit of 1000), It adds a new notification path to the polling loop, a new HumanEvent in the plugin API and a merge-check read in RunCommand, but it only notifies and never merges.
+  - verification: strong, A 659-line test file covers every acceptance case, including once per head, a head pushed after the merge check, and restarts, on recorded Actions and review answers, though those answers are hand-written.
+  - rollback_cost: two_way, The change adds code, an event key and docs with no schema or data migration, so a revert removes it, and recorded reaction_triggered events only stay in the store as history.
+  - error_detection: partial, Failed reviews, Actions or store reads are only logged at warn and skip the notice until a later poll, so a persistent failure shows up in logs but not as a loud error.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 7 of 19 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
