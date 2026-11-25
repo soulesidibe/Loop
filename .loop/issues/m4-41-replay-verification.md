@@ -44,3 +44,15 @@ Out of this issue: the extraction of the verification (m4-54), replaying holdout
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-25 22:44Z loop: Loop opened pull request #83 for this issue: https://github.com/soulesidibe/Loop/pull/83
+
+2026-11-25 22:48Z loop: Loop did not merge pull request #83 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.60.
+  - alignment: aligned, The diff implements --verify as specified in a new loop.core.replay package, with three placements, exit 4 naming both fingerprints, and a replay_verdict event, and it doesn't edit the orchestrator.
+  - impact: medium (floor medium: the diff changes 753 lines outside tests and docs, over half the limit of 1000), It adds a new read-mostly CLI mode and a new event type in a registry, but it runs check commands and creates and removes git worktrees and temp copies, and it touches 753 non-test lines.
+  - verification: strong, CLI tests cover the copy, worktree, changed and tree-gone cases, no verdict and mode conflicts, and compare the store, issue and workspace before and after, and unit tests cover sites, verdict and replay.
+  - rollback_cost: costly, A revert is clean in code, but replay_verdict events already written to the machine store stay behind, and the old code may not know that event kind.
+  - error_detection: partial, Placement failures and store errors exit loudly, but cleanup failures are swallowed with runCatching, which can leave stray worktrees or temp folders, and a failed copy falls back to a rebuild quietly.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 4 of 12 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
