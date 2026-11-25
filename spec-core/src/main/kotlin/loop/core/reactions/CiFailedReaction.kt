@@ -87,14 +87,21 @@ class CiFailedReaction(
         }
         val stored =
             reactionsBefore().getOrElse { error ->
-                val text = redactor.redact("cannot read the ci_failed reactions of the run store: ${error.message ?: error::class.simpleName}")
+                val text =
+                    redactor.redact(
+                        "cannot read the ci_failed reactions of the run store: ${error.message ?: error::class.simpleName}",
+                    )
                 log.log(LogLevel.WARN, REACTIONS, LogOutcome.FAILED, contextOf(wait), reason = text.take(REASON_MAX))
                 return CiFailedOutcome.Refuse(UNREAD_NOTE)
             }
         val used = maxOf(countIn(stored, wait.issueId), counted[wait.issueId] ?: 0)
         val retries = reaction.retries
         if (retries != null && used >= retries) {
-            record(wait, ReactionSkipped, data + (ReactionKeys.RETRY to used.toString()) + (ReactionKeys.REASON to ReactionSkipped.RETRIES_SPENT))
+            record(
+                wait,
+                ReactionSkipped,
+                data + (ReactionKeys.RETRY to used.toString()) + (ReactionKeys.REASON to ReactionSkipped.RETRIES_SPENT),
+            )
             return CiFailedOutcome.Refuse(spentNote(used))
         }
         val retry = used + 1
@@ -154,7 +161,8 @@ class CiFailedReaction(
         private val PASSING = setOf("success", "skipped", "neutral")
 
         /** The end of the comment when the store could not be read, so the reaction did not fire. */
-        const val UNREAD_NOTE: String = "The ci_failed reaction did not send the issue back, Loop could not read its count in the run store."
+        const val UNREAD_NOTE: String =
+            "The ci_failed reaction did not send the issue back, Loop could not read its count in the run store."
 
         /** The `ci_failed` reactions of [issueId] among [events], the `reaction_triggered` events of the run store. */
         fun countIn(

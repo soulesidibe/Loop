@@ -373,7 +373,8 @@ class CiFailedReactionTest {
         testScheduler.advanceUntilIdle()
     }
 
-    private fun recordedJson(name: String): JsonObject = Json.parseToJsonElement(RECORDED.resolve("$name.json").toFile().readText()).jsonObject
+    private fun recordedJson(name: String): JsonObject =
+        Json.parseToJsonElement(RECORDED.resolve("$name.json").toFile().readText()).jsonObject
 
     private fun JsonObject.text(key: String): String? = get(key)?.jsonPrimitive?.contentOrNull
 
@@ -411,7 +412,10 @@ class CiFailedReactionTest {
                     status = checkNotNull(job.text("status")),
                     conclusion = job.text("conclusion"),
                     steps = steps.size,
-                    stepList = steps.map { step -> ActionsStep(checkNotNull(step.jsonObject.text("name")), step.jsonObject.text("conclusion")) },
+                    stepList =
+                        steps.map { step ->
+                            ActionsStep(checkNotNull(step.jsonObject.text("name")), step.jsonObject.text("conclusion"))
+                        },
                 )
             }
         return ActionsJobs(listing.getValue("total_count").jsonPrimitive.long, jobs)
@@ -424,7 +428,7 @@ class CiFailedReactionTest {
     }
 
     @Test
-    fun `a red verdict resumes the workspace with retry kind reaction and findings naming the failed runs, jobs and steps, then verifies again`() =
+    fun `a red verdict resumes the workspace, retry kind reaction, findings naming failed runs, jobs and steps, then verifies again`() =
         runTest {
             val setup = Setup()
             setup.answerRed()
@@ -473,7 +477,12 @@ class CiFailedReactionTest {
             assertEquals(WaitReason.Approval, again.reason)
             assertFalse(again.approved)
             assertEquals(emptyList(), setup.remote.merges)
-            assertEquals(PullRequestState.Open, setup.remote.pulls.values.single().state)
+            assertEquals(
+                PullRequestState.Open,
+                setup.remote.pulls.values
+                    .single()
+                    .state,
+            )
         }
 
     @Test
@@ -551,7 +560,8 @@ class CiFailedReactionTest {
         runTest {
             val setup = Setup()
             setup.answerRed()
-            val orchestrator = with(setup) { orchestrator(reactionsBefore = { Result.failure(IllegalStateException("database is locked")) }) }
+            val orchestrator =
+                with(setup) { orchestrator(reactionsBefore = { Result.failure(IllegalStateException("database is locked")) }) }
 
             deliverToVerdict(orchestrator)
 
@@ -650,7 +660,9 @@ class CiFailedReactionTest {
             setup.answerRed()
             val orchestrator = with(setup) { orchestrator() }
             tick(orchestrator, after = 1_000)
-            val (branch, pull) = setup.remote.pulls.entries.single()
+            val (branch, pull) =
+                setup.remote.pulls.entries
+                    .single()
             setup.remote.pulls[branch] = pull.copy(state = PullRequestState.Merged, headSha = setup.verified)
 
             tick(orchestrator, after = CiWait.POLL_FLOOR_MS)
@@ -693,19 +705,21 @@ class CiFailedReactionTest {
             )
 
         assertEquals(
-            """
-            |The Actions runs of pull request #7 failed on its merged head [redacted]: Actions runs did not pass: build (failure), docs (failure).
-            |
-            |Failed runs:
-            |- build (failure): https://github.com/octocat/Hello-World/actions/runs/$RED_RUN
-            |- docs (failure): https://github.com/acme/widgets/actions/runs/99
-            |
-            |Failed jobs and steps:
-            |- build, job test (failure), failed step Run ./gradlew test (failure)
-            |- docs, its jobs were not read
-            |
-            |You cannot open the run URLs or read the CI logs. Find the cause from the job and step names, reproduce it in the workspace, fix it and commit.
-            """.trimMargin(),
+            listOf(
+                "The Actions runs of pull request #7 failed on its merged head [redacted]: " +
+                    "Actions runs did not pass: build (failure), docs (failure).",
+                "",
+                "Failed runs:",
+                "- build (failure): https://github.com/octocat/Hello-World/actions/runs/$RED_RUN",
+                "- docs (failure): https://github.com/acme/widgets/actions/runs/99",
+                "",
+                "Failed jobs and steps:",
+                "- build, job test (failure), failed step Run ./gradlew test (failure)",
+                "- docs, its jobs were not read",
+                "",
+                "You cannot open the run URLs or read the CI logs. Find the cause from the job and step names, " +
+                    "reproduce it in the workspace, fix it and commit.",
+            ).joinToString("\n"),
             findings,
         )
     }

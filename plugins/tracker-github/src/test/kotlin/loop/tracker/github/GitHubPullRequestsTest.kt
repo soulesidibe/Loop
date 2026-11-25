@@ -735,7 +735,13 @@ class GitHubPullRequestsTest {
                 ),
                 test.stepList,
             )
-            assertEquals(listOf("success"), jobs.jobs[1].stepList.map { it.conclusion }.distinct())
+            assertEquals(
+                listOf("success"),
+                jobs.jobs[1]
+                    .stepList
+                    .map { it.conclusion }
+                    .distinct(),
+            )
         }
 
     @Test

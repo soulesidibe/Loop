@@ -25,7 +25,7 @@ import kotlin.time.Instant
 
 /**
  * The reactions of `reactions:` (m4-34, PLAN 6.7): what Loop does when something happens to a pull request it opened
- * while the issue waits. Only `merge_conflict` acts so far.
+ * while the issue waits. This class polls for `merge_conflict`; `ci_failed` is [CiFailedReaction], asked by the CI wait (m4-35).
  *
  * The watched set is every unapproved `Waiting(approval)` that holds a pull request, not sent back, whose issue the tick
  * read active and that runs no attempt. Under the `human` policy the pull request opens after the approval, so these are

@@ -442,7 +442,11 @@ class RunCommand(
                     }
                 },
                 // m4-35: the ci_failed reactions of every run, so the retries of an issue are counted across a restart.
-                reactionsBefore = { store.eventsOfKinds(projectId, setOf(ReactionTriggered.name)).map { stored -> stored.map { it.event } } },
+                reactionsBefore = {
+                    store.eventsOfKinds(projectId, setOf(ReactionTriggered.name)).map { stored ->
+                        stored.map { it.event }
+                    }
+                },
             )
         log.log(
             LogLevel.INFO,
