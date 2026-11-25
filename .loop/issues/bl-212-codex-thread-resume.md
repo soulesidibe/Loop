@@ -49,6 +49,16 @@ Filed from the runner capability comparison of Claude, Codex and Gemini after th
 
 2026-11-25 21:39Z loop: Loop opened pull request #81 for this issue: https://github.com/soulesidibe/Loop/pull/81
 
+2026-11-25 22:01Z loop: Loop did not merge pull request #81 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.27.
+  - alignment: aligned, The diff implements respawn via thread/resume, resumeSession, failure as response_error and the docs/spec updates the issue asks for, with only small supporting changes such as the replayed-usage baseline.
+  - impact: medium, It changes the Codex runner's session lifecycle, the app server spawn path and usage accounting, and also touches the plugin-api doc comment, but only the Codex runner is affected.
+  - verification: strong, About 750 lines of new tests cover respawn, resume, failed resume, strict MCP and dynamicTools on the resume request, usage baseline and the contract, and a real run on the pinned codex is recorded.
+  - rollback_cost: two_way, The change is code and docs only, with no schema, data or persisted format, so a revert restores the old behavior.
+  - error_detection: loud, A failed thread/resume, an answer naming another thread, or a second exit in the same turn fails the turn with response_error or port_exit, and each respawn or resume writes a stderr line, so nothing silently starts a new thread.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 6 of 10 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
+
 ## Agent Brief
 
 **Category:** enhancement
