@@ -79,6 +79,9 @@ import kotlin.time.Instant
  *
  * Not thread safe: like the orchestrator, it runs on one single threaded dispatcher, so the tick's calls and the one
  * background [run] interleave only where they suspend, and the tick leaves the wait of a running check alone.
+ *
+ * It reads the code kind's delivery (m4-18): only a code issue reaches a merge wait, since no other kind may declare
+ * `delivery.pull_request` and the approval wait pins the kind its issue was dispatched under.
  */
 internal class Merges(
     private val waits: Waits,

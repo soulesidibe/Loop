@@ -452,4 +452,15 @@ class WorkflowFileTest {
             kindsError("  content:\n    match: { default: true }\n    verify:\n      checks: []\n"),
         )
     }
+
+    @Test
+    fun `m4-18 on_delivered move_to must be a terminal state for every kind`() {
+        assertEquals(
+            "kinds.content.delivery.on_delivered.move_to is \"review\", which is not a terminal state, use one of done, canceled",
+            kindsError(
+                codeKind + "  content:\n    match: { label: content }\n    verify:\n      checks: []\n" +
+                    "    delivery:\n      on_delivered: { move_to: review }\n",
+            ),
+        )
+    }
 }

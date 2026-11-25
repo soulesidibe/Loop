@@ -258,11 +258,13 @@ class WorkflowLoader(
                 ?: systemTemp.resolve(DEFAULT_WORKSPACES_DIR).toAbsolutePath().normalize()
 
         val terminalStates = tracker.terminalStates
-        kinds?.code?.delivery?.onDeliveredMoveTo?.let { moveTo ->
-            // m2-26: a merged pull request is done, so its issue leaves the tracker's work for good.
+        // m2-26: a merged pull request is done, so its issue leaves the tracker's work for good. Checked for every kind
+        // since m4-18.
+        kinds?.named?.forEach { (name, kind) ->
+            val moveTo = kind.delivery.onDeliveredMoveTo ?: return@forEach
             if (terminalStates.none { it.trim().equals(moveTo, ignoreCase = true) }) {
                 throw WorkflowError.InvalidConfig(
-                    "kinds.code.delivery.on_delivered.move_to is \"$moveTo\", which is not a terminal state, " +
+                    "kinds.$name.delivery.on_delivered.move_to is \"$moveTo\", which is not a terminal state, " +
                         "use one of ${terminalStates.joinToString(", ")}",
                 )
             }
