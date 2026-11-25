@@ -56,6 +56,19 @@ object ApprovalGiven : KeyedEvent("approval_given", Delivery.BY, Delivery.TO) {
     override val sample = mapOf(Delivery.BY to "alice", Delivery.TO to "review")
 }
 
+/**
+ * m4-32: `loop send-back` ended a `Waiting(approval)`, approved or not, sent back [Delivery.BY] an operator with
+ * [Delivery.REASON], redacted. The next attempt gets the reason as its verify findings.
+ */
+object SentBack : KeyedEvent("sent_back", Delivery.BY, Delivery.REASON) {
+    override val sample = mapOf(Delivery.BY to "alice", Delivery.REASON to "The button label is wrong, use Save.")
+
+    override fun humanSentence(
+        data: Map<String, String>,
+        facts: HumanFacts,
+    ) = "was sent back by ${data[Delivery.BY]}, Loop dispatches it again with the reason"
+}
+
 /** m2-25: the verified commit pushed to the issue's branch. */
 object BranchPushed : KeyedEvent("branch_pushed", Delivery.SHA, Delivery.BRANCH) {
     override val sample = mapOf(Delivery.SHA to "0123456789abcdef", Delivery.BRANCH to "loop/bl-1")

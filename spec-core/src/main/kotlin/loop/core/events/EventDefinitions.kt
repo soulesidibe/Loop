@@ -64,6 +64,7 @@ object EventDefinitions {
             // Delivery.
             ApprovalRequested,
             ApprovalGiven,
+            SentBack,
             BranchPushed,
             BranchPushFailed,
             PullRequestOpened,

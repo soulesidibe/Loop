@@ -27,6 +27,7 @@ class LoopCommand(
             ResumeCommand(host),
             ApproveCommand(host),
             AnswerCommand(host),
+            SendBackCommand(host),
             ToolCommand(host),
             InstallCommand(host),
         )
@@ -116,7 +117,7 @@ internal fun commandPathOf(args: Array<String>): String {
 }
 
 internal val SUBCOMMAND_NAMES =
-    setOf("run", "stop", "drain", "status", "trace", "show", "log", "resume", "approve", "answer", "tool", "install")
+    setOf("run", "stop", "drain", "status", "trace", "show", "log", "resume", "approve", "answer", "send-back", "tool", "install")
 
 internal val TOOL_SUBCOMMANDS = setOf("move", "comment", "mcp")
 

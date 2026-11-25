@@ -104,7 +104,7 @@ class PromptVariablesTest {
             assertEquals("Work on SAMPLE-1. Kind: $kind.", rendered)
         }
         assertEquals("Work on SAMPLE-1.", template.render(PromptVariables.of(issue, null)).getOrThrow())
-        assertEquals(listOf("continuation", "rotation", "error", "refuted", "answer"), PromptVariables.RETRY_KINDS)
+        assertEquals(listOf("continuation", "rotation", "error", "refuted", "answer", "sent_back"), PromptVariables.RETRY_KINDS)
     }
 
     @Test
@@ -119,6 +119,21 @@ class PromptVariablesTest {
         assertEquals("Work on SAMPLE-1.\n\n$answer", answered)
         assertEquals("Work on SAMPLE-1.", template.render(PromptVariables.of(issue, null)).getOrThrow())
         assertEquals("answer", PromptVariables.RETRY_ANSWER)
+    }
+
+    @Test
+    fun `m4-32 after loop send-back the reason renders as loop verify_findings with retry kind sent_back`() {
+        val source =
+            "Work on {{ issue.identifier }}.{% if loop.retry_kind %} Kind: {{ loop.retry_kind }}.{% endif %}" +
+                "{% if loop.verify_findings %}\n{{ loop.verify_findings }}{% endif %}"
+        val template = engine.parse(source, PromptVariables.schema).getOrThrow()
+        val reason = "Sent back by soule: use Save."
+
+        val sent =
+            template.render(PromptVariables.of(issue, null, reason, retryKind = PromptVariables.RETRY_SENT_BACK)).getOrThrow()
+
+        assertEquals("Work on SAMPLE-1. Kind: sent_back.\n$reason", sent)
+        assertEquals("sent_back", PromptVariables.RETRY_SENT_BACK)
     }
 
     @Test

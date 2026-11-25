@@ -587,4 +587,61 @@ class WaitsTest {
             restarted.current().forEach(restarted::hold)
             assertFalse(restarted.isBusy("id-1"))
         }
+
+    @Test
+    fun `m4-32 a send back goes through the store's own sendBack, drops the approval and holds who and why`() =
+        runTest {
+            val calls = mutableListOf<String>()
+            val fake = FakeWaitingIssues(record(WaitReason.Approval, approvalData))
+            val store =
+                object : WaitingIssues by fake {
+                    override suspend fun sendBack(
+                        projectId: ProjectId,
+                        issueId: String,
+                        by: String,
+                        reason: String,
+                        at: Instant,
+                    ): Result<WaitingIssue?> {
+                        calls += "sendBack"
+                        return fake.sendBack(projectId, issueId, by, reason, at)
+                    }
+                }
+            val waits = Waits(store, project)
+
+            val sent = assertIs<Wait.Approval>(waits.sendBack("id-1", "soule", "Use Save.", later).getOrThrow())
+
+            assertTrue(sent.sentBack)
+            assertFalse(sent.approved, "the send back drops the approval")
+            assertEquals("soule", sent.sentBackBy)
+            assertEquals("Use Save.", sent.sentBackReason)
+            assertEquals("review", sent.to)
+            assertEquals(listOf("sendBack"), calls)
+            // A second send back and an approve leave the sent back wait as it is.
+            assertEquals(sent, waits.sendBack("id-1", "other", "Again.", later).getOrThrow())
+            assertEquals(sent, waits.approve("id-1", "other", later).getOrThrow())
+            assertNull(Waits(FakeWaitingIssues(), project).sendBack("id-9", "soule", "Yes.", later).getOrThrow())
+        }
+
+    @Test
+    fun `m4-32 a sent back approval wait is no longer held, so its issue dispatches again, and it is found as sent back`() =
+        runTest {
+            val store = FakeWaitingIssues()
+            val waits = Waits(store, project)
+            val approval = Wait.of(record(WaitReason.Approval, approvalData - "approved_by" - "approved_at"))
+            waits.save(approval)
+            assertTrue(waits.awaitsApproval("id-1"))
+            assertNull(waits.sentBack("id-1"))
+
+            // `loop send-back`, another process, marks it in the store; the next read of this process sees it.
+            store.sendBack(project, "id-1", "soule", "Use Save.", later).getOrThrow()
+            waits.read()
+
+            assertFalse(waits.isBusy("id-1"))
+            assertEquals("Use Save.", waits.sentBack("id-1")?.sentBackReason)
+            // A restart, whose resume holds every wait that is not a verify, does not hold it either.
+            val restarted = Waits(store, project)
+            restarted.read()
+            restarted.current().forEach(restarted::hold)
+            assertFalse(restarted.isBusy("id-1"))
+        }
 }

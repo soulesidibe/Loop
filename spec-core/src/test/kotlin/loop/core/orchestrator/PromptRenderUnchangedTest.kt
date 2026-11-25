@@ -32,7 +32,9 @@ import kotlin.test.assertEquals
  * bl-02 moved that sync into "Your workspace", so it renders on every dispatch, and the golden file gained
  * that one bullet, rendered by this test. On 2026-11-18 the root template gained the rotation and session brief
  * blocks, which a first turn renders as blank lines, and the rule to commit after each passing step; the golden
- * file gained those, rendered by this test. The rest of the golden file is still the prompt of fbf637a.
+ * file gained those, rendered by this test. On 2026-11-25 the root template gained the `loop.answer` block, which
+ * a first turn renders as one more blank line; the golden file gained it, rendered by this test. The rest of the
+ * golden file is still the prompt of fbf637a.
  */
 class PromptRenderUnchangedTest {
     private val root: Path = createTempDirectory("loop-prompt-golden").toRealPath()

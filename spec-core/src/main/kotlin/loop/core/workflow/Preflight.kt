@@ -234,7 +234,7 @@ class Preflight(
         /**
          * The `attempt`, `loop.verify_findings` and `loop.retry_kind` of each sample render: a first run, then each retry
          * kind as Loop sets it, a rotation both on a first dispatch and on a retry (m3-11), and the dispatch after an answer,
-         * which also sets `loop.answer` (m4-52).
+         * which also sets `loop.answer` (m4-52), and the dispatch after a send back (m4-32).
          */
         val SAMPLES: List<Triple<Int?, String?, String?>> =
             listOf(
@@ -246,6 +246,8 @@ class Preflight(
                 Triple(1, PromptVariables.SAMPLE_VERIFY_FINDINGS, PromptVariables.RETRY_ROTATION),
                 // m4-52: the dispatch after `loop answer`, with `loop.answer` set.
                 Triple(null, null, PromptVariables.RETRY_ANSWER),
+                // m4-32: the dispatch after `loop send-back`, no retry, with the reason as the verify findings.
+                Triple(null, PromptVariables.SAMPLE_VERIFY_FINDINGS, PromptVariables.RETRY_SENT_BACK),
             )
 
         const val INVALID_CONFIG = "invalid_config"
