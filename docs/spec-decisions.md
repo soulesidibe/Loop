@@ -3196,6 +3196,34 @@ Story 135, PLAN 6.8 and 10.4. Lane C, not gating the M4 exit. The store already 
 
 Tests: `cli/src/test/kotlin/loop/cli/ReportCommandTest.kt` (every section on a seeded store; delivered only through a verified host move in the window, a verified attempt never delivered left out; a narrower window; the not reliable mark on every touch figure; a runner with no cost; an issue with one attempt not reporting; a bad `--since`; an empty window; no store yet, none created; the store unchanged, rows and bytes) and `store/src/test/kotlin/loop/store/SqliteEventStoreTest.kt` (`events of some kinds recorded after an instant come back in seq order, fractions compared exactly (m4-38)`).
 
+### loop query runs read only SQL over the store (extension, m4-39)
+
+Story 136, PLAN 10.4. Lane C, not gating the M4 exit. No Gradle change: `sqlite-jdbc` is an `implementation` dependency of `store`, so the read only connection opens there (`loop.store.StoreQuery`) and `cli` calls it. Saved queries, a query over the JSONL ledger and an HTTP API are out. The decisions:
+
+- **The command.** `loop query "<sql>" [--workflow WORKFLOW.md] [--format table|json] [--limit N]` and `loop query --tables` (`QueryCommand`). A statement and `--tables` together, or neither, is a usage error. The workflow is loaded read only, with deferred secrets, for the machine folder, the redactor of the error lines and the project id the first line names.
+- **Scope.** The whole machine store, every project, since a query may compare them. The first line says so and names the project of the workflow to filter on: `Store <path>: every project on this machine, this project is <id>.` The JSON output carries the same in its first keys, `store`, `scope` and `project_id`.
+- **Read only for real.** `StoreQuery.open` never goes through `SqliteEventStore.open`, which creates and migrates. A missing file is not opened. The file opens with `SQLITE_OPEN_READONLY`, `PRAGMA query_only = 1` so a temporary table cannot be written either, extension loading off, and the attached database limit at 0 (`SQLITE_LIMIT_ATTACHED`), so `ATTACH` and `VACUUM INTO`, which can open another file for writing, fail with `too many attached databases - max 0`. The statement is prepared, so the driver's own `backup to` and `restore from` commands never run, and only its first statement runs. SQLite refuses a write with `attempt to write a readonly database` and `load_extension` with `not authorized`.
+- **Beside a running Loop.** The store is in WAL mode, where a reader never blocks a writer: a query runs while `loop run` holds the store open, even inside a write transaction, and reads the last commit. When no writer holds the store, SQLite creates the `-wal` and `-shm` files a reader needs and, read only, leaves them when it closes, the `-wal` empty; the next writer uses them.
+- **Timeout.** A progress handler stops the statement after 30 seconds (`QueryCommand.TIMEOUT`), so a bad join cannot keep a snapshot open against a running `loop run`.
+- **Limit.** At most 1,000 rows are printed by default, `--limit N` with N at least 1 changes it. When more rows came, the table ends with `<n> rows printed, more were left out. --limit prints more, 1000 by default.` and the JSON sets `rows_left_out` to `true`. The rows past the limit are not counted.
+- **Table format.** A header, a line of dashes and the rows, columns padded and separated by two spaces, then `1 row.` or `<n> rows.`. `NULL` for a null, `x'<hex>'` for a blob, a line break or a tab in a text written `\n`, `\r` or `\t` so a row stays on one line.
+- **JSON format.** One line, an object with `store`, `scope`, `project_id`, `columns`, `rows` and `rows_left_out`. The rows are arrays in the order of the columns, since two columns may share a name; each value keeps its storage class, a number, a string or `null`, a blob as its `x'<hex>'` text. With `--tables`, `tables` is a list of objects with `name` and `columns`.
+- **Secrets.** The store holds redacted text only, so the rows are printed as stored. The error lines go through the redactor like every command's.
+- **Exit codes.**
+
+| Case | Exit | Output |
+|------|------|--------|
+| Printed | 0 | the first line, then the rows or the tables |
+| Startup | 1 | the startup failure |
+| No store yet | 1 | `loop query: no store at <path> yet, loop run creates it.` |
+| Usage | 2 | the usage line |
+| A statement SQLite cannot run | 2 | `loop query: <SQLite's message>.`, for example `near "selec": syntax error` or `no such table: nope` |
+| Store | 3 | `loop query: cannot open the store at <path>: <reason>.` or `cannot read the store at <path>: <reason>.` |
+| Refused | 4 | `loop query: <SQLite's message>. The store is opened read only, nothing changed.` |
+| Timed out | 5 | `loop query: the statement ran past 30s and was stopped, nothing changed.` |
+
+Tests: `cli/src/test/kotlin/loop/cli/QueryCommandTest.kt` (the count of `attempts` on a seeded store; aligned columns and `NULL`; an escaped line break and a blob; an insert, an update, a delete, a drop, a pragma that writes, an `ATTACH` and a `load_extension` call, one test each, the store file compared before and after and no frame in the WAL; the query beside a store held open in a write transaction; `--format json`; `--limit` and the left out note; 1,000 rows by default; a limit below 1; `--tables` in both formats; a statement with `--tables` or neither; a syntax error; a missing store, none created) and `store/src/test/kotlin/loop/store/StoreQueryTest.kt` (typed values on a store no connection holds; the limit; writes, `ATTACH`, `VACUUM INTO` and `load_extension` refused with the file unchanged and no other file created; SQLite's own messages; the driver's `backup to` and `restore from` not run; the timeout; a read beside a write transaction; the tables; a missing file not created).
+
 ### Reactions config and the merge_conflict reaction (extension, m4-34)
 
 Story 131, PLAN 6.7. Before it a conflict was found only by the merge check, at merge time: a pull request Loop opened that then waited was never looked at again. The `reactions:` config is the base m4-35 to m4-37 build on; this issue acts only on `merge_conflict`. The decisions:
