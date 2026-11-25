@@ -347,7 +347,7 @@ class SqliteEventStore private constructor(
                     st.setIssue(2, issueId)
                     st.executeQuery().use { rs -> if (rs.next()) rs.toWaitingIssue(ids) else null }
                 }
-            if (found == null || found.reason != WaitReason.Approval || found.approved) {
+            if (found == null || found.reason != WaitReason.Approval || found.approved || found.sentBack) {
                 found
             } else {
                 val data =
@@ -391,6 +391,39 @@ class SqliteEventStore private constructor(
                     st.executeUpdate()
                 }
                 found.copy(data = data)
+            }
+        }
+
+    /**
+     * Marks an approval wait sent back in one write transaction (m4-32), so `loop send-back` and a running Loop that
+     * delivers or ends the wait at the same time never leave half of each. The reason and who gave it are redacted. See
+     * [WaitingIssues.sendBack].
+     */
+    override suspend fun sendBack(
+        projectId: ProjectId,
+        issueId: String,
+        by: String,
+        reason: String,
+        at: Instant,
+    ): Result<WaitingIssue?> =
+        transaction {
+            val found =
+                connection.prepareStatement(SELECT_WAITING_ONE).use { st ->
+                    st.setString(1, projectId.value)
+                    st.setIssue(2, issueId)
+                    st.executeQuery().use { rs -> if (rs.next()) rs.toWaitingIssue(ids) else null }
+                }
+            if (found == null || found.reason != WaitReason.Approval || found.sentBack) {
+                found
+            } else {
+                val sent = found.sentBack(redactor.redact(by), redactor.redact(reason), at)
+                connection.prepareStatement(UPDATE_WAITING_DATA).use { st ->
+                    st.setNullable(1, encodeData(sent.data))
+                    st.setString(2, projectId.value)
+                    st.setIssue(3, issueId)
+                    st.executeUpdate()
+                }
+                sent
             }
         }
 

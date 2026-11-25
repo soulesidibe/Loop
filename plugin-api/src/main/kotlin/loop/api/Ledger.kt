@@ -207,6 +207,9 @@ public object HumanTouch {
     /** `loop answer` answered an agent's question (m4-52). */
     public const val ANSWER: String = "answer"
 
+    /** `loop send-back` sent a waiting delivery back with a reason (m4-32). */
+    public const val SEND_BACK: String = "send_back"
+
     /** A human changed the issue in the tracker: its state, its labels, or removed it. */
     public const val MOVE: String = "move"
 }

@@ -183,6 +183,7 @@ import loop.core.waiting.Answers
 import loop.core.waiting.Asks
 import loop.core.waiting.MergePhase
 import loop.core.waiting.MergeQueue
+import loop.core.waiting.SendBacks
 import loop.core.waiting.Wait
 import loop.core.waiting.WaitKeys
 import loop.core.waiting.Waits
@@ -613,6 +614,9 @@ class Orchestrator(
     /** The answered ask wait of each issue dispatched after `loop answer` (m4-52), for `loop.answer`. */
     private val dispatchAnswers = mutableMapOf<String, Wait.Ask>()
 
+    /** The sent back approval wait of each issue dispatched after `loop send-back` (m4-32), for `loop.verify_findings`. */
+    private val dispatchSentBacks = mutableMapOf<String, Wait.Approval>()
+
     /**
      * The findings of the refutation that ended an issue's last attempt or restored check, by issue id, for the
      * `loop.verify_findings` of its next attempt (m2-06). Taken by the next render; kept in memory only.
@@ -856,6 +860,7 @@ class Orchestrator(
             retryAttempts[issue.id]?.let { dispatchAttempts[issue.id] = it }
             retryKinds[issue.id]?.let { dispatchRetryKinds[issue.id] = it }
             waits.answered(issue.id)?.let { dispatchAnswers[issue.id] = it }
+            waits.sentBack(issue.id)?.let { dispatchSentBacks[issue.id] = it }
             if (gate == RunnerHold.Gate.Probe) {
                 hold.probeStarted(issue.id)
                 probing = true
@@ -1080,6 +1085,7 @@ class Orchestrator(
         dispatchAttempts -= issue.id
         dispatchRetryKinds -= issue.id
         dispatchAnswers -= issue.id
+        dispatchSentBacks -= issue.id
         executions -= issue.id
         running -= issue.id
         claimed -= issue.id
@@ -2723,8 +2729,11 @@ class Orchestrator(
 
             // Null on a first dispatch, including the first after a resume or a restart; the spec attempt on a retry.
             val attempt = dispatchAttempts[issue.id]
+            // m4-32: after `loop send-back` the human's reason, the path a refuted merge check takes, with no slot taken.
+            val sentBack = dispatchSentBacks[issue.id]
+            val sentBackFindings = sentBack?.let(SendBacks::findings)
             // The findings of a refutation that ended the last attempt, null otherwise (m2-06).
-            val findings = verifyFindings[issue.id]
+            val findings = sentBackFindings ?: verifyFindings[issue.id]
             // bl-19: the folder held earlier work before this attempt, whatever attempt says (a restart, a resume).
             val workspaceReused = !workspace.createdNow
             // bl-06: once per dispatch, so an answer the tracker keeps outside the body (a GitHub comment) is in the
@@ -2738,7 +2747,12 @@ class Orchestrator(
             val answered = dispatchAnswers[issue.id]
             val answer = answered?.let(Answers::prompt)
             // m3-11: continuation, error or refuted on a retry, null on a first dispatch.
-            val retryKind = if (answer != null) PromptVariables.RETRY_ANSWER else dispatchRetryKinds[issue.id]
+            val retryKind =
+                when {
+                    answer != null -> PromptVariables.RETRY_ANSWER
+                    sentBackFindings != null -> PromptVariables.RETRY_SENT_BACK
+                    else -> dispatchRetryKinds[issue.id]
+                }
             // m3-10: a retry or a reused workspace gets a session brief built from facts, a fresh first dispatch none.
             val brief = if (attempt != null || workspaceReused) sessionBrief(issue, workspace.path, fetchedBase, findings) else null
             // m4-19: the kind's own template or the body, and its context sources as the workspace holds them now.
@@ -2759,6 +2773,8 @@ class Orchestrator(
             verifyFindings -= issue.id
             // m4-52: the answer is in the prompt, so the wait ends; a failure before the render left it for the next dispatch.
             answered?.let { endWaiting(it) }
+            // m4-32: the reason is in the prompt, so the sent back wait ends, likewise.
+            sentBack?.let { endWaiting(it) }
             promptInputs = PromptInputs(attempt, findings, workspaceReused, workspace.path, fetchedBase)
             // m3-12: only a session that can rotate needs the commit, and the working tree (bl-136), its progress starts from.
             if (runner.capabilities.occupancy) {

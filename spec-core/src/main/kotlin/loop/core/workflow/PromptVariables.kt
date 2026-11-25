@@ -53,8 +53,14 @@ object PromptVariables {
     /** `loop.retry_kind` in the first prompt after `loop answer` answered the agent's question (m4-52). */
     const val RETRY_ANSWER: String = "answer"
 
+    /**
+     * `loop.retry_kind` in the first prompt after `loop send-back` (m4-32): the human's reason is `loop.verify_findings`,
+     * the path a refuted merge check takes. The dispatch takes no `max_attempts` slot.
+     */
+    const val RETRY_SENT_BACK: String = "sent_back"
+
     /** Every value of `loop.retry_kind` Loop produces, which preflight renders (m3-11); null on a first dispatch. */
-    val RETRY_KINDS: List<String> = listOf(RETRY_CONTINUATION, RETRY_ROTATION, RETRY_ERROR, RETRY_REFUTED, RETRY_ANSWER)
+    val RETRY_KINDS: List<String> = listOf(RETRY_CONTINUATION, RETRY_ROTATION, RETRY_ERROR, RETRY_REFUTED, RETRY_ANSWER, RETRY_SENT_BACK)
 
     /** A sample of `loop.answer`, so preflight also renders the branch a template shows after an answer (m4-52). */
     const val SAMPLE_ANSWER: String = "Question for a human (product): Sample question?\n\nAnswer from sample: Sample answer."

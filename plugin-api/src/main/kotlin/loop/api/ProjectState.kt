@@ -136,9 +136,9 @@ public interface WaitingIssues {
 
     /**
      * Marks the [WaitReason.Approval] wait of [issueId] approved by [by] at [at] (m2-24), in its data under
-     * [WaitingIssue.APPROVED_BY] and [WaitingIssue.APPROVED_AT]. A wait already approved, or a wait for another
-     * reason, is left as it is. The record as it is after the call, null when [issueId] does not wait. This
-     * default reads then writes; a store that can do it in one transaction overrides it.
+     * [WaitingIssue.APPROVED_BY] and [WaitingIssue.APPROVED_AT]. A wait already approved, a wait sent back (m4-32), or a
+     * wait for another reason, is left as it is. The record as it is after the call, null when [issueId] does not wait.
+     * This default reads then writes; a store that can do it in one transaction overrides it.
      */
     public suspend fun approve(
         projectId: ProjectId,
@@ -148,7 +148,7 @@ public interface WaitingIssues {
     ): Result<WaitingIssue?> =
         waitingIssues(projectId).mapCatching { records ->
             val found = records.firstOrNull { it.issueId == issueId } ?: return@mapCatching null
-            if (found.reason != WaitReason.Approval || found.approved) return@mapCatching found
+            if (found.reason != WaitReason.Approval || found.approved || found.sentBack) return@mapCatching found
             val approved = found.copy(data = found.data + mapOf(WaitingIssue.APPROVED_BY to by, WaitingIssue.APPROVED_AT to at.toString()))
             startWaiting(approved).getOrThrow()
             approved
@@ -175,6 +175,28 @@ public interface WaitingIssues {
             answered
         }
 
+    /**
+     * Marks the [WaitReason.Approval] wait of [issueId], approved or not, sent back by [by] at [at] with [reason] (m4-32):
+     * its approval keys go, so it is never delivered, and its data holds [WaitingIssue.SENT_BACK_REASON],
+     * [WaitingIssue.SENT_BACK_BY] and [WaitingIssue.SENT_BACK_AT]. A wait already sent back, or a wait for another reason,
+     * is left as it is. The record as it is after the call, null when [issueId] does not wait. This default reads then
+     * writes; a store that can do it in one transaction overrides it.
+     */
+    public suspend fun sendBack(
+        projectId: ProjectId,
+        issueId: String,
+        by: String,
+        reason: String,
+        at: Instant,
+    ): Result<WaitingIssue?> =
+        waitingIssues(projectId).mapCatching { records ->
+            val found = records.firstOrNull { it.issueId == issueId } ?: return@mapCatching null
+            if (found.reason != WaitReason.Approval || found.sentBack) return@mapCatching found
+            val sent = found.sentBack(by, reason, at)
+            startWaiting(sent).getOrThrow()
+            sent
+        }
+
     public companion object {
         /** Keeps nothing: every write succeeds, every read is empty. */
         public val NONE: WaitingIssues =
@@ -196,7 +218,9 @@ public interface WaitingIssues {
  * since when. [data] holds what the wait needs to go on after a restart, an opaque map the store keeps as it is:
  * the core reads and writes its keys in one place (bl-79). Once `loop approve` ran, an approval wait holds
  * [APPROVED_BY] and [APPROVED_AT] (m2-24), the two keys [WaitingIssues.approve] writes. Once `loop answer` ran, an ask
- * wait holds [ANSWER], [ANSWERED_BY] and [ANSWERED_AT] (m4-52), the keys [WaitingIssues.answer] writes.
+ * wait holds [ANSWER], [ANSWERED_BY] and [ANSWERED_AT] (m4-52), the keys [WaitingIssues.answer] writes. Once
+ * `loop send-back` ran, an approval wait holds [SENT_BACK_REASON], [SENT_BACK_BY] and [SENT_BACK_AT] and no approval
+ * (m4-32), what [WaitingIssues.sendBack] writes.
  */
 public data class WaitingIssue(
     public val projectId: ProjectId,
@@ -215,6 +239,16 @@ public data class WaitingIssue(
 
     /** True once a human approved this [WaitReason.Approval] wait (m2-24). */
     public val approved: Boolean get() = data[APPROVED_AT] != null
+
+    /** True once `loop send-back` sent this [WaitReason.Approval] wait back (m4-32). */
+    public val sentBack: Boolean get() = data[SENT_BACK_AT] != null
+
+    /** This record sent back by [by] at [at] with [reason] (m4-32): its approval dropped, the send back keys added. */
+    public fun sentBack(
+        by: String,
+        reason: String,
+        at: Instant,
+    ): WaitingIssue = copy(data = data - APPROVED_BY - APPROVED_AT + sendBackData(by, reason, at))
 
     public companion object {
         /** The data key of who approved an approval wait. */
@@ -238,6 +272,22 @@ public data class WaitingIssue(
             answer: String,
             at: Instant,
         ): Map<String, String> = mapOf(ANSWER to answer, ANSWERED_BY to by, ANSWERED_AT to at.toString())
+
+        /** The data key of the reason `loop send-back` gave for an approval wait (m4-32). */
+        public const val SENT_BACK_REASON: String = "sent_back_reason"
+
+        /** The data key of who sent an approval wait back (m4-32). */
+        public const val SENT_BACK_BY: String = "sent_back_by"
+
+        /** The data key of when an approval wait was sent back, an ISO instant (m4-32). */
+        public const val SENT_BACK_AT: String = "sent_back_at"
+
+        /** The data keys [WaitingIssues.sendBack] adds: [reason] given by [by] at [at]. */
+        public fun sendBackData(
+            by: String,
+            reason: String,
+            at: Instant,
+        ): Map<String, String> = mapOf(SENT_BACK_REASON to reason, SENT_BACK_BY to by, SENT_BACK_AT to at.toString())
     }
 }
 

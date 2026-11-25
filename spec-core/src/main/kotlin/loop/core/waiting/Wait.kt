@@ -87,6 +87,15 @@ sealed class Wait(
         /** When it was approved (bl-175), null before `loop approve` or when the record holds no readable time. */
         val approvedAt: Instant? get() = data[WaitingIssue.APPROVED_AT]?.let { runCatching { Instant.parse(it) }.getOrNull() }
 
+        /** True once `loop send-back` sent it back (m4-32): it is never delivered, and its issue dispatches again. */
+        val sentBack: Boolean get() = toRecord().sentBack
+
+        /** Who sent it back (m4-32), null before `loop send-back`. */
+        val sentBackBy: String? get() = data[WaitingIssue.SENT_BACK_BY]
+
+        /** Why it was sent back (m4-32), null before `loop send-back`. */
+        val sentBackReason: String? get() = data[WaitingIssue.SENT_BACK_REASON]
+
         /** This wait holding the [url] of the pull request a delivery commented on the issue (m2-25). */
         fun commented(url: String): Approval = Approval(with(data = data + (WaitKeys.PULL_REQUEST to url)))
 
