@@ -23,19 +23,37 @@ import kotlin.io.path.readText
  * Only the workflow's tracker shows: [trackerKind] and [definedStates] come from the attempt's tool config snapshot
  * (m1-23), so `move` accepts exactly the states that tracker defines, as an `enum`, and the descriptions name it. A
  * call is not run here: the runner hands it to `loop tool mcp`, see [LoopToolCall].
+ *
+ * Since m4-51 a workflow that declares `resources:`, whose ids the snapshot holds as [resources] (m4-25), adds
+ * `request_resource` and `release_resource`, the tools `loop tool mcp` serves then, with the same argument and the same
+ * descriptions. Their answers, `granted`, `preparing`, `queued` or a structured failure, are those of `loop tool mcp`:
+ * nothing is answered here, and an unknown name reaches it too, so `name` has no `enum`.
  */
 class LoopClientTools(
     val trackerKind: String,
     val definedStates: List<String>,
+    /** The ids of the workflow's `resources:` (m4-51), empty when it declares none. */
+    val resources: List<String> = emptyList(),
 ) {
-    /** The `dynamicTools` of `thread/start`: [SUBMIT_RESULT], [MOVE] and [COMMENT], in that order. */
+    /**
+     * The `dynamicTools` of `thread/start`: [SUBMIT_RESULT], [MOVE] and [COMMENT], then [REQUEST_RESOURCE] and
+     * [RELEASE_RESOURCE] when the workflow declares resources, in that order.
+     */
     val specs: JsonArray
         get() =
             buildJsonArray {
                 add(function(SUBMIT_RESULT, SUBMIT_RESULT_DESCRIPTION, objectSchema(SubmitResultArguments.properties, listOf("status"))))
                 add(function(MOVE, moveDescription(), objectSchema(moveProperties(), listOf(STATE))))
                 add(function(COMMENT, COMMENT_DESCRIPTION, objectSchema(commentProperties(), listOf(TEXT))))
+                if (resources.isNotEmpty()) {
+                    add(function(REQUEST_RESOURCE, REQUEST_RESOURCE_DESCRIPTION, objectSchema(nameProperties(), listOf(NAME))))
+                    add(function(RELEASE_RESOURCE, RELEASE_RESOURCE_DESCRIPTION, objectSchema(nameProperties(), listOf(NAME))))
+                }
             }
+
+    /** The names of the tools, in the order of [specs]. */
+    val names: List<String>
+        get() = if (resources.isEmpty()) NAMES else NAMES + RESOURCE_NAMES
 
     private fun moveDescription(): String =
         "Ask Loop to move your issue to another state of its $trackerKind tracker, like loop tool move. Loop queues the move " +
@@ -56,6 +74,14 @@ class LoopClientTools(
             putJsonObject(TEXT) {
                 put("type", "string")
                 put("description", "The comment to add, for example a question for a human.")
+            }
+        }
+
+    private fun nameProperties(): JsonObject =
+        buildJsonObject {
+            putJsonObject(NAME) {
+                put("type", "string")
+                put("description", "The name of a resource of the workflow: ${resources.joinToString(", ")}.")
             }
         }
 
@@ -81,14 +107,23 @@ class LoopClientTools(
         const val MOVE = "move"
         const val COMMENT = "comment"
 
-        /** The names of the tools, in the order of [specs]. */
+        const val REQUEST_RESOURCE = "request_resource"
+        const val RELEASE_RESOURCE = "release_resource"
+
+        /** The names of the tools every attempt gets, in the order of [specs]. */
         val NAMES: List<String> = listOf(SUBMIT_RESULT, MOVE, COMMENT)
+
+        /** The names of the resource tools (m4-51), listed after [NAMES] when the workflow declares resources. */
+        val RESOURCE_NAMES: List<String> = listOf(REQUEST_RESOURCE, RELEASE_RESOURCE)
 
         /** `move`'s one argument, as `loop tool mcp` reads it. */
         const val STATE = "state"
 
         /** `comment`'s one argument, as `loop tool mcp` reads it. */
         const val TEXT = "text"
+
+        /** The one argument of the resource tools, a resource id, as `loop tool mcp` reads it (m4-25). */
+        const val NAME = "name"
 
         /** The env name of the `loop` launcher, which runs `loop tool mcp`. */
         const val ENV_LAUNCHER = "LOOP_LAUNCHER"
@@ -108,6 +143,22 @@ class LoopClientTools(
         private const val COMMENT_DESCRIPTION =
             "Ask Loop to add a comment to your issue, like loop tool comment, for example a question for a human. " +
                 "Loop queues the comment, redacted, and adds it when this turn ends. Call it once per comment."
+
+        // The two texts of `loop tool mcp` (`LoopMcpServer` in the `mcp` module); the cli test `CodexClientToolsRunTest`
+        // keeps them equal.
+        private const val REQUEST_RESOURCE_DESCRIPTION =
+            "Ask Loop for a resource of the workflow, such as a device or a simulator, by its name, before you use it. " +
+                "Loop answers at once with a JSON object. status granted: it is yours, with what you need to use it " +
+                "(for example a udid or a serial) and what it can and cannot test. status preparing: it is yours and Loop " +
+                "is preparing it, call request_resource again with the same name in a few seconds. status queued: another " +
+                "attempt holds it and position is your place in its queue, call request_resource again later to check, " +
+                "your place is kept. Never use a resource before it is granted. Call release_resource as soon as you are " +
+                "done with it."
+
+        private const val RELEASE_RESOURCE_DESCRIPTION =
+            "Give back a resource Loop granted you, by its name, as soon as you are done with it. Stop using it now: " +
+                "Loop gives it back and grants it to the next attempt in its queue. Loop also frees it when your attempt " +
+                "ends. Releasing a resource you do not hold is an error."
 
         /**
          * The tools of the attempt whose env is [env]: [Loaded.None] without `LOOP_LAUNCHER` or `LOOP_TOOL_CONFIG`, as
@@ -144,7 +195,19 @@ class LoopClientTools(
                         (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content
                             ?: throw SnapshotException("a defined state is not a string")
                     }?.takeIf { it.isNotEmpty() } ?: throw SnapshotException("it has no defined_states")
-            return LoopClientTools(kind, states)
+            return LoopClientTools(kind, states, json["resources"]?.let(::resourceIds).orEmpty())
+        }
+
+        /**
+         * The ids of the snapshot's `resources` (m4-25), each entry a map with a string `id`; a snapshot written before
+         * m4-25 has none, so the key is optional.
+         */
+        private fun resourceIds(value: JsonElement): List<String> {
+            val entries = value as? JsonArray ?: throw SnapshotException("its resources is not a list")
+            return entries.map { entry ->
+                ((entry as? JsonObject)?.get("id") as? JsonPrimitive)?.takeIf { it.isString }?.content
+                    ?: throw SnapshotException("its resources holds an entry with no id")
+            }
         }
 
         private fun JsonObject.string(key: String): String? = (get(key) as? JsonPrimitive)?.content

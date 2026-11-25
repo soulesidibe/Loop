@@ -39,8 +39,10 @@ import kotlin.time.Duration.Companion.seconds
  * m3-22, 17.5 items 15 and 16 (tools 1): Loop's tools, `submit_result`, `move` and `comment`, are the Codex thread's
  * client tools. The thread start declares them, built from the attempt's tool config snapshot, so `move` accepts the
  * states of the workflow's tracker; a call is run through `loop tool mcp`, here a [FakeLoopTool], and its reply goes
- * back to the session. Every message is checked against the pinned schema; the tool list against `DynamicToolSpec`,
- * which the pinned schema holds although only the experimental `thread/start` refers to it.
+ * back to the session. Since m4-51 a workflow with `resources:` adds `request_resource` and `release_resource`, whose
+ * answers, those of m4-25, reach the session unchanged. Every message is checked against the pinned schema; the tool
+ * list against `DynamicToolSpec`, which the pinned schema holds although only the experimental `thread/start` refers
+ * to it.
  */
 class CodexClientToolsTest {
     @TempDir
@@ -277,6 +279,132 @@ class CodexClientToolsTest {
         assertIs<RunnerEvent.TurnCompleted>(call.events.last(), "${call.events}")
     }
 
+    @Test
+    fun `m4-51 with resources the thread start carries request_resource and release_resource after Loop's three tools`() {
+        val tools = advertised(snapshot("files", FILES_STATES, resources = listOf("pixel-7", "iphone-16")))
+
+        assertEquals(listOf("submit_result", "move", "comment", "request_resource", "release_resource"), tools.map { it.string("name") })
+        tools.drop(3).forEach { tool ->
+            assertEquals("function", tool.string("type"))
+            assertTrue(tool.string("description").orEmpty().isNotBlank(), "$tool")
+            val input = tool.obj("inputSchema")
+            assertEquals("object", input.string("type"), "$tool")
+            assertEquals(listOf("name"), input.obj("properties").keys.toList(), "$tool")
+            assertEquals(listOf("name"), input.getValue("required").jsonArray.map { it.jsonPrimitive.content }, "$tool")
+            val name = input.obj("properties").obj("name")
+            assertEquals("string", name.string("type"), "$tool")
+            // No enum: an unknown name reaches loop tool mcp, which answers it with its structured failure (m4-25).
+            assertNull(name["enum"], "$tool")
+            assertEquals("The name of a resource of the workflow: pixel-7, iphone-16.", name.string("description"))
+        }
+        val (request, release) = tools.drop(3).map { it.string("description").orEmpty() }
+        assertTrue("status granted" in request && "status queued" in request && "position" in request, request)
+        assertTrue("release_resource" in request, request)
+        assertTrue("Give back a resource" in release, release)
+    }
+
+    @Test
+    fun `m4-51 without resources the thread start carries no resource tool`() {
+        val absent = advertised(snapshot("files", FILES_STATES))
+        val empty = advertised(snapshot("files", FILES_STATES, resources = emptyList()))
+
+        assertEquals(listOf("submit_result", "move", "comment"), absent.map { it.string("name") })
+        assertEquals(listOf("submit_result", "move", "comment"), empty.map { it.string("name") })
+    }
+
+    @Test
+    fun `m4-51 a snapshot whose resources are not a list of ids declares no tool and says so on stderr`() {
+        val loop = FakeLoopTool.write(dir)
+        val server =
+            FakeAppServer.write(dir) {
+                handshake()
+                turnCompleted()
+            }
+        val config = dir.resolve("tool-config-bad.json")
+        config.writeText(snapshotJson("files", FILES_STATES).let { JsonObject(it + ("resources" to JsonPrimitive("pixel-7"))) }.toString())
+
+        val events = runAll(runner(server.command), attemptEnv(loop.launcher, config))
+
+        assertIs<RunnerEvent.TurnCompleted>(events.last(), "$events")
+        assertNull(received(server)[2].obj("params")["dynamicTools"])
+        assertTrue(loopLines(events).any { "declares no Loop tool" in it && "resources" in it }, "${loopLines(events)}")
+    }
+
+    @Test
+    fun `m4-51 a request_resource call runs through loop tool mcp and its granted answer reaches the turn unchanged`() {
+        val reply =
+            """{"status":"granted","resource":"pixel-7","kind":"android-device","prepared":{"serial":"emulator-5554"},""" +
+                """"can":["ui tests"],"cannot":["push"],"message":"Granted pixel-7, ready: it is yours until you call """ +
+                """release_resource or your attempt ends."}"""
+        val arguments = buildJsonObject { put("name", "pixel-7") }
+
+        val call = call("request_resource", arguments, FakeLoopTool.reply(reply), config = resourcesSnapshot())
+
+        assertEquals(success(reply), call.answer)
+        assertMcpCall(call.loop, "request_resource", arguments)
+        assertIs<RunnerEvent.TurnCompleted>(call.events.last(), "${call.events}")
+        assertTrue(
+            loopLines(call.events).any { it == "loop: ran the Loop tool request_resource for the tool call request 7" },
+            "${call.events}",
+        )
+    }
+
+    @Test
+    fun `m4-51 a queued answer reaches the turn unchanged, with its position`() {
+        val reply =
+            """{"status":"queued","resource":"pixel-7","kind":"android-device","position":2,"message":"Queued at position 2: """ +
+                """another attempt holds pixel-7. Call request_resource with the same name again later to check; your place is kept."}"""
+
+        val call = call("request_resource", buildJsonObject { put("name", "pixel-7") }, FakeLoopTool.reply(reply), config = resourcesSnapshot())
+
+        assertEquals(success(reply), call.answer)
+        assertIs<RunnerEvent.TurnCompleted>(call.events.last(), "${call.events}")
+    }
+
+    @Test
+    fun `m4-51 a structured failure reaches the turn unchanged as a failure result, and the turn goes on`() {
+        val reply =
+            """{"status":"error","error":"unknown_resource","message":"\"pixel-9\" is not a resource of the workflow. """ +
+                """The resources are: pixel-7, iphone-16."}"""
+        val arguments = buildJsonObject { put("name", "pixel-9") }
+
+        val call = call("request_resource", arguments, FakeLoopTool.reply(reply, isError = true), config = resourcesSnapshot())
+
+        assertEquals(failure(reply), call.answer)
+        assertMcpCall(call.loop, "request_resource", arguments)
+        assertIs<RunnerEvent.TurnCompleted>(call.events.last(), "${call.events}")
+        assertEquals(1, call.events.count(::isTerminal), "${call.events}")
+        assertTrue(
+            loopLines(call.events).any { "ran the Loop tool request_resource for the tool call request 7, refused" in it },
+            "${call.events}",
+        )
+    }
+
+    @Test
+    fun `m4-51 a release_resource call runs through loop tool mcp and its released answer reaches the turn unchanged`() {
+        val reply =
+            """{"status":"released","resource":"pixel-7","kind":"android-device","message":"Released pixel-7. Stop using it now: """ +
+                """Loop gives it back and grants it to the next attempt in its queue."}"""
+        val arguments = buildJsonObject { put("name", "pixel-7") }
+
+        val call = call("release_resource", arguments, FakeLoopTool.reply(reply), config = resourcesSnapshot())
+
+        assertEquals(success(reply), call.answer)
+        assertMcpCall(call.loop, "release_resource", arguments)
+        assertIs<RunnerEvent.TurnCompleted>(call.events.last(), "${call.events}")
+    }
+
+    @Test
+    fun `m4-51 without resources a request_resource call gets a failure result without running loop tool mcp`() {
+        val call = call("request_resource", buildJsonObject { put("name", "pixel-7") })
+
+        val text = text(call.answer)
+        assertEquals(failure(text), call.answer)
+        assertTrue("request_resource" in text && "submit_result, move and comment" in text, text)
+        assertEquals(0, call.loop.runs())
+        assertIs<RunnerEvent.TurnCompleted>(call.events.last(), "${call.events}")
+    }
+
     // Helpers.
 
     private class Call(
@@ -291,6 +419,7 @@ class CodexClientToolsTest {
         arguments: JsonElement,
         reply: String = FakeLoopTool.reply("Queued."),
         loop: FakeLoopTool = FakeLoopTool.write(dir, reply),
+        config: Path = snapshot("files", FILES_STATES),
     ): Call {
         val params =
             buildJsonObject {
@@ -310,7 +439,7 @@ class CodexClientToolsTest {
                 turnCompleted()
             }
 
-        val events = runAll(runner(server.command), attemptEnv(loop.launcher, snapshot("files", FILES_STATES)))
+        val events = runAll(runner(server.command), attemptEnv(loop.launcher, config))
 
         val answer = received(server).single { it["id"]?.jsonPrimitive?.content == "7" }.obj("result")
         assertEquals(emptyList(), schema.problems("DynamicToolCallResponse", answer), "$answer")
@@ -356,24 +485,44 @@ class CodexClientToolsTest {
 
     private fun stateEnum(move: JsonObject): List<String> = stateProperty(move).getValue("enum").jsonArray.map { it.jsonPrimitive.content }
 
-    /** Writes a tool config snapshot of a [kind] tracker with [states], as `loop run` writes one (m1-23). */
+    /**
+     * Writes a tool config snapshot of a [kind] tracker with [states], as `loop run` writes one (m1-23), with
+     * [resources], the ids of `resources:` (m4-25), when given.
+     */
     private fun snapshot(
         kind: String,
         states: List<String>,
+        resources: List<String>? = null,
     ): Path {
-        val file = dir.resolve("tool-config-$kind.json")
-        val json =
-            buildJsonObject {
-                put("version", 1)
-                put("project_id", "project-1")
-                put("workflow_dir", dir.toString())
-                put("tracker_kind", kind)
-                put("defined_states", JsonArray(states.map(::JsonPrimitive)))
-                putJsonObject("provider") {}
+        val file = dir.resolve("tool-config-$kind-${resources?.size}.json")
+        val json = snapshotJson(kind, states)
+        val entries =
+            resources?.map { id ->
+                buildJsonObject {
+                    put("kind", "android-device")
+                    put("id", id)
+                    put("can", JsonArray(listOf(JsonPrimitive("ui tests"))))
+                    put("cannot", JsonArray(listOf(JsonPrimitive("push"))))
+                }
             }
-        file.writeText(json.toString())
+        file.writeText((if (entries == null) json else JsonObject(json + ("resources" to JsonArray(entries)))).toString())
         return file
     }
+
+    private fun snapshotJson(
+        kind: String,
+        states: List<String>,
+    ): JsonObject =
+        buildJsonObject {
+            put("version", 1)
+            put("project_id", "project-1")
+            put("workflow_dir", dir.toString())
+            put("tracker_kind", kind)
+            put("defined_states", JsonArray(states.map(::JsonPrimitive)))
+            putJsonObject("provider") {}
+        }
+
+    private fun resourcesSnapshot(): Path = snapshot("files", FILES_STATES, resources = listOf("pixel-7", "iphone-16"))
 
     private fun attemptEnv(
         launcher: Path,
