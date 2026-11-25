@@ -1,6 +1,7 @@
 package loop.core.workflow
 
 import loop.api.MergeMethod
+import loop.api.ResourceDeclaration
 import java.math.BigDecimal
 
 /**
@@ -31,6 +32,11 @@ data class WorkflowConfig(
      * resolved by the loader or left as written (m1-23, kept out of the agent env).
      */
     val referencedEnvNames: Set<String> = emptySet(),
+    /**
+     * m4-24: the entries of `resources:`, in the order written, none when it is absent. A kind no provider serves is a
+     * plain lock, which the load names in one warning per kind.
+     */
+    val resources: List<ResourceDeclaration> = emptyList(),
 )
 
 /**
