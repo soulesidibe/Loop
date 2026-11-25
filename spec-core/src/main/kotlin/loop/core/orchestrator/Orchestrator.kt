@@ -45,6 +45,7 @@ import loop.api.ParkReason
 import loop.api.ParkedIssues
 import loop.api.ProjectId
 import loop.api.RecordedEvent
+import loop.api.ResourceLockStore
 import loop.api.RetryStates
 import loop.api.RiskReviewer
 import loop.api.RunId
@@ -102,6 +103,7 @@ import loop.core.events.MergeRequeued
 import loop.core.events.Phase
 import loop.core.events.PromptRecordFailed
 import loop.core.events.RateLimit
+import loop.core.events.ResourceReleased
 import loop.core.events.ResultDiscarded
 import loop.core.events.ResultInvalid
 import loop.core.events.ResultSubmitted
@@ -144,6 +146,7 @@ import loop.core.merge.Merges
 import loop.core.merge.Recheck
 import loop.core.merge.RecheckOutcome
 import loop.core.merge.WorkspaceMergeGit
+import loop.core.resources.ResourceLocks
 import loop.core.template.Template
 import loop.core.template.TemplateEngine
 import loop.core.trackers.AreaLock
@@ -421,6 +424,8 @@ class Orchestrator(
     private val queuePausedBefore: suspend () -> RecordedEvent? = { null },
     /** m4-10: true once `loop drain` asked this run to drain, read at each dispatch. */
     private val drainRequested: () -> Boolean = { false },
+    /** m4-50: the resource locks of the shared store, freed at the end of each attempt. */
+    private val resourceLockStore: ResourceLockStore = ResourceLockStore.NONE,
 ) {
     /** The HEAD and working tree reads for the progress between rotations (bl-136), bounded and cancellable (bl-149). */
     private val workspaceFacts = WorkspaceFacts(workspaceGit)
@@ -480,6 +485,13 @@ class Orchestrator(
 
     /** m3-16: the machine slot each running attempt holds, by issue id; none without a machine cap. */
     private val machineSlots = mutableMapOf<String, String>()
+
+    /** m4-50: the resource lock calls, over the shared store. */
+    private val resourceLocks =
+        ResourceLocks(resourceLockStore, this.sink, clock, runId) { event, error ->
+            val context = LogContext(runId, event.projectId, event.issueId, event.issueIdentifier, event.attemptId)
+            log.log(LogLevel.WARN, "sink", LogOutcome.FAILED, context, fields = mapOf("sink" to sinkName), reason = error.describe())
+        }
 
     /** How many attempts this orchestrator saw canceled, for the run level `run_stopped` event. */
     var attemptsCanceled: Int = 0
@@ -1439,6 +1451,10 @@ class Orchestrator(
                     attempt.afterRun(canceled = cancelled || stop != null)
                 } finally {
                     try {
+                        // m4-50: every lock and queue row of the attempt goes at its end, whatever the end.
+                        resourceLocks.freeAttempt(attempt.attemptId, ResourceReleased.ATTEMPT_ENDED).onFailure {
+                            log.log(LogLevel.WARN, "resource", LogOutcome.FAILED, attempt.logContext(), reason = it.describe())
+                        }
                         // Whatever a canceled or failed turn queued is never applied (m1-23).
                         attempt.dropRequests()
                         attempt.deleteDirectory()

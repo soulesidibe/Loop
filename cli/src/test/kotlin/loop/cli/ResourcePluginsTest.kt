@@ -5,6 +5,7 @@ import loop.api.ResourceHolder
 import loop.api.ResourceProvider
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.io.path.readText
 import kotlin.io.path.writeText
 import kotlin.test.Test
@@ -86,7 +87,11 @@ class ResourcePluginsTest {
     }
 }
 
-/** A resource provider of the cli tests, registered on the test classpath, serving two kinds. */
+/**
+ * A resource provider of the cli tests, registered on the test classpath, serving two kinds. Every instance adds the
+ * holders of each `recover` call to [recovered], shared by the tests of the JVM, which run in parallel: a test finds
+ * its own calls by a resource id only it uses.
+ */
 class FakeResourceProvider : ResourceProvider {
     override val kinds: Set<String> = setOf("fake-device", "fake-emulator")
 
@@ -96,5 +101,12 @@ class FakeResourceProvider : ResourceProvider {
 
     override fun readOnlyCheck(resource: ResourceDeclaration): List<String> = emptyList()
 
-    override fun recover(liveHolders: List<ResourceHolder>) = Unit
+    override fun recover(liveHolders: List<ResourceHolder>) {
+        recovered += listOf(liveHolders.toList())
+    }
+
+    companion object {
+        /** The holders of each `recover` call of any instance, in call order. */
+        val recovered: MutableList<List<ResourceHolder>> = CopyOnWriteArrayList()
+    }
 }

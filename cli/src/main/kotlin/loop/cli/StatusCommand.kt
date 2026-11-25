@@ -7,6 +7,9 @@ import com.github.ajalt.clikt.parameters.arguments.optional
 import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.option
 import kotlinx.coroutines.runBlocking
+import loop.api.ProjectId
+import loop.api.ResourceDeclaration
+import loop.api.ResourceLockRows
 import loop.api.RunId
 import loop.core.machine.MachineConfig
 import loop.core.machine.MachineLimits
@@ -29,7 +32,8 @@ import kotlin.time.Instant
  * an attempt whose runner declares no occupancy gets a line saying only the prompt limit and the turn cap hold for it.
  * Since m4-02 a running session whose model has no window shows `window=none` and a line naming the model.
  * Since bl-172 a merge wait shows its place in the delivery queue, `queue=1` for the head, and since bl-175 one line says
- * when the live run keeps the delivery queue paused after a CI timeout.
+ * when the live run keeps the delivery queue paused after a CI timeout. Since m4-50 one line per resource of the
+ * workflow, and per resource an issue of the project holds or waits for, names its holder and its queue.
  */
 class StatusCommand(
     private val host: Host,
@@ -63,10 +67,19 @@ class StatusCommand(
         val storeFile = project.storeFile
         val store = project.store().getOrElse { fail(it.sentence(), EXIT_STORE) }
         var machine = emptyList<String>()
+        var resources = emptyList<String>()
         val snapshot =
             store.use {
                 runBlocking {
                     machine = machineLines(store, storeFile.toString())
+                    val locks =
+                        store.resourceLockRows().getOrElse {
+                            fail(
+                                "cannot read the store at $storeFile: ${it.sentence()}",
+                                EXIT_STORE,
+                            )
+                        }
+                    resources = resourceLines(workflow.config.resources, locks, projectId, project.ids)
                     val events = store.eventsOfKinds(projectId, SNAPSHOT_KINDS)
                     val parked = store.list(projectId)
                     val waiting = Waits(store, projectId).read()
@@ -85,6 +98,7 @@ class StatusCommand(
         val draining = if (snapshot.drain != null) "  draining" else ""
         echo(live?.let { "Run ${id(it.runId)}  pid ${it.pid}$draining" } ?: "No run in progress.")
         machine.forEach { echo(redact(it)) }
+        resources.forEach { echo(redact(it)) }
         echo("")
         // bl-39: one line while the runner hold of the live run stops every dispatch.
         snapshot.hold?.let { hold ->
@@ -156,6 +170,51 @@ class StatusCommand(
             "Machine day spend $tokens tokens${of(limits.perDayTokens?.toString())}, " +
                 "${dollars(usd)} usd${of(limits.perDayUsd?.let(::dollars))}",
         )
+    }
+
+    /**
+     * The resource lines (m4-50): each resource of [declared], in the order written, then each other resource whose
+     * lock or queue holds an issue of [projectId], with its holder, its attempt, since when it holds the lock, and its
+     * queue, oldest first. Locks are shared by the machine, so a holder or a request of another project shows with
+     * that project's id before its issue.
+     */
+    private fun resourceLines(
+        declared: List<ResourceDeclaration>,
+        rows: ResourceLockRows,
+        projectId: ProjectId,
+        ids: IssueIdDisplay,
+    ): List<String> {
+        val ours =
+            (
+                rows.locks.filter { it.projectId == projectId }.map { it.kind to it.resourceId } +
+                    rows.queue.filter { it.projectId == projectId }.map { it.kind to it.resourceId }
+            )
+        val keys = (declared.map { it.kind to it.id } + ours).distinct()
+
+        fun issue(
+            project: ProjectId,
+            issueId: String,
+            identifier: String,
+        ): String = if (project == projectId) ids.name(issueId, identifier) else "${id(project.value)}/$identifier"
+        return keys.map { (kind, resourceId) ->
+            val lock = rows.locks.firstOrNull { it.kind == kind && it.resourceId == resourceId }
+            val queue =
+                rows.queue
+                    .filter { it.kind == kind && it.resourceId == resourceId }
+                    .joinToString(",") { issue(it.projectId, it.issueId, it.issueIdentifier) }
+            val state =
+                if (lock == null) {
+                    "free"
+                } else {
+                    details(
+                        "held_by" to issue(lock.projectId, lock.issueId, lock.issueIdentifier),
+                        "attempt" to id(lock.attemptId.value),
+                        "since" to seconds(lock.grantedAt),
+                        "queue" to queue.ifEmpty { null },
+                    )
+                }
+            "Resource $kind $resourceId  $state"
+        }
     }
 
     private fun of(limit: String?): String = limit?.let { " of $it" } ?: ""
