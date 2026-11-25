@@ -3,6 +3,7 @@ package loop.core.workflow
 import loop.api.PluginProfile
 import loop.api.ProfileKey
 import loop.api.ProfileType
+import loop.api.ResourceDeclaration
 import java.nio.file.Path
 import kotlin.io.path.createTempDirectory
 import kotlin.io.path.writeText
@@ -461,6 +462,108 @@ class WorkflowFileTest {
                 codeKind + "  content:\n    match: { label: content }\n    verify:\n      checks: []\n" +
                     "    delivery:\n      on_delivered: { move_to: review }\n",
             ),
+        )
+    }
+
+    /** m4-24: [bare] with the `resources:` lines [resources], loaded with a check whose providers serve `ios-simulator`. */
+    private fun withResources(resources: String): Result<WorkflowFile> =
+        WorkflowLoader(env = emptyMap(), resourceCheck = { kind -> Result.success(kind == "ios-simulator") })
+            .load(write(bare.replace("runner:", "resources:\n" + resources.trimEnd() + "\nrunner:")))
+
+    private fun resourcesError(resources: String): String =
+        assertIs<WorkflowError.InvalidConfig>(withResources(resources).exceptionOrNull()).message!!
+
+    @Test
+    fun `m4-24 resources parses every field of each entry, in the order written`() {
+        val workflow =
+            withResources(
+                "  - kind: ios-simulator\n    id: iphone-16\n    can: [ui tests, deep links]\n    cannot: [push notifications]\n" +
+                    "    restore:\n      - xcrun simctl erase iphone-16\n      - xcrun simctl boot iphone-16\n" +
+                    "    read_only_check: xcrun simctl listapps iphone-16\n" +
+                    "  - { kind: ios-simulator, id: ipad, cannot: [real calls, sms] }\n",
+            ).getOrThrow()
+
+        assertEquals(
+            listOf(
+                ResourceDeclaration(
+                    kind = "ios-simulator",
+                    id = "iphone-16",
+                    can = listOf("ui tests", "deep links"),
+                    cannot = listOf("push notifications"),
+                    restore = listOf("xcrun simctl erase iphone-16", "xcrun simctl boot iphone-16"),
+                    readOnlyCheck = "xcrun simctl listapps iphone-16",
+                ),
+                ResourceDeclaration(kind = "ios-simulator", id = "ipad", cannot = listOf("real calls", "sms")),
+            ),
+            workflow.config.resources,
+        )
+        assertEquals(emptyList(), workflow.configWarnings)
+        assertEquals(emptyList(), load(bare).config.resources)
+    }
+
+    @Test
+    fun `m4-24 preflight refuses a duplicate resource id`() {
+        assertEquals(
+            "resources[1].id \"iphone-16\" is already the id of resources[0]",
+            resourcesError("  - { kind: ios-simulator, id: iphone-16 }\n  - { kind: avd, id: iphone-16 }\n"),
+        )
+    }
+
+    @Test
+    fun `m4-24 preflight refuses a resource with no kind`() {
+        assertEquals("resources[1].kind is required", resourcesError("  - { kind: ios-simulator, id: iphone-16 }\n  - { id: pixel }\n"))
+        assertEquals("resources[0].kind is required", resourcesError("  - { kind: \" \", id: pixel }\n"))
+    }
+
+    @Test
+    fun `m4-24 a resource kind with no provider loads as a plain lock, with one log line naming the kind`() {
+        val workflow =
+            withResources(
+                "  - { kind: avd, id: pixel-1 }\n  - { kind: ios-simulator, id: iphone-16 }\n  - { kind: avd, id: pixel-2 }\n" +
+                    "  - { kind: ios-simulater, id: typo }\n",
+            ).getOrThrow()
+
+        assertEquals(listOf("pixel-1", "iphone-16", "pixel-2", "typo"), workflow.config.resources.map { it.id })
+        assertEquals(
+            listOf(
+                "resources kind \"avd\" has no resource provider, Loop holds its resources as plain locks",
+                "resources kind \"ios-simulater\" has no resource provider, Loop holds its resources as plain locks",
+            ),
+            workflow.configWarnings,
+        )
+    }
+
+    @Test
+    fun `m4-24 preflight refuses resources it cannot read, and warns on an unknown key of an entry`() {
+        assertEquals("resources must be a list", resourcesError("  iphone: { kind: ios-simulator }\n"))
+        assertEquals("resources[0] must be a map", resourcesError("  - iphone-16\n"))
+        assertEquals("resources[0].id is required", resourcesError("  - { kind: ios-simulator }\n"))
+        assertEquals("resources[0].kind must be a string", resourcesError("  - { kind: [avd], id: pixel }\n"))
+        assertEquals("resources[0].can must be a list of strings", resourcesError("  - { kind: avd, id: pixel, can: ui tests }\n"))
+        assertEquals("resources[0].restore must be a list of strings", resourcesError("  - { kind: avd, id: pixel, restore: [[a]] }\n"))
+        assertEquals(
+            "resources[0].read_only_check must be a string",
+            resourcesError("  - { kind: avd, id: pixel, read_only_check: [a, b] }\n"),
+        )
+        assertEquals(
+            listOf("resources[0].restor is not a key of a resource, Loop ignores it"),
+            withResources("  - { kind: ios-simulator, id: iphone-16, restor: [a] }\n").getOrThrow().configWarnings,
+        )
+    }
+
+    @Test
+    fun `m4-24 resource plugins that could not be found fail the load with the reason, and a loader without a check sees no provider`() {
+        val failing =
+            WorkflowLoader(env = emptyMap(), resourceCheck = { Result.failure(IllegalStateException("cannot load the resource plugins")) })
+        val text = bare.replace("runner:", "resources:\n  - { kind: avd, id: pixel }\nrunner:")
+
+        assertEquals(
+            "cannot load the resource plugins",
+            assertIs<WorkflowError.InvalidConfig>(failing.load(write(text)).exceptionOrNull()).message,
+        )
+        assertEquals(
+            listOf("resources kind \"avd\" has no resource provider, Loop holds its resources as plain locks"),
+            load(text).configWarnings,
         )
     }
 }

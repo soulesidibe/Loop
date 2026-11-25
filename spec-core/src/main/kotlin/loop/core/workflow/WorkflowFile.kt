@@ -12,6 +12,8 @@ import loop.api.PluginProfile
 import loop.api.ProfileProblem
 import loop.core.delivery.AttachDelivery
 import loop.core.kinds.KindWorkspaces
+import loop.core.resources.ResourceCheck
+import loop.core.resources.ResourcesParser
 import loop.core.trackers.TrackerEntry
 import loop.core.trackers.TrackerParser
 import loop.core.trackers.TrackersConfig
@@ -54,7 +56,9 @@ data class WorkflowFile(
     val trackerSettings: Any? = null,
     /**
      * m3-05: one warning per key of a selected plugin's section that its profile does not list, `tracker.provider`
-     * and `runners.<section>`, without a final period. Unknown keys stay allowed, for forward compatibility.
+     * and `runners.<section>`, without a final period. Unknown keys stay allowed, for forward compatibility. Since
+     * m4-24 also one line per `resources:` kind no resource plugin serves, a plain lock, and per unknown key of a
+     * resource entry.
      */
     val configWarnings: List<String> = emptyList(),
     /**
@@ -125,6 +129,7 @@ fun workflowHash(text: String): String =
  * exactly `$NAME` reads `NAME` from [env] first (spec 6.1, plan D3).
  * `tracker.kind` selects a tracker plugin through [trackerCheck], which reads its own `tracker.provider` (bl-23, m3-05).
  * `trackers:` lists extra trackers, each read the same way by [TrackerParser] (m4-11).
+ * `resources:` lists the machine resources, read by [ResourcesParser], [resourceCheck] telling which kinds a plugin serves (m4-24).
  * `runner.kind` is required, and [runnerCheck] tells whether a runner plugin of that kind accepts its section (m3-04).
  * Each selected plugin's section is first checked against the plugin's profile (m3-05), see [checkProfile].
  * With [deferSecrets] (bl-70), an unset secret is named in [WorkflowFile.deferredSecrets] instead of failing the load.
@@ -149,6 +154,8 @@ class WorkflowLoader(
      * still fails.
      */
     private val deferSecrets: Boolean = false,
+    /** m4-24: whether a resource plugin serves each kind of `resources:`; [ResourceCheck.NONE] sees no plugin. */
+    private val resourceCheck: ResourceCheck = ResourceCheck.NONE,
 ) {
     fun load(path: Path): Result<WorkflowFile> = readSource(path).fold(onSuccess = ::parse, onFailure = { Result.failure(it) })
 
@@ -242,6 +249,8 @@ class WorkflowLoader(
                 ?.associate { it.key.content to it.value.toPlain() }
                 .orEmpty()
 
+        val resources = ResourcesParser(resourceCheck, configWarnings).parse(config.node("resources")?.toPlain())
+
         val polling = parsePolling(config.child("polling"))
         val hooks = parseHooks(config.child("hooks"))
         val agent = parseAgent(config.child("agent"), listOf(tracker.id) + extraTrackers.map { it.id })
@@ -296,6 +305,7 @@ class WorkflowLoader(
                     trackerProvider = tracker.provider,
                     envRefs = envRefs.toList(),
                     referencedEnvNames = config?.referencedEnvNames().orEmpty(),
+                    resources = resources,
                 ),
             sourceHash = workflowHash(text),
             sourceText = text,

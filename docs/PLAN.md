@@ -348,12 +348,12 @@ Each reaction resumes the issue's workspace with a continuation turn, then verif
 
 Ported from the manager skill:
 
-- Declared under `resources:`: kind (`android-device`, `avd`, `mac-app`, `display`, other), id, what it can and cannot test, restore list, read only check.
+- Declared under `resources:`, a list: `kind` (`android-device`, `avd`, `ios-simulator`, `mac-app`, `display` or another string), `id`, `can` and `cannot` (free text shown to the agent), `restore` (shell commands) and `read_only_check` (a shell command). The preflight refuses a missing kind or id and a duplicate id. A kind no provider serves is a plain lock: Loop grants and releases it and prepares nothing, and the preflight logs one line naming the kind, so a typo shows (m4-24). See [resources](spec-decisions.md#resources-config-and-the-provider-interface-extension-m4-24).
 - Agents ask with `request_resource` and release with `release_resource`. Locks live in the run store; grants are in queue order.
 - Limits: at most 2 Android devices and emulators together, at most 2 self-managed iOS simulators.
 - With no Android device connected, Loop boots a configured AVD and grants it.
 - After a release, Loop runs the read only check and asks the agent to fix any difference.
-- Resource providers (Android, iOS simulator) are plugins.
+- Resource providers (Android, iOS simulator) are plugins: a `ResourceProvider` serves a set of kinds and has `prepare` (returns what the agent needs, such as a UDID or a serial), `release`, its own read only check and `recover`, called at startup with the holders of every live lock (m4-24).
 
 ### 6.10 Tools Loop gives to agents
 
@@ -692,7 +692,7 @@ The plugin API is a small Kotlin module that the core depends on and plugins imp
 
 Two ways to write a plugin:
 
-- **In process:** a module on Loop's classpath or a JAR in `<LOOP_HOME>/plugins/` (each JAR with its own class loader), discovered with Java's `ServiceLoader` through a `META-INF/services` entry, selected by `kind` in config. Runners first (m3-04): a `RunnerProvider` in `plugin-api` gives its `kind` and builds an `AgentRunner` from its own `runners.<kind>` section and the host's agent env policy. An unknown kind fails preflight with `invalid_config` naming the kinds found, and two providers of one kind fail startup naming both. See [runner plugins](spec-decisions.md#runner-plugins-extension-m3-04). Trackers next (m3-05): a `TrackerProvider` gives its `kind`, its default states and settings reader, and builds the `TrackerAdapter`; `files` and `github` register the same way. See [tracker plugins](spec-decisions.md#tracker-plugins-extension-m3-05).
+- **In process:** a module on Loop's classpath or a JAR in `<LOOP_HOME>/plugins/` (each JAR with its own class loader), discovered with Java's `ServiceLoader` through a `META-INF/services` entry, selected by `kind` in config. Runners first (m3-04): a `RunnerProvider` in `plugin-api` gives its `kind` and builds an `AgentRunner` from its own `runners.<kind>` section and the host's agent env policy. An unknown kind fails preflight with `invalid_config` naming the kinds found, and two providers of one kind fail startup naming both. See [runner plugins](spec-decisions.md#runner-plugins-extension-m3-04). Trackers next (m3-05): a `TrackerProvider` gives its `kind`, its default states and settings reader, and builds the `TrackerAdapter`; `files` and `github` register the same way. See [tracker plugins](spec-decisions.md#tracker-plugins-extension-m3-05). Resource providers (m4-24): a `ResourceProvider` registers on `loop.api.ResourceProvider` and serves a set of `resources[].kind` values, found by `ResourcePlugins` in `cli`; two providers serving one kind fail startup, and a kind none serves is a plain lock. `ResourceProviderContract` is its contract. See [resources](spec-decisions.md#resources-config-and-the-provider-interface-extension-m4-24).
 - **Out of process:** any executable that speaks a small JSON-RPC protocol over stdio, for plugins written in another language. One generic adapter per interface wraps it.
 
 Each plugin has a profile (its config keys, defaults, secrets and limits), as the spec asks of tracker adapters, and contract tests that every implementation of an interface must pass. Since m3-05 runner and tracker plugins declare it as a `PluginProfile`, which Loop checks their sections against at startup, see [plugin profiles](spec-decisions.md#plugin-profiles-extension-m3-05).
@@ -764,7 +764,7 @@ reactions:
 budgets: { per_attempt_usd: 10, per_issue_usd: 25, per_day_usd: 100 }
 context: { soft_limit: 0.20, hard_limit: 0.21, prompt_limit: 0.05, max_rotations: 5 }
 observability: { store: ~/.loop/, retention_days: 90, otlp: { endpoint: $OTLP_ENDPOINT } }   # machine level folder, LOOP_HOME overrides
-resources:
+resources:                                       # m4-24: kind, id, can, cannot, restore, read_only_check
   - { kind: avd, id: wallpilates_api35, cannot: [real calls, sms] }
 channel: { kind: terminal }
 ---
