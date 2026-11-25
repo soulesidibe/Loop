@@ -30,7 +30,8 @@ import kotlin.time.Instant
 /**
  * The notices of m4-30: Loop tells a human that a run needs them, through the [channel] and through
  * `hooks.on_human_needed`, when an issue is parked and when a verified result waits for `loop approve`, fresh or after a
- * delivery failed for good or an auto merge fell back. Never twice for one wait or park: an approval wait keeps the key
+ * delivery failed for good or an auto merge fell back, and since m4-36 when changes are still requested on a pull request
+ * past `escalate_after`. Never twice for one wait or park: an approval wait keeps the key
  * of its notice in its data ([Wait.Approval.noticed]), so the same wait saved again on a later tick or read back after a
  * restart notifies nobody, and the wait a refused delivery or merge leaves, which drops the key, notifies again. A park
  * is notified once, by the one call that records it.

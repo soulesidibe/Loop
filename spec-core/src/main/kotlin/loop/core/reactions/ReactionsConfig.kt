@@ -2,8 +2,8 @@ package loop.core.reactions
 
 /**
  * The `reactions:` key of `WORKFLOW.md` (m4-34, PLAN 6.7): what Loop does when something happens to a pull request it
- * opened while the issue waits. Each key is null when it is absent, and absent means no reaction. [mergeConflict] and,
- * since m4-35, [ciFailed] act; the other keys parse and do nothing until their issue (m4-36, m4-37).
+ * opened while the issue waits. Each key is null when it is absent, and absent means no reaction. [mergeConflict],
+ * since m4-35 [ciFailed] and since m4-36 [changesRequested] act; [approvedGreen] parses and does nothing until m4-37.
  */
 data class ReactionsConfig(
     val ciFailed: Reaction? = null,
