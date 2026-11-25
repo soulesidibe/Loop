@@ -54,9 +54,7 @@ class CodexRiskReviewer(
                     var terminal: RunnerEvent? = null
                     runner.run(context(request), request.prompt).collect { event ->
                         answer.read(event)
-                        if (event is RunnerEvent.TurnCompleted || event is RunnerEvent.TurnFailed || event is RunnerEvent.TurnInputRequired) {
-                            terminal = event
-                        }
+                        if (event.isTerminal()) terminal = event
                     }
                     terminal
                 } ?: return Result.failure(RiskReviewError.Timeout("no answer within ${request.timeoutMs} ms"))
@@ -109,6 +107,9 @@ class CodexRiskReviewer(
 
         private fun JsonObject.string(key: String): String? = (get(key) as? JsonPrimitive)?.takeIf { it.isString }?.content
     }
+
+    private fun RunnerEvent.isTerminal(): Boolean =
+        this is RunnerEvent.TurnCompleted || this is RunnerEvent.TurnFailed || this is RunnerEvent.TurnInputRequired
 
     /** The attempt the runner needs: the review's workspace, ids of its own and an empty env, so no Loop tool is declared. */
     private fun context(request: RiskReviewRequest): AttemptContext =

@@ -240,7 +240,7 @@ internal class ServerRequestPolicy(
         return if (holdout != null && paths.any { holdout.covers(it, cwd) }) HOLDOUT else null
     }
 
-    /** The answer to the approval request [id], [yes] when [refusal] is null, else [no] of the refusal. */
+    /** The answer to the approval request [id]: [yes] when [refusal] is null and the policy is not read only, else [no] of the reason. */
     private fun decide(
         id: JsonPrimitive,
         what: String,
