@@ -32,17 +32,21 @@ class RiskReviewerWarningTest {
             userHome = "/tmp",
         )
 
-    /** Sets `runner.kind: codex-app-server`, [claudeCode] as the `runners.claude-code` section when set, and [delivery]. */
+    /**
+     * Sets `runner.kind: codex-app-server` with [codexCommand], [claudeCode] as the `runners.claude-code` section when
+     * set, and [delivery].
+     */
     private fun useCodex(
         claudeCode: String? = null,
         delivery: String = AUTO_MERGE,
+        codexCommand: String = "codex app-server",
     ) {
         val text = fixture.workflow.readText()
         val start = text.indexOf("runner:\n")
         val end = text.indexOf("polling:\n")
         val section = claudeCode?.let { "  claude-code:\n    command: \"$it\"\n" }.orEmpty()
         val runner =
-            "runner:\n  kind: codex-app-server\nrunners:\n  codex:\n    command: codex app-server\n$section" +
+            "runner:\n  kind: codex-app-server\nrunners:\n  codex:\n    command: \"$codexCommand\"\n$section" +
                 "kinds:\n  code:\n    delivery:\n$delivery    verify:\n      checks: []\n"
         fixture.workflow.writeText(text.substring(0, start) + runner + text.substring(end))
     }
@@ -135,6 +139,44 @@ class RiskReviewerWarningTest {
 
         assertEquals(0, result.exitCode, result.toString())
         assertFalse("risk.reviewer" in result.stderr, result.stderr)
+    }
+
+    @Test
+    fun `bl-214 a Codex reviewer model whose codex cannot be found warns, naming codex and its fix`() {
+        useCodex(delivery = AUTO_MERGE.replace("claude-sonnet-5-5", "gpt-6.1-sol"))
+
+        assertEquals(
+            "kinds.code.delivery.risk.reviewer is gpt-6.1-sol, but its command codex cannot be found, so no " +
+                "merge risk reviewer can run and every result waits for loop approve. Install Codex or set " +
+                "runners.codex.command",
+            riskReviewerWarning(workflow(), mapOf("PATH" to root.resolve("empty").toString())),
+        )
+    }
+
+    @Test
+    fun `bl-214 a Codex reviewer model whose codex is on PATH gives no warning, even without claude`() {
+        val bin = root.resolve("bin-codex")
+        executable(bin.resolve("codex"))
+        useCodex(delivery = AUTO_MERGE.replace("claude-sonnet-5-5", "gpt-6.1-sol"))
+
+        assertNull(riskReviewerWarning(workflow(), mapOf("PATH" to "$bin")))
+    }
+
+    @Test
+    fun `bl-214 loop run warns at startup when the Codex reviewer's codex cannot be found`() {
+        val missing = root.resolve("nowhere/codex")
+        useCodex(delivery = AUTO_MERGE.replace("claude-sonnet-5-5", "gpt-6.1-sol"), codexCommand = "$missing app-server")
+        withRemote()
+
+        val result = fixture.loop("run", "--once", env = mapOf("LOOP_PR_TOKEN" to token))
+
+        assertEquals(0, result.exitCode, result.toString())
+        assertContains(
+            result.stderr,
+            "loop run: warning: kinds.code.delivery.risk.reviewer is gpt-6.1-sol, but its command $missing cannot be " +
+                "found, so no merge risk reviewer can run and every result waits for loop approve. Install Codex or set " +
+                "runners.codex.command",
+        )
     }
 
     private companion object {

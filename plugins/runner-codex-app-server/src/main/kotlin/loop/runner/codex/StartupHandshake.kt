@@ -125,7 +125,8 @@ sealed interface StartupFailure {
  * - policy: [APPROVAL_POLICY] with [SANDBOX] on `thread/start`, [APPROVAL_POLICY] with [SANDBOX_POLICY], the same
  *   posture in the form `turn/start` takes, on `turn/start`, and the workspace's absolute path as `cwd` on both, see
  *   `docs/spec-decisions.md`, "Codex runner session startup" and "Codex runner approvals, user input, tool calls and
- *   guards".
+ *   guards". With [readOnly], the merge risk reviewer's thread (bl-214), [READ_ONLY_SANDBOX] and
+ *   [READ_ONLY_SANDBOX_POLICY] instead.
  */
 internal class StartupHandshake(
     private val workspace: Path,
@@ -133,8 +134,13 @@ internal class StartupHandshake(
     private val strictMcp: Boolean = false,
     private val tools: JsonArray? = null,
     private val configuredModel: String? = null,
+    /** bl-214: the merge risk reviewer's thread, on [READ_ONLY_SANDBOX] and [READ_ONLY_SANDBOX_POLICY]. */
+    private val readOnly: Boolean = false,
     private val pinnedVersion: String = CodexCliVersion.PINNED,
 ) {
+    private val sandbox: SandboxMode get() = if (readOnly) READ_ONLY_SANDBOX else SANDBOX
+    private val sandboxPolicy: SandboxPolicy get() = if (readOnly) READ_ONLY_SANDBOX_POLICY else SANDBOX_POLICY
+
     /** What the client does after reading one frame. */
     sealed interface Step {
         /** Write [lines] (none when the frame changed nothing) and go on reading. */
@@ -317,7 +323,7 @@ internal class StartupHandshake(
                 params =
                     ThreadStartParams(
                         approvalPolicy = APPROVAL_POLICY,
-                        sandbox = SANDBOX,
+                        sandbox = sandbox,
                         cwd = workspace.toAbsolutePath().toString(),
                         config = config,
                         model = configuredModel,
@@ -367,7 +373,7 @@ internal class StartupHandshake(
                         threadId = turn.threadId,
                         input = listOf(UserInput.Text(text = input)),
                         approvalPolicy = APPROVAL_POLICY,
-                        sandboxPolicy = SANDBOX_POLICY,
+                        sandboxPolicy = sandboxPolicy,
                         cwd = workspace.toAbsolutePath().toString(),
                     ),
             ),
@@ -424,6 +430,16 @@ internal class StartupHandshake(
 
         /** The same posture as [SANDBOX], in the policy form `turn/start` takes. */
         val SANDBOX_POLICY: SandboxPolicy = SandboxPolicy.DangerFullAccess
+
+        /**
+         * The sandbox of the merge risk reviewer (bl-214): Codex runs the commands it holds as known safe without asking,
+         * and the sandbox keeps them from writing. A command Codex asks about would run outside it once accepted, as the
+         * recorded `approval.jsonl` shows, so the reviewer declines every approval, see [ServerRequestPolicy].
+         */
+        val READ_ONLY_SANDBOX: SandboxMode = SandboxMode.READ_ONLY
+
+        /** The same posture as [READ_ONLY_SANDBOX], with no network, in the policy form `turn/start` takes. */
+        val READ_ONLY_SANDBOX_POLICY: SandboxPolicy = SandboxPolicy.ReadOnly(networkAccess = false)
 
         private val NOTHING = Step.Write(emptyList())
 

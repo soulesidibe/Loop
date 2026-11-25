@@ -1,7 +1,7 @@
 ---
 id: m4-51
 title: "request_resource and release_resource on the Codex runner"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-25]
@@ -31,3 +31,5 @@ Story 122, the Codex half of the tools (PLAN 6.10). Lane A, runs on the claude-c
 ## Comments
 
 2026-11-18 soule: written in m3-29, split from m4-25 after the Fable 5.2 review.
+
+2026-11-25 08:39Z loop: Loop opened pull request #61 for this issue: https://github.com/soulesidibe/Loop/pull/61
