@@ -94,7 +94,8 @@ class AttachDeliveryRunTest {
         // The files tracker writes a comment's lines indented under its first line, blank lines left out.
         assertContains(issueText, "loop: " + expected.lines().filter { it.isNotBlank() }.joinToString("\n  "))
         assertEquals(1, issueText.split("Loop attached the deliverable").size - 1, "one deliverable comment")
-        assertTrue(issueText.indexOf("Loop attached") < issueText.lastIndexOf("once an operator approves it"), "the evidence summary comes after it")
+        val summaryAt = issueText.lastIndexOf("once an operator approves it")
+        assertTrue(issueText.indexOf("Loop attached") < summaryAt, "the evidence summary comes after it")
         // The file over the cap stays in the workspace until the issue is delivered.
         assertTrue(fixture.workspace("c-1").resolve("out/big.md").isRegularFile())
         val commented = fixture.query("SELECT data FROM events WHERE kind = 'issue_commented'").map { it["data"].orEmpty() }
@@ -111,7 +112,15 @@ class AttachDeliveryRunTest {
         assertEquals(0, deliver.exitCode, deliver.toString())
         assertEquals("done", fixture.stateOf("c-1"), deliver.toString())
         assertEquals(emptyList(), fixture.query("SELECT reason FROM waiting_issues"))
-        assertEquals(1, fixture.issueFile("c-1").readText().split("Loop attached the deliverable").size - 1, "posted once")
+        assertEquals(
+            1,
+            fixture
+                .issueFile("c-1")
+                .readText()
+                .split("Loop attached the deliverable")
+                .size - 1,
+            "posted once",
+        )
     }
 
     @Test

@@ -18,7 +18,12 @@ class AttachDeliveryTest {
         text: String,
     ) = AttachedFile(DeliverableFile(path, text.toByteArray().size.toLong(), digest(path)), text)
 
-    private fun digest(path: String) = path.hashCode().toUInt().toString(16).padStart(64, '0')
+    private fun digest(path: String) =
+        path
+            .hashCode()
+            .toUInt()
+            .toString(16)
+            .padStart(64, '0')
 
     @Test
     fun `the cap is below GitHub's limit of 65,536 characters per comment`() {
@@ -101,8 +106,14 @@ class AttachDeliveryTest {
         assertTrue(text.length <= AttachComment.MAX_CHARS, "${text.length}")
         assertContains(text, "`out/1.md`, 25000 bytes:")
         assertContains(text, "`out/2.md`, 25000 bytes:")
-        assertContains(text, "- `out/3.md`, 25000 bytes, sha256 ${digest("out/3.md")}, no room left under the 60000 character cap of a comment")
-        assertContains(text, "- `out/4.md`, 25000 bytes, sha256 ${digest("out/4.md")}, no room left under the 60000 character cap of a comment")
+        assertContains(
+            text,
+            "- `out/3.md`, 25000 bytes, sha256 ${digest("out/3.md")}, no room left under the 60000 character cap of a comment",
+        )
+        assertContains(
+            text,
+            "- `out/4.md`, 25000 bytes, sha256 ${digest("out/4.md")}, no room left under the 60000 character cap of a comment",
+        )
     }
 
     @Test

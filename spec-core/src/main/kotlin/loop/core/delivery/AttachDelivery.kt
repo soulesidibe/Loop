@@ -137,7 +137,11 @@ object AttachComment {
         file: DeliverableFile,
         reason: String,
     ): String {
-        val path = file.path.lines().joinToString(" ").let { if (it.length > PATH_MAX) it.take(PATH_MAX) + "..." else it }
+        val path =
+            file.path
+                .lines()
+                .joinToString(" ")
+                .let { if (it.length > PATH_MAX) it.take(PATH_MAX) + "..." else it }
         val why = reason.lines().joinToString(" ").take(REASON_MAX)
         return "- ${code(path)}, ${file.size} bytes, sha256 ${file.sha256}, $why"
     }
@@ -217,7 +221,11 @@ class AttachDelivery(
             if (file.size > AttachComment.MAX_CHARS.toLong() * UTF8_MAX_BYTES) return AttachedFile(file, null, AttachComment.OVER_CAP)
             val bytes =
                 try {
-                    Files.newInputStream(workspace.resolve(file.path), LinkOption.NOFOLLOW_LINKS).use { it.readNBytes(file.size.toInt() + 1) }
+                    Files
+                        .newInputStream(
+                            workspace.resolve(file.path),
+                            LinkOption.NOFOLLOW_LINKS,
+                        ).use { it.readNBytes(file.size.toInt() + 1) }
                 } catch (e: IOException) {
                     return AttachedFile(file, null, "cannot be read: ${e.describe()}")
                 }

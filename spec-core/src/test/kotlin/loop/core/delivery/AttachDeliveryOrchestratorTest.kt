@@ -208,8 +208,18 @@ class AttachDeliveryOrchestratorTest {
 
             orchestrator(workflow(DeliveryConfig(DeliveryPolicy.Human, attach = true)), waiting).tick()
 
-            assertEquals("review", waiting.records.values.single().data["to"])
-            assertContains(tracker.comments.first().second.text, "Loop attached the deliverable of p-1")
+            assertEquals(
+                "review",
+                waiting.records.values
+                    .single()
+                    .data["to"],
+            )
+            assertContains(
+                tracker.comments
+                    .first()
+                    .second.text,
+                "Loop attached the deliverable of p-1",
+            )
         }
 
     @Test
@@ -222,7 +232,12 @@ class AttachDeliveryOrchestratorTest {
             orchestrator(workflow(auto), waiting, sink).tick()
 
             assertEquals(listOf("deliverable"), sink.commented().map { it["reason"] })
-            assertContains(tracker.comments.single().second.text, "````\n$post````")
+            assertContains(
+                tracker.comments
+                    .single()
+                    .second.text,
+                "````\n$post````",
+            )
             assertEquals(listOf("id-p-1" to "done"), tracker.moves)
             assertTrue(waiting.records.isEmpty(), waiting.records.toString())
         }
@@ -238,7 +253,10 @@ class AttachDeliveryOrchestratorTest {
 
             orchestrator(workflow(attachHuman), FakeWaitingIssues()).tick()
 
-            val body = tracker.comments.first().second.text
+            val body =
+                tracker.comments
+                    .first()
+                    .second.text
             assertFalse(body.contains("Rewritten"), body)
             assertContains(body, "- `out/post.md`, ${post.length} bytes, sha256 ${sha256(post)}, changed since its verification")
         }
@@ -251,7 +269,10 @@ class AttachDeliveryOrchestratorTest {
 
             orchestrator(workflow(attachHuman), FakeWaitingIssues()).tick()
 
-            val body = tracker.comments.first().second.text
+            val body =
+                tracker.comments
+                    .first()
+                    .second.text
             assertContains(body, "Loop attached the deliverable of p-1")
             assertFalse(body.contains(token), body)
         }
@@ -334,8 +355,14 @@ class AttachDeliveryOrchestratorTest {
 
     @Test
     fun `preflight refuses attach without a deliverable, attach_auto without attach and a value that is not a boolean`() {
-        refused(posts("{ attach: true }", deliverable = ""), "kinds.posts.delivery.attach needs kinds.posts.deliverable.files, the files it posts")
-        refused(posts("{ attach_auto: { enabled: true } }"), "kinds.posts.delivery.attach_auto.enabled needs kinds.posts.delivery.attach: true")
+        refused(
+            posts("{ attach: true }", deliverable = ""),
+            "kinds.posts.delivery.attach needs kinds.posts.deliverable.files, the files it posts",
+        )
+        refused(
+            posts("{ attach_auto: { enabled: true } }"),
+            "kinds.posts.delivery.attach_auto.enabled needs kinds.posts.delivery.attach: true",
+        )
         refused(posts("{ attach: yes please }"), "kinds.posts.delivery.attach must be true or false, got \"yes please\"")
     }
 

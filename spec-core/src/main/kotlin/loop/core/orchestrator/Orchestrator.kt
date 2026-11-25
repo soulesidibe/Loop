@@ -56,10 +56,10 @@ import loop.api.TurnId
 import loop.api.TurnLedger
 import loop.api.WaitReason
 import loop.api.WaitingIssues
+import loop.core.delivery.AttachDelivery
 import loop.core.delivery.AutoMerge
 import loop.core.delivery.DeliveryFacts
 import loop.core.delivery.DeliveryOutcome
-import loop.core.delivery.AttachDelivery
 import loop.core.delivery.EvidenceSummary
 import loop.core.delivery.MergeCheck
 import loop.core.delivery.PullRequestDelivery
@@ -4410,7 +4410,8 @@ class Orchestrator(
         private suspend fun postDeliverable(issue: Issue): String? {
             val files = deliverableFiles ?: return null
             val attempt = attemptId?.value ?: return null
-            val failure = AttachDelivery(tracker, redactor, clock, io, record).post(issue, identifier, attempt, workspace, files) ?: return null
+            val failure =
+                AttachDelivery(tracker, redactor, clock, io, record).post(issue, identifier, attempt, workspace, files) ?: return null
             log.log(LogLevel.WARN, DELIVERY, LogOutcome.FAILED, logContext(), reason = failure)
             return failure
         }

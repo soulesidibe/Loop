@@ -149,9 +149,25 @@ class DeliverableFilesTest {
         assertEquals(
             "kinds.posts.delivery.policy is auto, which a kind with deliverable.files supports only with " +
                 "kinds.posts.delivery.attach: true and the opt in kinds.posts.delivery.attach_auto.enabled: true, or use policy: human",
-            AttachDelivery.refusal("kinds.posts", listOf("out/**/*.md"), attach = false, attachAuto = false, pullRequest = false, auto = true),
+            AttachDelivery.refusal(
+                "kinds.posts",
+                listOf("out/**/*.md"),
+                attach = false,
+                attachAuto = false,
+                pullRequest = false,
+                auto = true,
+            ),
         )
-        assertNull(AttachDelivery.refusal("kinds.posts", listOf("out/**/*.md"), attach = false, attachAuto = false, pullRequest = false, auto = false))
+        assertNull(
+            AttachDelivery.refusal(
+                "kinds.posts",
+                listOf("out/**/*.md"),
+                attach = false,
+                attachAuto = false,
+                pullRequest = false,
+                auto = false,
+            ),
+        )
         assertNull(AttachDelivery.refusal("kinds.code", emptyList(), attach = false, attachAuto = false, pullRequest = false, auto = true))
     }
 }
