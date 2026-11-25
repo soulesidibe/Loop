@@ -76,7 +76,7 @@ internal class StopUsage(
         /**
          * Whether a budget the usage of the attempt's last stop went past ([breached]) ends the attempt on that budget,
          * in place of the end it reached. An end that already [parks] the issue keeps its own reason, and an end that
-         * [waitsApproval], a verified result waiting for a human, keeps its wait. A failed stop at the attempt's end
+         * [waitsApproval], a verified result waiting for a human or an agent's question (m4-31), keeps its wait. A failed stop at the attempt's end
          * changes nothing.
          */
         fun budgetWins(

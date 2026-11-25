@@ -91,6 +91,18 @@ object WaitKeys {
      */
     const val HUMAN_NOTICE: String = "human_notice"
 
+    /**
+     * The data key of the state the issue was in when its agent asked a question (m4-31): a human move of the issue to
+     * another state ends the ask wait.
+     */
+    const val STATE: String = "state"
+
+    /**
+     * The data key of the kind of an agent's question (m4-31), one of `engineering`, `design`, `product` and `human`. Not
+     * [KIND], which is the kind the issue was dispatched under.
+     */
+    const val QUESTION_KIND: String = "question_kind"
+
     /** The merge check runs: fetch the base, merge it, run the checks again (m2-26). */
     const val PHASE_CHECK: String = "check"
 

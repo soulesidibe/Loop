@@ -5,6 +5,7 @@ import loop.api.ProjectId
 import loop.api.Redactor
 import loop.api.RunId
 import loop.core.events.AttemptStarted
+import loop.core.events.QuestionAsked
 import loop.core.events.ToolRequestDropped
 import loop.core.events.ToolRequestEvent
 import loop.core.events.Tracker
@@ -122,6 +123,8 @@ private fun droppedData(
                     )
                 // m2-16: a result queued by the submit_result MCP tool, named like the drain names it.
                 is ToolRequest.Result -> mapOf(ToolRequestEvent.REQUEST to request.kind, ToolRequestEvent.SOURCE to Tracker.MCP)
+                // m4-31: a question queued by the ask tool, named with its kind like the drain names it.
+                is ToolRequest.Ask -> mapOf(ToolRequestEvent.REQUEST to request.kind, QuestionAsked.QUESTION_KIND to request.questionKind)
             }
     }
 

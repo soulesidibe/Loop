@@ -36,6 +36,7 @@ class LoopMcpServerTest {
         comment: CommentHandler = CommentHandler { ToolReply("commented") },
         trimmer: ReplyTrimmer = ReplyTrimmer.NONE,
         resources: ResourceHandler? = null,
+        ask: AskHandler? = null,
     ) {
         private val input = Pipe.open()
         private val output = Pipe.open()
@@ -48,7 +49,7 @@ class LoopMcpServerTest {
         val serving =
             Thread {
                 try {
-                    runBlocking { LoopMcpServer.serve(serverIn, serverOut, "test", handler, move, comment, trimmer, resources) }
+                    runBlocking { LoopMcpServer.serve(serverIn, serverOut, "test", handler, move, comment, trimmer, resources, ask) }
                 } finally {
                     serverOut.close()
                 }
@@ -97,9 +98,10 @@ class LoopMcpServerTest {
         comment: CommentHandler = CommentHandler { ToolReply("commented") },
         trimmer: ReplyTrimmer = ReplyTrimmer.NONE,
         resources: ResourceHandler? = null,
+        ask: AskHandler? = null,
         block: suspend Client.() -> Unit,
     ) {
-        val client = Client(handler, move, comment, trimmer, resources)
+        val client = Client(handler, move, comment, trimmer, resources, ask)
         try {
             runBlocking { client.block() }
         } finally {
@@ -466,6 +468,127 @@ class LoopMcpServerTest {
             assertEquals("""{"status":"released"}""", released.text())
             assertEquals(true, missing.getValue("isError").jsonPrimitive.boolean)
             assertEquals("name is required, a string. Nothing queued.", missing.text())
+        }
+    }
+
+    @Test
+    fun `m4-31 with an ask handler the server lists ask after comment, with kind and question required`() =
+        withClient(ask = AskHandler { ToolReply("pending") }) {
+            initialize()
+            val tools = tools()
+            assertEquals(listOf("submit_result", "move", "comment", "ask"), tools.map { it.getValue("name").jsonPrimitive.content })
+            val tool = tools.single { it.getValue("name").jsonPrimitive.content == "ask" }
+            val schema = tool.getValue("inputSchema").jsonObject
+            assertEquals("object", schema.getValue("type").jsonPrimitive.content)
+            assertEquals(JsonArray(listOf(JsonPrimitive("kind"), JsonPrimitive("question"))), schema["required"])
+            val properties = schema.getValue("properties").jsonObject
+            assertEquals(listOf("kind", "question", "options", "recommendation"), properties.keys.toList())
+            val kind = properties.getValue("kind").jsonObject
+            assertEquals("string", kind.getValue("type").jsonPrimitive.content)
+            assertEquals(
+                listOf("engineering", "design", "product", "human"),
+                kind.getValue("enum").jsonArray.map { it.jsonPrimitive.content },
+            )
+            assertEquals(
+                "string",
+                properties
+                    .getValue("question")
+                    .jsonObject
+                    .getValue("type")
+                    .jsonPrimitive.content,
+            )
+            val options = properties.getValue("options").jsonObject
+            assertEquals("array", options.getValue("type").jsonPrimitive.content)
+            assertEquals(
+                "string",
+                options
+                    .getValue("items")
+                    .jsonObject
+                    .getValue("type")
+                    .jsonPrimitive.content,
+            )
+            assertEquals(
+                "string",
+                properties
+                    .getValue("recommendation")
+                    .jsonObject
+                    .getValue("type")
+                    .jsonPrimitive.content,
+            )
+            properties.values.forEach {
+                assertTrue(
+                    it.jsonObject
+                        .getValue("description")
+                        .jsonPrimitive.content
+                        .isNotBlank(),
+                    "$it",
+                )
+            }
+            val description = tool.getValue("description").jsonPrimitive.content
+            assertContains(description, "only for a question a human must answer")
+            assertContains(description, "Technical choices are your own")
+            assertContains(description, "takes no attempt slot")
+            assertContains(description, "pending")
+            assertContains(description, "end your turn")
+        }
+
+    @Test
+    fun `m4-31 an ask call hands its arguments to the handler, options and recommendation optional`() {
+        val received = mutableListOf<AskCall>()
+        withClient(
+            ask =
+                AskHandler {
+                    received += it
+                    ToolReply("pending")
+                },
+        ) {
+            initialize()
+            val full =
+                request(
+                    "tools/call",
+                    """{"name":"ask","arguments":{"kind":"product","question":"Archived items too?",""" +
+                        """"options":["include them","skip them"],"recommendation":"include them"}}""",
+                ).getValue("result").jsonObject
+            request("tools/call", """{"name":"ask","arguments":{"kind":"human","question":"Which account?"}}""")
+
+            assertEquals("pending", full.text())
+            assertEquals(null, full["isError"]?.jsonPrimitive?.boolean?.takeIf { it })
+            assertEquals(
+                listOf(
+                    AskCall("product", "Archived items too?", listOf("include them", "skip them"), "include them"),
+                    AskCall("human", "Which account?", emptyList(), null),
+                ),
+                received,
+            )
+        }
+    }
+
+    @Test
+    fun `m4-31 an ask without its kind or question, with an unknown kind or with options that are not strings reaches no handler`() {
+        val received = mutableListOf<AskCall>()
+        withClient(
+            ask =
+                AskHandler {
+                    received += it
+                    ToolReply("pending")
+                },
+        ) {
+            initialize()
+            val refusals =
+                listOf(
+                    """{"question":"Which account?"}""",
+                    """{"kind":"product"}""",
+                    """{"kind":"legal","question":"Which account?"}""",
+                    """{"kind":"product","question":"Which account?","options":[1,2]}""",
+                    """{"kind":"product","question":"Which account?","recommendation":3}""",
+                ).map { arguments -> request("tools/call", """{"name":"ask","arguments":$arguments}""").getValue("result").jsonObject }
+
+            assertEquals(emptyList(), received)
+            refusals.forEach { refusal ->
+                assertEquals(true, refusal.getValue("isError").jsonPrimitive.boolean, "$refusal")
+                assertTrue(refusal.text().endsWith("Nothing queued."), refusal.text())
+            }
+            assertContains(refusals[2].text(), "engineering, design, product, human")
         }
     }
 

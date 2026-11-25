@@ -481,4 +481,53 @@ class WaitsTest {
         assertNull(Wait.of(record(WaitReason.Approval, approvalData)).kind)
         assertNull(Wait.verify(project, "id-1", "t-1", null, null, since, "review").kind)
     }
+
+    @Test
+    fun `m4-31 an ask wait holds the state it was asked in and its question kind, and its record restores it`() {
+        val ask =
+            Wait.ask(
+                project,
+                "id-1",
+                "t-1",
+                AttemptId("a1"),
+                RunId("r1"),
+                since,
+                state = "todo",
+                questionKind = "product",
+                kind = "code",
+            )
+
+        assertEquals(WaitReason.Ask, ask.reason)
+        assertEquals("ask", WaitReason.Ask.wire)
+        assertEquals(mapOf("state" to "todo", "question_kind" to "product", "kind" to "code"), ask.toRecord().data)
+        val restored = assertIs<Wait.Ask>(Wait.of(ask.toRecord()))
+        assertEquals("todo", restored.state)
+        assertEquals("product", restored.questionKind)
+        assertEquals("code", restored.kind)
+    }
+
+    @Test
+    fun `m4-31 an ask wait ends when its issue is gone, left the active states or a human moved it`() {
+        val ask = Wait.ask(project, "id-1", "t-1", AttemptId("a1"), RunId("r1"), since, state = "todo", questionKind = "human")
+
+        assertFalse(ask.humanMoved(state = "todo", active = true))
+        assertFalse(ask.humanMoved(state = "Todo", active = true), "the same state, written another way")
+        assertTrue(ask.humanMoved(state = "in_progress", active = true))
+        assertTrue(ask.humanMoved(state = "review", active = false))
+        assertTrue(ask.humanMoved(state = null, active = false), "gone from the tracker")
+    }
+
+    @Test
+    fun `m4-31 one read holds the stored ask waits, so a restart keeps their issues waiting`() =
+        runTest {
+            val store = FakeWaitingIssues()
+            val ask = Wait.ask(project, "id-1", "t-1", AttemptId("a1"), RunId("r1"), since, state = "todo", questionKind = "design")
+            Waits(store, project).save(ask)
+
+            val restarted = Waits(store, project)
+            restarted.read()
+
+            assertTrue(restarted.isBusy("id-1"))
+            assertEquals(listOf<Wait>(ask), restarted.current(WaitReason.Ask))
+        }
 }

@@ -12,10 +12,13 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.io.asSink
 import kotlinx.io.asSource
 import kotlinx.io.buffered
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import java.io.InputStream
 import java.io.OutputStream
@@ -39,6 +42,22 @@ fun interface MoveHandler {
 /** Handles a `comment` call (m2-17): [text] is the comment as the agent wrote it, not yet redacted or trimmed. */
 fun interface CommentHandler {
     suspend fun comment(text: String): ToolReply
+}
+
+/**
+ * One `ask` call (m4-31) as the agent wrote it: [kind], one of [LoopMcpServer.ASK_KINDS], the [question], the [options]
+ * it sees, empty when it gave none, and the one it recommends, null when it gave none. Not yet redacted or trimmed.
+ */
+data class AskCall(
+    val kind: String,
+    val question: String,
+    val options: List<String>,
+    val recommendation: String?,
+)
+
+/** Handles an `ask` call (m4-31): queued like `comment`, it answers `pending` at once. */
+fun interface AskHandler {
+    suspend fun ask(call: AskCall): ToolReply
 }
 
 /**
@@ -78,7 +97,8 @@ fun interface ReplyTrimmer {
  * refuses one that lacks its required string, and leaves what a call does to the tool's handler. Since m3-14 every
  * reply, a refusal included, goes through a [ReplyTrimmer] before it is sent. Since m4-25 a server given a
  * [ResourceHandler], which `loop tool mcp` gives when the workflow declares `resources:`, also serves
- * `request_resource` and `release_resource`.
+ * `request_resource` and `release_resource`. Since m4-31 a server given an [AskHandler], which `loop tool mcp` always
+ * gives, also serves `ask`, for a question a human must answer.
  */
 object LoopMcpServer {
     /** The server name in the runtime's MCP config; Claude Code names the tool `mcp__loop__submit_result`. */
@@ -93,6 +113,20 @@ object LoopMcpServer {
     const val REQUEST_RESOURCE = "request_resource"
 
     const val RELEASE_RESOURCE = "release_resource"
+
+    const val ASK = "ask"
+
+    /** The values of `ask`'s `kind` (PLAN 6.10). In M4 every question goes to a human, whatever its kind (m4-31). */
+    val ASK_KINDS: List<String> = listOf("engineering", "design", "product", "human")
+
+    /** The description of `ask`; the Codex client tools (`LoopClientTools`) carry the same text. */
+    const val ASK_DESCRIPTION =
+        "Ask a human a question. Use it only for a question a human must answer, such as a product decision the issue " +
+            "and the docs leave open, where a wrong guess would ship the wrong thing. Technical choices are your own: make " +
+            "them, note why, and go on. An ask takes no attempt slot and nothing else bounds it, so never ask what you can " +
+            "decide. Give the options you see and the one you recommend. Loop answers pending at once: end your turn then. " +
+            "When the turn ends, Loop posts your question on the issue, ends your attempt without verification and keeps " +
+            "your workspace, and the issue waits for a human's answer. Call it once per attempt."
 
     private const val SUBMIT_RESULT_DESCRIPTION =
         "Submit the result of your attempt, in Loop's result shape. Loop applies it when this turn ends, " +
@@ -138,6 +172,7 @@ object LoopMcpServer {
         comment: CommentHandler,
         trimmer: ReplyTrimmer = ReplyTrimmer.NONE,
         resources: ResourceHandler? = null,
+        ask: AskHandler? = null,
     ): Server {
         val server =
             Server(
@@ -158,6 +193,7 @@ object LoopMcpServer {
         server.addStringTool(COMMENT, COMMENT_DESCRIPTION, TEXT, "The comment to add, for example a question for a human.", trimmer) {
             comment.comment(it)
         }
+        if (ask != null) server.addAskTool(ask, trimmer)
         // m4-25: only for a workflow that declares resources.
         if (resources != null) {
             val names = "The name of a resource of the workflow: ${resources.names.joinToString(", ")}."
@@ -198,17 +234,91 @@ object LoopMcpServer {
         }
     }
 
+    /**
+     * Adds `ask` (m4-31): `kind` and `question` required strings, `kind` one of [ASK_KINDS], `options` a list of
+     * strings and `recommendation` a string, both optional. A call that breaks the schema is a tool error that reaches no
+     * handler, so nothing is queued.
+     */
+    private fun Server.addAskTool(
+        ask: AskHandler,
+        trimmer: ReplyTrimmer,
+    ) {
+        addTool(
+            name = ASK,
+            description = ASK_DESCRIPTION,
+            inputSchema = ToolSchema(properties = askProperties, required = listOf(KIND, QUESTION)),
+        ) { request ->
+            val reply =
+                askCall(
+                    request.arguments ?: JsonObject(emptyMap()),
+                ).fold({ ask.ask(it) }, { ToolReply("$it $NOTHING_QUEUED", isError = true) })
+            trimmer.trim(ASK, reply).toResult()
+        }
+    }
+
+    /** The [AskCall] of [arguments], or why they break the schema. */
+    private fun askCall(arguments: JsonObject): kotlin.Result<AskCall> {
+        fun string(key: String): String? = (arguments[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+        val kind = string(KIND) ?: return failure("$KIND is required, a string.")
+        if (kind !in ASK_KINDS) return failure("$KIND must be one of ${ASK_KINDS.joinToString(", ")}, not \"$kind\".")
+        val question = string(QUESTION) ?: return failure("$QUESTION is required, a string.")
+        val options =
+            when (val value = arguments[OPTIONS]) {
+                null, JsonNull -> emptyList()
+                is JsonArray -> value.map { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content ?: return failure(OPTIONS_TYPE) }
+                else -> return failure(OPTIONS_TYPE)
+            }
+        val recommendation =
+            when (val value = arguments[RECOMMENDATION]) {
+                null, JsonNull -> null
+                else -> string(RECOMMENDATION) ?: return failure("$RECOMMENDATION must be a string.")
+            }
+        return kotlin.Result.success(AskCall(kind, question, options, recommendation))
+    }
+
+    private fun failure(reason: String): kotlin.Result<AskCall> = kotlin.Result.failure(IllegalArgumentException(reason))
+
+    private val askProperties: JsonObject =
+        buildJsonObject {
+            putJsonObject(KIND) {
+                put("type", "string")
+                putJsonArray("enum") { ASK_KINDS.forEach { add(JsonPrimitive(it)) } }
+                put(
+                    "description",
+                    "Who the question is for. In this version every question goes to a human, and the kind is recorded with it.",
+                )
+            }
+            putJsonObject(QUESTION) {
+                put("type", "string")
+                put("description", "The question, in full sentences a human can answer without reading your session.")
+            }
+            putJsonObject(OPTIONS) {
+                put("type", "array")
+                putJsonObject("items") { put("type", "string") }
+                put("description", "The options you see, one per item.")
+            }
+            putJsonObject(RECOMMENDATION) {
+                put("type", "string")
+                put("description", "The option you would pick, and why.")
+            }
+        }
+
     private fun ToolReply.toResult() = CallToolResult(content = listOf(TextContent(text)), isError = isError)
 
     private const val STATE = "state"
     private const val TEXT = "text"
     private const val NAME_ARGUMENT = "name"
     private const val NOTHING_QUEUED = "Nothing queued."
+    private const val KIND = "kind"
+    private const val QUESTION = "question"
+    private const val OPTIONS = "options"
+    private const val RECOMMENDATION = "recommendation"
+    private const val OPTIONS_TYPE = "options must be a list of strings."
 
     /**
      * Serves one session over newline delimited JSON-RPC on [input] and [output], the stdio transport an MCP
      * runtime spawns its servers with, until [input] ends, every reply trimmed by [trimmer] (m3-14), with the resource
-     * tools when [resources] is given (m4-25). Nothing else may
+     * tools when [resources] is given (m4-25) and `ask` when [ask] is given (m4-31). Nothing else may
      * write to [output], so kotlin-logging's startup line, which goes to stdout, is turned off. The SDK's own log goes
      * to SLF4J's no-op provider.
      */
@@ -221,9 +331,10 @@ object LoopMcpServer {
         comment: CommentHandler,
         trimmer: ReplyTrimmer = ReplyTrimmer.NONE,
         resources: ResourceHandler? = null,
+        ask: AskHandler? = null,
     ) {
         quietLogging()
-        val server = create(version, submitResult, move, comment, trimmer, resources)
+        val server = create(version, submitResult, move, comment, trimmer, resources, ask)
         val transport = StdioServerTransport(input.asSource().buffered(), output.asSink().buffered())
         val closed = CompletableDeferred<Unit>()
         val session = server.createSession(transport)

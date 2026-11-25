@@ -147,7 +147,8 @@ internal class RunDrain(
  * Whether [wait] holds a drain (m4-10): a wait that needs no human does, one that needs a human does not and stays in
  * the store for the next `loop run`. A check wait holds. A merge wait holds unless it is a merge check behind a paused
  * delivery queue ([queuePaused], bl-175), which waits for `loop approve` or a restart. An approval holds once given, by
- * a human or by the auto policy, since the run delivers it at its next tick. Shared with `loop status`.
+ * a human or by the auto policy, since the run delivers it at its next tick. An ask (m4-31) needs a human, so it does
+ * not hold. Shared with `loop status`.
  */
 fun holdsDrain(
     wait: Wait,
@@ -157,5 +158,5 @@ fun holdsDrain(
         is Wait.Verify -> true
         is Wait.Merge -> !(queuePaused && wait.phase == MergePhase.Check)
         is Wait.Approval -> wait.approved
-        is Wait.Other -> false
+        is Wait.Ask, is Wait.Other -> false
     }

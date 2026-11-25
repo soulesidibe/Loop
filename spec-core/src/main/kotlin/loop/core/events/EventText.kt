@@ -104,6 +104,7 @@ object HumanText {
             reason == "max_wake_turns" -> "it used all its wake turns"
             reason == "no_continuation" -> "the runner ran its one turn"
             reason == "waiting_approval" -> "its verified result waits for approval"
+            reason == "waiting_ask" -> "it asked a human a question"
             reason == "split_issue" -> "its sessions filled up without progress"
             else -> reason.take(TEXT_MAX)
         }

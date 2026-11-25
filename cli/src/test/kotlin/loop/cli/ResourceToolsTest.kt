@@ -501,6 +501,8 @@ class ResourceToolsTest {
         const val D = "$"
         const val ATTEMPT = "7c1e9d2a-0000-4000-8000-000000000025"
         const val TEST_RUN = "7e570000-0000-4000-8000-000000000002"
-        val TOOLS = listOf("submit_result", "move", "comment")
+
+        /** The tools of every attempt, `ask` since m4-31. */
+        val TOOLS = listOf("submit_result", "move", "comment", "ask")
     }
 }

@@ -7,7 +7,7 @@ import kotlinx.serialization.json.JsonPrimitive
 /**
  * The MCP config the runner passes with `--mcp-config` for each turn (m2-16, story 67): one stdio server, `loop`,
  * which is `<LOOP_LAUNCHER> tool mcp`, Loop's MCP server, so the agent gets `mcp__loop__submit_result`, and since m2-17
- * `mcp__loop__move` and `mcp__loop__comment`.
+ * `mcp__loop__move` and `mcp__loop__comment`, and since m4-31 `mcp__loop__ask`.
  *
  * It is secret free by construction. The server reads its settings from the tool config snapshot `LOOP_TOOL_CONFIG`
  * points to, which holds no credential (m1-23), and the config passes only the Loop ids and paths the server reads

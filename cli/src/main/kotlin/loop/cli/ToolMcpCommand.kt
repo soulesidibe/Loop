@@ -13,6 +13,7 @@ import loop.core.verify.ResultFile
 import loop.core.verify.SubmittedResult
 import loop.core.workflow.TokenCounters
 import loop.core.workflow.ToolOutputTrim
+import loop.mcp.AskHandler
 import loop.mcp.CommentHandler
 import loop.mcp.LoopMcpServer
 import loop.mcp.MoveHandler
@@ -44,6 +45,9 @@ import loop.mcp.ToolReply
  * Since m4-25, when the snapshot holds resources, it also serves `request_resource` and `release_resource`
  * ([ResourceTools]), answered inside the turn: this process takes, queues or marks the lock in the store itself, while
  * `loop run` runs every provider.
+ *
+ * Since m4-31 it serves `ask` ([queueAsk]), queued like `comment`: it answers `pending` at once, and when the turn ends
+ * Loop posts the question on the issue and the issue waits as `Waiting(ask)`.
  */
 class ToolMcpCommand(
     private val host: Host,
@@ -63,6 +67,7 @@ class ToolMcpCommand(
                 CommentHandler { text -> call(scope) { queueComment(env, text) } },
                 ReplyTrimmer { tool, reply -> trim(env, tool, reply) },
                 resourceHandler(scope, env),
+                AskHandler { call -> answered(scope) { queueAsk(env, call) } },
             )
         }
     }
@@ -130,8 +135,8 @@ class ToolMcpCommand(
     }
 
     /**
-     * Runs one resource call with a fresh [AttemptTool] (m4-25): its answer, or the refusal it printed, such as an
-     * attempt that is not live, as a tool error.
+     * Runs one resource call (m4-25) or `ask` call (m4-31) with a fresh [AttemptTool]: its answer, or the refusal it
+     * printed, such as an attempt that is not live, as a tool error.
      */
     private suspend fun answered(
         scope: RedactorScope,

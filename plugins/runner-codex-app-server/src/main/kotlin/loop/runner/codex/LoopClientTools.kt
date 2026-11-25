@@ -24,6 +24,9 @@ import kotlin.io.path.readText
  * (m1-23), so `move` accepts exactly the states that tracker defines, as an `enum`, and the descriptions name it. A
  * call is not run here: the runner hands it to `loop tool mcp`, see [LoopToolCall].
  *
+ * Since m4-31 every attempt also gets `ask`, for a question a human must answer, with the arguments and the description
+ * `loop tool mcp` gives it; its `pending` answer and its structured failures are those of `loop tool mcp`.
+ *
  * Since m4-51 a workflow that declares `resources:`, whose ids the snapshot holds as [resources] (m4-25), adds
  * `request_resource` and `release_resource`, the tools `loop tool mcp` serves then, with the same argument and the same
  * descriptions. Their answers, `granted`, `preparing`, `queued` or a structured failure, are those of `loop tool mcp`:
@@ -36,7 +39,7 @@ class LoopClientTools(
     val resources: List<String> = emptyList(),
 ) {
     /**
-     * The `dynamicTools` of `thread/start`: [SUBMIT_RESULT], [MOVE] and [COMMENT], then [REQUEST_RESOURCE] and
+     * The `dynamicTools` of `thread/start`: [SUBMIT_RESULT], [MOVE], [COMMENT] and [ASK], then [REQUEST_RESOURCE] and
      * [RELEASE_RESOURCE] when the workflow declares resources, in that order.
      */
     val specs: JsonArray
@@ -45,6 +48,7 @@ class LoopClientTools(
                 add(function(SUBMIT_RESULT, SUBMIT_RESULT_DESCRIPTION, objectSchema(SubmitResultArguments.properties, listOf("status"))))
                 add(function(MOVE, moveDescription(), objectSchema(moveProperties(), listOf(STATE))))
                 add(function(COMMENT, COMMENT_DESCRIPTION, objectSchema(commentProperties(), listOf(TEXT))))
+                add(function(ASK, ASK_DESCRIPTION, objectSchema(askProperties(), listOf(KIND, QUESTION))))
                 if (resources.isNotEmpty()) {
                     add(function(REQUEST_RESOURCE, REQUEST_RESOURCE_DESCRIPTION, objectSchema(nameProperties(), listOf(NAME))))
                     add(function(RELEASE_RESOURCE, RELEASE_RESOURCE_DESCRIPTION, objectSchema(nameProperties(), listOf(NAME))))
@@ -74,6 +78,31 @@ class LoopClientTools(
             putJsonObject(TEXT) {
                 put("type", "string")
                 put("description", "The comment to add, for example a question for a human.")
+            }
+        }
+
+    private fun askProperties(): JsonObject =
+        buildJsonObject {
+            putJsonObject(KIND) {
+                put("type", "string")
+                put("enum", JsonArray(ASK_KINDS.map(::JsonPrimitive)))
+                put(
+                    "description",
+                    "Who the question is for. In this version every question goes to a human, and the kind is recorded with it.",
+                )
+            }
+            putJsonObject(QUESTION) {
+                put("type", "string")
+                put("description", "The question, in full sentences a human can answer without reading your session.")
+            }
+            putJsonObject(OPTIONS) {
+                put("type", "array")
+                putJsonObject("items") { put("type", "string") }
+                put("description", "The options you see, one per item.")
+            }
+            putJsonObject(RECOMMENDATION) {
+                put("type", "string")
+                put("description", "The option you would pick, and why.")
             }
         }
 
@@ -107,11 +136,14 @@ class LoopClientTools(
         const val MOVE = "move"
         const val COMMENT = "comment"
 
+        /** The tool of a question a human must answer (m4-31). */
+        const val ASK = "ask"
+
         const val REQUEST_RESOURCE = "request_resource"
         const val RELEASE_RESOURCE = "release_resource"
 
         /** The names of the tools every attempt gets, in the order of [specs]. */
-        val NAMES: List<String> = listOf(SUBMIT_RESULT, MOVE, COMMENT)
+        val NAMES: List<String> = listOf(SUBMIT_RESULT, MOVE, COMMENT, ASK)
 
         /** The names of the resource tools (m4-51), listed after [NAMES] when the workflow declares resources. */
         val RESOURCE_NAMES: List<String> = listOf(REQUEST_RESOURCE, RELEASE_RESOURCE)
@@ -121,6 +153,15 @@ class LoopClientTools(
 
         /** `comment`'s one argument, as `loop tool mcp` reads it. */
         const val TEXT = "text"
+
+        /** The arguments of `ask` (m4-31), as `loop tool mcp` reads them: `kind` and `question` required. */
+        const val KIND = "kind"
+        const val QUESTION = "question"
+        const val OPTIONS = "options"
+        const val RECOMMENDATION = "recommendation"
+
+        /** The values of `ask`'s `kind`, those of `loop tool mcp`. */
+        val ASK_KINDS: List<String> = listOf("engineering", "design", "product", "human")
 
         /** The one argument of the resource tools, a resource id, as `loop tool mcp` reads it (m4-25). */
         const val NAME = "name"
@@ -144,8 +185,16 @@ class LoopClientTools(
             "Ask Loop to add a comment to your issue, like loop tool comment, for example a question for a human. " +
                 "Loop queues the comment, redacted, and adds it when this turn ends. Call it once per comment."
 
-        // The two texts of `loop tool mcp` (`LoopMcpServer` in the `mcp` module); the cli test `CodexClientToolsRunTest`
+        // The texts of `loop tool mcp` (`LoopMcpServer` in the `mcp` module); the cli test `CodexClientToolsRunTest`
         // keeps them equal.
+        private const val ASK_DESCRIPTION =
+            "Ask a human a question. Use it only for a question a human must answer, such as a product decision the issue " +
+                "and the docs leave open, where a wrong guess would ship the wrong thing. Technical choices are your own: make " +
+                "them, note why, and go on. An ask takes no attempt slot and nothing else bounds it, so never ask what you can " +
+                "decide. Give the options you see and the one you recommend. Loop answers pending at once: end your turn then. " +
+                "When the turn ends, Loop posts your question on the issue, ends your attempt without verification and keeps " +
+                "your workspace, and the issue waits for a human's answer. Call it once per attempt."
+
         private const val REQUEST_RESOURCE_DESCRIPTION =
             "Ask Loop for a resource of the workflow, such as a device or a simulator, by its name, before you use it. " +
                 "Loop answers at once with a JSON object. status granted: it is yours, with what you need to use it " +
