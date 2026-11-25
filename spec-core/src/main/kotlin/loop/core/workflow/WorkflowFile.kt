@@ -876,8 +876,15 @@ class WorkflowLoader(
             delivery.mapEntry("attach_auto", "$kindKey.delivery.attach_auto")?.boolean("$kindKey.delivery.attach_auto.enabled", "enabled")
                 ?: false
         AttachDelivery
-            .refusal(kindKey, deliverable.globs, attach, attachAuto, pullRequest != null, policy == DeliveryPolicy.Auto, deliverable.report != null)
-            ?.let { throw WorkflowError.InvalidConfig(it) }
+            .refusal(
+                kindKey,
+                deliverable.globs,
+                attach,
+                attachAuto,
+                pullRequest != null,
+                policy == DeliveryPolicy.Auto,
+                deliverable.report != null,
+            )?.let { throw WorkflowError.InvalidConfig(it) }
         // m2-28: off unless the project opts in, so `auto` alone never delivers without a human. m4-22: an attach kind
         // opts in with attach_auto, which the refusal above already required.
         if (policy == DeliveryPolicy.Auto && !autoMerge.enabled && !attach) {

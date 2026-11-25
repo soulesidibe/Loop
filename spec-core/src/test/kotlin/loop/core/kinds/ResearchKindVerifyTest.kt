@@ -196,7 +196,12 @@ class ResearchKindVerifyTest {
             val listed = evidence(verdict.getValue("deliverable_evidence"))
             assertContains(listed, "- report.md, ${fullReport.length} bytes, sha256 ")
             assertFalse(listed.contains("notes.md"), listed)
-            assertEquals(WaitReason.Approval, waiting.records.values.single().reason)
+            assertEquals(
+                WaitReason.Approval,
+                waiting.records.values
+                    .single()
+                    .reason,
+            )
         }
 
     @Test

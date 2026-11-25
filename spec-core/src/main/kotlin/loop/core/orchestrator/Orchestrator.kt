@@ -4152,7 +4152,12 @@ class Orchestrator(
                     Verdict.UNCOMMITTED to uncommitted?.let { (it.changed.size + it.untracked.size).toString() },
                     Verdict.DELIVERABLE to listedFiles?.size?.toString(),
                     Verdict.DELIVERABLE_EVIDENCE to deliverableEvidence,
-                    Verdict.REPORT_FINDINGS to missing?.problems?.size?.takeIf { it > 0 }?.toString(),
+                    Verdict.REPORT_FINDINGS to
+                        missing
+                            ?.problems
+                            ?.size
+                            ?.takeIf { it > 0 }
+                            ?.toString(),
                 ),
             )
             log.log(

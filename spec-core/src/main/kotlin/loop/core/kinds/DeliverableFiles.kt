@@ -117,8 +117,14 @@ object DeliverableFiles {
     ): DeliverableListing.Listed {
         val globs = listOf(report)
         val file = list(workspace, globs).singleOrNull() ?: return DeliverableListing.Listed(globs, emptyList(), report)
-        val bytes = Files.newInputStream(workspace.resolve(file.path), LinkOption.NOFOLLOW_LINKS).use { it.readNBytes(REPORT_MAX_BYTES + 1) }
-        val read = DeliverableFile(file.path, bytes.size.toLong(), HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)))
+        val bytes =
+            Files
+                .newInputStream(
+                    workspace.resolve(file.path),
+                    LinkOption.NOFOLLOW_LINKS,
+                ).use { it.readNBytes(REPORT_MAX_BYTES + 1) }
+        val read =
+            DeliverableFile(file.path, bytes.size.toLong(), HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)))
         val listed = { problem: String -> DeliverableListing.Listed(globs, listOf(read), report, listOf("$report $problem")) }
         if (bytes.size > REPORT_MAX_BYTES) return listed("is over $REPORT_MAX_BYTES bytes, too large to read")
         val text =

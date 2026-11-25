@@ -66,7 +66,14 @@ class SourcesCheckExampleTest {
                 .redirectErrorStream(true)
                 .apply {
                     // A proxy of the host must not stand between curl and the local server.
-                    listOf("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "ALL_PROXY").forEach(environment()::remove)
+                    listOf(
+                        "http_proxy",
+                        "https_proxy",
+                        "HTTP_PROXY",
+                        "HTTPS_PROXY",
+                        "all_proxy",
+                        "ALL_PROXY",
+                    ).forEach(environment()::remove)
                     environment()["SOURCES_TIMEOUT"] = "5"
                 }.start()
         val output = process.inputStream.bufferedReader().readText()
