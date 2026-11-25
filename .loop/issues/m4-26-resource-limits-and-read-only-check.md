@@ -1,7 +1,7 @@
 ---
 id: m4-26
 title: "Resource limits, the read only check after release, and resources for checks"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-51]
@@ -61,3 +61,26 @@ Story 123 (PLAN 6.9). Lane A, runs on the claude-code runner. Area: `loop.core.r
   - Low, the limit reply (`ResourceTools.why`) should tell the agent to release a resource it holds if it does not need both, since two attempts each holding one of a pool of 2 can wait on each other.
   - Low, `requestAny` records `resource_requested` and `resource_queued` with the ids joined by commas as `resource_id`; record the kind or one event per id.
   - Docs only: a lock freed as abandoned skips the `read_only_check`, restore and dirty mark (the provider's `recover` is the hook), and a v9 `loop run` left open beside a v10 one drops `any_of_kind`, so restart every `loop run` after the upgrade. One line each in spec-decisions.
+
+2026-11-25 10:15Z agent 3089a000: Review fixes of pull request #63, on the same branch after merging main at 7e08b3f:
+  - Medium, self deadlock: a check with resource: reads LOOP_ATTEMPT_ID and first gives back the locks and drops the queue rows its attempt holds in the pool of the kind, through the end of attempt path (read only check, restore, dirty mark, provider release and check), recorded as resource_released reason=check. New CheckResourceTest case: the agent holds the only resource and submits, the check runs and passes (it hung before the fix). Tool descriptions of request_resource and release_resource say it; a WARN log line every 5 minutes while a check waits.
+  - Dirty recheck holds a real lock, recheck-<uuid>, the only holder the queue rules grant on a dirty resource, so it is exclusive across processes and counts in the pool; a failed prepare is released; the recheck time is set after the check.
+  - The tool runs the read only check in workflow_dir of the snapshot (test proves the folder).
+  - Resource command timeout 60 s; the declared end check is skipped when a check is canceled.
+  - The limit reply tells the agent to release a resource it holds if it does not need both.
+  - requestAny records one resource_requested and one resource_queued per id.
+  - spec-decisions: abandoned locks skip the checks (recover is the hook), restart every loop run after the v10 upgrade, the take back replaces the old sentence.
+
+2026-11-25 10:19Z loop: Loop updated pull request #63 for this issue: https://github.com/soulesidibe/Loop/pull/63
+
+2026-11-25 10:24Z loop: Loop did not merge pull request #63 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Failed conditions:
+  - diff_size: the diff changes 1292 lines outside tests and docs, over the limit of 1000, 2644 lines in all
+  Merge risk: band medium, score 1.47.
+  - alignment: aligned, The diff covers the limits, the release order, the dirty mark and the check `resource:` key, and it applies the review fixes from the earlier send back; the orchestrator edit is mostly call sites.
+  - impact: medium (floor medium: the diff changes 1292 lines outside tests and docs, over half the limit of 1000), It adds 1292 lines outside tests and docs and changes the shared lock, queue and grant code that every attempt, check and merge check goes through; the event store and the tool config snapshot change too.
+  - verification: strong, Each acceptance criterion has a named test, the review fixes have their own cases such as the self deadlock and the tool's folder, and the merge check is tested end to end with a fake GitHub server.
+  - rollback_cost: costly, The store changes shared state with dirty marks and new lock and queue columns or events, and the docs say every `loop run` must restart after the upgrade, so a revert leaves rows that the older code may not read.
+  - error_detection: loud, A failed read only check, a dirty mark and a limit wait are each reported through a tool error, an event, `loop status` or a WARN log line, and a check that cannot hold a resource fails with a reason.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 23 of 32 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
