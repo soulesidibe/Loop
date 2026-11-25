@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 /**
@@ -143,6 +144,37 @@ public abstract class TrackerAdapterContract {
         val result = runBlocking { tracker.updateLabels("no-such-issue", add = listOf("needs-info")) }
 
         assertIs<TrackerError.NotFound>(result.exceptionOrNull(), result.toString())
+    }
+
+    @Test
+    public fun `m4-33 a created issue has its title, body and labels and a refresh by its id reads it`() {
+        val tracker = trackerWith(listOf(seed("c-1")))
+        val existing = tracker.byStates(activeState).single().id
+        val body = "Export the archived items too.\n\nFiled as a follow up of c-1."
+
+        val created = runBlocking { tracker.createIssue("Archived items in the export", body, listOf("needs-triage")) }.getOrThrow()
+
+        assertNotEquals(existing, created.id)
+        assertEquals("Archived items in the export", created.title)
+        assertEquals(body, created.description)
+        assertEquals(listOf("needs-triage"), created.labels)
+        assertEquals(activeState, created.state)
+        val refreshed = runBlocking { tracker.fetchIssuesByIds(listOf(created.id)) }.getOrThrow().single()
+        assertEquals(created.title, refreshed.title)
+        assertEquals(created.description, refreshed.description)
+        assertEquals(created.labels, refreshed.labels)
+        assertEquals(created.state, refreshed.state)
+        assertEquals(2, tracker.byStates(activeState).size)
+    }
+
+    @Test
+    public fun `m4-33 a blank title is refused and creates nothing`() {
+        val tracker = trackerWith(listOf(seed("c-1")))
+
+        val result = runBlocking { tracker.createIssue("  ", "A body.", listOf("needs-triage")) }
+
+        assertIs<TrackerError.Rejected>(result.exceptionOrNull(), result.toString())
+        assertEquals(listOf("c-1"), tracker.byStates(activeState).map { it.identifier })
     }
 
     @Test

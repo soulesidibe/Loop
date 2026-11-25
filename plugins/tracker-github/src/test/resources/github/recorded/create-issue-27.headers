@@ -1,0 +1,7 @@
+status: 201
+x-ratelimit-limit: 5000
+x-ratelimit-remaining: 4989
+x-ratelimit-used: 11
+x-ratelimit-resource: core
+x-ratelimit-reset: 1794500000
+location: https://api.github.com/repos/octocat/Hello-World/issues/27

@@ -24,7 +24,8 @@ import kotlin.time.Instant
  * prompt is rendered (bl-06). Only authors in `trusted_associations` reach the agent (bl-157): an issue by another
  * author is blocked, a comment by one is left out. A candidate with native blockers is blocked until each one is closed as
  * completed, see [GitHubBlockers] (bl-158). Writes (m2-23): a move to a handoff state is a label change, a move to `open` or
- * `closed` patches the issue state, a comment is posted as given. A write is never retried inside a call. A column 0
+ * `closed` patches the issue state, a comment is posted as given, an issue is created open with its labels (m4-33). A
+ * write is never retried inside a call. A column 0
  * `Area:` line of the body is the issue's area (m4-17), see [GitHubArea]; a malformed one is ignored with a warning.
  */
 class GitHubTracker(
@@ -264,6 +265,43 @@ class GitHubTracker(
             for (label in removing) {
                 send("DELETE", URI("$repoPath/issues/$issueId/labels/${pathSegment(label)}"), absent = LABEL_ABSENT)
             }
+        }
+    }
+
+    /**
+     * Creates an open issue with [title], [body] and [labels], and the `scope_labels` too, so the tracker reads it back
+     * (m4-33). One request; the issue is read from GitHub's answer. A blank title and a body over GitHub's
+     * [MAX_COMMENT_CHARS] characters are refused with nothing sent.
+     */
+    override suspend fun createIssue(
+        title: String,
+        body: String,
+        labels: List<String>,
+    ): Result<Issue> {
+        val written = title.trim()
+        if (written.isEmpty()) return Result.failure(TrackerError.Rejected("The issue title is empty, so no issue was created"))
+        val chars = body.codePointCount(0, body.length)
+        if (chars > MAX_COMMENT_CHARS) {
+            return Result.failure(
+                TrackerError.Rejected(
+                    "The issue body has $chars characters, over GitHub's limit of $MAX_COMMENT_CHARS. No issue was created",
+                ),
+            )
+        }
+        val all = (labels + settings.scopeLabels).map { it.trim() }.filter { it.isNotEmpty() }.distinctBy { it.lowercase() }
+        return catching {
+            val url = URI("$repoPath/issues")
+            val request =
+                JsonObject(
+                    mapOf(
+                        "title" to JsonPrimitive(written),
+                        "body" to JsonPrimitive(body),
+                        "labels" to JsonArray(all.map(::JsonPrimitive)),
+                    ),
+                )
+            val response = send("POST", url, absent = emptySet(), body = request.toString()) ?: error("no status is absent for a create")
+            val item = parse(response.body, url) as? JsonObject ?: throw TrackerError.Malformed(url.toString())
+            normalize(item) ?: throw TrackerError.Malformed(url.toString())
         }
     }
 

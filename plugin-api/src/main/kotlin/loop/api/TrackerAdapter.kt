@@ -7,6 +7,7 @@ import kotlin.time.Instant
  * failure is a [TrackerError]; implementations do not throw for expected failures.
  * [updateLabels] is optional: a tracker without labels keeps its default, which fails
  * with [TrackerError.Unsupported]. [completeIssue] is optional too: its default returns the issue unchanged.
+ * [createIssue] is optional like [updateLabels] (m4-33): its default fails with [TrackerError.Unsupported].
  *
  * The core writes through the versions of [moveIssue] and [addComment] that take the current [Issue] (m4-14, spec 11
  * and 17.5): a tracker whose writes need a provider id beyond [Issue.id], such as a project item id, reads it from
@@ -82,6 +83,19 @@ public interface TrackerAdapter {
         add: List<String> = emptyList(),
         remove: List<String> = emptyList(),
     ): Result<Unit> = Result.failure(TrackerError.Unsupported("labels"))
+
+    /**
+     * Creates an issue with [title], the [body] as its description and the [labels], in the tracker's first active
+     * state or its equivalent, such as an `open` GitHub issue (m4-33, a follow up filed by an agent). Returns the new
+     * issue as a read by id would give it, with the id the tracker gave it. Fails with [TrackerError.Rejected] when
+     * the title is blank, with nothing written, and with [TrackerError.Unsupported] when the tracker cannot create
+     * issues, the default.
+     */
+    public suspend fun createIssue(
+        title: String,
+        body: String,
+        labels: List<String>,
+    ): Result<Issue> = Result.failure(TrackerError.Unsupported("issues"))
 }
 
 /** A comment on an issue: who wrote it, when, and the [text] as final, already redacted. */

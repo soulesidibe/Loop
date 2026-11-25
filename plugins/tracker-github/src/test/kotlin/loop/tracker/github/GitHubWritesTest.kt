@@ -26,19 +26,22 @@ class GitHubWritesTest {
     private val clock = TestClock(Instant.parse("2026-11-12T15:00:00Z"))
     private var required = listOf("ready-for-agent")
 
-    private fun tracker(handoffLabels: Map<String, String> = GitHubTrackerSettings.DEFAULT_HANDOFF_LABELS) =
-        GitHubTracker(
-            GitHubTrackerSettings(
-                owner = "octocat",
-                repo = "Hello-World",
-                token = token,
-                apiUrl = URI(FakeGitHub.API),
-                handoffLabels = handoffLabels,
-            ),
-            github,
-            clock,
-            requiredLabels = { required },
-        )
+    private fun tracker(
+        handoffLabels: Map<String, String> = GitHubTrackerSettings.DEFAULT_HANDOFF_LABELS,
+        scopeLabels: List<String> = emptyList(),
+    ) = GitHubTracker(
+        GitHubTrackerSettings(
+            owner = "octocat",
+            repo = "Hello-World",
+            token = token,
+            apiUrl = URI(FakeGitHub.API),
+            handoffLabels = handoffLabels,
+            scopeLabels = scopeLabels,
+        ),
+        github,
+        clock,
+        requiredLabels = { required },
+    )
 
     private val issueUrl = FakeGitHub.issueUrl(26)
     private val labelsUrl = "$issueUrl/labels"
@@ -409,4 +412,50 @@ class GitHubWritesTest {
         }
 
     private fun JsonObject.string(key: String): String = (this[key] as JsonPrimitive).content
+
+    private val issuesUrl = "${FakeGitHub.API}/repos/octocat/Hello-World/issues"
+
+    @Test
+    fun `m4-33 a created issue is posted with its title, body and labels and read from GitHub's answer`() =
+        runTest {
+            github.on("POST", issuesUrl, FakeGitHub.recorded("create-issue-27"))
+            val body = "Export the archived items too.\n\nFiled by Loop as a follow up of t-1, attempt 0a1b2c3d."
+
+            val created = tracker().createIssue("Archived items in the export", body, listOf("needs-triage")).getOrThrow()
+
+            assertEquals("27", created.id)
+            assertEquals("Hello-World-27", created.identifier)
+            assertEquals("Archived items in the export", created.title)
+            assertEquals("open", created.state)
+            assertEquals(listOf("needs-triage"), created.labels)
+            assertEquals(body, created.description)
+            val sent =
+                JsonObject(
+                    mapOf(
+                        "title" to JsonPrimitive("Archived items in the export"),
+                        "body" to JsonPrimitive(body),
+                        "labels" to JsonArray(listOf(JsonPrimitive("needs-triage"))),
+                    ),
+                )
+            assertEquals(listOf(Triple("POST", issuesUrl, sent)), writes())
+        }
+
+    @Test
+    fun `m4-33 a created issue also carries the scope labels, so the tracker reads it`() =
+        runTest {
+            github.on("POST", issuesUrl, FakeGitHub.recorded("create-issue-27"))
+
+            tracker(scopeLabels = listOf("loop", "Needs-Triage")).createIssue("Title", "Body.", listOf("needs-triage")).getOrThrow()
+
+            val labels = writes().single().third!!.getValue("labels") as JsonArray
+            assertEquals(listOf("needs-triage", "loop"), labels.map { (it as JsonPrimitive).content })
+        }
+
+    @Test
+    fun `m4-33 a blank title or a body over GitHub's limit is refused and nothing is sent`() =
+        runTest {
+            assertIs<TrackerError.Rejected>(tracker().createIssue(" ", "Body.", listOf("needs-triage")).exceptionOrNull())
+            assertIs<TrackerError.Rejected>(tracker().createIssue("Title", "a".repeat(65_537), listOf("needs-triage")).exceptionOrNull())
+            assertEquals(emptyList(), github.requests)
+        }
 }

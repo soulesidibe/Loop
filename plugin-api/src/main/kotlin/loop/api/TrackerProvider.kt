@@ -52,7 +52,8 @@ public class TrackerConfigException(
  * What the host gives every tracker it builds: [trackerDir], the resolved `tracker.provider.dir` (`.loop/issues`
  * beside `WORKFLOW.md` when unset), [lockDir], the machine level folder of locks, [onMalformed] and [onWarning] for
  * the operator log, and [requiredLabels], the effective workflow's `tracker.required_labels`, read at each move,
- * which a move to a handoff state removes (m2-23).
+ * which a move to a handoff state removes (m2-23), and [activeStates], the tracker's `active_states` as the workflow
+ * set them, whose first is the state of an issue the tracker creates (m4-33), empty when the host gives none.
  */
 public class TrackerContext(
     public val trackerDir: Path,
@@ -60,4 +61,5 @@ public class TrackerContext(
     public val onMalformed: (TrackerError.Malformed) -> Unit = {},
     public val onWarning: (String) -> Unit = {},
     public val requiredLabels: () -> List<String> = { emptyList() },
+    public val activeStates: List<String> = emptyList(),
 )

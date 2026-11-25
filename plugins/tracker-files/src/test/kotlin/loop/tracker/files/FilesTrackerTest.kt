@@ -862,4 +862,62 @@ class FilesTrackerTest {
             assertNull(failure.get())
             assertTrue(reads.get() > 0)
         }
+
+    @Test
+    fun `m4-33 without a prefix setting a created issue is the next free bl number, named after its title`() =
+        runTest {
+            issueFile("a-1")
+            issuesDir.resolve("bl-03-old.md").writeText("---\nid: bl-03\ntitle: Old\nstate: done\nlabels: []\n---\n")
+            // A file that does not parse still holds its number.
+            issuesDir.resolve("bl-09-broken.md").writeText("not front matter\n")
+
+            val created = tracker().createIssue("Archived items: the export", "Body.", listOf("needs-triage")).getOrThrow()
+
+            assertEquals("bl-10", created.id)
+            assertEquals("bl-10", created.identifier)
+            assertTrue(issuesDir.resolve("bl-10-archived-items-the-export.md").toFile().isFile, issuesDir.listDirectoryEntries().toString())
+        }
+
+    @Test
+    fun `m4-33 the first created issue of a folder is number 01`() =
+        runTest {
+            issueFile("a-1")
+
+            val created = tracker().createIssue("First", "Body.", listOf("needs-triage")).getOrThrow()
+
+            assertEquals("bl-01", created.id)
+            assertTrue(issuesDir.resolve("bl-01-first.md").toFile().isFile)
+        }
+
+    @Test
+    fun `m4-33 a created issue's front matter parses back, its title quoted, in the first active state with an empty blocked_by`() =
+        runTest {
+            val tracker = FilesTracker(issuesDir, lockDir, prefix = "ops", firstActiveState = "in_progress")
+            val title = "Quote \"this\": and # that"
+
+            val created = tracker.createIssue(title, "Line one.\n\nFiled as a follow up.", listOf("needs-triage")).getOrThrow()
+
+            assertEquals("ops-01", created.id)
+            val file = issuesDir.listDirectoryEntries().single()
+            val text = file.readText()
+            assertContains(text, "title: \"Quote \\\"this\\\": and # that\"\n")
+            assertContains(text, "state: in_progress\n")
+            assertContains(text, "labels: [needs-triage]\n")
+            assertContains(text, "blocked_by: []\n")
+            val read = tracker.fetchIssuesByIds(listOf("ops-01")).getOrThrow().single()
+            assertEquals(title, read.title)
+            assertEquals("in_progress", read.state)
+            assertEquals(listOf("needs-triage"), read.labels)
+            assertEquals(emptyList(), read.blockedBy)
+            assertEquals("Line one.\n\nFiled as a follow up.", read.description)
+            assertEquals(read, created)
+        }
+
+    @Test
+    fun `m4-33 a title with no letter or digit still gets a file name`() =
+        runTest {
+            tracker().createIssue("???", "Body.", emptyList()).getOrThrow()
+
+            assertEquals(listOf("bl-01-issue.md"), issuesDir.listDirectoryEntries().map { it.name })
+        }
 }
