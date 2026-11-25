@@ -191,12 +191,24 @@ A kind is matched from the issue (tracker id, label, state, or a field (not in M
 
 `kinds:` is a map of named kinds, each with the slots of `code` (`verify`, `ready`, `delivery`) and a `match` (m4-18). The match keys are `default` (`match: { default: true }`, alone in its match), `label`, `tracker` (a tracker id of the registry, 6.1) and `state`, and every key a match sets must hold. A match on a front matter field waits for a field map in the issue model and is not in M4. An issue gets the first kind whose match holds, in the order the kinds are written, and the default kind otherwise. `code` with no `match` is the default, so a workflow whose only kind is `code` behaves as before. Preflight refuses two default kinds, no default kind, a kind other than `code` with no `match`, and an unknown match key. Every hook gets the kind's name as `LOOP_KIND`, and the ledger records the matched kind on each line and row. The verify and approval waits of an attempt hold the kind it was dispatched under, so a move or a label edit during a wait never changes how the issue is verified or delivered, and an agent's own move that would change its issue's kind is refused. Until each kind takes them up (m4-20 to m4-23), the merge check and the auto merge read the `code` kind, and only `code` may deliver a pull request.
 
+The content kind (m4-21, story 120). Behavior follows the keys a kind declares, never its name: `kinds:` is a free map and custom kinds are allowed, so `deliverable.files` gives the files deliverable whatever the kind is called, and "a content kind" means a kind that declares it. `deliverable: { files: [out/**/*.md] }` lists globs relative to the workspace, anchored at its root like `guards.protect` (`*` stays in one folder, `**` crosses any number of them). After the agent submits, Loop lists the regular files that match, with the fingerprint and before the checks, never through a symlink and never a `.git` entry, and records them with the verdict: the verdict event carries `deliverable`, the count, and `deliverable_evidence`, an evidence file listing each path, size and sha256 digest. When every check passed and no file matches, the result is `refuted` with the finding "no deliverable file", which names the globs. The workspace is a git worktree populated by `after_create` like `code`; on a `workspace: plain` kind the listing works the same, with the `tree:` fingerprint. The checks are `command` checks the workflow declares, banned words and dashes, length limits, markdown lint, with no new check type (bl-14, bl-116 and bl-118 come after M4). The banned dash example, which runs on BSD and GNU grep and exits 1 on a file with an em or en dash, printing its path and line:
+
+```yaml
+verify:
+  checks:
+    - type: command
+      run: |
+        ! grep -rnE "$(printf '\342\200\224|\342\200\223')" out/
+```
+
+A `-P` pattern is wrong here: macOS grep has no `-P`, its usage error exits non zero, and the `!` turns it into a pass on a file full of dashes. A `!` check also passes when `out/` is missing, which is why no deliverable file is a finding of its own. A content kind keeps the default `delivery.policy: human`, and preflight refuses `policy: auto` on a kind with `deliverable.files` until the attach delivery (m4-22) defines what auto means for it. `deliverable.report` is the research kind's (m4-23).
+
 Gap after M4: kinds with their own runner are out of M4 (m4-45). In M4 a kind sets its template, verify contract, workspace and delivery, and every kind runs on the project's runner.
 
 | Kind | Workspace population | Deliverable | Checks (examples) | Delivery |
 |---|---|---|---|---|
 | `code` | git worktree via `after_create` | pull request | build, tests, lint, tamper guard, holdout tests | merge (policy `human` or `auto`), then move to the handoff state |
-| `content` | git worktree of a content repo, or empty | files | markdown lint, link check, length limits, banned words and dashes, review rubric | merge or attach to the issue |
+| `content` | git worktree of a content repo, or empty | files (`deliverable.files`, m4-21) | markdown lint, link check, length limits, banned words and dashes as `command` checks, review rubric | attach to the issue (m4-22), `human` |
 | `research` | empty | report | sources listed and reachable, required sections present, review | post on the issue |
 | `ops` | empty | external action plan | plan matches a schema, dry run where possible | executed only after human approval |
 
@@ -712,9 +724,12 @@ kinds:
     match: { label: content }
     runner: { kind: codex-app-server }
     template: .loop/templates/content.md
+    deliverable: { files: [out/**/*.md] }        # m4-21: the files deliverable, recorded with the verdict
     verify:
       checks:
-        - { type: command, run: "! grep -rnP '\\x{2014}|\\x{2013}' out/" }
+        - type: command                          # banned dashes, on BSD and GNU grep (m4-21)
+          run: |
+            ! grep -rnE "$(printf '\342\200\224|\342\200\223')" out/
       review: { role: reviewer, rubric: .loop/rubrics/voice.md }   # from M6
     delivery: { policy: human }
 

@@ -124,6 +124,8 @@ import loop.core.events.TurnInputRequired
 import loop.core.events.TurnStarted
 import loop.core.events.Usage
 import loop.core.events.Verdict
+import loop.core.kinds.DeliverableFiles
+import loop.core.kinds.DeliverableListing
 import loop.core.kinds.IssueKind
 import loop.core.kinds.KindLookup
 import loop.core.kinds.KindPrompt
@@ -150,6 +152,7 @@ import loop.core.verify.AcceptanceCriteria
 import loop.core.verify.AcceptanceCriterion
 import loop.core.verify.CheckResult
 import loop.core.verify.CheckRunner
+import loop.core.verify.DeliverableEvidence
 import loop.core.verify.Evidence
 import loop.core.verify.EvidenceWriter
 import loop.core.verify.Fingerprinter
@@ -4010,6 +4013,8 @@ class Orchestrator(
             val fingerprint = fingerprint()
             // m2-25: listed with the fingerprint, before a check can regenerate a file.
             val uncommittedAtStart = uncommittedFiles(fingerprint)
+            // m4-21: listed with the fingerprint too, so a file a check writes is never taken for the deliverable.
+            val deliverable = withContext(io) { DeliverableFiles.listing(kind, workspace) }
             // m2-09: a refused list uses nothing of the criteria. bl-32: a diff_policy only run reads none of them.
             val read = criteria?.takeIf { refusal == null && !diffPolicyOnly }
             val judgmentCalls = read.orEmpty().judgmentCalls
@@ -4101,8 +4106,20 @@ class Orchestrator(
                 verdict = REFUTED
                 findings = VerifyFindings.uncommitted(uncommitted, redactor)
             }
+            // m4-21: a kind with deliverable.files proves nothing without one.
+            val missing = (deliverable as? DeliverableListing.Listed)?.takeIf { it.missing && verdict == VERIFIED }
+            if (missing != null) {
+                verdict = REFUTED
+                findings = VerifyFindings.noDeliverable(missing.globs, redactor)
+            }
+            if (verdict == VERIFIED && deliverable is DeliverableListing.Failed) {
+                verdict = UNVERIFIED
+                unverified = redactor.redact(deliverable.reason).take(REASON_MAX)
+            }
+            val listedFiles = (deliverable as? DeliverableListing.Listed)?.files
+            val deliverableEvidence = listedFiles?.let { saveDeliverable(DeliverableEvidence(fingerprint, it)) }
             val listed = all.count { (check, _) -> !diffPolicyOnly || check is CheckConfig.DiffPolicy }
-            failingChecks = listed - passed.size + (if (uncommitted != null) 1 else 0)
+            failingChecks = listed - passed.size + (if (uncommitted != null) 1 else 0) + (if (missing != null) 1 else 0)
             record(
                 Verdict,
                 mapOfNotNull(
@@ -4113,6 +4130,8 @@ class Orchestrator(
                     Verdict.REASON to unverified,
                     Verdict.JUDGMENT_CALLS to judgmentCalls.size.takeIf { it > 0 }?.toString(),
                     Verdict.UNCOMMITTED to uncommitted?.let { (it.changed.size + it.untracked.size).toString() },
+                    Verdict.DELIVERABLE to listedFiles?.size?.toString(),
+                    Verdict.DELIVERABLE_EVIDENCE to deliverableEvidence,
                 ),
             )
             log.log(
@@ -4571,6 +4590,21 @@ class Orchestrator(
                 null
             }
         }
+
+        /** Saves the deliverable files of a verification as evidence (m4-21) and returns its reference, null when not saved. */
+        private suspend fun saveDeliverable(deliverable: DeliverableEvidence): String? =
+            attemptId?.let { attempt ->
+                try {
+                    withContext(io) { evidence.writeDeliverable(projectId, attempt, deliverable) }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    val reason = redactor.redact("cannot save the deliverable files: ${e.describe()}").take(REASON_MAX)
+                    record(EvidenceRecordFailed, mapOf(Results.REASON to reason))
+                    log.log(LogLevel.WARN, "evidence_record", LogOutcome.FAILED, logContext(), reason = reason)
+                    null
+                }
+            }
 
         /**
          * Saves the criteria of the issue that hold no command as evidence of their own (m2-09), then records

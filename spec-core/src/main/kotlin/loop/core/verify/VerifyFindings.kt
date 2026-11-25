@@ -47,6 +47,12 @@ class VerifyFindings private constructor(
                 "and a pull request carries only commits, so the issue did not move. Commit what belongs to the work, " +
                 "restore or remove what does not, such as files a check or a build regenerates, then move the issue again."
 
+        /** m4-21: the start of the findings of a result with no file matching the kind's `deliverable.files`. */
+        const val NO_DELIVERABLE_LEAD =
+            "Your last result was refuted: no deliverable file, every check passed but no file of the workspace matches " +
+                "the kind's deliverable.files, so the issue did not move. Write the deliverable where the issue asks, " +
+                "at a path these globs match, then move the issue again."
+
         /** At most this many files of each list of [uncommitted], each name cut to [FILE_MAX] characters. */
         const val FILES_SHOWN = 10
         const val FILE_MAX = 100
@@ -80,6 +86,19 @@ class VerifyFindings private constructor(
                 listOfNotNull(section("Uncommitted changes", files.changed), section("Untracked files", files.untracked))
                     .ifEmpty { listOf("Loop could not list the files: run git status to see them.") }
             return VerifyFindings((listOf(UNCOMMITTED_LEAD) + sections).joinToString("\n"))
+        }
+
+        /**
+         * The findings of a result whose checks all passed while no file matches the [globs] of the kind's
+         * `deliverable.files` (m4-21): the globs, redacted, one a line, so the next turn knows where the files go.
+         */
+        fun noDeliverable(
+            globs: List<String>,
+            redactor: Redactor,
+        ): VerifyFindings {
+            val shown = globs.take(FILES_SHOWN).map { "- " + redactor.redact(it).take(FILE_MAX) }
+            val more = if (globs.size > FILES_SHOWN) listOf("- and ${globs.size - FILES_SHOWN} more") else emptyList()
+            return VerifyFindings((listOf(NO_DELIVERABLE_LEAD, "deliverable.files:") + shown + more).joinToString("\n"))
         }
 
         /**
