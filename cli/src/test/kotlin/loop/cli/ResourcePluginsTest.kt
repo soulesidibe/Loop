@@ -12,6 +12,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * m4-24: resource providers are found with `ServiceLoader` on `loop.api.ResourceProvider`, like the runner and tracker
@@ -27,16 +28,26 @@ class ResourcePluginsTest {
     fun `a fake provider registered through a test services file is loaded and serves its kinds`() {
         val plugins = ResourcePlugins.discover(root.resolve("no-plugins")).getOrThrow()
 
-        assertEquals(listOf("fake-device", "fake-emulator"), plugins.kinds)
+        assertTrue(plugins.kinds.containsAll(listOf("fake-device", "fake-emulator")), "${plugins.kinds}")
         assertIs<FakeResourceProvider>(plugins.provider("fake-device"))
         assertIs<FakeResourceProvider>(plugins.provider("fake-emulator"))
-        assertNull(plugins.provider("avd"))
+        assertNull(plugins.provider("display"))
         assertEquals(true, plugins.serves("fake-emulator").getOrThrow())
-        assertEquals(false, plugins.serves("avd").getOrThrow())
+        assertEquals(false, plugins.serves("display").getOrThrow())
         assertEquals(
             mapOf("serial" to "fake-pixel"),
             plugins.provider("fake-device")!!.prepare(ResourceDeclaration("fake-device", "pixel")),
         )
+    }
+
+    @Test
+    fun `m4-28 the Android provider of plugins resource-android is on the classpath and serves android-device and avd`() {
+        val plugins = ResourcePlugins.discover(root.resolve("no-plugins")).getOrThrow()
+
+        val android = plugins.provider("avd")
+        assertEquals("loop.resource.android.AndroidResourceProvider", android?.javaClass?.name, "${plugins.kinds}")
+        assertEquals(setOf("android-device", "avd"), android!!.kinds)
+        assertEquals(android, plugins.provider("android-device"))
     }
 
     @Test
@@ -68,7 +79,7 @@ class ResourcePluginsTest {
     fun `the host's workflow loader names a resource kind no provider serves and stays quiet for a served one`() {
         val text = fixture.workflow.readText()
         fixture.workflow.writeText(
-            text.replace("polling:\n", "resources:\n  - { kind: fake-device, id: pixel }\n  - { kind: avd, id: api35 }\npolling:\n"),
+            text.replace("polling:\n", "resources:\n  - { kind: fake-device, id: pixel }\n  - { kind: display, id: main }\npolling:\n"),
         )
         val host =
             Host(
@@ -79,9 +90,9 @@ class ResourcePluginsTest {
 
         val workflow = host.workflowLoader().load(fixture.workflow).getOrThrow()
 
-        assertEquals(listOf("fake-device", "avd"), workflow.config.resources.map { it.kind })
+        assertEquals(listOf("fake-device", "display"), workflow.config.resources.map { it.kind })
         assertEquals(
-            listOf("resources kind \"avd\" has no resource provider, Loop holds its resources as plain locks"),
+            listOf("resources kind \"display\" has no resource provider, Loop holds its resources as plain locks"),
             workflow.configWarnings,
         )
     }

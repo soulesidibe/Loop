@@ -4,9 +4,11 @@ import loop.api.ProjectId
 import loop.api.ResourceDeclaration
 import loop.api.ResourceException
 import loop.api.ResourceHolder
+import loop.api.ResourceProvider
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
+import java.util.ServiceLoader
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -23,6 +25,14 @@ class AndroidResourceProviderTest {
 
     @AfterEach
     fun stopFakeEmulators() = android.shutdown()
+
+    @Test
+    fun `the provider is registered for ServiceLoader and serves android-device and avd`() {
+        val found = ServiceLoader.load(ResourceProvider::class.java).filterIsInstance<AndroidResourceProvider>()
+
+        assertEquals(1, found.size)
+        assertEquals(setOf("android-device", "avd"), found.single().kinds)
+    }
 
     @Test
     fun `a connected device is granted by its serial and no emulator starts`() {
