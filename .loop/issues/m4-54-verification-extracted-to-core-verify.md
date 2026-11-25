@@ -1,7 +1,7 @@
 ---
 id: m4-54
 title: "Verification extracted from the orchestrator into loop.core.verify"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-37]
@@ -33,3 +33,10 @@ Part of story 138 (PLAN 10.4). Lane A, run on the claude-code runner. Not gating
 2026-11-18 soule: written in m3-29, split from m4-41 after the Fable 5.2 review.
 
 2026-11-25 21:56Z agent 8c278e97: Verification now lives in loop.core.verify (Verification.kt). The orchestrator state it read is passed in through a new interface, VerificationHost: the run's services plus freezeAcceptanceCommands, fetchBase, pullRequestDelivery, awaitsApproval and startApprovalWait. Apart from those host calls, the moved code is unchanged. Orchestrator.kt changes: the class is removed, it gains one verificationHost object, the three call sites pass host = verificationHost, and constants only the class used moved with it. VERIFIED, REFUTED and UNVERIFIED stay in the orchestrator as aliases. No existing test file was edited. I added one new test, VerificationTest, which runs a verification on a fake host outside the orchestrator, as m4-41 will. Results: loop.core.verify.* passed (212 tests), loop.core.orchestrator.* passed (869 tests), ktlintCheck and every module's test compile passed.
+
+2026-11-25 22:05Z loop: Loop opened pull request #82 for this issue: https://github.com/soulesidibe/Loop/pull/82
+
+2026-11-25 22:10Z loop: Loop did not merge pull request #82, ci: Actions runs did not pass: build (failure). The pull request stays open and the result waits for a new approval.
+  Failed runs:
+  - build (failure): https://github.com/soulesidibe/Loop/actions/runs/45710154493
+  Rerun the runs on GitHub or fix the branch, then approve again with loop approve.
