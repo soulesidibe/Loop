@@ -9,6 +9,13 @@ object WaitKeys {
     /** The data key of the state the result moves the issue to. */
     const val TO: String = "to"
 
+    /**
+     * The data key of the name of the kind the issue was dispatched under (m4-18), on a verify and an approval wait and
+     * kept by the merge wait that follows, so the delivery and a restored check follow that kind, not the one the issue
+     * matches now. Absent on a wait stored before m4-18 and in Symphony mode.
+     */
+    const val KIND: String = "kind"
+
     /** The data key of the workspace fingerprint an approval wait was verified on. */
     const val FINGERPRINT: String = "fingerprint"
 

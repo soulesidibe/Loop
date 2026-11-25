@@ -122,6 +122,9 @@ import loop.core.events.TurnInputRequired
 import loop.core.events.TurnStarted
 import loop.core.events.Usage
 import loop.core.events.Verdict
+import loop.core.kinds.IssueKind
+import loop.core.kinds.KindLookup
+import loop.core.kinds.PinnedKind
 import loop.core.kinds.Readiness
 import loop.core.log.KeyValueLog
 import loop.core.log.LogContext
@@ -167,6 +170,8 @@ import loop.core.workflow.DeliveryConfig
 import loop.core.workflow.DeliveryPolicy
 import loop.core.workflow.FilledPrompt
 import loop.core.workflow.GuardsConfig
+import loop.core.workflow.KindConfig
+import loop.core.workflow.KindsConfig
 import loop.core.workflow.PreflightCheck
 import loop.core.workflow.PreflightResult
 import loop.core.workflow.PromptBudget
@@ -810,8 +815,9 @@ class Orchestrator(
      */
     private fun missingSections(issue: Issue): List<String> {
         val ready =
-            effective.config.kinds
-                ?.code
+            KindLookup
+                .of(effective, issue)
+                ?.config
                 ?.ready ?: return emptyList()
         return Readiness.missingSections(issue.description, ready)
     }
@@ -1080,7 +1086,7 @@ class Orchestrator(
         val key = NamespacedId.workspaceKey(issue.id, issue.identifier, effective.trackerId)
         val context = pollContext.copy(issueId = issue.id, issueIdentifier = issue.identifier)
         val env =
-            hookEnv(effective.path, issue.id, issue.identifier, key) +
+            hookEnv(effective.path, issue.id, issue.identifier, key, KindLookup.of(effective, issue)?.name) +
                 mapOf(
                     "LOOP_HOME" to loopHome.toString(),
                     "LOOP_PROJECT_ID" to projectId.value,
@@ -1627,6 +1633,9 @@ class Orchestrator(
          */
         val workflow: WorkflowFile = effective
 
+        /** The kind of the issue as dispatched (m4-18), for the whole attempt like [workflow]; null in Symphony mode. */
+        val kind: IssueKind? = KindLookup.of(workflow, issue)
+
         val runner: AgentRunner = runnerFor(workflow)
         private val workspaces: WorkspaceManager = workspacesFor(workflow)
 
@@ -1710,7 +1719,7 @@ class Orchestrator(
          * runner's configured model. A line names its session's reported model instead, the row the attempt's (bl-147).
          */
         private val ledger = LedgerMeter()
-        private val ledgerSetup = LedgerMeter.setupOf(workflow, runner.model, issue.id)
+        private val ledgerSetup = LedgerMeter.setupOf(workflow, runner.model, issue.id, kind?.name)
 
         /** m4-42: the ledger setup `attempt_started` carries, so an exporter names it on every span of the attempt. */
         fun setupData(): Map<String, String> =
@@ -2039,13 +2048,20 @@ class Orchestrator(
             drainFailures.putIfAbsent(if (safe[Tracker.TO] != null) failedRequestName(safe) else notice, notice)
         }
 
-        /** Moves the issue and records `issue_moved` by host; the failure's reason, null when it moved. */
+        /**
+         * Moves the issue and records `issue_moved` by host; the failure's reason, null when it moved. A move that would
+         * put the issue under another kind is refused (m4-18), so an agent never picks a kind with laxer checks for its
+         * next attempt.
+         */
         private suspend fun applyMove(request: ToolRequest.Move): String? {
             val current =
                 withContext(io) { tracker.fetchIssuesByIds(listOf(issue.id)) }
                     .getOrElse { return it.describe() }
                     .firstOrNull()
                     ?: return "no issue ${issue.identifier} in the tracker"
+            val before = KindLookup.of(workflow, current)?.name
+            val after = KindLookup.afterMove(workflow, current, request.to)?.name
+            if (before != after) return "the move to ${request.to} would change the kind of the issue from $before to $after"
             val from = current.state
             withContext(io) { tracker.moveIssue(current, request.to) }.getOrElse { return it.describe() }
             record(IssueMoved, data = mapOf(Tracker.FROM to from, Tracker.TO to request.to, Tracker.BY to BY_HOST))
@@ -2127,7 +2143,7 @@ class Orchestrator(
                 unverified = verification.unverified
                 return null
             }
-            val wait = Wait.verify(projectId, issue.id, issue.identifier, attemptId, runId, clock.now(), to)
+            val wait = Wait.verify(projectId, issue.id, issue.identifier, attemptId, runId, clock.now(), to, kind?.name)
             return waitingFor(wait, write = true, endOnCancel = { executions[issue.id]?.stop != null }) {
                 val passed = verification.verify().also { submitted = it }
                 progress.verified(verification.failingChecks)
@@ -2296,6 +2312,7 @@ class Orchestrator(
                 issue.description,
                 attemptId,
                 workflow,
+                kind,
                 path,
                 checkRunner,
                 { definition, data -> record(definition, data = data) },
@@ -2641,8 +2658,8 @@ class Orchestrator(
             rotations: Int = 0,
         ): String {
             val base =
-                fetchedBase ?: workflow.config.kinds
-                    ?.code
+                fetchedBase ?: kind
+                    ?.config
                     ?.guards
                     ?.base ?: GuardsConfig.DEFAULT_BASE
             val brief = SessionBrief(workspaceGit, attemptLedger, attemptEvents, SessionBrief.savedResults(loopHome, projectId), redactor)
@@ -2665,7 +2682,7 @@ class Orchestrator(
          * fails the attempt: its verification freezes the same dispatched list, or parks the issue when it cannot.
          */
         private suspend fun freezeAtDispatch() {
-            if (!declaresAcceptanceCommands(workflow) || workflow.trackers.entryOf(issue.id).kind != FILES_TRACKER) return
+            if (!declaresAcceptanceCommands(kind?.config) || workflow.trackers.entryOf(issue.id).kind != FILES_TRACKER) return
             val commands = AcceptanceCriteria.of(issue.description).commands
             freezeAcceptanceCommands(issue.id, issue.identifier, commands) { definition, data -> record(definition, data = data) }
                 .onFailure { error ->
@@ -3645,8 +3662,8 @@ class Orchestrator(
          */
         private suspend fun attemptBase(): String? {
             val base =
-                workflow.config.kinds
-                    ?.code
+                kind
+                    ?.config
                     ?.delivery
                     ?.pullRequest
                     ?.base ?: return null
@@ -3714,7 +3731,7 @@ class Orchestrator(
 
         private fun env(key: WorkspaceKey): Map<String, String> {
             val launcherDir = launcher.parent.toString()
-            return hookEnv(workflow.path, issue.id, issue.identifier, key) +
+            return hookEnv(workflow.path, issue.id, issue.identifier, key, kind?.name) +
                 mapOf(
                     "LOOP_HOME" to loopHome.toString(),
                     "LOOP_PROJECT_ID" to projectId.value,
@@ -3727,10 +3744,9 @@ class Orchestrator(
         }
     }
 
-    /** Whether the kind of [workflow] declares `acceptance_commands` (m2-09). */
-    private fun declaresAcceptanceCommands(workflow: WorkflowFile): Boolean =
-        workflow.config.kinds
-            ?.code
+    /** Whether [kind] declares `acceptance_commands` (m2-09). */
+    private fun declaresAcceptanceCommands(kind: KindConfig?): Boolean =
+        kind
             ?.checks
             .orEmpty()
             .any { it is CheckConfig.AcceptanceCommands }
@@ -3774,6 +3790,11 @@ class Orchestrator(
         val description: String?,
         val attemptId: AttemptId?,
         val workflow: WorkflowFile,
+        /**
+         * The kind of the issue (m4-18), whose checks, holdouts and delivery apply, and whose name the approval wait
+         * holds; null in Symphony mode.
+         */
+        val kind: IssueKind?,
         val workspace: Path,
         val checkRunner: CheckRunner,
         val record: suspend (EventDefinition, Map<String, String>) -> Unit,
@@ -3792,18 +3813,10 @@ class Orchestrator(
          */
         val diffPolicyOnly: Boolean = false,
     ) {
-        private val configured: List<CheckConfig> =
-            workflow.config.kinds
-                ?.code
-                ?.checks
-                .orEmpty()
+        private val configured: List<CheckConfig> = kind?.config?.checks.orEmpty()
 
         /** The hidden checks (m2-14), run after every visible check passed and counted in the verdict like them. */
-        private val holdouts: List<CheckConfig> =
-            workflow.config.kinds
-                ?.code
-                ?.holdout
-                .orEmpty()
+        private val holdouts: List<CheckConfig> = kind?.config?.holdout.orEmpty()
 
         /** The issue's acceptance criteria when the kind declares `acceptance_commands`, null otherwise (m2-09). */
         private val criteria: List<AcceptanceCriterion>? =
@@ -4097,9 +4110,10 @@ class Orchestrator(
          */
         private suspend fun pinnedBase(): String? {
             if (diffBase != null) return diffBase
+            // m4-18: the issue's kind, like `attemptBase`; only the code kind delivers a pull request so far.
             val base =
-                workflow.config.kinds
-                    ?.code
+                kind
+                    ?.config
                     ?.delivery
                     ?.pullRequest
                     ?.base ?: return null
@@ -4121,8 +4135,8 @@ class Orchestrator(
         /** True when the kind delivers a pull request (m2-25). */
         private val deliversPullRequest: Boolean
             get() =
-                workflow.config.kinds
-                    ?.code
+                kind
+                    ?.config
                     ?.delivery
                     ?.pullRequest != null
 
@@ -4190,10 +4204,7 @@ class Orchestrator(
          * starts a `Waiting(approval)` with an evidence summary on the issue. The failure's reason, null otherwise.
          */
         suspend fun deliver(to: String): String? {
-            val delivery =
-                workflow.config.kinds
-                    ?.code
-                    ?.delivery ?: DeliveryConfig()
+            val delivery = kind?.config?.delivery ?: DeliveryConfig()
             if (delivery.policy != DeliveryPolicy.Auto) return requestApproval(to)
             // m2-28: an auto merge goes through the m2-25 delivery and the m2-26 merge check, approved by `auto` itself;
             // the auto merge gate decides right before the merge.
@@ -4323,8 +4334,8 @@ class Orchestrator(
         ) {
             // The check lines, redacted, and the number of judgment calls of the last [verify], for the body (m2-25).
             val pullRequestDelivery =
-                workflow.config.kinds
-                    ?.code
+                kind
+                    ?.config
                     ?.delivery
                     ?.pullRequest != null
             val checks = if (pullRequestDelivery) redactor.redact(EvidenceSummary.lines(passed.toList()).joinToString("\n")) else null
@@ -4343,6 +4354,7 @@ class Orchestrator(
                     approvedBy = approvedBy,
                     approvedAt = approvedBy?.let { clock.now() },
                     pullRequest = pullRequest,
+                    kind = kind?.name,
                 )
             waits.hold(wait)
             storeWaiting(wait) { waits.save(wait) }
@@ -4858,7 +4870,8 @@ class Orchestrator(
      * Delivers an approved wait (m2-24): on the files tracker, the move of [issue] to [to], its handoff state, with
      * the wait's attempt id. A failed move is logged and the issue keeps waiting, so the next tick tries again.
      * With `delivery.pull_request` the pull request delivery runs instead, its move last (m2-25). True when it was
-     * delivered.
+     * delivered. The delivery is that of the kind the issue was dispatched under, which the wait holds (m4-18), not the
+     * one it matches now; a wait whose kind left the workflow keeps waiting, with a warning.
      */
     private suspend fun deliverApproved(
         wait: Wait.Approval,
@@ -4866,8 +4879,16 @@ class Orchestrator(
         to: String,
     ): Boolean {
         val context = waitContext(wait)
-        if (effective.config.kinds
-                ?.code
+        val kind =
+            when (val pinned = KindLookup.pinned(effective, wait.kind, issue)) {
+                is PinnedKind.Found -> pinned.kind
+                is PinnedKind.Gone -> {
+                    warnKindGone(wait, pinned.name)
+                    return false
+                }
+            }
+        if (kind
+                ?.config
                 ?.delivery
                 ?.pullRequest != null
         ) {
@@ -4926,6 +4947,8 @@ class Orchestrator(
                 commented = wait.pullRequest,
             )
         // m2-26: with `merge`, the delivery stops after the comment and the merge wait takes over, the issue unmoved.
+        // m4-18: the code kind's, since only a code issue reaches a pull request delivery: no other kind may declare
+        // one, and the wait pins the kind the issue was dispatched under.
         val merges =
             effective.config.kinds
                 ?.code
@@ -5096,6 +5119,9 @@ class Orchestrator(
                 issue.description,
                 wait.attemptId,
                 workflow,
+                // m4-18: the merge check is code only until each kind takes it up. Only a code issue reaches it: no
+                // other kind may deliver a pull request, and the approval wait pins the kind it was dispatched under.
+                workflow.config.kinds?.let { IssueKind(KindsConfig.CODE, it.code) },
                 workspace,
                 checkRunnerFor(workflow),
                 { definition, data -> recordWaitEvent(wait, definition, data + (MergeCheck.MARK to "true")) },
@@ -5181,6 +5207,19 @@ class Orchestrator(
         log.guardSink(sinkName, waitContext(wait)) { sink.record(event).getOrThrow() }
     }
 
+    /** The issues whose wait named a kind the workflow no longer holds, warned once each for the life of this run (m4-18). */
+    private val kindGoneWarned = mutableSetOf<String>()
+
+    /** Logs at warn, once per issue, that [wait] keeps waiting because its kind [name] left the workflow (m4-18). */
+    private fun warnKindGone(
+        wait: Wait,
+        name: String,
+    ) {
+        if (!kindGoneWarned.add(wait.issueId)) return
+        val reason = "the kind $name the issue was dispatched under is no longer in the workflow, it keeps waiting until it is back"
+        log.log(LogLevel.WARN, WAITING, LogOutcome.FAILED, waitContext(wait), mapOf("wait_reason" to wait.reason.wire), reason)
+    }
+
     /** Resumes one stored wait, see [restoreWaiting]; the rerun of its checks, null when nothing runs. */
     private suspend fun resumeWait(
         scope: CoroutineScope,
@@ -5209,6 +5248,16 @@ class Orchestrator(
             log.log(LogLevel.INFO, WAITING, LogOutcome.RELEASED, waitContext(wait), mapOf("wait_reason" to wait.reason.wire), dropped)
             return null
         }
+        // m4-18: the checks of the kind the issue was dispatched under; a wait whose kind left the workflow keeps waiting.
+        val kind =
+            when (val pinned = KindLookup.pinned(workflow, wait.kind, candidate)) {
+                is PinnedKind.Found -> pinned.kind
+                is PinnedKind.Gone -> {
+                    waits.hold(wait)
+                    warnKindGone(wait, pinned.name)
+                    return null
+                }
+            }
         val context = waitContext(wait)
         val record: suspend (EventDefinition, Map<String, String>) -> Unit = { definition, data ->
             val event =
@@ -5230,6 +5279,7 @@ class Orchestrator(
                 candidate?.description,
                 wait.attemptId,
                 workflow,
+                kind,
                 checkNotNull(located.getOrNull()),
                 checkRunnerFor(workflow),
                 record,

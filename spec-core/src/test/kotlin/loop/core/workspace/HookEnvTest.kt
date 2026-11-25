@@ -35,4 +35,19 @@ class HookEnvTest {
         assertEquals("m1-04", env["LOOP_ISSUE_ID"])
         assertFalse("LOOP_TRACKER_ID" in env)
     }
+
+    @Test
+    fun `m4-18 every hook gets LOOP_KIND, the kind of its issue`() {
+        val env = hookEnv(Path("/p/WORKFLOW.md"), "local:post-01", "post-01", WorkspaceKey.of("local:post-01"), kind = "content")
+
+        assertEquals("content", env["LOOP_KIND"])
+        assertEquals("post-01", env["LOOP_ISSUE_ID"])
+    }
+
+    @Test
+    fun `m4-18 a workflow in Symphony mode has no kind, so no LOOP_KIND`() {
+        val env = hookEnv(Path("/p/WORKFLOW.md"), "m1-04", "m1-04", WorkspaceKey.of("m1-04"), kind = null)
+
+        assertFalse("LOOP_KIND" in env)
+    }
 }

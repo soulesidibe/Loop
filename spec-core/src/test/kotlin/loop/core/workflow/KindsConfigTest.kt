@@ -146,7 +146,10 @@ class KindsConfigTest {
                 "kinds:\n  code:\n    verify: {}" to "kinds.code.verify.checks is required",
                 "kinds:\n  code:\n    verify:\n      chekcs: []" to "kinds.code.verify.checks is required",
                 "kinds:\n  code:\n    verify:\n      checks: ./x.sh" to "kinds.code.verify.checks must be a list",
-                "kinds:\n  docs:\n    verify:\n      checks: []" to "kinds.docs is not supported, use code",
+                // m4-18: a kind other than code is read, but code stays required.
+                "kinds:\n  docs:\n    verify:\n      checks: []" to "kinds must be a map with a code kind",
+                "kinds:\n  code:\n    verify:\n      checks: []\n  Docs:\n    match: { label: docs }\n    verify:\n      checks: []" to
+                    "kinds.Docs is not a kind name, use lowercase letters, digits and -, starting with a letter",
             )
         cases.forEach { (yaml, message) -> assertEquals(message, error(yaml), yaml) }
     }
