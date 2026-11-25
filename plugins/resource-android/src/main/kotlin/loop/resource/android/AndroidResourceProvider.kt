@@ -11,9 +11,14 @@ import java.net.ServerSocket
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.io.path.deleteIfExists
 import kotlin.io.path.exists
+import kotlin.io.path.extension
+import kotlin.io.path.getLastModifiedTime
+import kotlin.io.path.listDirectoryEntries
 import kotlin.io.path.readText
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
 
@@ -38,13 +43,17 @@ internal data class AndroidTimeouts(
  * as a child of `loop run`, on the first free even port from 5554, waits for `adb wait-for-device` and
  * `sys.boot_completed`, and grants `emulator-<port>`. The attempt that holds the lock is written on the record of the
  * boot and names its log (bl-208). A prepare run again for the same attempt waits for the emulator the first one booted
- * when it still runs, and stops what is left of it when not, so it is idempotent. [release] stops an emulator it booted with `adb -s <serial> emu
- * kill`, and leaves a real device, or an emulator started outside Loop, as it is. [readOnlyCheck] confirms an emulator
- * it booted is gone. [recover] stops each emulator it booted whose AVD no live lock holds and whose booting process of
- * Loop is dead, and never touches a real device.
+ * when it still runs, and stops what is left of it when not, so it is idempotent. [release] stops an emulator it booted
+ * with `adb -s <serial> emu kill`, and leaves a real device, or an emulator started outside Loop, as it is.
+ * [readOnlyCheck] confirms an emulator it booted is gone. [recover] stops each emulator it booted whose AVD no live
+ * lock holds and whose booting process of Loop is dead, and never touches a real device.
  *
  * The emulators it booted are written under [stateDir], `<LOOP_HOME>/resources/android/` by default, so a later
- * process finds what a crashed one left. Every `adb` and `emulator` call has a timeout of [timeouts], and a failure
+ * process finds what a crashed one left. A record names its emulator by the pid and the start time of the `emulator`
+ * process: the provider stops an emulator only while that process runs, so an emulator someone started on the same
+ * port after Loop's died, or a process that took its pid, is never stopped, and a record whose emulator is dead is
+ * dropped. The log of a boot is deleted by a release that ends cleanly, and [recover] deletes logs older than
+ * [LOG_RETENTION]. Every `adb` and `emulator` call has a timeout of [timeouts], and a failure
  * names the command and its exit code. The limit of 2 Android devices and emulators is Loop's, never the provider's.
  */
 class AndroidResourceProvider internal constructor(
@@ -92,14 +101,14 @@ class AndroidResourceProvider internal constructor(
 
     override fun release(resource: ResourceDeclaration) {
         if (resource.kind != AVD) return
-        named(resource) { records.of(resource.id)?.let(::stop) }
+        named(resource) { records.of(resource.id)?.let { stop(it, deleteLog = true) } }
     }
 
     override fun readOnlyCheck(resource: ResourceDeclaration): List<String> {
         if (resource.kind != AVD) return emptyList()
         return named(resource) {
             val record = records.of(resource.id) ?: return@named emptyList()
-            if (runs(record, devices())) {
+            if (runs(record)) {
                 listOf("the emulator ${record.serial} of avd ${record.avd} that Loop booted is still running after release")
             } else {
                 emptyList()
@@ -119,7 +128,21 @@ class AndroidResourceProvider internal constructor(
                     "avd ${record.avd}: ${e.message}"
                 }
             }
+        sweepLogs()
         if (failures.isNotEmpty()) throw ResourceException(failures.joinToString("; "))
+    }
+
+    /** Deletes the emulator logs older than [LOG_RETENTION]; a log that cannot be read or deleted stays for the next sweep. */
+    private fun sweepLogs() {
+        if (!logs.exists()) return
+        val before = System.currentTimeMillis() - LOG_RETENTION.inWholeMilliseconds
+        logs.listDirectoryEntries().filter { it.extension == "log" }.forEach { log ->
+            try {
+                if (log.getLastModifiedTime().toMillis() < before) log.deleteIfExists()
+            } catch (e: IOException) {
+                // Kept: the next recover tries again.
+            }
+        }
     }
 
     private fun prepareDevice(serial: String): String {
@@ -137,6 +160,9 @@ class AndroidResourceProvider internal constructor(
         avd: String,
         attempt: String,
     ): String {
+        // A record whose emulator is dead names nothing: dropped first, so an emulator now on its serial, maybe one
+        // started by hand on the same port, is granted as one already running and never stopped by release.
+        records.of(avd)?.takeIf { process(it) == null }?.let { records.delete(avd) }
         val devices = devices()
         val emulators = devices.filter { (serial, state) -> state == READY && serial.startsWith(EMULATOR_PREFIX) }.keys
         val running = emulators.firstOrNull { avdName(it) == avd }
@@ -151,7 +177,7 @@ class AndroidResourceProvider internal constructor(
             waitOrStop(avd, record.serial, mine)
             return record.serial
         }
-        // A record whose emulator no longer runs the AVD is stale: stop what is left of it before booting again.
+        // Any other record is stale: stop its emulator, still running, before booting again.
         record?.let(::stop)
         return boot(avd, attempt)
     }
@@ -167,7 +193,7 @@ class AndroidResourceProvider internal constructor(
                 val serial = "$EMULATOR_PREFIX$port"
                 records.write(BootRecord(avd, serial, pid = 0, owner = owner, attempt = attempt))
                 val args = emulatorArgs(avd, port)
-                val log = logs.resolve("$serial-${BootRecords.safeName(attempt)}.log")
+                val log = logOf(BootRecord(avd, serial, pid = 0, owner = owner, attempt = attempt))
                 val process =
                     try {
                         Files.createDirectories(logs)
@@ -176,7 +202,9 @@ class AndroidResourceProvider internal constructor(
                         records.delete(avd)
                         throw e
                     }
-                records.write(BootRecord(avd, serial, pid = process.pid(), owner = owner, attempt = attempt))
+                records.write(
+                    BootRecord(avd, serial, pid = process.pid(), owner = owner, attempt = attempt, started = startOf(process.toHandle())),
+                )
                 val emulator = Started(process, args, log)
                 started[avd] = emulator
                 serial to emulator
@@ -274,56 +302,90 @@ class AndroidResourceProvider internal constructor(
     }
 
     /**
-     * Stops the emulator of [record] when it still runs its AVD, with `adb -s <serial> emu kill`, waits for it to leave
-     * `adb devices`, and kills its process when it does not. True when it is gone, and its record with it; false when
-     * it still runs, the record kept for the read only check and [recover]. A failing `emu kill` throws once the
-     * process is killed.
+     * Stops the emulator of [record] while its process runs: with `adb -s <serial> emu kill` when its serial is
+     * connected, then by killing the process when it does not end. True when it is gone, and its record with it, and
+     * when [deleteLog], its log too once nothing failed; false when it still runs, the record kept for the read only
+     * check and [recover]. A record whose process is dead is dropped and nothing is stopped. A failing `emu kill`
+     * throws once the process is killed.
      */
-    private fun stop(record: BootRecord): Boolean {
-        if (!runs(record, devices())) {
-            started.remove(record.avd)?.let { kill(it.process) }
+    private fun stop(
+        record: BootRecord,
+        deleteLog: Boolean = false,
+    ): Boolean {
+        val emulator = process(record)
+        if (emulator == null) {
+            started.remove(record.avd)
             records.delete(record.avd)
+            if (deleteLog) logOf(record).deleteIfExists()
             return true
         }
-        val kill = commands.adb(listOf("-s", record.serial, "emu", "kill"), timeouts.command)
+        val connected = record.serial in devices()
         val failure =
-            when {
-                kill.timedOut -> "${killCommand(record)} timed out after ${timeouts.command}"
-                kill.exitCode != 0 -> AndroidCommands.failed(killCommand(record), kill.exitCode, kill.output)
-                else -> null
+            if (!connected) {
+                null
+            } else {
+                val kill = commands.adb(listOf("-s", record.serial, "emu", "kill"), timeouts.command)
+                when {
+                    kill.timedOut -> "${killCommand(record)} timed out after ${timeouts.command}"
+                    kill.exitCode != 0 -> AndroidCommands.failed(killCommand(record), kill.exitCode, kill.output)
+                    else -> null
+                }
             }
-        var gone = failure == null && awaitGone(record.serial)
+        var gone = connected && failure == null && awaitGone(record.serial, emulator)
         if (!gone) {
-            val process =
-                started[record.avd]?.process?.toHandle() ?: record.pid.takeIf { it > 0 }?.let { ProcessHandle.of(it).orElse(null) }
-            process?.let(::kill)
-            gone = awaitGone(record.serial)
+            kill(emulator)
+            gone = awaitGone(record.serial, emulator)
         }
         if (gone) {
             started.remove(record.avd)
             records.delete(record.avd)
+            if (deleteLog && failure == null) logOf(record).deleteIfExists()
         }
         failure?.let { throw ResourceException(it) }
         return gone
     }
 
-    /** Whether the serial of [record] is connected and, when it answers, still runs the record's AVD. */
-    private fun runs(
-        record: BootRecord,
-        devices: Map<String, String>,
-    ): Boolean {
-        val state = devices[record.serial] ?: return false
-        return state != READY || avdName(record.serial) == record.avd
+    /**
+     * The `emulator` process of [record] while it runs: the process this provider started, else the recorded pid when
+     * its start time is the recorded one. Null when it is dead, its pid now another process's, or its start unknown.
+     */
+    private fun process(record: BootRecord): ProcessHandle? {
+        if (record.pid <= 0) return null
+        started[record.avd]
+            ?.process
+            ?.toHandle()
+            ?.takeIf { it.pid() == record.pid }
+            ?.let { return it.takeIf(ProcessHandle::isAlive) }
+        if (record.started == 0L) return null
+        val handle = ProcessHandle.of(record.pid).orElse(null) ?: return null
+        return handle.takeIf { it.isAlive && startOf(it) == record.started }
     }
 
-    private fun awaitGone(serial: String): Boolean {
+    /**
+     * Whether the emulator of [record] still runs, for the read only check: its process runs, or its serial is
+     * connected, ready, and runs the record's AVD, as an emulator that outlived its killed process would.
+     */
+    private fun runs(record: BootRecord): Boolean {
+        if (process(record) != null) return true
+        if (devices()[record.serial] != READY) return false
+        return avdName(record.serial) == record.avd
+    }
+
+    /** Waits until [emulator] ended and [serial] left `adb devices`, at most the stop timeout. */
+    private fun awaitGone(
+        serial: String,
+        emulator: ProcessHandle,
+    ): Boolean {
         val deadline = TimeSource.Monotonic.markNow() + timeouts.stop
         while (true) {
-            if (serial !in devices()) return true
+            if (!emulator.isAlive && serial !in devices()) return true
             if (deadline.hasPassedNow()) return false
             Thread.sleep(timeouts.poll.inWholeMilliseconds)
         }
     }
+
+    /** The log of the boot of [record]. */
+    private fun logOf(record: BootRecord): Path = logs.resolve("${record.serial}-${BootRecords.safeName(record.attempt)}.log")
 
     private fun kill(process: Process) = kill(process.toHandle())
 
@@ -392,6 +454,9 @@ class AndroidResourceProvider internal constructor(
         const val LAST_PORT = 5584
         const val WAIT_SLICE_POLLS = 5
         val EMULATOR_SERIAL = Regex("emulator-(\\d+)")
+
+        /** How long [recover] keeps an emulator log that no clean release deleted. */
+        val LOG_RETENTION = 7.days
 
         fun emulatorArgs(
             avd: String,

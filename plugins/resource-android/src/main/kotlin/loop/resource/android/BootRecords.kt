@@ -17,8 +17,10 @@ import kotlin.io.path.outputStream
 
 /**
  * One emulator the provider booted (m4-28): the [avd] it runs on [serial], `emulator-<port>`, the [pid] of the
- * `emulator` process, 0 until it started, the [owner], the process of Loop that booted it, and the [attempt] whose
- * prepare booted it (bl-208), empty in a record written before.
+ * `emulator` process, 0 until it started, the [owner], the process of Loop that booted it, the [attempt] whose
+ * prepare booted it (bl-208), empty in a record written before, and [started], the start of the `emulator` process in
+ * epoch milliseconds, 0 when unknown. The pid and its start time together name the emulator: a pid another process
+ * took since, or an emulator someone else started on the same port, never matches.
  */
 internal data class BootRecord(
     val avd: String,
@@ -26,6 +28,7 @@ internal data class BootRecord(
     val pid: Long,
     val owner: String,
     val attempt: String = "",
+    val started: Long = 0,
 )
 
 /**
@@ -52,6 +55,7 @@ internal class BootRecords(
                 setProperty("pid", record.pid.toString())
                 setProperty("owner", record.owner)
                 setProperty("attempt", record.attempt)
+                setProperty("started", record.started.toString())
             }
         val temp = Files.createTempFile(booted, "record-", ".tmp")
         temp.outputStream().use { properties.store(it, null) }
@@ -82,6 +86,7 @@ internal class BootRecords(
                 pid = properties.getProperty("pid")?.toLongOrNull() ?: 0,
                 owner = properties.getProperty("owner").orEmpty(),
                 attempt = properties.getProperty("attempt").orEmpty(),
+                started = properties.getProperty("started")?.toLongOrNull() ?: 0,
             )
         }.getOrNull()
 
