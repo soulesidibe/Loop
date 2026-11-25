@@ -47,3 +47,5 @@ Filed from the bl-178 delivery, at the user's request. Triage decides whether it
 Closed as a duplicate of bl-07, which describes the same 60 second stall of CLI tests that start a real `loop` process and is step 1 of m4-00. Today's four failures, the CI failure on ubuntu and the missing thread dump were copied into bl-07, and bl-07's priority was raised to 2. The work happens there, in the human lane.
 
 2026-11-25 soule: another occurrence on pull request #63 (m4-26), GitHub Actions run 45585606802 attempt 1: `ResourceToolsTest > without resources loop tool mcp advertises no resource tool()` failed at `ResourceToolsTest.kt:458`, `run.await()` timing out ("did not exit in 60s") on a loaded cli-test shard. The test runs no m4-26 path; attempt 2 passed on the same commit.
+
+2026-11-25 soule: another flaky test, on pull request #76 (m4-39), run 45684771762 attempt 1: `MultiTrackerRunCommandTest > candidates of both trackers, each filtered by its own labels, are dispatched in the spec's order` (`MultiTrackerRunCommandTest.kt`, around line 221), a dispatch order assertion with `maxAgents = 3`; the pull request did not touch it and the rerun passed.
