@@ -122,6 +122,22 @@ sealed interface ToolRequest {
     ) : ToolRequest {
         override val kind: String get() = "result"
     }
+
+    /**
+     * A question for a human the agent asked with the `ask` MCP tool (m4-31): its [questionKind], the [question],
+     * redacted and trimmed, the [options] it sees and the one it recommends. The drain posts it on the issue and the
+     * issue waits as `Waiting(ask)`.
+     */
+    @Serializable
+    @SerialName("ask")
+    data class Ask(
+        @SerialName("question_kind") val questionKind: String,
+        val question: String,
+        val options: List<String> = emptyList(),
+        val recommendation: String? = null,
+    ) : ToolRequest {
+        override val kind: String get() = "ask"
+    }
 }
 
 /** One file of the queue: decoded, or unreadable with the reason. */

@@ -103,6 +103,7 @@ import loop.core.events.IssueCommented
 import loop.core.events.IssueLabeled
 import loop.core.events.IssueMoved
 import loop.core.events.IssueParked
+import loop.core.events.QuestionAsked
 import loop.core.events.MergeRequeued
 import loop.core.events.Phase
 import loop.core.events.PromptRecordFailed
@@ -178,6 +179,7 @@ import loop.core.verify.WorkspaceFingerprint
 import loop.core.verify.WorkspaceGit
 import loop.core.verify.commands
 import loop.core.verify.judgmentCalls
+import loop.core.waiting.Asks
 import loop.core.waiting.MergePhase
 import loop.core.waiting.MergeQueue
 import loop.core.waiting.Wait
@@ -702,6 +704,8 @@ class Orchestrator(
         val restored = if (polled.failures.isEmpty()) restoreWaiting(scope, issues) else emptyList()
         // m2-24: approvals given from another terminal, and the approval waits a human ended by moving the issue.
         val delivered = syncApprovals(issues)
+        // m4-31: the ask waits a human ended by moving the issue.
+        syncAsks(issues)
         // m2-26, bl-172: the merge waits, one delivery at a time, the head of the queue on a free agent slot.
         val verifications = restored + syncMerges(scope, issues)
         val parkedIds =
@@ -2065,7 +2069,8 @@ class Orchestrator(
                 }
                 removeRequest(entry)
             }
-            val took = takeResultFile()
+            // m4-31: a result file left beside an ask stays for the next attempt's stale discard.
+            val took = !asked && takeResultFile()
             return pending.isNotEmpty() || took
         }
 
@@ -2102,9 +2107,18 @@ class Orchestrator(
             val failure =
                 try {
                     when (request) {
-                        is ToolRequest.Move -> if (intercepts(request.to)) applySubmitted(request.to) else applyMove(request)
+                        // m4-31: after an ask the issue waits for its answer, so no move and no result of the drain applies.
+                        is ToolRequest.Move ->
+                            if (asked) {
+                                WAITS_FOR_ANSWER
+                            } else if (intercepts(request.to)) {
+                                applySubmitted(request.to)
+                            } else {
+                                applyMove(request)
+                            }
                         is ToolRequest.Comment -> applyComment(request)
-                        is ToolRequest.Result -> applyQueuedResult(request)
+                        is ToolRequest.Result -> if (asked) WAITS_FOR_ANSWER else applyQueuedResult(request)
+                        is ToolRequest.Ask -> applyAsk(request)
                     }
                 } catch (e: CancellationException) {
                     throw e
@@ -2194,6 +2208,37 @@ class Orchestrator(
          * stops after that drain: the issue stays active until `loop approve`, and no further turn is needed.
          */
         private var waitingApproval = false
+
+        /**
+         * True once a drain of this attempt started a `Waiting(ask)` (m4-31). The attempt stops after that drain with no
+         * verification, and a second `ask` fails.
+         */
+        private var asked = false
+
+        /**
+         * A queued `ask` (m4-31): its question posted on the issue as it stands now, then `Waiting(ask)`, see [Asks]. The
+         * failure's reason, null once the issue waits.
+         */
+        private suspend fun applyAsk(request: ToolRequest.Ask): String? {
+            Asks.refusal(loopMode = kinds != null, asked = asked, submitted = submitted != null)?.let { return it }
+            val current =
+                withContext(io) { tracker.fetchIssuesByIds(listOf(issue.id)) }
+                    .getOrElse { return it.describe() }
+                    .firstOrNull()
+                    ?: return "no issue ${issue.identifier} in the tracker"
+            val wait = Wait.ask(projectId, issue.id, issue.identifier, attemptId, runId, clock.now(), current.state, request.questionKind, kind?.name)
+            return Asks
+                .start(
+                    Asks.Question(request.questionKind, request.question, request.options, request.recommendation),
+                    wait,
+                    redactor::redact,
+                    post = { text -> withContext(io) { tracker.addComment(current, IssueComment(agentAuthor(), clock.now(), text)) } },
+                    record = { definition, data -> record(definition, data = data) },
+                    save = { asking ->
+                        notices.asking(asking, Asks.noticeReason(request.questionKind)) { noticed -> storeWaiting(noticed) { waits.save(noticed) } }
+                    },
+                ).also { failure -> if (failure == null) asked = true }
+        }
 
         /**
          * In Loop mode every move out of the active states is a submitted result, except `needs_info`: a move
@@ -2413,11 +2458,14 @@ class Orchestrator(
         /** Adds the comment, redacted with the run's redactor, and records `issue_commented` by host. */
         private suspend fun applyComment(request: ToolRequest.Comment): String? {
             val text = redactor.redact(request.text).trim()
-            val comment = IssueComment("agent ${attemptId.value.take(SHORT_ID)}", clock.now(), text)
+            val comment = IssueComment(agentAuthor(), clock.now(), text)
             withContext(io) { tracker.addComment(issue, comment) }.getOrElse { return it.describe() }
             record(IssueCommented, data = mapOf(Tracker.CHARS to text.length.toString(), Tracker.BY to BY_HOST))
             return null
         }
+
+        /** The author of the agent's comments, `agent <short attempt id>`. */
+        private fun agentAuthor(): String = "agent ${attemptId.value.take(SHORT_ID)}"
 
         /** The `request` and `to` or `chars` data of the tool request events; the length is of the redacted text. */
         private fun requestData(request: ToolRequest): Map<String, String> =
@@ -2428,6 +2476,7 @@ class Orchestrator(
                     mapOf(ToolRequestEvent.REQUEST to request.kind, Tracker.CHARS to chars.toString())
                 }
                 is ToolRequest.Result -> mapOf(ToolRequestEvent.REQUEST to request.kind, ToolRequestEvent.SOURCE to RESULT_MCP_SOURCE)
+                is ToolRequest.Ask -> mapOf(ToolRequestEvent.REQUEST to request.kind, QuestionAsked.QUESTION_KIND to request.questionKind)
             }
 
         private val toolOutputs = ToolOutputQueue(directory)
@@ -2718,7 +2767,7 @@ class Orchestrator(
                     endSession()
                 }
             val parks = executed.parkReason != null
-            val waits = executed.exitReason == ExitReason.WAITING_APPROVAL
+            val waits = executed.exitReason == ExitReason.WAITING_APPROVAL || executed.exitReason == ExitReason.WAITING_ASK
             return if (StopUsage.budgetWins(breach != null, parks, waits)) budgetEnd(executed.turns) else executed
         }
 
@@ -3104,6 +3153,7 @@ class Orchestrator(
                     recordFinishing(turn)
                     unverifiedEnd(number)?.let { return it }
                     approvalEnd(number)?.let { return it }
+                    askEnd(number)?.let { return it }
                     resultFailure?.let { return it.executed(number) }
                     refutedEnd(number, refresh = null)?.let { return it }
                     return Executed(AttemptOutcome.Succeeded, exitReason = ExitReason.NO_CONTINUATION, turns = number)
@@ -3116,6 +3166,10 @@ class Orchestrator(
                     return it
                 }
                 approvalEnd(number)?.let {
+                    recordFinishing(turn)
+                    return it
+                }
+                askEnd(number)?.let {
                     recordFinishing(turn)
                     return it
                 }
@@ -3371,6 +3425,13 @@ class Orchestrator(
          */
         private fun approvalEnd(number: Int): Executed? =
             if (waitingApproval) Executed(AttemptOutcome.Succeeded, exitReason = ExitReason.WAITING_APPROVAL, turns = number) else null
+
+        /**
+         * How an attempt ends after the turn [number] whose drain started a `Waiting(ask)` (m4-31): normally, with the exit
+         * reason `waiting_ask`, no verification and no continuation, its workspace kept. Null when no ask wait started.
+         */
+        private fun askEnd(number: Int): Executed? =
+            if (asked) Executed(AttemptOutcome.Succeeded, exitReason = ExitReason.WAITING_ASK, turns = number) else null
 
         /** Why no further turn follows a completed turn, [limit] the turn limit it reached, null when the next one should run. */
         private fun endReason(
@@ -5156,6 +5217,31 @@ class Orchestrator(
     }
 
     /**
+     * Goes through the ask waits of this tick's read (m4-31): a wait whose issue a human moved, see [Wait.Ask.humanMoved],
+     * ends, recorded as a human touch, and the issue is dispatched again like any other. An issue that still runs, the
+     * attempt that asked closing, or that cannot be read keeps waiting.
+     */
+    private suspend fun syncAsks(candidates: List<Issue>) {
+        val asks = waits.current(WaitReason.Ask).filterIsInstance<Wait.Ask>().filter { it.issueId !in running }
+        if (asks.isEmpty()) return
+        val standing = standings(asks, candidates)
+        for (wait in asks) {
+            val found = standing(wait.issueId)
+            val issue =
+                when (found) {
+                    Standing.Unread -> continue
+                    is Standing.Active -> found.issue
+                    is Standing.Gone -> found.issue
+                }
+            if (!wait.humanMoved(issue?.state, active = found is Standing.Active)) continue
+            endWaiting(wait)
+            val touch = mapOfNotNull(HumanTouched.TOUCH to HumanTouch.MOVE, HumanTouched.FROM_STATE to wait.state, HumanTouched.TO_STATE to issue?.state)
+            recordWaitEvent(wait, HumanTouched, touch)
+            log.log(LogLevel.INFO, WAITING, LogOutcome.RELEASED, waitContext(wait), mapOf("wait_reason" to wait.reason.wire), "a human moved the issue")
+        }
+    }
+
+    /**
      * Delivers an approved wait (m2-24): on the files tracker, the move of [issue] to [to], its handoff state, with
      * the wait's attempt id. A failed move is logged and the issue keeps waiting, so the next tick tries again.
      * With `delivery.pull_request` the pull request delivery runs instead, its move last (m2-25). True when it was
@@ -5860,6 +5946,9 @@ class Orchestrator(
         /** The longest move target a failed request notice names (m2-07). */
         const val NOTICE_TARGET_MAX = 64
         const val SHORT_ID = 8
+
+        /** Why a move or a result queued after an `ask` of the same drain fails (m4-31). */
+        const val WAITS_FOR_ANSWER = "the issue waits for the answer to the agent's question"
 
         /** The guidance of turns 2..n, the same for every runner (m1-06 decision P1); the tags are filled per turn. */
         const val CONTINUATION_GUIDANCE =

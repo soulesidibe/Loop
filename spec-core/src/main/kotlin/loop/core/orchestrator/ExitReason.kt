@@ -26,6 +26,9 @@ internal object ExitReason {
     /** The verified result waits for `loop approve` under the `human` delivery policy (m2-24); no continuation follows. */
     const val WAITING_APPROVAL = "waiting_approval"
 
+    /** The agent asked a human a question with `ask` (m4-31): the issue waits, no verification and no continuation follow. */
+    const val WAITING_ASK = "waiting_ask"
+
     /** The attempt failed because the by-id refresh after a turn failed (spec 16.5). */
     const val REFRESH_ERROR = "issue_state_refresh_error"
 }

@@ -94,6 +94,9 @@ object IssueCommented : EventDefinition("issue_commented") {
     /** m3-12: the comment of a `split_issue` park. */
     const val SPLIT_ISSUE = IssueParked.SPLIT_ISSUE
 
+    /** m4-31: the comment of an agent's `ask`, its question for a human. */
+    const val QUESTION = "question"
+
     override val trace = TraceShow.TIMELINE_AND_ISSUE_LEVEL
     override val human = HumanShow.ISSUE
     override val sample = mapOf(Tracker.CHARS to "42", Tracker.BY to Tracker.BY_HOST)
@@ -115,6 +118,7 @@ object IssueCommented : EventDefinition("issue_commented") {
         CI -> "commented why CI did not let it merge"
         DELIVERABLE -> "commented the deliverable files of its verified result"
         SPLIT_ISSUE -> "commented that it should be split"
+        QUESTION -> "commented the agent's question for a human"
         else -> "commented${Tracker.humanBy(data)}"
     }
 }
@@ -153,6 +157,22 @@ object IssueCommentRequested : EventDefinition("issue_comment_requested") {
         event: RecordedEvent,
         context: TraceContext,
     ) = traceDetails(context) { comment(event) }
+}
+
+/**
+ * m4-31: Loop posted an agent's `ask` on its issue, a question of [QUESTION_KIND] with [OPTIONS] options in a comment of
+ * [Tracker.CHARS] characters, and the issue waits as `Waiting(ask)`. Never the text: a question can hold a secret.
+ */
+object QuestionAsked : KeyedEvent("question_asked", QuestionAsked.QUESTION_KIND, QuestionAsked.OPTIONS, Tracker.CHARS) {
+    const val QUESTION_KIND = "question_kind"
+    const val OPTIONS = "options"
+
+    override val sample = mapOf(QUESTION_KIND to "product", OPTIONS to "2", Tracker.CHARS to "120")
+
+    override fun humanSentence(
+        data: Map<String, String>,
+        facts: HumanFacts,
+    ) = "asked a ${data[QUESTION_KIND]} question on the issue and waits for a human"
 }
 
 /** The fields of a queued agent request Loop could not apply or dropped. */

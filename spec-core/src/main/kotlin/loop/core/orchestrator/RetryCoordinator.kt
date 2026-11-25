@@ -405,6 +405,12 @@ internal class RetryCoordinator(
     ) {
         when (summary.outcome) {
             AttemptOutcome.Succeeded -> {
+                if (summary.exitReason == ExitReason.WAITING_ASK) {
+                    // m4-31: an ask waits for a human. It takes no max_attempts slot and counts toward no
+                    // max_continuations, so the counters stay as they were, neither counted nor reset.
+                    queue.drop(issue.id, resetCounter = false)
+                    return
+                }
                 if (summary.exitReason == ExitReason.WAITING_APPROVAL) {
                     // m2-24: a verified result waiting for approval is progress and needs no continuation.
                     queue.drop(issue.id, resetCounter = true)
