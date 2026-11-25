@@ -60,7 +60,6 @@ import loop.api.TurnLedger
 import loop.api.WaitReason
 import loop.api.WaitingIssues
 import loop.core.channel.HumanNotices
-import loop.core.channel.NoticeRecorder
 import loop.core.channel.NoticeSettings
 import loop.core.delivery.AttachDelivery
 import loop.core.delivery.AutoMerge
@@ -585,7 +584,7 @@ class Orchestrator(
                 )
             },
             env = mapOf("LOOP_PROJECT_ID" to projectId.value, "LOOP_WORKFLOW" to effective.path.toString()),
-            recorder = NoticeRecording(),
+            recorder = NoticeRecording(this.sink, sinkName, log, clock, projectId, runId, ::HookRecorder),
             redact = redactor::redact,
         )
     }
@@ -5624,40 +5623,6 @@ class Orchestrator(
         }
     }
 
-    /** m4-30: records the events and the hook runs of [notices] in this run, outside any attempt, and logs the warnings. */
-    private inner class NoticeRecording : NoticeRecorder {
-        override suspend fun record(
-            issueId: String,
-            identifier: String,
-            definition: EventDefinition,
-            data: Map<String, String>,
-        ) {
-            val event = definition.event(clock.now(), projectId, data, runId, issueId, identifier)
-            log.guardSink(sinkName, noticeContext(issueId, identifier)) { sink.record(event).getOrThrow() }
-        }
-
-        override fun hookListener(
-            issueId: String,
-            identifier: String,
-        ): HookListener =
-            HookRecorder({ definition, data -> record(issueId, identifier, definition, data) }, {
-                noticeContext(issueId, identifier)
-            })
-
-        override suspend fun warn(
-            issueId: String,
-            identifier: String,
-            reason: String,
-        ) {
-            log.log(LogLevel.WARN, NOTICE, LogOutcome.FAILED, noticeContext(issueId, identifier), reason = reason)
-        }
-
-        private fun noticeContext(
-            issueId: String,
-            identifier: String,
-        ) = pollContext.copy(issueId = issueId, issueIdentifier = identifier)
-    }
-
     /** Records a `hook_finished` event for each hook run (plan R3) and logs it (spec 9.4, plan R2). */
     private inner class HookRecorder(
         private val record: suspend (EventDefinition, Map<String, String>) -> Unit,
@@ -5821,9 +5786,6 @@ class Orchestrator(
 
         /** The operator log event of a wait (m2-04). */
         const val WAITING = "waiting"
-
-        /** m4-30: the log event of a notice to a human. */
-        const val NOTICE = "notice"
 
         /** The operator log event of a delivery: an approval wait started, an approved result delivered (m2-24). */
         const val DELIVERY = "delivery"
