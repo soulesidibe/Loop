@@ -1,7 +1,7 @@
 ---
 id: m4-20
 title: "Verification and fingerprint on a workspace without git, and an empty workspace"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-19]
@@ -51,3 +51,5 @@ Decisions for the issue:
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-25 01:47Z loop: Loop opened pull request #54 for this issue: https://github.com/soulesidibe/Loop/pull/54
