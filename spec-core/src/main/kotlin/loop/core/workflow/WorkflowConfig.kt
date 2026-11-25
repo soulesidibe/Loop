@@ -65,7 +65,8 @@ data class KindsConfig(
  * outside every workspace; empty when the kind declares none. [delivery] is how a verified result is delivered
  * (m2-24), `human` by default. [match] says which issues the kind takes (m4-18), the default kind by default.
  * [context] holds the kind's context sources and [template] its own prompt template, null to render the
- * `WORKFLOW.md` body (m4-19).
+ * `WORKFLOW.md` body (m4-19). [workspace] says whether Loop reads the workspace with git, and [populate] who fills it
+ * (m4-20).
  */
 data class KindConfig(
     val checks: List<CheckConfig>,
@@ -76,7 +77,33 @@ data class KindConfig(
     val match: KindMatch = KindMatch.DEFAULT,
     val context: KindContext = KindContext(),
     val template: KindTemplate? = null,
+    val workspace: KindWorkspace = KindWorkspace.Git,
+    val populate: KindPopulate = KindPopulate.Hooks,
 )
+
+/**
+ * A kind's `workspace` (m4-20), decided by the declaration, never by looking at the folder. [Git], the default, is a git
+ * work tree: verification, `diff_policy`, the restore and the pinned base read it with git. [Plain] is a folder Loop
+ * never reads with git, fingerprinted `tree:<hash>` even inside a work tree.
+ */
+enum class KindWorkspace(
+    val wire: String,
+) {
+    Git("git"),
+    Plain("plain"),
+}
+
+/**
+ * A kind's `populate` (m4-20): [Hooks], the default, runs the workflow's workspace hooks. [Empty] gets a folder Loop
+ * creates and runs none of `after_create`, `before_run`, `after_run` and `before_remove` for it; only a
+ * [KindWorkspace.Plain] kind may declare it.
+ */
+enum class KindPopulate(
+    val wire: String,
+) {
+    Hooks("hooks"),
+    Empty("empty"),
+}
 
 /**
  * A kind's `context` (m4-19, plan 8.6): [files], paths relative to the workspace that the agent reads on demand, in the

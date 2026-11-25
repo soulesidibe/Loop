@@ -10,6 +10,7 @@ import com.charleskorn.kaml.YamlTaggedNode
 import loop.api.MergeMethod
 import loop.api.PluginProfile
 import loop.api.ProfileProblem
+import loop.core.kinds.KindWorkspaces
 import loop.core.trackers.TrackerEntry
 import loop.core.trackers.TrackerParser
 import loop.core.trackers.TrackersConfig
@@ -479,6 +480,13 @@ class WorkflowLoader(
             }
         val ready = parseReady(kindKey, kind)
         val holdout = parseHoldout(kindKey, verify, guards)
+        val workspace = parseChoice(kindKey, kind, "workspace", KindWorkspace.entries, KindWorkspace::wire) ?: KindWorkspace.Git
+        val populate = parseChoice(kindKey, kind, "populate", KindPopulate.entries, KindPopulate::wire) ?: KindPopulate.Hooks
+        // m4-20: a plain kind's git only settings are refused here, before dispatch, never found as a park.
+        val pullRequest = kind.child("delivery", "$kindKey.delivery").node("pull_request") != null
+        KindWorkspaces.refusal(kindKey, workspace, populate, listed, holdout, guards, pullRequest)?.let {
+            throw WorkflowError.InvalidConfig(it)
+        }
         // m4-18: the merge check, the auto merge and the pinned diff base read the code kind alone until each kind
         // takes them up (m4-20 to m4-23), so no other kind may deliver a pull request yet.
         if (name != KindsConfig.CODE && kind.child("delivery", "$kindKey.delivery").node("pull_request") != null) {
@@ -497,7 +505,26 @@ class WorkflowLoader(
             match ?: throw WorkflowError.InvalidConfig("$kindKey.match is required, only the code kind is the default without one"),
             context = parseContextSources(kindKey, kind),
             template = parseKindTemplate(kindKey, kind, folder),
+            workspace = workspace,
+            populate = populate,
         )
+    }
+
+    /**
+     * m4-20: `kinds.<kind>.<key>`, null when absent; present, one of the [choices] by its [wire] name, any other value
+     * refused, so a misspelled value never falls back to the default silently.
+     */
+    private fun <T> parseChoice(
+        kindKey: String,
+        kind: YamlMap?,
+        key: String,
+        choices: List<T>,
+        wire: (T) -> String,
+    ): T? {
+        val name = "$kindKey.$key"
+        val written = kind.string(name, key) ?: return null
+        return choices.firstOrNull { wire(it) == written.trim() }
+            ?: throw WorkflowError.InvalidConfig("$name must be ${choices.joinToString(" or ") { wire(it) }}, got \"$written\"")
     }
 
     /**

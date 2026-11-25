@@ -84,6 +84,7 @@ import loop.core.events.ContextSourceMissing
 import loop.core.events.ContextUsage
 import loop.core.events.ContextWindowUnknown
 import loop.core.events.Delivery
+import loop.core.events.DeliveryFailed
 import loop.core.events.DeliveryQueuePaused
 import loop.core.events.DeliveryQueueResumed
 import loop.core.events.DiffBaseUnpinned
@@ -126,6 +127,7 @@ import loop.core.events.Verdict
 import loop.core.kinds.IssueKind
 import loop.core.kinds.KindLookup
 import loop.core.kinds.KindPrompt
+import loop.core.kinds.KindWorkspaces
 import loop.core.kinds.PinnedKind
 import loop.core.kinds.Readiness
 import loop.core.log.KeyValueLog
@@ -151,6 +153,7 @@ import loop.core.verify.CheckRunner
 import loop.core.verify.Evidence
 import loop.core.verify.EvidenceWriter
 import loop.core.verify.Fingerprinter
+import loop.core.verify.PlainWorkspace
 import loop.core.verify.Holdouts
 import loop.core.verify.JudgmentCalls
 import loop.core.verify.ResultFile
@@ -1087,8 +1090,9 @@ class Orchestrator(
     suspend fun removeWorkspace(issue: Issue): Result<Unit> {
         val key = NamespacedId.workspaceKey(issue.id, issue.identifier, effective.trackerId)
         val context = pollContext.copy(issueId = issue.id, issueIdentifier = issue.identifier)
+        val kind = KindLookup.of(effective, issue)
         val env =
-            hookEnv(effective.path, issue.id, issue.identifier, key, KindLookup.of(effective, issue)?.name) +
+            hookEnv(effective.path, issue.id, issue.identifier, key, kind?.name) +
                 mapOf(
                     "LOOP_HOME" to loopHome.toString(),
                     "LOOP_PROJECT_ID" to projectId.value,
@@ -1110,7 +1114,8 @@ class Orchestrator(
                 },
                 context = { context },
             )
-        return workspacesFor(effective).remove(key, env, hooks).fold(
+        // m4-20: a kind populated empty runs no before_remove.
+        return KindWorkspaces.manager(workspacesFor(effective), kind).remove(key, env, hooks).fold(
             onSuccess = { removed ->
                 if (removed) {
                     log.log(LogLevel.INFO, "workspace", LogOutcome.COMPLETED, context, mapOf("workspace_key" to key.value))
@@ -1639,7 +1644,7 @@ class Orchestrator(
         val kind: IssueKind? = KindLookup.of(workflow, issue)
 
         val runner: AgentRunner = runnerFor(workflow)
-        private val workspaces: WorkspaceManager = workspacesFor(workflow)
+        private val workspaces: WorkspaceManager = KindWorkspaces.manager(workspacesFor(workflow), kind)
 
         /** The windows of this attempt's models, and the ones with none (m4-02). */
         private val contextWindows =
@@ -4089,7 +4094,7 @@ class Orchestrator(
                 break
             }
             // m2-25: what a check wrote is not the agent's work, so a work tree clean before the checks is clean after them.
-            if (deliversPullRequest && WorkspaceFingerprint.committedHead(fingerprint) != null) restoreWorkTree()
+            if (!plain && deliversPullRequest && WorkspaceFingerprint.committedHead(fingerprint) != null) restoreWorkTree()
             // m2-25: a pull request carries only commits, so a verified work tree that holds more is refuted.
             val uncommitted = uncommittedAtStart?.takeIf { verdict == VERIFIED }
             if (uncommitted != null) {
@@ -4134,6 +4139,8 @@ class Orchestrator(
          */
         private suspend fun pinnedBase(): String? {
             if (diffBase != null) return diffBase
+            // m4-20: a plain kind has no git diff to base.
+            if (plain) return null
             // m4-18: the issue's kind, like `attemptBase`; only the code kind delivers a pull request so far.
             val base =
                 kind
@@ -4155,6 +4162,9 @@ class Orchestrator(
                 },
             )
         }
+
+        /** True when the kind declares `workspace: plain` (m4-20): no git read, a `tree:` fingerprint. */
+        private val plain: Boolean get() = KindWorkspaces.isPlain(kind)
 
         /** True when the kind delivers a pull request (m2-25). */
         private val deliversPullRequest: Boolean
@@ -4189,7 +4199,7 @@ class Orchestrator(
          * empty lists, and the finding says so.
          */
         private suspend fun uncommittedFiles(fingerprint: String): UncommittedFiles? {
-            if (!deliversPullRequest) return null
+            if (plain || !deliversPullRequest) return null
             if (!fingerprint.startsWith("git:") || WorkspaceFingerprint.committedHead(fingerprint) != null) return null
             val listed =
                 try {
@@ -4210,7 +4220,7 @@ class Orchestrator(
         private suspend fun fingerprint(): String {
             val result =
                 try {
-                    withContext(io) { fingerprinter.of(workspace) }
+                    withContext(io) { PlainWorkspace.fingerprint(fingerprinter, workspace, plain) }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -4917,6 +4927,22 @@ class Orchestrator(
                 ?.pullRequest != null
         ) {
             return deliverPullRequest(wait, issue, to)
+        }
+        // m4-20: a plain workspace is delivered only while it is still at its verified fingerprint.
+        if (KindWorkspaces.isPlain(kind)) {
+            val key = NamespacedId.workspaceKey(wait.issueId, wait.identifier, effective.trackerId)
+            val stale =
+                withContext(io) {
+                    val located = workspacesFor(effective).locate(key).getOrElse { return@withContext "cannot locate the workspace: ${it.describe()}" }
+                    PlainWorkspace.stale(fingerprinter, located, wait.fingerprint)
+                }
+            if (stale != null) {
+                val reason = redactor.redact(stale).take(REASON_MAX)
+                recordWaitEvent(wait, DeliveryFailed, mapOf(Delivery.STEP to PlainWorkspace.STEP_FINGERPRINT, Delivery.REASON to reason))
+                log.log(LogLevel.WARN, DELIVERY, LogOutcome.FAILED, context, reason = "cannot deliver the approved result: $reason")
+                clearApproval(wait)
+                return false
+            }
         }
         val failure =
             try {

@@ -16,6 +16,12 @@ fun interface Fingerprinter {
     fun of(workspace: Path): Result<String>
 
     /**
+     * The fingerprint of [workspace] as a folder, `tree:<hash>`, whether or not it is a git work tree (m4-20): the one a
+     * `workspace: plain` kind gets. [of] by default, for a fingerprinter that cannot tell.
+     */
+    fun tree(workspace: Path): Result<String> = of(workspace)
+
+    /**
      * The files of [workspace] that a commit does not hold (m2-25), named in the finding of a work tree refuted for
      * them. None by default, for a fingerprinter that cannot tell.
      */
@@ -48,7 +54,8 @@ data class UncommittedFiles(
  *   content of every untracked file git does not ignore, in path order. Ignored files, such as build
  *   output, are not workspace state.
  * - Otherwise, a folder that is not a repository or only a folder inside one: `tree:<hash>` of the path
- *   and content of every file under it, in path order.
+ *   and content of every file under it, in path order. [tree] gives this one for any folder, for a
+ *   `workspace: plain` kind (m4-20). The `.git` entry at the top, git's own state, is never part of it.
  *
  * The result file `.loop/result.json` at the top of the workspace is left out of both (m2-15): it is what the
  * agent tells Loop, not the work. Every other file under `.loop/` counts. Each hash is sha256, cut to its first
@@ -61,9 +68,17 @@ open class WorkspaceFingerprinter(
     override fun of(workspace: Path): Result<String> =
         try {
             val root = workspace.toRealPath()
-            Result.success(if (isGitTop(root)) git(root) else "tree:${tree(root)}")
+            Result.success(if (isGitTop(root)) git(root) else "tree:${treeHash(root)}")
         } catch (e: Exception) {
             // Files.walk throws UncheckedIOException, a process start IOException: both mean no fingerprint.
+            Result.failure(e)
+        }
+
+    /** `tree:<hash>` of [workspace] even when it is the top of a git work tree (m4-20), for a `workspace: plain` kind. */
+    override fun tree(workspace: Path): Result<String> =
+        try {
+            Result.success("tree:${treeHash(workspace.toRealPath())}")
+        } catch (e: Exception) {
             Result.failure(e)
         }
 
@@ -159,13 +174,13 @@ open class WorkspaceFingerprinter(
         return "git:${head ?: NO_HEAD}:${hex(diff)}:${hex(untracked)}"
     }
 
-    private fun tree(root: Path): String {
+    private fun treeHash(root: Path): String {
         val hash = digest()
         val files =
             Files.walk(root).use { stream ->
                 stream
                     .filter { it != root && !Files.isDirectory(it, LinkOption.NOFOLLOW_LINKS) }
-                    .filter { !it.startsWith(root.resolve(ResultFile.PATH)) }
+                    .filter { !it.startsWith(root.resolve(ResultFile.PATH)) && !it.startsWith(root.resolve(GIT_DIR)) }
                     .map { it.relativeTo(root).joinToString("/") { part -> part.name } to it }
                     .toList()
             }
@@ -266,6 +281,9 @@ open class WorkspaceFingerprinter(
         /** Every path of the work tree but the result file (m2-15), as a literal path so no glob widens it. */
         val PATHS = arrayOf("--", ".", ":(exclude,literal)${ResultFile.PATH}")
         const val NO_HEAD = "none"
+
+        /** Git's own state at the top of a folder, left out of a `tree:` hash (m4-20): a read only git command can change it. */
+        const val GIT_DIR = ".git"
 
         const val HEX_CHARS = 16
         const val CHUNK = 8192
