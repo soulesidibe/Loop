@@ -1,7 +1,7 @@
 ---
 id: m4-24
 title: "Resources config, the ResourceProvider interface and its loader"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-23, m4-01]
@@ -41,3 +41,5 @@ Story 122, config and provider part (PLAN 6.9 and 12). Lane A, runs on the claud
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-25 04:44Z loop: Loop opened pull request #58 for this issue: https://github.com/soulesidibe/Loop/pull/58
