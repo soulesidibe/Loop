@@ -333,7 +333,7 @@ class AgyResumeTest {
     }
 
     @Test
-    fun `a new session of the same issue removes the kept folder, a resumed one included, and keeps other issues' folders`() {
+    fun `bl-230 a new session of the same issue never removes a kept folder when it opens, only once it is kept itself`() {
         val heldA = server("held-a") { agyHandshake(sessionId = "agy-a") }
         val otherIssue = server("other") { agyHandshake(sessionId = "agy-other") }
         val loader =
@@ -353,11 +353,90 @@ class AgyResumeTest {
         turns(assertNotNull(runner.resumeSession(context(attempt = "attempt-2"), "agy-a")), "Continue")
         assertTrue(keptA.exists(), "a resumed session is kept again when it stops")
 
-        turns(runner.openSession(context(attempt = "attempt-3")), "Fresh start")
+        val session = runner.openSession(context(attempt = "attempt-3"))
+        val events =
+            runBlocking {
+                withTimeout(30.seconds) {
+                    try {
+                        session.runTurn("Fresh start", 1).toList().also {
+                            assertTrue(keptA.exists(), "a session that opens and runs a turn leaves the kept folder of the issue")
+                        }
+                    } finally {
+                        session.stop()
+                    }
+                }
+            }
 
-        assertFalse(keptA.exists(), "the next session of the issue supersedes the resumed one")
+        assertIs<RunnerEvent.TurnCompleted>(events.last(), "$events")
+        assertFalse(keptA.exists(), "the newer kept session of the issue supersedes the resumed one at its stop")
         assertTrue(keptOther.exists(), "a kept folder of another issue stays")
         assertTrue(home.resolve(geminiDir(3)).exists(), "the newest session is kept")
+        assertTrue(warnings.isEmpty(), "$warnings")
+    }
+
+    @Test
+    fun `bl-230 the runner sweeps kept folders of finished issues when it starts, before any agy launch`() {
+        val gone = workspace.resolve("removed-at-terminal").createDirectories()
+        val finished =
+            AgyIsolationDir.create(homeDir = home, loopHome = null, attemptId = "attempt-1").also {
+                it.recordSession(AgyIsolationDir.Owner("project-1", "issue-1", gone), "agy-finished")
+                assertTrue(it.keep())
+            }
+        val live =
+            AgyIsolationDir.create(homeDir = home, loopHome = null, attemptId = "attempt-2").also {
+                it.recordSession(AgyIsolationDir.Owner("project-1", "issue-2", workspace), "agy-live")
+                assertTrue(it.keep())
+            }
+        Files.delete(gone)
+
+        runner(server("unused") { agyHandshake() })
+
+        assertFalse(finished.path.exists(), "the kept folder of a finished issue is swept at startup")
+        assertTrue(live.path.exists(), "a kept folder whose workspace is still there stays")
+        assertTrue(launched.isEmpty())
+    }
+
+    @Test
+    fun `bl-230 a turn failed by the protected roots check ends the session, so no later turn respawns and loads it`() {
+        val first =
+            server("first") {
+                agyHandshake(sessionId = "agy-guard-1")
+                shell("sleep 30")
+            }
+        val loader =
+            server("loader") {
+                initialize(id = 1, loadSession = true)
+                sessionLoad(id = 2, sessionId = "agy-guard-1")
+                sessionSetModel(id = 3, configUpdateModelId = FakeAcpServer.DEFAULT_MODEL, sessionId = "agy-guard-1")
+                promptTurn(id = 4)
+            }
+        val runner = runner(first, loader)
+        val session = runner.openSession(context(attempt = "attempt-1"))
+        val hooks = workspace.resolve(".agents").createDirectories().resolve("hooks.json")
+        val (turn2, turn3) =
+            runBlocking {
+                withTimeout(30.seconds) {
+                    try {
+                        val one = session.runTurn("Work", 1).toList()
+                        assertIs<RunnerEvent.TurnCompleted>(one.last(), "$one")
+                        hooks.writeText("""{"hooks":[{"cmd":"injected"}]}""")
+                        val two = session.runTurn("Go on", 2).toList()
+                        Files.delete(hooks)
+                        two to session.runTurn("Go on again", 3).toList()
+                    } finally {
+                        session.stop()
+                    }
+                }
+            }
+
+        val guard = assertIs<RunnerEvent.TurnFailed>(turn2.last(), "$turn2")
+        assertTrue(".agents/hooks.json" in guard.reason, guard.reason)
+        val closed = assertIs<RunnerEvent.TurnFailed>(turn3.last(), "$turn3")
+        assertTrue("a guard ended this session" in closed.reason, closed.reason)
+        assertTrue(".agents/hooks.json" in closed.reason, closed.reason)
+        assertEquals(1, launched.size, "no agy process is spawned for a session a guard ended")
+        assertFalse(home.resolve(geminiDir(0)).exists(), "the folder of a session a guard ended is deleted, never kept")
+        assertNull(runner.resumeSession(context(attempt = "attempt-2"), "agy-guard-1"))
     }
 
     @Test
