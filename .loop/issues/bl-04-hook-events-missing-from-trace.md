@@ -1,7 +1,7 @@
 ---
 id: bl-04
 title: "Hook events missing from loop trace in two cases"
-state: todo
+state: done
 priority: 3
 labels: [ready-for-agent]
 blocked_by: []
@@ -52,3 +52,7 @@ Re-triaged ready-for-agent, priority 3. The human label dates from M1, before Lo
   Failed runs:
   - build (failure): https://github.com/soulesidibe/Loop/actions/runs/45869576555
   Rerun the runs on GitHub or fix the branch, then approve again with loop approve.
+
+2026-11-26 20:08Z loop: Loop could not merge pull request #99: merging main at 46c0937c04145f5c87c383b76915ca79022efa17 into loop/bl-04 conflicts (conflict in spec-core/src/main/kotlin/loop/core/orchestrator/Orchestrator.kt, spec-core/src/main/kotlin/loop/core/workspace/WorkspaceManager.kt). The merge was aborted and the branch is unchanged. The next attempt merges refs/loop/base/main into its branch, resolves the conflict and submits the result again.
+
+2026-11-26 20:27Z loop: Loop updated pull request #99 for this issue: https://github.com/soulesidibe/Loop/pull/99
