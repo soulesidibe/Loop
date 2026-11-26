@@ -41,10 +41,11 @@ import kotlin.time.Instant
  * that slot was the last one and the issue parked instead, the event holds no review id and the reviews are not marked
  * sent, so after `loop resume` they reach the agent. Since bl-224 the event of a scheduled retry also holds the findings,
  * which reach the retry after a restart, and a wait a human approved or sent back while GitHub was read is kept: the
- * reaction records `reaction_skipped` with `human_decided`, counts nothing and marks nothing sent. When the round was sent and still stands `escalate_after` after its
- * reaction, Loop sends nothing more for it: it records `reaction_skipped` with `escalated` and tells the human through
- * [escalate], with the pull request URL, once per round. `retries` bounds the reactions of an issue as for `ci_failed`; a
- * round past it records `retries_spent` and, when `escalate_after` is set, is told to the human at once, once per round.
+ * reaction records `reaction_skipped` with `human_decided`, counts nothing and marks nothing sent. When the round was
+ * sent and still stands `escalate_after` after its reaction, Loop sends nothing more for it: it records
+ * `reaction_skipped` with `escalated` and tells the human through [escalate], with the pull request URL, once per round.
+ * `retries` bounds the reactions of an issue as for `ci_failed`; a round past it records `retries_spent` and, when
+ * `escalate_after` is set, is told to the human at once, once per round.
  *
  * What was sent, and when, is read from the run store's reaction events, [reactionsBefore], and the ones this process
  * recorded, so a restart never sends a review twice nor tells the human twice; a store that cannot be read sends
