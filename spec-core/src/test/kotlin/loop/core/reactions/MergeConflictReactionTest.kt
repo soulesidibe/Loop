@@ -281,7 +281,11 @@ class MergeConflictReactionTest {
                 workspaceGit = workspaceGit,
                 retryStates = retryStates,
                 // bl-224: the run store's events as a new process reads them back.
-                reactionsBefore = { Result.success(sink.events.filter { it.kind == ReactionTriggered.name || it.kind == ReactionSkipped.name }) },
+                reactionsBefore = {
+                    Result.success(
+                        sink.events.filter { it.kind == ReactionTriggered.name || it.kind == ReactionSkipped.name },
+                    )
+                },
                 retryEventsBefore = { Result.success(sink.events.filter { it.kind in ReactionMarks.KINDS }) },
             )
         }

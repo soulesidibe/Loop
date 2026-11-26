@@ -131,10 +131,17 @@ internal class RetryCoordinator(
             }
         // bl-224: a lost mark would reset the counter at the next approval exit, so an unread store restores nothing.
         val marked =
-            safely { retryEventsBefore() }.getOrElse { error ->
-                log.log(LogLevel.ERROR, RETRY_STATE, LogOutcome.FAILED, pollContext, reason = "cannot read the reactions: ${error.describe()}")
-                return false
-            }.let(ReactionMarks::reacted)
+            safely { retryEventsBefore() }
+                .getOrElse { error ->
+                    log.log(
+                        LogLevel.ERROR,
+                        RETRY_STATE,
+                        LogOutcome.FAILED,
+                        pollContext,
+                        reason = "cannot read the reactions: ${error.describe()}",
+                    )
+                    return false
+                }.let(ReactionMarks::reacted)
         reacted += states.filter { it.failures > 0 && it.issueId in marked }.map { it.issueId }
         restored = true
         val now = clock.now()
@@ -561,7 +568,8 @@ internal class RetryCoordinator(
         issueId: String,
         reason: String,
     ) {
-        if (reason == ExitReason.TERMINAL || reason == ExitReason.NOT_ACTIVE) resetCounter(issueId) else queue.drop(issueId, resetCounter = false)
+        val reset = reason == ExitReason.TERMINAL || reason == ExitReason.NOT_ACTIVE
+        if (reset) resetCounter(issueId) else queue.drop(issueId, resetCounter = false)
         unsaved += issueId
         save()
     }

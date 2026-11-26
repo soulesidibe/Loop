@@ -192,7 +192,12 @@ class Reactions(
                 when (sendBack(one.wait, one.issue, findings)) {
                     SendBackOutcome.Scheduled -> record(one.wait, ReactionTriggered, data + (ReactionKeys.FINDINGS to findings))
                     SendBackOutcome.Parked -> record(one.wait, ReactionTriggered, data)
-                    SendBackOutcome.Decided -> record(one.wait, ReactionSkipped, data + (ReactionKeys.REASON to ReactionSkipped.HUMAN_DECIDED))
+                    SendBackOutcome.Decided ->
+                        record(
+                            one.wait,
+                            ReactionSkipped,
+                            data + (ReactionKeys.REASON to ReactionSkipped.HUMAN_DECIDED),
+                        )
                     SendBackOutcome.Kept -> Unit
                 }
                 return true

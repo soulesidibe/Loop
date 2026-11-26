@@ -79,7 +79,8 @@ class ReactionMarksTest {
         fun event(
             definition: EventDefinition,
             data: Map<String, String>,
-        ): RecordedEvent = definition.event(ts = FIXED_NOW, projectId = ProjectId("p1"), data = data, issueId = ISSUE, issueIdentifier = "t-1")
+        ): RecordedEvent =
+            definition.event(ts = FIXED_NOW, projectId = ProjectId("p1"), data = data, issueId = ISSUE, issueIdentifier = "t-1")
 
         /** A `merge_conflict` reaction, [sent] when it scheduled a retry, which then holds its [findings]. */
         fun triggered(

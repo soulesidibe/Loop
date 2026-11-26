@@ -103,7 +103,8 @@ class RetryCoordinatorReactionMarkTest {
             parkReason = parkReason,
         )
 
-        suspend fun approvalExit() = coordinator.afterAttempt(issue, summary(AttemptOutcome.Succeeded, ExitReason.WAITING_APPROVAL), workflow)
+        suspend fun approvalExit() =
+            coordinator.afterAttempt(issue, summary(AttemptOutcome.Succeeded, ExitReason.WAITING_APPROVAL), workflow)
 
         suspend fun failure() = coordinator.afterAttempt(issue, summary(AttemptOutcome.Failed, reason = "boom"), workflow)
 
