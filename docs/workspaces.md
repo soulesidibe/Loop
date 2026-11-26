@@ -99,11 +99,13 @@ workspace:
 1. removes the clone's `origin` remote, so `git push origin ...` from the Workspace fails instead of writing the project's refs;
 2. copies the project's repository local `user.name` and `user.email` into the clone's config, when set;
 3. writes the keep ref `refs/loop/workspace/<key>` in the project at the start commit;
-4. creates and checks out `loop/<key>`, from the project's `refs/heads/loop/<key>` when it exists, else from `LOOP_BASE_REF` (the base Loop fetched), else from the resolved base, else from the project's `HEAD`.
+4. creates and checks out `loop/<key>`, from the project's `refs/heads/loop/<key>` when it exists, else from `LOOP_BASE_REF` (the base Loop fetched), else from the base resolved in the project, else from the project's `HEAD`, which Loop logs as a `clone_start` warning.
+
+The clone is built in the sibling folder `.loop-clone-<key>` and moved into place once every step is done, so a run killed half way leaves no half made clone in the Workspace. A failed or cancelled creation, or a failed or cancelled `after_create`, deletes the folder and the keep refs.
 
 Loop sets no sparse pattern: hiding `.loop/issues/` stays the hooks' job, and the worktree scripts must accept a clone (they make a worktree today, so a workflow that clones uses hooks that only set the sparse pattern and check out `loop/<key>`, or none).
 
-A Workspace that already is a clone of the project (its `.git/objects/info/alternates` names the project's object folder) is reused as it is on a retry or a restart, never reset. A folder whose `.git` is anything else, a worktree's `.git` file included, fails the Attempt with `cannot prepare workspace <key>: the workspace <path> is not a clone of the project, ...`.
+A Workspace that already is a clone of the project (its `.git/objects/info/alternates` names the project's object folder) is reused as it is on a retry or a restart, never reset. Loop first removes any remote the clone has, writes back a missing keep ref, and fails the Attempt if the clone has no `loop/<key>` branch. A folder whose `.git` is anything else, a worktree's `.git` file included, fails the Attempt with `cannot prepare workspace <key>: the workspace <path> is not a clone of the project, ...`.
 
 ### What stays shared
 
@@ -111,17 +113,19 @@ The objects only, read only: the clone borrows the project's object folder throu
 
 ### The base ref
 
-Before the hooks and the agent run, Loop writes `refs/loop/base/<base>` in the clone at the commit it fetched in the project, so the prompt's `git merge-base --is-ancestor refs/loop/base/main HEAD` and `git merge refs/loop/base/main` work as in a worktree. Loop never reads a ref of the clone to choose a base, a diff base or a push target: moving `main` or `refs/loop/base/main` in the clone changes nothing Loop checks. `diff_policy` and `changed_line_coverage` resolve their base in the project, for every kind, with or without pull request delivery.
+Before the hooks and the agent run, and again at each base fetch of a verification or a merge check, Loop writes `refs/loop/base/<base>` in the clone at the commit it fetched in the project, so the prompt's `git merge-base --is-ancestor refs/loop/base/main HEAD` and `git merge refs/loop/base/main` work as in a worktree. Loop never reads a ref of the clone to choose a base, a diff base or a push target: moving `main` or `refs/loop/base/main` in the clone changes nothing Loop checks. `diff_policy` and `changed_line_coverage` resolve their base in the project, for every kind, with or without pull request delivery; a base the project does not have makes the check unable to run, so the verdict is `unverified`.
 
 ### Import before push
 
-On a verified verdict on a clean committed fingerprint, and again before every push of a Workspace commit (the pull request push, the merge check's push of the merged head), Loop imports that commit into the project by its id: a fetch from the clone with `transfer.fsckObjects` into a temporary repository with no config file, then a plain copy of the objects into the project's object folder, then `refs/heads/loop/<key>` written in the project at that commit. The push then runs as without clones. A commit that fails the object check is never imported or pushed.
+On a verified verdict on a clean committed fingerprint, and again before every push of a Workspace commit (the pull request push, the merge check's push of the merged head), Loop imports that commit into the project by its id: a fetch from the clone with `transfer.fsckObjects` into a temporary repository with no config file, then a plain copy of the objects into the project's object folder, then `refs/heads/loop/<key>` written in the project at that commit, with no old value check, since in clone mode Loop is that ref's only writer. The fetch tells the clone which commits the project already has (the keep refs, `loop/<key>`, `refs/loop/base/*`), so only the new objects are copied. The push then runs as without clones. A commit that fails the object check is never imported or pushed.
 
-In the project Loop writes three refs and no other: `refs/heads/loop/<key>`, `refs/loop/base/*` and `refs/loop/workspace/<key>`.
+In the project Loop writes these refs and no other: `refs/heads/loop/<key>`, `refs/loop/base/*`, `refs/loop/workspace/<key>` and `refs/loop/workspace-base/<key>`.
 
 ### The keep ref
 
-The clone borrows objects it does not own. If the operator deletes the branch the clone started from and runs `git gc --prune=now`, those objects would go and the clone would break with `bad object HEAD`. `refs/loop/workspace/<key>` keeps the start commit reachable while the Workspace lives. Loop deletes it when it removes the Workspace; the imported `loop/<key>` branch stays.
+The clone borrows objects it does not own. If the operator deletes the branch the clone started from and runs `git gc --prune=now`, those objects would go and the clone would break with `bad object HEAD`. `refs/loop/workspace/<key>` keeps the start commit reachable while the Workspace lives, and `refs/loop/workspace-base/<key>` the last base Loop wrote in the clone. Loop deletes both when it removes the Workspace; the imported `loop/<key>` branch stays.
+
+Switching a workflow from `clone` back to the worktree hooks leaves the keep refs of the clones that still exist. Delete them with `git for-each-ref --format='delete %(refname)' refs/loop/workspace/ refs/loop/workspace-base/ | git update-ref --stdin`.
 
 ### What is lost compared with a worktree
 
