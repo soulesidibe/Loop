@@ -93,7 +93,8 @@ class WorkspaceManagerCloneTest {
         val trap = LazyFetchTrap(workspace.path, folder.resolve("lazy-fetch-ran"), "refs/heads/loop/t-1").arm()
         trap.proveLive()
         // The same prepare without the variable runs the agent's program.
-        val unguarded = WorkspaceManager(Workspaces(root), HooksConfig(), runner, WorkspaceClones(project, LazyFetchTrap.unguarded(hostEnv)))
+        val unguarded =
+            WorkspaceManager(Workspaces(root), HooksConfig(), runner, WorkspaceClones(project, LazyFetchTrap.unguarded(hostEnv)))
         runBlocking { unguarded.prepare(key, emptyMap(), clone = CloneStart(first)) }
         assertTrue(trap.marker.exists(), "the reuse does not fetch unguarded, so the test proves nothing")
         Files.delete(trap.marker)

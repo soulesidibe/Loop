@@ -35,7 +35,9 @@ class LazyFetchTrap(
      * [marker]. The marker is deleted afterwards.
      */
     fun proveLive() {
-        val args = WorkspaceGit.PINS + listOf("-C", repo.toString()) + WorkspaceGit.MORE_PINS + listOf("rev-parse", "--verify", "-q", "$ref^{commit}")
+        val args =
+            WorkspaceGit.PINS + listOf("-C", repo.toString()) + WorkspaceGit.MORE_PINS +
+                listOf("rev-parse", "--verify", "-q", "$ref^{commit}")
         git(repo, *args.toTypedArray(), ok = false)
         assertTrue(marker.exists(), "the trap is not live: the unguarded rev-parse did not run the program")
         Files.delete(marker)

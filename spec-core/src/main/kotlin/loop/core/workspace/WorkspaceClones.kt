@@ -294,7 +294,12 @@ class WorkspaceClones(
         if (gitChecked) return
         val outcome = git.run(projectDir, "version", cancellation = cancellation)
         check(outcome, "read the git version")
-        val line = outcome.stdout.trim().lineSequence().firstOrNull().orEmpty()
+        val line =
+            outcome.stdout
+                .trim()
+                .lineSequence()
+                .firstOrNull()
+                .orEmpty()
         val found =
             GIT_VERSION.find(line)?.destructured?.let { (major, minor, patch) ->
                 listOf(major.toInt(), minor.toInt(), patch.ifEmpty { "0" }.toInt())
