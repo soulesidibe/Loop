@@ -1,6 +1,8 @@
 package loop.runner.acp
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.IOException
@@ -25,10 +27,11 @@ import java.util.UUID
  *
  * The folder holds `agy`'s session store, so since bl-213 it outlives its session: once the session reported its
  * runtime session id ([recordSession]), [keep] marks it kept when the session stops, and a respawned `agy acp` or a
- * later attempt of the same issue ([findKept]) can `session/load` that id. A kept folder is removed when a new session
- * of its issue opens ([removeKept]), when its workspace is gone, which Loop does when the issue reaches a terminal
- * state, or when its owner process is dead ([sweepStale]). A folder whose session never reported an id is deleted
- * when the session stops.
+ * later attempt of the same issue ([findKept]) can `session/load` that id. A kept folder is removed when a newer session
+ * of its issue is kept ([removeKept], since bl-230 at that session's stop, never when a session opens), when its
+ * workspace is gone, which Loop does when the issue reaches a terminal state, or when its owner process is dead
+ * ([sweepStale], at the runner's start and at every launch and resume). A folder whose session never reported an id
+ * is deleted when the session stops.
  *
  * Directories are populated under a hidden `.tmp-<id>` staging folder and atomically moved into place after writing
  * both `settings.json` and `.loop-pid`, so a concurrent [sweepStale] never races with directory creation. The root
@@ -67,32 +70,27 @@ internal class AgyIsolationDir private constructor(
 
     /**
      * Checks the folder before `agy` loads a session from it, then rewrites `antigravity-cli/settings.json` with the
-     * strict settings. Returns why the folder is refused, or null. Fails closed: its root may hold only what `agy` and
-     * Loop write there (no symbolic link), and `config/hooks.json`, which `agy` would run, must be absent.
+     * strict settings. Returns why the folder is refused, or null. Fails closed on anything `agy` and Loop do not write
+     * there: its root, `config/` and `antigravity-cli/` may each hold only the entries of their allow list, each of its
+     * type ([ROOT_ENTRIES], [CONFIG_ENTRIES], [SETTINGS_ENTRIES]); `antigravity-cli/mcp/` only the cache of Loop's own
+     * MCP server; `config/mcp_config.json` no MCP server, since `agy` starts those at launch, outside the permission
+     * policy; and nothing under `config/` and `antigravity-cli/` may be a symbolic link. So `config/hooks.json`, which
+     * `agy` would run, is refused.
      */
     fun checkBeforeLoad(): String? {
-        val entries =
-            try {
-                Files.list(path).use { stream -> stream.toList() }
-            } catch (e: IOException) {
-                return "the isolated agy folder $path cannot be listed: ${e.message}"
-            } catch (e: UncheckedIOException) {
-                return "the isolated agy folder $path cannot be listed: ${e.cause?.message ?: e.message}"
-            }
-        for (entry in entries.sortedBy { it.fileName.toString() }) {
-            val name = entry.fileName.toString()
-            val expected =
-                when (name) {
-                    SETTINGS_SUBDIR, CONFIG_SUBDIR -> Files.isDirectory(entry, LinkOption.NOFOLLOW_LINKS)
-                    PID_FILE_NAME, RECORD_FILE_NAME -> Files.isRegularFile(entry, LinkOption.NOFOLLOW_LINKS)
-                    else -> return unexpected(name)
-                }
-            if (!expected) {
-                return if (Files.isSymbolicLink(entry)) unexpected("$name as a symbolic link") else unexpected("$name of another type")
-            }
-        }
-        val hooks = path.resolve(CONFIG_SUBDIR).resolve(HOOKS_FILE)
-        if (Files.exists(hooks, LinkOption.NOFOLLOW_LINKS)) return unexpected("$CONFIG_SUBDIR/$HOOKS_FILE")
+        val refusal =
+            checkEntries(path, "", ROOT_ENTRIES)
+                ?: checkEntries(path.resolve(CONFIG_SUBDIR), "$CONFIG_SUBDIR/", CONFIG_ENTRIES)
+                ?: checkEntries(path.resolve(SETTINGS_SUBDIR), "$SETTINGS_SUBDIR/", SETTINGS_ENTRIES)
+                ?: checkEntries(
+                    path.resolve(SETTINGS_SUBDIR).resolve(MCP_CACHE_SUBDIR),
+                    "$SETTINGS_SUBDIR/$MCP_CACHE_SUBDIR/",
+                    MCP_CACHE_ENTRIES,
+                )
+                ?: checkNoLinks(CONFIG_SUBDIR)
+                ?: checkNoLinks(SETTINGS_SUBDIR)
+                ?: checkMcpConfig()
+        if (refusal != null) return refusal
         return try {
             val settings = path.resolve(SETTINGS_SUBDIR).resolve(SETTINGS_FILE)
             Files.createDirectories(settings.parent)
@@ -102,6 +100,84 @@ internal class AgyIsolationDir private constructor(
         } catch (e: IOException) {
             "the strict settings cannot be written to the isolated agy folder $path: ${e.message}"
         }
+    }
+
+    /**
+     * Checks that every entry of [dir], shown as [prefix] plus its name, is in [allowed] with its type, a directory when
+     * true, a regular file when false, never a symbolic link. A missing [dir] holds nothing.
+     */
+    private fun checkEntries(
+        dir: Path,
+        prefix: String,
+        allowed: Map<String, Boolean>,
+    ): String? {
+        if (!Files.exists(dir, LinkOption.NOFOLLOW_LINKS)) return null
+        val entries =
+            try {
+                Files.list(dir).use { stream -> stream.toList() }
+            } catch (e: IOException) {
+                return "the isolated agy folder $path cannot be listed: ${e.message}"
+            } catch (e: UncheckedIOException) {
+                return "the isolated agy folder $path cannot be listed: ${e.cause?.message ?: e.message}"
+            }
+        for (entry in entries.sortedBy { it.fileName.toString() }) {
+            val name = entry.fileName.toString()
+            val isDirectory = allowed[name] ?: return unexpected("$prefix$name")
+            val expected =
+                if (isDirectory) {
+                    Files.isDirectory(entry, LinkOption.NOFOLLOW_LINKS)
+                } else {
+                    Files.isRegularFile(entry, LinkOption.NOFOLLOW_LINKS)
+                }
+            if (!expected) {
+                return if (Files.isSymbolicLink(entry)) {
+                    unexpected("$prefix$name as a symbolic link")
+                } else {
+                    unexpected("$prefix$name of another type")
+                }
+            }
+        }
+        return null
+    }
+
+    /** Refuses a symbolic link at any depth under the folder's [subdir], such as one in a transcript folder. */
+    private fun checkNoLinks(subdir: String): String? {
+        val root = path.resolve(subdir)
+        if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) return null
+        return try {
+            Files.walk(root).use { stream ->
+                stream
+                    .filter { Files.isSymbolicLink(it) }
+                    .findFirst()
+                    .orElse(null)
+                    ?.let { link -> unexpected("${relativeTo(path, link)} as a symbolic link") }
+            }
+        } catch (e: IOException) {
+            "the isolated agy folder $path cannot be listed: ${e.message}"
+        } catch (e: UncheckedIOException) {
+            "the isolated agy folder $path cannot be listed: ${e.cause?.message ?: e.message}"
+        }
+    }
+
+    /**
+     * Refuses a `config/mcp_config.json` that names an MCP server: `agy` writes it empty, and under `strict_mcp` Loop's
+     * own server comes only from `session/new` and `session/load`. A file that is not a JSON object is refused too.
+     */
+    private fun checkMcpConfig(): String? {
+        val file = path.resolve(CONFIG_SUBDIR).resolve(MCP_CONFIG_FILE)
+        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) return null
+        val text =
+            try {
+                Files.readString(file, Charsets.UTF_8)
+            } catch (e: IOException) {
+                return "the isolated agy folder $path cannot be read: ${e.message}"
+            }
+        if (text.isBlank()) return null
+        val servers =
+            runCatching { (AcpFraming.json.parseToJsonElement(text) as JsonObject)[MCP_SERVERS_KEY] }
+                .getOrElse { return unexpected("$CONFIG_SUBDIR/$MCP_CONFIG_FILE that is not a JSON object") }
+        val empty = servers == null || servers is JsonNull || (servers as? JsonObject)?.isEmpty() == true
+        return if (empty) null else unexpected("$CONFIG_SUBDIR/$MCP_CONFIG_FILE naming an MCP server")
     }
 
     /** What a folder's [RECORD_FILE_NAME] holds. */
@@ -127,10 +203,66 @@ internal class AgyIsolationDir private constructor(
         private const val SETTINGS_SUBDIR = "antigravity-cli"
         private const val CONFIG_SUBDIR = "config"
         private const val SETTINGS_FILE = "settings.json"
-        private const val HOOKS_FILE = "hooks.json"
+        private const val MCP_CONFIG_FILE = "mcp_config.json"
+        private const val MCP_SERVERS_KEY = "mcpServers"
+        private const val MCP_CACHE_SUBDIR = "mcp"
         private const val STATE_LIVE = "live"
         private const val STATE_KEPT = "kept"
         private val UNSAFE_SEGMENT = Regex("[^A-Za-z0-9._-]+")
+
+        /** What the folder's root may hold, each name to whether it is a directory: what `agy` and Loop write. */
+        private val ROOT_ENTRIES: Map<String, Boolean> =
+            mapOf(SETTINGS_SUBDIR to true, CONFIG_SUBDIR to true, PID_FILE_NAME to false, RECORD_FILE_NAME to false)
+
+        /**
+         * What `config/` may hold: the files and folder `agy` 1.5.18 wrote there in a real session (bl-230), its plugin
+         * switches (`config.json`), an empty `mcp_config.json`, its migration marker and an empty `projects/`. Not
+         * `hooks.json`, `skills.json`, `GEMINI.md`, `plugins/`, `skills/` or `sidecars/`, which `agy` loads from its
+         * global config but never writes in an isolated folder.
+         */
+        private val CONFIG_ENTRIES: Map<String, Boolean> =
+            mapOf("config.json" to false, MCP_CONFIG_FILE to false, ".migrated" to false, "projects" to true)
+
+        /**
+         * What `antigravity-cli/` may hold: `agy`'s session store and the state it keeps beside it. The entries a real
+         * `agy acp` 1.5.18 session wrote (bl-230): its transcripts (`brain/`, `conversations/`, `annotations/`), its
+         * summaries database, its logs, caches, built in skills and plugins (`builtin/`), its `agentapi` launcher
+         * (`bin/`), its daemon, terminal and crash folders, its state files, and `settings.json`, which Loop rewrites
+         * before every load. Also what its store grows in a longer session, the database's write ahead files, `implicit/`,
+         * `knowledge/`, `presence/`, `updater/`, `last_check.timestamp`, and `mcp/`, the tool cache of the session's MCP
+         * servers, checked apart. Not what only the interactive `agy` writes: `keybindings.json`, `history.jsonl`,
+         * `cli.log` and `plugin_data/`.
+         */
+        private val SETTINGS_ENTRIES: Map<String, Boolean> =
+            mapOf(
+                SETTINGS_FILE to false,
+                "annotations" to true,
+                "bin" to true,
+                "brain" to true,
+                "builtin" to true,
+                "cache" to true,
+                "conversations" to true,
+                "crashes" to true,
+                "daemon" to true,
+                "implicit" to true,
+                "knowledge" to true,
+                "log" to true,
+                MCP_CACHE_SUBDIR to true,
+                "persistent_terminals" to true,
+                "presence" to true,
+                "updater" to true,
+                "conversation_summaries.db" to false,
+                "conversation_summaries.db-journal" to false,
+                "conversation_summaries.db-shm" to false,
+                "conversation_summaries.db-wal" to false,
+                "installation_id" to false,
+                "jetbox_summaries_proto.pb" to false,
+                "jetski_state.pbtxt" to false,
+                "last_check.timestamp" to false,
+            )
+
+        /** What `antigravity-cli/mcp/` may hold: the tool cache of Loop's own server, the only one under `strict_mcp`. */
+        private val MCP_CACHE_ENTRIES: Map<String, Boolean> = mapOf("loop" to true)
 
         val SETTINGS_JSON: String =
             buildJsonObject {
@@ -199,11 +331,10 @@ internal class AgyIsolationDir private constructor(
                     val record = readRecord(child) ?: continue
                     if (record.state != STATE_KEPT || record.runtimeSessionId != runtimeSessionId) continue
                     if (record.projectId != projectId || record.issueId != issueId) continue
+                    // The pid file is replaced in one move, so a concurrent sweep never sees the folder without one.
                     val claimed =
                         runCatching {
-                            val pidFile = child.resolve(PID_FILE_NAME)
-                            Files.deleteIfExists(pidFile)
-                            Files.writeString(pidFile, ownerPid.toString(), Charsets.UTF_8)
+                            writeAtomically(child, PID_FILE_NAME, ownerPid.toString())
                             writeRecord(child, record.copy(state = STATE_LIVE))
                         }
                     if (claimed.isFailure) return null
@@ -214,20 +345,24 @@ internal class AgyIsolationDir private constructor(
         }
 
         /**
-         * Removes every kept folder of [issueId] of [projectId]: a new session of the issue opens, and Loop only ever
-         * resumes the last session of an issue, so these can never be loaded again. Returns the removal failures.
+         * Removes every kept folder of [issueId] of [projectId] but [except]: the session of [except] stopped and was
+         * kept, so it is now the last session of the issue, and Loop only ever resumes the last one, so the others can
+         * never be loaded again. A session that opens removes nothing, so a folder a hold resume still needs survives
+         * any session of the issue until a newer one is kept. Returns the removal failures.
          */
         fun removeKept(
             homeDir: Path,
             loopHome: Path?,
             projectId: String,
             issueId: String,
+            except: Path? = null,
         ): List<String> {
             val errors = mutableListOf<String>()
             for (root in roots(homeDir, loopHome)) {
                 val children = listChildren(root, errors) ?: continue
                 for (child in children) {
                     if (child.fileName.toString().startsWith(STAGING_PREFIX)) continue
+                    if (except != null && child == except) continue
                     val record = readRecord(child) ?: continue
                     if (record.state != STATE_KEPT || record.projectId != projectId || record.issueId != issueId) continue
                     deleteTree(child, "could not remove superseded agy directory $child")?.let { errors += it }
@@ -348,11 +483,18 @@ internal class AgyIsolationDir private constructor(
         private fun writeRecord(
             dir: Path,
             record: Record,
+        ) = writeAtomically(dir, RECORD_FILE_NAME, AcpFraming.json.encodeToString(Record.serializer(), record))
+
+        /** Writes [text] to a temporary file in [dir] and moves it over [name] in one step, replacing any file there. */
+        private fun writeAtomically(
+            dir: Path,
+            name: String,
+            text: String,
         ) {
-            val file = dir.resolve(RECORD_FILE_NAME)
-            val temp = dir.resolve("$RECORD_FILE_NAME.${UUID.randomUUID().toString().take(8)}")
+            val file = dir.resolve(name)
+            val temp = dir.resolve("$name.${UUID.randomUUID().toString().take(8)}")
             try {
-                Files.writeString(temp, AcpFraming.json.encodeToString(Record.serializer(), record), Charsets.UTF_8)
+                Files.writeString(temp, text, Charsets.UTF_8)
                 try {
                     Files.move(temp, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
                 } catch (ignored: AtomicMoveNotSupportedException) {
