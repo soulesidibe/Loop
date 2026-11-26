@@ -1,7 +1,7 @@
 ---
 id: bl-212
 title: "The Codex runner resumes its thread after the app server dies or a network hold"
-state: todo
+state: done
 priority: 3
 labels: [ready-for-agent]
 blocked_by: []
