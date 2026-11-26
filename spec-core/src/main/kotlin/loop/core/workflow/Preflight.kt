@@ -12,6 +12,8 @@ import kotlin.coroutines.cancellation.CancellationException
 sealed interface PreflightResult {
     data class Ok(
         val workflow: WorkflowFile,
+        /** What dispatch can run with but the operator should fix, one sentence each without a final period (bl-221). */
+        val warnings: List<String> = emptyList(),
     ) : PreflightResult
 
     data class Failed(
@@ -38,8 +40,8 @@ fun interface PreflightCheck {
  * and no optional slot: when that alone is over the prompt limit of the window of [promptModel], the template can
  * never fit and the preflight fails with `invalid_config`. Since m4-19 it checks the template of every kind, its own
  * `template` or the body, the same way, renders each with `loop.context_sources` null and set, and refuses a kind that
- * declares `context.files` with a template that never uses `loop.context_sources`. Never throws, except to propagate
- * cancellation.
+ * declares `context.files` with a template that never uses `loop.context_sources`. Since bl-221 a workflow in Loop
+ * mode whose template never reads `loop.answer` passes with a warning. Never throws, except to propagate cancellation.
  */
 class Preflight(
     private val loader: WorkflowLoader,
@@ -83,6 +85,7 @@ class Preflight(
         trackerCheck(workflow)?.let { return PreflightResult.Failed(INVALID_CONFIG, it) }
         // m2-09: no remote issue text runs a command until Loop checks who wrote it.
         untrustedAcceptanceCommands(workflow)?.let { return PreflightResult.Failed(INVALID_CONFIG, it) }
+        val warnings = linkedSetOf<String>()
         for (prompt in prompts(workflow)) {
             val template =
                 templates
@@ -91,8 +94,26 @@ class Preflight(
             unusedSources(prompt, template)?.let { return PreflightResult.Failed(INVALID_CONFIG, it) }
             renderSamples(template)?.let { return templateFailure(it, prompt.name) }
             templateOverLimit(workflow, template, prompt.name)?.let { return PreflightResult.Failed(INVALID_CONFIG, it) }
+            unreadAnswer(workflow, prompt, template)?.let { warnings += it }
         }
-        return PreflightResult.Ok(workflow)
+        return PreflightResult.Ok(workflow, warnings.toList())
+    }
+
+    /**
+     * bl-221: why an answer can miss the agent, a warning, never a refusal. A workflow in Loop mode offers `ask` to every
+     * attempt (m4-31), and the dispatch after `loop answer` passes the question and the answer only as `loop.answer`
+     * (m4-52), so a template that never reads it shows the answer only as the comment the tracker keeps in the issue
+     * description (bl-06). Null when the template reads it or the workflow cannot ask. Once per template source.
+     */
+    private fun unreadAnswer(
+        workflow: WorkflowFile,
+        prompt: PromptToCheck,
+        template: Template,
+    ): String? {
+        if (workflow.config.kinds == null || template.uses(PromptVariables.LOOP, PromptVariables.ANSWER)) return null
+        return "${prompt.source} never uses loop.${PromptVariables.ANSWER}, so an answer given with loop answer reaches the " +
+            "agent only as a comment in the issue description, place " +
+            "{% if loop.${PromptVariables.ANSWER} %}{{ loop.${PromptVariables.ANSWER} }}{% endif %} where the answer goes"
     }
 
     /**

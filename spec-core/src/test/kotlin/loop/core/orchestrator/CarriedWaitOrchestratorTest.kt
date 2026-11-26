@@ -140,7 +140,19 @@ class CarriedWaitOrchestratorTest {
 
     /** `t-1` waits as a sent back `Waiting(approval)`, as `loop send-back` leaves it in the store. */
     private suspend fun sentBack(): FakeWaitingIssues {
-        val approval = WaitingIssue(project, "id-t-1", "t-1", WaitReason.Approval, AttemptId("a0"), RunId("r0"), SINCE, mapOf("to" to "review"))
+        val approval =
+            WaitingIssue(
+                project,
+                "id-t-1",
+                "t-1",
+                WaitReason.Approval,
+                AttemptId("a0"),
+                RunId("r0"),
+                SINCE,
+                mapOf(
+                    "to" to "review",
+                ),
+            )
         return FakeWaitingIssues(approval).also {
             assertNotNull(it.sendBack(project, "id-t-1", "soule", "Use Save.", SINCE).getOrThrow())
         }
@@ -214,14 +226,16 @@ class CarriedWaitOrchestratorTest {
         budgetThenResume(::answered, answerPrompt)
 
     @Test
-    fun `bl-221 an answered issue whose session fails to open carries the answer on its retry`() = failedOpenThenRetry(::answered, answerPrompt)
+    fun `bl-221 an answered issue whose session fails to open carries the answer on its retry`() =
+        failedOpenThenRetry(::answered, answerPrompt)
 
     @Test
     fun `bl-221 a sent back issue parked at its budget before its first turn carries the reason on its next dispatch`() =
         budgetThenResume(::sentBack, sentBackPrompt)
 
     @Test
-    fun `bl-221 a sent back issue whose session fails to open carries the reason on its retry`() = failedOpenThenRetry(::sentBack, sentBackPrompt)
+    fun `bl-221 a sent back issue whose session fails to open carries the reason on its retry`() =
+        failedOpenThenRetry(::sentBack, sentBackPrompt)
 
     @Test
     fun `bl-221 a completed first turn ends the answered wait, so the next dispatch carries no answer`() =

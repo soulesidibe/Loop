@@ -150,7 +150,9 @@ object PromptVariables {
     private const val WORKSPACE_REUSED = "workspace_reused"
     private const val SESSION_BRIEF = "session_brief"
     private const val RETRY_KIND = "retry_kind"
-    private const val ANSWER = "answer"
+
+    /** `loop.answer` (m4-52), which preflight looks for in a template that can be answered (bl-221). */
+    const val ANSWER = "answer"
 
     /** The root of Loop's own variables. */
     const val LOOP = "loop"

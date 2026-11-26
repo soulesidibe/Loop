@@ -1456,6 +1456,10 @@ class Orchestrator(
                 val previous = effective
                 effective = reloaded
                 recordReload(previous, reloaded)
+                // bl-221: what the reloaded workflow runs with but should fix, such as a template that never reads loop.answer.
+                result.warnings.forEach { warning ->
+                    log.log(LogLevel.WARN, WORKFLOW_RELOAD, LogOutcome.COMPLETED, pollContext, reason = redactor.redact(warning))
+                }
             }
             is PreflightResult.Failed -> {
                 val version = result.source?.hash ?: UNREADABLE

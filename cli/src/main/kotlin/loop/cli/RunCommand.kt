@@ -107,6 +107,8 @@ class RunCommand(
         // m2-14: the holdout folder must stay out of every workspace and the repository, checked on every tick too.
         val holdoutDir = Holdouts.dir(host.loopHome)
         lateinit var preflight: Preflight
+        // bl-221: what the startup preflight warned about, printed once the redactor knows the workflow's secrets.
+        var preflightWarnings = emptyList<String>()
         // m3-05: a failed discovery fails the load first, with its reason, so the classpath's plugins are only a stand in.
         val trackers = host.trackerPlugins.getOrElse { TrackerPlugins.classpath }
         // m1-11: one redactor for the run, shared by the log, the store and the orchestrator. It knows
@@ -119,7 +121,9 @@ class RunCommand(
                         trackerProblem(it, trackers) ?: Holdouts.problem(it, holdoutDir) ?: deliveryProblem(it, host.rawEnv)
                             ?: exporterProblem(it)
                     }
-                when (val checked = runBlocking { preflight.check() }) {
+                val checked = runBlocking { preflight.check() }
+                if (checked is PreflightResult.Ok) preflightWarnings = checked.warnings
+                when (checked) {
                     // m3-16: a malformed machine config fails the startup preflight too, naming the key.
                     is PreflightResult.Ok ->
                         MachineConfig.read(host.loopHome).fold(
@@ -136,6 +140,7 @@ class RunCommand(
         operatorLog = log
         // m3-05: unknown keys under a plugin's section stay allowed, for forward compatibility, with a warning each.
         workflow.configWarnings.forEach { warn(redactor.redact(it)) }
+        preflightWarnings.forEach { warn(redactor.redact(it)) }
         shortSecretNames(workflow, host.rawEnv).forEach { name ->
             warn("\$$name is under ${SecretRedactor.MIN_SECRET_LENGTH} characters, so Loop does not redact it")
         }
