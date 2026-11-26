@@ -1,8 +1,10 @@
 package loop.core.workspace
 
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import loop.core.workflow.HooksConfig
+import java.io.IOException
 import java.nio.file.Path
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -10,23 +12,47 @@ import kotlin.coroutines.cancellation.CancellationException
  * The workspace manager of spec 9: per issue directories under the root
  * ([Workspaces]) and the four hooks of [hooks], run through [runner]. Every hook
  * run is reported to the caller's [HookListener], which records and logs it.
+ *
+ * bl-28: with [clones] (`workspace.git: clone`), each workspace is a clone of the project, made by Loop before
+ * `after_create`, and removal deletes its keep ref.
  */
 class WorkspaceManager(
     private val workspaces: Workspaces,
     private val hooks: HooksConfig,
     private val runner: HookRunner,
+    /** bl-28: the clone steps of `workspace.git: clone`, null when the hooks own the folder. */
+    val clones: WorkspaceClones? = null,
 ) {
     /**
      * Creates or reuses the workspace of [key]. `after_create` runs only when the
      * directory was created by this call; its failure or timeout fails the call
      * with [WorkspaceError.Hook].
+     *
+     * bl-28: with [clones], before any hook, a folder without `.git` becomes a clone of the project starting at
+     * [clone]'s base, a clone of the project is reused as it is, and any other `.git` fails the call with
+     * [WorkspaceError.Clone]. Then [CloneStart.baseRef], when given, is written in the clone. A failed clone of a
+     * folder created now deletes the folder and the keep ref.
      */
     suspend fun prepare(
         key: WorkspaceKey,
         env: Map<String, String>,
         listener: HookListener = HookListener.NONE,
+        clone: CloneStart = CloneStart(),
     ): Result<Workspace> {
         val workspace = workspaces.prepare(key).getOrElse { return Result.failure(it) }
+        clones?.let { clones ->
+            cloneStep(clones, workspace, clone)?.let { reason ->
+                val cleanup =
+                    if (workspace.createdNow) {
+                        val folder = workspaces.delete(key).exceptionOrNull()
+                        val keep = runCatching { withContext(Dispatchers.IO) { clones.dropKeep(key) } }.exceptionOrNull()
+                        listOfNotNull(folder, keep).joinToString("") { "; the partial clone was not removed: ${it.message}" }
+                    } else {
+                        ""
+                    }
+                return Result.failure(WorkspaceError.Clone("cannot prepare workspace ${key.value}: $reason$cleanup"))
+            }
+        }
         if (!workspace.createdNow) return Result.success(workspace)
         val result =
             try {
@@ -52,6 +78,29 @@ class WorkspaceManager(
      */
     fun withoutWorkspaceHooks(): WorkspaceManager =
         WorkspaceManager(workspaces, hooks.copy(afterCreate = null, beforeRun = null, afterRun = null, beforeRemove = null), runner)
+
+    /**
+     * bl-28: makes [workspace] a clone or checks it is one, then writes the base ref; the reason it failed, null when
+     * it did not.
+     */
+    private suspend fun cloneStep(
+        clones: WorkspaceClones,
+        workspace: Workspace,
+        clone: CloneStart,
+    ): String? =
+        withContext(Dispatchers.IO) {
+            try {
+                when (val state = clones.state(workspace.path)) {
+                    CloneState.Absent -> clones.create(workspace.path, workspace.key, clone.base)
+                    CloneState.Clone -> Unit
+                    is CloneState.Foreign -> return@withContext "the workspace ${workspace.path} is not a clone of the project, ${state.reason}"
+                }
+                clone.baseRef?.let { clones.writeBase(workspace.path, it.name, it.sha) }
+                null
+            } catch (e: IOException) {
+                e.message ?: e.toString()
+            }
+        }
 
     /** The existing workspace of [key], null when there is none; nothing is created and no hook runs (m2-04). */
     fun locate(key: WorkspaceKey): Result<Path?> = workspaces.locate(key)
@@ -109,9 +158,23 @@ class WorkspaceManager(
         env: Map<String, String>,
         listener: HookListener = HookListener.NONE,
     ): Result<Boolean> {
-        val path = workspaces.locate(key).getOrElse { return Result.failure(it) } ?: return Result.success(false)
+        val path = workspaces.locate(key).getOrElse { return Result.failure(it) } ?: return dropKeep(key).map { false }
         run(HookName.BEFORE_REMOVE, hooks.beforeRemove, path, env, hooks.timeoutMs, listener)
-        return workspaces.delete(key).map { true }
+        return workspaces.delete(key).mapCatching {
+            dropKeep(key).getOrThrow()
+            true
+        }
+    }
+
+    /** bl-28: deletes the keep ref of [key] in the project when this manager clones, so a gc may drop what it kept. */
+    private suspend fun dropKeep(key: WorkspaceKey): Result<Unit> {
+        val clones = clones ?: return Result.success(Unit)
+        return try {
+            withContext(Dispatchers.IO) { clones.dropKeep(key) }
+            Result.success(Unit)
+        } catch (e: IOException) {
+            Result.failure(WorkspaceError.Io("cannot remove the keep ref of workspace ${key.value}: ${e.message}", e))
+        }
     }
 
     private suspend fun run(
@@ -135,6 +198,21 @@ class WorkspaceManager(
         return result
     }
 }
+
+/**
+ * bl-28: what [WorkspaceManager.prepare] needs to make a clone: the [base] a new branch starts from when the project has
+ * no `loop/<key>` branch, and the [baseRef] to write in the clone, both resolved by Loop in the project.
+ */
+data class CloneStart(
+    val base: String? = null,
+    val baseRef: CloneBase? = null,
+)
+
+/** bl-28: `refs/loop/base/[name]` at [sha], written in a clone like in the project. */
+data class CloneBase(
+    val name: String,
+    val sha: String,
+)
 
 /** Told about each hook run, to record and log it (plan R2, R3). All default to nothing. */
 interface HookListener {
