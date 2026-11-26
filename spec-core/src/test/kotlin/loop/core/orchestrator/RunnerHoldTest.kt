@@ -7,8 +7,10 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.time.Clock
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.nanoseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
@@ -83,6 +85,21 @@ class RunnerHoldTest {
         hold.probeStarted("a")
         val short = assertNotNull(assertIs<RunnerHold.Outcome.Held>(unavailable(retryAfter = 30.seconds)).started)
         assertEquals(2.minutes, short.delay)
+    }
+
+    @Test
+    fun `bl-215 an exhausted Gemini quota holds until its reset time, not the 1 minute backoff`() {
+        // What the acp runner parses from the logged 429 body (AcpQuotaResetTest): quotaResetDelay 4h23m27.716645894s.
+        val reset = 4.hours + 23.minutes + 27.seconds + 716_645_894.nanoseconds
+
+        val period = assertNotNull(assertIs<RunnerHold.Outcome.Held>(unavailable(retryAfter = reset)).started)
+
+        assertEquals(reset, period.delay)
+        assertEquals(FIXED_NOW + reset, period.probeAt)
+        clock.now = FIXED_NOW + 1.minutes
+        assertEquals(RunnerHold.Gate.Closed, hold.gate())
+        clock.now = FIXED_NOW + reset
+        assertEquals(RunnerHold.Gate.Probe, hold.gate())
     }
 
     @Test

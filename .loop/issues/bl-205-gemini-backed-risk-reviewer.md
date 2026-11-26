@@ -52,6 +52,15 @@ Filed from `.loop/specs/gemini-support.md` item 8.
   - band floor medium: the reviewer's diff was cut to fit its prompt limit, 1 of 12 changed files left out in whole or in part
   Once approved, Loop runs the merge check again and merges.
 
+2026-11-26 13:56Z soulesidibe: Sent back by soulesidibe: Sent back before merge, after the merge risk reviews of pull request #91 (Sonnet, then a Fable recheck). The code has only lows, but the head conflicts with current main. Fix these on the same branch, then submit again:
+  - Medium: merge current main. bl-230 (pull request #92) merged after this head's base and conflicts in plugins/runner-acp/src/main/kotlin/loop/runner/acp/AcpRunner.kt, releaseIsolationDir. Main has `if (endedBy == null && dir.keep()) {` followed by the removeKept(..., except = dir.path) block; this branch has `if (!settings.readOnly && dir.keep()) {`. Resolve to `if (endedBy == null && !settings.readOnly && dir.keep())`, keep main's removeKept block and both doc comment clauses. Taking this branch's side would drop bl-230's rule that a guard ended session never keeps its folder. Then run ./gradlew build on the merged tree (bl-230's guardFail, endedBy, init startup sweep and AgyIsolationDir checks auto merge; confirm a read only review still goes straight to deleteIsolationDir and never reaches removeKept, and that the per review startup sweep is harmless).
+  - Low: GeminiRiskReviewer.kt:44 passes request.model untrimmed and uncased to session/set_model while routing trims and lowercases. Pass the trimmed model (fails closed today via ModelMismatch, but needlessly).
+  - Low: agent_message_chunk texts are concatenated with no message boundary (GeminiRiskReviewer.kt around 95 to 98), so prose then JSON in two messages, or a max_tokens cut, fails MergeRisk.parse and falls back. Take the last complete agent message, as the Codex reviewer does.
+  - Low: a tool_call_update arriving after the final message clears the answer and yields a spurious Crashed. Ignore updates of tool calls that already ended, or keep the last answer; add a test.
+  - Low: test gaps in AcpPermissionPolicyTest for readOnly: a non Loop MCP tool, an internal protected dir, kind fetch, and kind think with a mutating looking name.
+  - Low: the `else` branch for no terminal event is unreachable, since withTimeoutOrNull returns null when the flow ends without one and that is reported as Timeout. Report it separately or drop the branch (wording only).
+  - Low, docs: say in docs/plugins/runner-acp.md that a review fails closed with protected_workspace_root when the PR touches agent customization roots (.agents, .agent, _agents, _agent) or when the base cannot be resolved from main, master or origin/HEAD; that reads outside the workspace (not the holdout) are allowed as for workers; and that, unlike the Claude Code reviewer, no workspace context file (AGENTS.md, GEMINI.md) is turned off, relying on the gate's protected_paths condition.
+
 ## Agent Brief
 
 **Category:** enhancement

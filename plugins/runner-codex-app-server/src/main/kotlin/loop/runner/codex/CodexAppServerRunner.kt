@@ -55,9 +55,9 @@ import kotlin.time.TimeSource
  * run with no shell (m3-20). [readTimeout] (`read_timeout_ms`) is how long the runner waits for the answer to each
  * request it writes, [turnTimeout] (`turn_timeout_ms`) how long a started turn may go without a protocol message
  * (m3-19, spec 10.6). [strictMcp] (`strict_mcp`, m3-20 after bl-72) starts every thread with each MCP server of the
- * Codex config disabled and the `apps` feature off, so the agent gets no MCP server. [holdoutDir] is Loop's holdout
- * folder (m2-14), given by the host through plugin loading, whose reads and edits the approval rules refuse (m3-20);
- * null refuses none. [model] (`model`, bl-141) is sent as the `model` of `thread/start`, so the thread runs the model
+ * Codex config disabled and the `apps`, `plugins` and `computer_use` features off, so the agent gets no MCP server.
+ * [holdoutDir] is Loop's holdout folder (m2-14), given by the host through plugin loading, whose reads and edits the
+ * approval rules refuse (m3-20); null refuses none. [model] (`model`, bl-141) is sent as the `model` of `thread/start`, so the thread runs the model
  * the workflow names rather than the one of the operator's Codex config; null sends none and keeps Codex's choice.
  * [readOnly] (bl-214, no profile key) is the posture of the merge risk reviewer, [CodexRiskReviewer]: the thread runs
  * on the `read-only` sandbox and every command and file change approval is declined, see [ServerRequestPolicy].
@@ -249,7 +249,8 @@ data class CodexAppServerSettings(
  * id of turn 1 and the turn id of their own answer, or one Loop minted. Exactly one terminal event comes last.
  *
  * Strict MCP (m3-20, bl-72): with [CodexAppServerSettings.strictMcp] the startup reads the Codex config with
- * `config/read` and starts the thread with each MCP server it lists disabled and the `apps` feature off.
+ * `config/read` and starts the thread with each MCP server it lists disabled and the `apps`, `plugins` (bl-235) and
+ * `computer_use` features off.
  *
  * Exec policy rules (bl-135): before a session starts an app server, its first or a respawned one, [ExecPolicyRules]
  * reads the Codex rules files it would load; one that allows a denied command, or cannot be read, fails the turn with

@@ -1,7 +1,7 @@
 ---
 id: bl-235
 title: "Codex starts a cua_repl MCP server that strict_mcp does not turn off"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-agent]
 blocked_by: []
@@ -60,6 +60,21 @@ The likely source is Codex's `computer_use` feature (`codex features list` shows
 2026-11-26 13:33Z agent 896ccc84: The second refuted full build failed on another `:cli` test, `ClaudeCodeTrackerToolsTest` m4-14. The fake Claude Code of the GitHub issue exited with code 1 after 0.7 s, so it made no tracker calls. It passed 3 of 3 focused reruns. Over 8 minutes the machine's load average stayed between 233 and 462, with XprotectService and syspolicyd at the top, which explains a different timing flake in each full build. bl-235 touches only the Codex runner and its docs, so nothing changed on the branch. The base is unchanged.
 
 2026-11-26 13:39Z loop: Loop updated pull request #88 for this issue: https://github.com/soulesidibe/Loop/pull/88
+
+2026-11-26 14:00Z loop: Loop did not merge pull request #88: main at 02318280598fcbe3c321dd7d9dd2e2711ac0ccd1 was merged into loop/bl-235, but the checks failed on the result (a check failed). The merge commit stays on the branch. The next attempt fixes the result and submits it again.
+
+2026-11-26 14:04Z agent 0b6cee6e: The third refuted full build failed on another `:cli` test, `CodexClientToolsRunTest` m4-51: `loop tool mcp did not exit in 60s`, after both replies were written. This is the known stall tracked in bl-07 (bl-183 was closed as its duplicate, with the same message on ToolMcpCommandTest and ResourceToolsTest). The thread dump shows main parked in `ToolMcpCommand.body`. bl-235 does not touch cli or mcp. It passed 3 of 3 focused reruns, with the load average at 370. Main moved to 341b645, which changed only tracker files, and merged cleanly. The codex runner module tests and ktlint pass. Nothing changed on the branch except the merge.
+
+2026-11-26 14:20Z loop: Loop updated pull request #88 for this issue: https://github.com/soulesidibe/Loop/pull/88
+
+2026-11-26 14:24Z loop: Loop did not merge pull request #88 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.67.
+  - alignment: aligned, The diff turns off apps, plugins and computer_use under strict_mcp on thread/start and thread/resume, leaves non-strict unchanged and documents it; plugins goes beyond the issue's guess but a real probe showed it was needed.
+  - impact: medium, Small code change, but it alters the config of every strict Codex thread by default, and turning plugins off may remove behavior operators rely on.
+  - verification: partial, Unit tests check the strict and non-strict config on start and resume against the schema, but only a comment and doc note record the real run, and no automated test shows cua_repl stays off.
+  - rollback_cost: two_way, A revert restores the old config and leaves no persistent state.
+  - error_detection: partial, A new MCP server source would show only in startup notifications, with no check that fails the turn and no response_error fallback, which the docs name as not covered.
+  Once approved, Loop runs the merge check again and merges.
 
 ## Agent Brief
 

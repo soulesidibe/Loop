@@ -8,9 +8,11 @@ import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.longOrNull
 import loop.api.RunnerEvent
 import java.util.Locale
+import kotlin.time.Clock
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Instant
 
 /**
  * Classifies structured ACP JSON-RPC errors into [RunnerEvent.TurnFailed.Category.RunnerUnavailable]
@@ -24,6 +26,7 @@ internal object AcpErrors {
     data class Classification(
         val category: RunnerEvent.TurnFailed.Category?,
         val retryAfter: Duration? = null,
+        val quotaReset: AcpQuotaReset.Reset? = null,
     )
 
     private const val INVALID_PARAMS_CODE = -32602L
@@ -80,13 +83,16 @@ internal object AcpErrors {
     /**
      * Classifies a structured JSON-RPC error response for [method]. Returns `RunnerUnavailable` only
      * for structured model refusals, authentication/eligibility codes or 401/403 statuses, rate limit
-     * or overload codes or 429/503/529 statuses, or POSIX/Node transport errno codes with no HTTP status.
+     * or overload codes or 429/503/529 statuses (a Google `RESOURCE_EXHAUSTED` or `QUOTA_EXHAUSTED`
+     * error at any depth of [data] included), or POSIX/Node transport errno codes with no HTTP status.
+     * A rate limit or status classification carries its wait, a quota reset measured from [now].
      */
     fun classify(
         method: String?,
         code: Long,
         message: String,
         data: JsonElement? = null,
+        now: Instant = Clock.System.now(),
     ): Classification {
         val dataObj = data as? JsonObject
         val httpStatus = extractHttpStatus(dataObj)
@@ -102,28 +108,19 @@ internal object AcpErrors {
         }
 
         if (httpStatus != null && httpStatus in UNAVAILABLE_HTTP_STATUSES) {
-            return Classification(
-                category = RunnerEvent.TurnFailed.Category.RunnerUnavailable,
-                retryAfter = extractRetryAfter(dataObj),
-            )
+            return unavailableWithWait(message, data, now)
         }
 
         if (HTTP_STATUS_LINE_PATTERNS.any { it.containsMatchIn(combined) }) {
-            return Classification(
-                category = RunnerEvent.TurnFailed.Category.RunnerUnavailable,
-                retryAfter = extractRetryAfter(dataObj),
-            )
+            return unavailableWithWait(message, data, now)
         }
 
         if (tokens.any { it in STRUCTURED_AUTH_CODES }) {
             return Classification(RunnerEvent.TurnFailed.Category.RunnerUnavailable)
         }
 
-        if (tokens.any { it in STRUCTURED_RATE_LIMIT_CODES }) {
-            return Classification(
-                category = RunnerEvent.TurnFailed.Category.RunnerUnavailable,
-                retryAfter = extractRetryAfter(dataObj),
-            )
+        if (tokens.any { it in STRUCTURED_RATE_LIMIT_CODES } || AcpQuotaReset.isQuotaExhausted(data)) {
+            return unavailableWithWait(message, data, now)
         }
 
         // m4-08: a transport failure with no HTTP status at all is RunnerUnavailable; one with an HTTP
@@ -133,6 +130,21 @@ internal object AcpErrors {
         }
 
         return Classification(category = null)
+    }
+
+    /**
+     * A `RunnerUnavailable` that may carry a wait: an explicit retry key of the error data first, else the quota reset
+     * [AcpQuotaReset] finds (bl-215), else none.
+     */
+    private fun unavailableWithWait(
+        message: String,
+        data: JsonElement?,
+        now: Instant,
+    ): Classification {
+        val unavailable = RunnerEvent.TurnFailed.Category.RunnerUnavailable
+        extractRetryAfter(data as? JsonObject)?.let { return Classification(unavailable, retryAfter = it) }
+        val reset = AcpQuotaReset.find(message, data, now)
+        return Classification(unavailable, retryAfter = reset?.retryAfter, quotaReset = reset)
     }
 
     private fun extractHttpStatus(data: JsonObject?): Long? {

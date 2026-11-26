@@ -217,7 +217,11 @@ class CodexThreadResumeTest {
             buildJsonObject {
                 put("allow_login_shell", false)
                 putJsonObject("mcp_servers") { putJsonObject("operator_server") { put("enabled", false) } }
-                putJsonObject("features") { put("apps", false) }
+                putJsonObject("features") {
+                    put("apps", false)
+                    put("computer_use", false)
+                    put("plugins", false)
+                }
             },
             resume.obj("params").obj("config"),
         )
@@ -231,6 +235,40 @@ class CodexThreadResumeTest {
         tools.forEach { assertEquals(emptyList(), schema.problems("v2/DynamicToolSpec", it), "$it") }
         val stable = JsonObject(resume + ("params" to JsonObject(resume.obj("params") - "dynamicTools")))
         assertEquals(emptyList(), schema.problems("ClientRequest", stable))
+    }
+
+    /** A plugin's MCP server, such as `cua_repl`, started on a resumed thread too on codex 0.167.0, until `plugins` was off. */
+    @Test
+    fun `bl-235 under strict MCP the resume turns plugins and computer_use off beside apps, and no feature without it`() {
+        val features =
+            listOf(true, false).associateWith { strict ->
+                val server =
+                    server("resume-$strict") {
+                        resumeHandshake(
+                            threadId = THREAD,
+                            turnId = "turn-9",
+                            config = if (strict) FakeAppServer.configReadResult() else null,
+                        )
+                        turnCompleted(turnId = "turn-9", threadId = THREAD)
+                    }
+                val session = assertNotNull(runner(server, strictMcp = strict).resumeSession(context(), THREAD))
+                val (events) = runTurns(session, "Work on c-01 again")
+
+                assertIs<RunnerEvent.TurnCompleted>(events.last(), "$events")
+                val resume = received(server).single { it.string("method") == "thread/resume" }
+                assertEquals(emptyList(), schema.problems("ClientRequest", resume), "$resume")
+                resume.obj("params").obj("config")["features"]
+            }
+
+        assertEquals(
+            buildJsonObject {
+                put("apps", false)
+                put("computer_use", false)
+                put("plugins", false)
+            },
+            features.getValue(true),
+        )
+        assertEquals(null, features.getValue(false), "without strict MCP the resumed thread config turns no feature off")
     }
 
     @Test
