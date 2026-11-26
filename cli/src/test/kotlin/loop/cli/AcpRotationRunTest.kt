@@ -134,7 +134,7 @@ class AcpRotationRunTest {
         fakeAgy.writeText(
             """
             #!/bin/bash
-            if [ "$1" = "--version" ]; then echo "1.5.16"; exit 0; fi
+            if [ "$1" = "--version" ]; then echo "1.5.18"; exit 0; fi
             if [ "$1" = "models" ]; then echo "gemini-3.8-flash-low  Flash"; exit 0; fi
             exit 0
             """.trimIndent() + "\n",
@@ -202,7 +202,7 @@ class AcpRotationRunTest {
                 "echo \"\$n\" > '$calls/count'",
                 "pwd > '$calls/cwd-'\"\$n\"",
                 read,
-                """printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"name":"Antigravity ACP Server","version":"1.5.16"}}}'""",
+                """printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"name":"Antigravity ACP Server","version":"1.5.18"}}}'""",
                 read,
                 "if [ \"\$n\" = 1 ]; then",
                 """printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"agy-sess-1"}}'""",
