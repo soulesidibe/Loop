@@ -97,7 +97,8 @@ sealed interface StartupFailure {
  * `thread/start`, and `thread/start` carries a `config` that disables each MCP server its answer lists, by name, and
  * turns the `apps` feature off, the mechanism m3-02 found on the pinned app server: no single override empties the
  * server table, but a server disabled by name never starts. The answer lists the servers of the user's config and of
- * a trusted project's `.codex/config.toml`. An error answer or one that does not decode fails the start, so a strict
+ * a trusted project's `.codex/config.toml`, not those of the operator's Codex plugins, so the `plugins` feature goes
+ * off too, and `computer_use` with it (bl-235). An error answer or one that does not decode fails the start, so a strict
  * session never runs with the operator's servers.
  *
  * A resume (bl-212) is the same start with `thread/resume` of an existing thread in place of `thread/start`: [start] with
@@ -424,13 +425,19 @@ internal class StartupHandshake(
      */
     private fun baseConfig(): JsonObject = buildJsonObject { put(ALLOW_LOGIN_SHELL, false) }
 
-    /** The `config` of a strict thread: [baseConfig], each of [names] disabled, and the `apps` feature, `codex_apps`, off. */
+    /**
+     * The `config` of a strict thread: [baseConfig], each of [names] disabled, and the features off that bring MCP
+     * servers `config/read` does not list: `apps`, which starts `codex_apps`, and `plugins` (bl-235), which starts the
+     * servers of the operator's enabled Codex plugins, such as `cua_repl` of `unified-computer-use`. `computer_use` goes
+     * off too, as a precaution. Probed on codex 0.167.0, on a started and on a resumed thread: `plugins` off kept
+     * `cua_repl` from starting, `computer_use` off alone did not.
+     */
     private fun strictConfig(names: Set<String>): JsonObject =
         JsonObject(
             baseConfig() +
                 mapOf(
                     MCP_SERVERS to JsonObject(names.sorted().associateWith { buildJsonObject { put("enabled", false) } }),
-                    "features" to buildJsonObject { put("apps", false) },
+                    "features" to buildJsonObject { STRICT_FEATURES_OFF.forEach { put(it, false) } },
                 ),
         )
 
@@ -524,6 +531,9 @@ internal class StartupHandshake(
 
         /** The config table of the MCP servers. */
         private const val MCP_SERVERS = "mcp_servers"
+
+        /** The Codex features a strict thread turns off, see [strictConfig]. */
+        private val STRICT_FEATURES_OFF = listOf("apps", "plugins", "computer_use")
 
         /**
          * The member of `thread/start` and `thread/resume` that declares the client tools (m3-22, bl-212), experimental
