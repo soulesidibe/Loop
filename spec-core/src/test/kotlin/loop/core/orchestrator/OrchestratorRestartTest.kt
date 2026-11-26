@@ -21,8 +21,16 @@ import loop.api.RetryState
 import loop.api.RunId
 import loop.api.RunnerEvent
 import loop.api.SecretRedactor
+import loop.api.WaitReason
+import loop.api.WaitingIssue
 import loop.core.log.KeyValueLog
+import loop.core.verify.CheckRunner
 import loop.core.workflow.AgentConfig
+import loop.core.workflow.CheckConfig
+import loop.core.workflow.DeliveryConfig
+import loop.core.workflow.DeliveryPolicy
+import loop.core.workflow.KindConfig
+import loop.core.workflow.KindsConfig
 import loop.core.workflow.RetriesConfig
 import loop.core.workflow.WorkflowConfig
 import loop.core.workflow.WorkflowFile
@@ -30,6 +38,7 @@ import loop.core.workflow.commandRunner
 import loop.core.workspace.WorkspaceManager
 import loop.core.workspace.Workspaces
 import java.io.IOException
+import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
@@ -81,6 +90,8 @@ class OrchestratorRestartTest {
         runId: RunId = RunId("r1"),
         idPrefix: String = "a",
         parked: FakeParkedIssues = FakeParkedIssues(),
+        checks: CheckRunner = CheckRunner.NONE,
+        waiting: FakeWaitingIssues = FakeWaitingIssues(),
     ): Orchestrator {
         var next = 0
         val clock = SchedulerClock(testScheduler)
@@ -103,12 +114,71 @@ class OrchestratorRestartTest {
             secretsOf = { emptyMap() },
             retryStates = retryStates,
             claims = claims,
+            checkRunnerFor = { checks },
+            waiting = waiting,
         )
     }
 
     private fun failingRunner(): FakeRunner = FakeRunner { _, _ -> failingTurn() }
 
     private fun FakeSink.ofKind(kind: String): List<RecordedEvent> = events.filter { it.kind == kind }
+
+    @Test
+    fun `three restored verify waits with max_concurrent_agents 1 rerun their builds one at a time in stored order (bl-188)`() =
+        runTest {
+            val identifiers = listOf("bl-3", "bl-1", "bl-2")
+            val tracker = FakeTracker(identifiers.map { issue(it) })
+            val stored =
+                identifiers.mapIndexed { n, identifier ->
+                    Files.createDirectories(root.resolve("workspaces/$identifier"))
+                    WaitingIssue(
+                        projectId = PROJECT,
+                        issueId = "id-$identifier",
+                        identifier = identifier,
+                        reason = WaitReason.Verify,
+                        attemptId = AttemptId("dead$n"),
+                        runId = RunId("r0"),
+                        since = FIXED_NOW,
+                        data = mapOf("to" to "review"),
+                    )
+                }
+            val waiting = FakeWaitingIssues(*stored.toTypedArray())
+            val checks = HeldBuilds()
+            val base = workflow()
+            val workflow =
+                base.copy(
+                    config =
+                        base.config.copy(
+                            agent = base.config.agent.copy(maxConcurrentAgents = 1),
+                            kinds =
+                                KindsConfig(
+                                    KindConfig(
+                                        listOf(CheckConfig.Command("./gradlew build")),
+                                        delivery = DeliveryConfig(DeliveryPolicy.Auto),
+                                    ),
+                                ),
+                        ),
+                )
+            val job =
+                launch {
+                    orchestrator(tracker, failingRunner(), FakeRetryStates(), workflow = workflow, checks = checks, waiting = waiting)
+                        .runUntilCancelled()
+                }
+            runCurrent()
+
+            for (count in 1..3) {
+                assertEquals(count, checks.started.size, "build $count runs alone")
+                assertEquals(1, checks.running)
+                checks.releaseNext()
+                runCurrent()
+            }
+
+            assertEquals(identifiers, checks.started.map { it.fileName.toString() })
+            assertEquals(1, checks.most)
+            assertEquals(identifiers.map { "id-$it" }, tracker.moves.map { it.first }, "each rerun verified and applied its move")
+            assertEquals(emptyMap(), waiting.records)
+            job.cancelAndJoin()
+        }
 
     @Test
     fun `a failure writes the queued retry and the failure count to the store`() =

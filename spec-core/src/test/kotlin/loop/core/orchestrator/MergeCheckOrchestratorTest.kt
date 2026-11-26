@@ -6,6 +6,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
@@ -2861,6 +2862,56 @@ class MergeCheckOrchestratorTest {
             assertEquals(1, remote.fetchCalls, "the merge check ran")
             assertEquals(1, sink.all(MergeCheckStarted.name).size)
             assertEquals(0, runner.calls.size, "no attempt without the parked read")
+        }
+
+    @Test
+    fun `a restored verify rerun and a merge check never build at the same time with capacity 1 (bl-188)`() =
+        runTest {
+            val verified = verifiedWorktree()
+            secondWorktree()
+            val base = baseCommit()
+            val tracker = FakeTracker(listOf(issue("t-1"), issue("t-2")))
+            val remote =
+                FakeRemote().apply {
+                    bases += base
+                    pulls["loop/t-1"] = PullRequest(7, "https://github.com/acme/widgets/pull/7", created = false, headSha = verified)
+                }
+            val verify =
+                WaitingIssue(
+                    projectId = PROJECT,
+                    issueId = "id-t-2",
+                    identifier = "t-2",
+                    reason = WaitReason.Verify,
+                    attemptId = AttemptId("dead2"),
+                    runId = RunId("r0"),
+                    since = FIXED_NOW,
+                    data = mapOf(WaitKeys.TO to "review"),
+                )
+            val waiting = FakeWaitingIssues(mergeWait(clean(verified)), verify)
+            val checks = HeldBuilds()
+            val sink = FakeSink()
+            val job = launch { orchestrator(tracker, remote, waiting, sink, workflow(maxAgents = 1), checks).runUntilCancelled() }
+            runCurrent()
+
+            assertEquals(1, sink.all(MergeCheckStarted.name).size, "the merge check started beside the restored rerun")
+            assertEquals(1, checks.started.size, "only one of the two builds runs")
+            checks.releaseNext()
+            runCurrent()
+            assertEquals(2, checks.started.size, "the other build starts once the first ended")
+            assertEquals(setOf(workspace, secondWorkspace), checks.started.toSet())
+            checks.releaseNext()
+            runCurrent()
+
+            assertEquals(1, checks.most)
+            assertEquals(1, remote.merges.size, "the merge check passed and merged")
+            assertEquals(
+                WaitReason.Approval,
+                waiting.records.values
+                    .single()
+                    .reason,
+                "the rerun verified t-2, which waits for approval",
+            )
+            job.cancelAndJoin()
         }
 
     private companion object {

@@ -81,6 +81,12 @@ class WorkflowReloadCommandTest {
     private fun events(kind: String): List<Map<String, String>> =
         fixture.query("SELECT data FROM events WHERE kind = '$kind' ORDER BY seq").map(::data)
 
+    /** The one event of [kind]; when there is not exactly one, the failure lists every event of that kind. */
+    private fun single(kind: String): Map<String, String> {
+        val all = events(kind)
+        return all.singleOrNull() ?: fail("expected one $kind event, got ${all.size}:\n${all.joinToString("\n")}")
+    }
+
     @Test
     fun `an edit of max_turns while loop run runs reaches the next attempt and loop trace shows each config version`() {
         useTwoCallAgent()
@@ -99,7 +105,7 @@ class WorkflowReloadCommandTest {
             val turns = events("turn_completed").map { it["max_turns"] }
             assertEquals(listOf("1", "2"), turns, run.toString())
             assertEquals(listOf(first, second), events("attempt_started").map { it["config_version"] }, run.toString())
-            val reloaded = events("config_reloaded").single()
+            val reloaded = single("config_reloaded")
             assertEquals(second, reloaded["config_version"])
             assertEquals(first, reloaded["previous_version"])
             assertTrue("-  max_turns: 1\n+  max_turns: 2\n" in reloaded.getValue("diff"), reloaded.toString())
@@ -149,7 +155,7 @@ class WorkflowReloadCommandTest {
             await("the move to review", running) { fixture.stateOf("t-1") == "review" }
             val run = stop(running)
 
-            val rejected = events("config_reload_failed").single()
+            val rejected = single("config_reload_failed")
             assertEquals(bad, rejected["config_version"])
             assertEquals(good, rejected["active_version"])
             assertEquals("invalid_config", rejected["error"])

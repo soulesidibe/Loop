@@ -190,9 +190,9 @@ data class CodexAppServerSettings(
  * `thread/resume` fails the turn with `response_error` and never starts a new thread in its place. Usage Codex replays
  * on a resumed thread for the earlier attempt's turns is left out, see [Telemetry].
  *
- * Streams: stdout is the protocol stream. Each stdout line is kept as raw [RunnerEvent.Output] and read with
- * [ProtocolFraming], one JSON-RPC message per line; a line split across reads is whole once its line break arrives,
- * since the launcher reads lines. A line longer than [ProtocolFraming.MAX_LINE_BYTES] is dropped by the launcher, which
+ * Streams: stdout is the protocol stream. Each stdout line is read with [ProtocolFraming], one JSON-RPC message per
+ * line, and kept as [RunnerEvent.Output] as read, except an error response, whose data is left out (bl-240); a line
+ * split across reads is whole once its line break arrives, since the launcher reads lines. A line longer than [ProtocolFraming.MAX_LINE_BYTES] is dropped by the launcher, which
  * writes a `loop:` line on stderr in its place (bl-128). A line that is not a protocol message is logged as a `loop:`
  * line on stderr naming the framing's fixed reason, never the line, and reading goes on: a bad line never ends the
  * turn. Stderr is kept apart, as diagnostics: each stderr line is a raw `Output` on stderr and never reaches the
@@ -631,10 +631,14 @@ class CodexAppServerRunner internal constructor(
                             return fail(event.exitCode, reason)
                         }
                         is ProcessEvent.Line -> {
-                            out(RunnerEvent.Output(event.stream, event.text))
-                            if (event.stream != Stream.Stdout) continue
+                            if (event.stream != Stream.Stdout) {
+                                out(RunnerEvent.Output(event.stream, event.text))
+                                continue
+                            }
                             process.stdoutLines++
                             val frame = frame(event.text)
+                            // bl-240: an error response's data stays in the frame, out of the echo.
+                            out(RunnerEvent.Output(event.stream, ProtocolFraming.echo(frame)))
                             if (frame is Frame.Malformed) {
                                 out(malformed(frame))
                                 continue
@@ -780,7 +784,7 @@ class CodexAppServerRunner internal constructor(
                 kill(process)
                 while (true) {
                     val queued = process.events.tryReceive().getOrNull() ?: break
-                    if (queued is ProcessEvent.Line) out(RunnerEvent.Output(queued.stream, queued.text))
+                    if (queued is ProcessEvent.Line) out(echoed(queued))
                 }
                 end(event)
             }
@@ -817,6 +821,13 @@ class CodexAppServerRunner internal constructor(
 
     /** Frames one stdout [line] and hands the frame to [onFrame]. */
     private fun frame(line: String): Frame = ProtocolFraming.decode(line).also(onFrame)
+
+    /** The runner output of a [line] drained after the kill, a stdout line echoed as [ProtocolFraming.echo] gives it (bl-240). */
+    private fun echoed(line: ProcessEvent.Line): RunnerEvent.Output =
+        RunnerEvent.Output(
+            line.stream,
+            if (line.stream == Stream.Stdout) ProtocolFraming.echo(ProtocolFraming.decode(line.text)) else line.text,
+        )
 
     /** The log line of a stdout line that is not a protocol message: its reason, never the line. */
     private fun malformed(frame: Frame.Malformed): RunnerEvent.Output =

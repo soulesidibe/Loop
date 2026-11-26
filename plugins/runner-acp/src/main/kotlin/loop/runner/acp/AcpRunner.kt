@@ -594,10 +594,14 @@ class AcpRunner internal constructor(
                             return fail(event.exitCode, reason)
                         }
                         is ProcessEvent.Line -> {
-                            out(RunnerEvent.Output(event.stream, event.text))
-                            if (event.stream != Stream.Stdout) continue
+                            if (event.stream != Stream.Stdout) {
+                                out(RunnerEvent.Output(event.stream, event.text))
+                                continue
+                            }
                             process.stdoutLines++
                             val frame = decodeFrame(event.text)
+                            // bl-240: an error response's data stays in the frame, out of the echo.
+                            out(RunnerEvent.Output(event.stream, AcpFraming.echo(frame)))
                             if (frame is AcpFrame.Malformed) {
                                 out(malformed(frame))
                                 continue
@@ -842,13 +846,20 @@ class AcpRunner internal constructor(
                 kill(process)
                 while (true) {
                     val queued = process.events.tryReceive().getOrNull() ?: break
-                    if (queued is ProcessEvent.Line) out(RunnerEvent.Output(queued.stream, queued.text))
+                    if (queued is ProcessEvent.Line) out(echoed(queued))
                 }
             }
         }
     }
 
     private fun decodeFrame(line: String): AcpFrame = AcpFraming.decode(line).also(onFrame)
+
+    /** The runner output of a [line] drained after the kill, a stdout line echoed as [AcpFraming.echo] gives it (bl-240). */
+    private fun echoed(line: ProcessEvent.Line): RunnerEvent.Output =
+        RunnerEvent.Output(
+            line.stream,
+            if (line.stream == Stream.Stdout) AcpFraming.echo(AcpFraming.decode(line.text)) else line.text,
+        )
 
     private fun malformed(frame: AcpFrame.Malformed): RunnerEvent.Output =
         loopNote("an ACP server stdout line is not a protocol message (${frame.reason}), skipped")

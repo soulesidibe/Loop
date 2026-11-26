@@ -144,6 +144,36 @@ object AcpFraming {
         return AcpFrame.Malformed(line, "not a JSON-RPC message")
     }
 
+    /**
+     * The text runner output echoes for the stdout line of [frame] (bl-240). An error response's `data`, and any member
+     * besides `code` and `message` in its error or besides `jsonrpc`, `id` and `error` in its envelope, can hold a
+     * provider's error body with account fields, so it is echoed as `jsonrpc` and `id` (as the line had them), `code`,
+     * `message` and a `data` marker, `[error data omitted, N chars]`, N the length of the omitted values as compact JSON.
+     * Every other line, an undecodable one included, is echoed as read. The frame itself keeps the data.
+     */
+    fun echo(frame: AcpFrame): String {
+        if (frame !is AcpFrame.Error) return frame.line
+        val envelope = json.parseToJsonElement(frame.line) as JsonObject
+        val error = envelope.getValue("error") as JsonObject
+        // A null member carries nothing to omit.
+        val omitted =
+            (envelope.filterKeys { it !in ENVELOPE_KEPT }.values + error.filterKeys { it !in ERROR_KEPT }.values)
+                .filterNot { it is JsonNull }
+        if (omitted.isEmpty()) return frame.line
+        return buildJsonObject {
+            envelope["jsonrpc"]?.let { put("jsonrpc", it) }
+            envelope["id"]?.let { put("id", it) }
+            put(
+                "error",
+                buildJsonObject {
+                    put("code", error.getValue("code"))
+                    put("message", error.getValue("message"))
+                    put("data", "[error data omitted, ${omitted.sumOf { it.toString().length }} chars]")
+                },
+            )
+        }.toString()
+    }
+
     /** Encodes a JSON-RPC 2.0 request line, terminated with `\n`. */
     fun request(
         id: Long,
@@ -196,6 +226,9 @@ object AcpFraming {
                 },
             )
         }.toString() + "\n"
+
+    private val ENVELOPE_KEPT = setOf("jsonrpc", "id", "error")
+    private val ERROR_KEPT = setOf("code", "message")
 
     private fun isValidId(id: JsonElement): Boolean {
         val primitive = id as? JsonPrimitive ?: return false
