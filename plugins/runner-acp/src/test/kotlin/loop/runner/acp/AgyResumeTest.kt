@@ -7,9 +7,11 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import loop.api.AgentSession
 import loop.api.AttemptContext
 import loop.api.AttemptId
@@ -437,6 +439,42 @@ class AgyResumeTest {
         assertEquals(1, launched.size, "no agy process is spawned for a session a guard ended")
         assertFalse(home.resolve(geminiDir(0)).exists(), "the folder of a session a guard ended is deleted, never kept")
         assertNull(runner.resumeSession(context(attempt = "attempt-2"), "agy-guard-1"))
+    }
+
+    @Test
+    fun `bl-230 a human input request ends the session, so no later turn respawns and its folder is not kept`() {
+        val asking =
+            server("asking") {
+                initialize(id = 1)
+                sessionNew(id = 2, sessionId = "agy-input-1")
+                sessionSetModel(id = 3, configUpdateModelId = FakeAcpServer.DEFAULT_MODEL, sessionId = "agy-input-1")
+                awaitClient()
+                request(
+                    id = 201,
+                    method = "session/request_user_input",
+                    params = buildJsonObject { put("prompt", "Which database?") },
+                )
+                shell("sleep 30")
+            }
+        val loader = server("loader") { agyHandshake(sessionId = "agy-input-1") }
+        val runner = runner(asking, loader)
+        val session = runner.openSession(context(attempt = "attempt-1"))
+        val (turn1, turn2) =
+            runBlocking {
+                withTimeout(30.seconds) {
+                    try {
+                        session.runTurn("Work", 1).toList() to session.runTurn("Go on", 2).toList()
+                    } finally {
+                        session.stop()
+                    }
+                }
+            }
+
+        assertIs<RunnerEvent.TurnInputRequired>(turn1.last(), "$turn1")
+        val closed = assertIs<RunnerEvent.TurnFailed>(turn2.last(), "$turn2")
+        assertTrue("a guard ended this session" in closed.reason, closed.reason)
+        assertEquals(1, launched.size, "no agy process is spawned for a session a guard ended")
+        assertFalse(home.resolve(geminiDir(0)).exists(), "the folder of a session a guard ended is deleted, never kept")
     }
 
     @Test
