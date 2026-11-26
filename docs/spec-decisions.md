@@ -719,7 +719,8 @@ One reusable `Redactor` in `plugin-api` serves every write point, and m1-22's at
 - the human log (m1-39), each line as a whole;
 - the orchestrator, before each truncation, so no fragment of a value survives a cut: runner output (the 2000 character preview of the event, while the Attempt file gets the whole redacted line, m2-18), hook command (200 characters) and log reason (200 characters);
 - hook output. When the tail is truncated, its partial first line is dropped and `hook_finished` carries `output_truncated=true`;
-- CLI warnings and failure lines, internal errors included.
+- CLI warnings and failure lines, internal errors included;
+- `loop trace` output, the whole rendered trace in one call right before it is printed, so the tracker's issue identifier and title are covered (bl-05). The store stays read only with no redactor, and a store event, redacted when recorded, passes through unchanged.
 
 Redaction happens before writing, never on read. The one exception is a queued comment, which sits in its request file until Loop applies it (see [Host side tracker writes](#host-side-tracker-writes-extension-m1-23)). The redactor never throws (Symphony 17.6): on an internal failure it returns `[redacted]`, never the raw input.
 
