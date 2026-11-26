@@ -383,7 +383,7 @@ class CodexServerRequestsTest {
         val config = sent[3].obj("params").obj("config")
         assertEquals(
             CodexJson.format.parseToJsonElement(
-                """{"allow_login_shell":false,"mcp_servers":{"operator_server":{"enabled":false}},"features":{"apps":false}}""",
+                """{"allow_login_shell":false,"mcp_servers":{"operator_server":{"enabled":false}},"features":{"apps":false,"computer_use":false,"plugins":false}}""",
             ),
             config,
         )
@@ -409,9 +409,40 @@ class CodexServerRequestsTest {
 
         val config = received(server)[3].obj("params").obj("config")
         assertEquals(
-            CodexJson.format.parseToJsonElement("""{"allow_login_shell":false,"mcp_servers":{},"features":{"apps":false}}"""),
+            CodexJson.format.parseToJsonElement(
+                """{"allow_login_shell":false,"mcp_servers":{},"features":{"apps":false,"computer_use":false,"plugins":false}}""",
+            ),
             config,
         )
+    }
+
+    /**
+     * An enabled Codex plugin brings its own MCP servers, such as `cua_repl` of `unified-computer-use`, which
+     * `config/read` does not list, so they cannot be disabled by name. Probed on codex 0.167.0: `plugins` off keeps
+     * them from starting, `computer_use` off alone does not.
+     */
+    @Test
+    fun `bl-235 under strict MCP thread start turns the plugins and computer_use features off beside apps, and leaves them alone without it`() {
+        val features =
+            listOf(true, false).associateWith { strict ->
+                val server =
+                    FakeAppServer.write(dir.resolve("strict-$strict")) {
+                        if (strict) strictHandshake() else handshake()
+                        turnCompleted()
+                    }
+
+                runAll(runner(server.command, strictMcp = strict))
+
+                val thread = received(server).single { it.string("method") == "thread/start" }
+                assertEquals(emptyList(), schema.problems("ClientRequest", thread), "$thread")
+                thread.obj("params").obj("config")["features"]
+            }
+
+        assertEquals(
+            CodexJson.format.parseToJsonElement("""{"apps":false,"computer_use":false,"plugins":false}"""),
+            features.getValue(true),
+        )
+        assertEquals(null, features.getValue(false), "without strict MCP the thread config turns no feature off")
     }
 
     @Test
