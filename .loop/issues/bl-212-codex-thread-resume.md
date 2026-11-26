@@ -1,7 +1,7 @@
 ---
 id: bl-212
 title: "The Codex runner resumes its thread after the app server dies or a network hold"
-state: todo
+state: done
 priority: 3
 labels: [ready-for-agent]
 blocked_by: []
@@ -72,6 +72,11 @@ Filed from the runner capability comparison of Claude, Codex and Gemini after th
   - error_detection: loud, A failed thread/resume, an answer naming another thread or a second exit in the same turn fails the turn with response_error or port_exit, and each respawn or resume writes a stderr line, so nothing silently starts a new thread.
   - band floor medium: the reviewer's diff was cut to fit its prompt limit, 6 of 10 changed files left out in whole or in part
   Once approved, Loop runs the merge check again and merges.
+
+2026-11-25 22:25Z loop: Loop did not merge pull request #81, ci: Actions runs did not pass: build (failure). The pull request stays open and the result waits for a new approval.
+  Failed runs:
+  - build (failure): https://github.com/soulesidibe/Loop/actions/runs/45712408955
+  Rerun the runs on GitHub or fix the branch, then approve again with loop approve.
 
 ## Agent Brief
 

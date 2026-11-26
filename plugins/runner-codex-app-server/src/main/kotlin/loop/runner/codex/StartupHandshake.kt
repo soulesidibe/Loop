@@ -21,6 +21,8 @@ import loop.runner.codex.protocol.v2.ConfigReadParams
 import loop.runner.codex.protocol.v2.ConfigReadResponse
 import loop.runner.codex.protocol.v2.SandboxMode
 import loop.runner.codex.protocol.v2.SandboxPolicy
+import loop.runner.codex.protocol.v2.ThreadResumeParams
+import loop.runner.codex.protocol.v2.ThreadResumeResponse
 import loop.runner.codex.protocol.v2.ThreadStartParams
 import loop.runner.codex.protocol.v2.ThreadStartResponse
 import loop.runner.codex.protocol.v2.TurnInterruptParams
@@ -75,6 +77,14 @@ sealed interface StartupFailure {
     ) : StartupFailure {
         override val reason: String get() = "response_error: the $method response does not match the pinned schema"
     }
+
+    /** The `thread/resume` answer names the thread [found], not the thread [asked] the client resumes (bl-212). */
+    data class OtherThread(
+        val asked: String,
+        val found: String,
+    ) : StartupFailure {
+        override val reason: String get() = "response_error: the thread/resume response names the thread $found, not $asked"
+    }
 }
 
 /**
@@ -89,6 +99,13 @@ sealed interface StartupFailure {
  * server table, but a server disabled by name never starts. The answer lists the servers of the user's config and of
  * a trusted project's `.codex/config.toml`. An error answer or one that does not decode fails the start, so a strict
  * session never runs with the operator's servers.
+ *
+ * A resume (bl-212) is the same start with `thread/resume` of an existing thread in place of `thread/start`: [start] with
+ * the thread's id writes it, with the policy, `cwd`, model, `config` and `dynamicTools` that `thread/start` carries, so
+ * the strict MCP settings and Loop's tools hold on a resumed thread as on a started one, and with `excludeTurns`, since
+ * the client never reads the thread's history and a long one could exceed the launcher's line bound. An error answer,
+ * one that does not decode or one that names another thread fails the start: a resume never falls back to a new thread.
+ * One handshake serves one app server, so a new app server gets a new handshake and its request ids count from 1.
  *
  * A continuation turn (m3-19, spec 10.2 and 10.3) is one more `turn/start` on the same thread, with the next request
  * id and the same policy and `cwd`: [continueOn] gives its line, and its answer is read as the first turn's is.
@@ -165,6 +182,9 @@ internal class StartupHandshake(
     // The input of the first turn, written once the thread started.
     private var prompt: String = ""
 
+    // The thread `thread/resume` resumes, null for a start with `thread/start` (bl-212).
+    private var resumed: String? = null
+
     // The id of the next request, taken by the reading coroutine and by an interrupt from another thread.
     private val ids = AtomicLong(1)
 
@@ -182,9 +202,16 @@ internal class StartupHandshake(
     /** The request whose answer is awaited, null once the turn started; for the reason of an exit or a timeout. */
     val pendingMethod: String? get() = awaiting.method
 
-    /** The first line to write, the `initialize` request; [prompt] is the input of the first turn. */
-    fun start(prompt: String): String {
+    /**
+     * The first line to write, the `initialize` request; [prompt] is the input of the first turn. With [resume], the
+     * thread goes on with `thread/resume` of that thread id instead of `thread/start` (bl-212).
+     */
+    fun start(
+        prompt: String,
+        resume: String? = null,
+    ): String {
         this.prompt = prompt
+        this.resumed = resume
         val initialize = Awaiting.Initialize(ids.getAndIncrement())
         awaiting = initialize
         return request(
@@ -269,16 +296,27 @@ internal class StartupHandshake(
                         awaiting = config
                         Step.Write(listOf(initialized, configRead(config)))
                     } else {
-                        Step.Write(listOf(initialized, threadStart(baseConfig())))
+                        Step.Write(listOf(initialized, thread(baseConfig())))
                     }
                 }
             is Awaiting.Config ->
                 decode(result, ConfigReadResponse.serializer(), "config/read") {
                     val names = mcpServerNames(result) ?: return@decode Step.Failed(StartupFailure.InvalidAnswer("config/read"))
-                    Step.Write(listOf(threadStart(strictConfig(names))))
+                    Step.Write(listOf(thread(strictConfig(names))))
                 }
             is Awaiting.Thread ->
                 decode(result, ThreadStartResponse.serializer(), "thread/start") { response ->
+                    modelProvider = response.modelProvider
+                    model = response.model
+                    val turn = Awaiting.Turn(response.thread.id, ids.getAndIncrement())
+                    awaiting = turn
+                    Step.Write(listOf(turnStart(turn, prompt)))
+                }
+            is Awaiting.Resume ->
+                decode(result, ThreadResumeResponse.serializer(), "thread/resume") { response ->
+                    if (response.thread.id != current.threadId) {
+                        return@decode Step.Failed(StartupFailure.OtherThread(current.threadId, response.thread.id))
+                    }
                     modelProvider = response.modelProvider
                     model = response.model
                     val turn = Awaiting.Turn(response.thread.id, ids.getAndIncrement())
@@ -309,6 +347,36 @@ internal class StartupHandshake(
         return next(response)
     }
 
+    /** Writes `thread/resume` of the [resumed] thread when there is one, else `thread/start`, each with [config]. */
+    private fun thread(config: JsonObject): String = resumed?.let { threadResume(it, config) } ?: threadStart(config)
+
+    /**
+     * Writes `thread/resume` of [threadId] with [config] and the settings of [threadStart], tools included, and awaits
+     * its answer (bl-212). `excludeTurns` leaves the thread's history out of the answer.
+     */
+    private fun threadResume(
+        threadId: String,
+        config: JsonObject,
+    ): String {
+        val resume = Awaiting.Resume(threadId, ids.getAndIncrement())
+        awaiting = resume
+        return withTools(
+            ClientRequest.ThreadResume(
+                id = id(resume),
+                params =
+                    ThreadResumeParams(
+                        threadId = threadId,
+                        approvalPolicy = APPROVAL_POLICY,
+                        sandbox = sandbox,
+                        cwd = workspace.toAbsolutePath().toString(),
+                        config = config,
+                        model = configuredModel,
+                        excludeTurns = true,
+                    ),
+            ),
+        )
+    }
+
     /**
      * Writes `thread/start` with [config], the thread's config overrides, and awaits its answer. With [tools] the params
      * also carry them as `dynamicTools` (m3-22), a member of the experimental `ThreadStartParams` that the stable type
@@ -329,6 +397,11 @@ internal class StartupHandshake(
                         model = configuredModel,
                     ),
             )
+        return withTools(request)
+    }
+
+    /** The line of [request], with [tools] added to its params as `dynamicTools` when there are tools. */
+    private fun withTools(request: ClientRequest): String {
         if (tools == null) return request(request)
         val json = CodexJson.format.encodeToJsonElement(ClientRequest.serializer(), request).jsonObject
         val params = JsonObject(json.getValue("params").jsonObject + (DYNAMIC_TOOLS to tools))
@@ -404,6 +477,12 @@ internal class StartupHandshake(
             val requestId: Long,
         ) : Awaiting(requestId, "thread/start")
 
+        /** The `thread/resume` of [threadId] (bl-212). */
+        data class Resume(
+            val threadId: String,
+            val requestId: Long,
+        ) : Awaiting(requestId, "thread/resume")
+
         /** A `turn/start` on [threadId] with the request id [requestId]. */
         data class Turn(
             val threadId: String,
@@ -446,7 +525,10 @@ internal class StartupHandshake(
         /** The config table of the MCP servers. */
         private const val MCP_SERVERS = "mcp_servers"
 
-        /** The `thread/start` member that declares the client tools (m3-22), experimental in the pinned protocol. */
+        /**
+         * The member of `thread/start` and `thread/resume` that declares the client tools (m3-22, bl-212), experimental
+         * in the pinned protocol.
+         */
         private const val DYNAMIC_TOOLS = "dynamicTools"
 
         /** The config key that lets Codex run the agent's commands in a login shell; Loop sets it to false. */

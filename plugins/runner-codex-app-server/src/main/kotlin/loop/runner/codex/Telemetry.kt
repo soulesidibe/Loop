@@ -38,6 +38,11 @@ import kotlin.time.Instant
  *   it leaves out keeps the value an earlier update of the same limit gave, as the schema asks. An update that changes
  *   nothing gives no event. `resetsAt` is read as Unix seconds.
  *
+ * A resumed thread (bl-212): once [resume] names it, an update of that thread for a turn no [startTurn] named is the
+ * total Codex replays from before this session, of an earlier attempt's turns. It gives no event and becomes the
+ * thread's baseline, taken out of its later totals, so the session is not charged the earlier attempt's tokens again.
+ * A replay for a turn of this session, after a respawn, is an ordinary update and counts once.
+ *
  * A notification of any of these kinds that does not match the pinned schema gives a `loop:` line on stderr and is skipped:
  * telemetry never ends a turn. Any other notification is no signal.
  */
@@ -58,6 +63,15 @@ internal class Telemetry {
     ) {
         operator fun plus(other: Tokens) =
             Tokens(input + other.input, output + other.output, cacheRead + other.cacheRead, cacheCreation + other.cacheCreation)
+
+        /** What is left of these tokens once [other] is taken out, never below zero. */
+        operator fun minus(other: Tokens) =
+            Tokens(
+                (input - other.input).coerceAtLeast(0),
+                (output - other.output).coerceAtLeast(0),
+                (cacheRead - other.cacheRead).coerceAtLeast(0),
+                (cacheCreation - other.cacheCreation).coerceAtLeast(0),
+            )
     }
 
     private data class Limit(
@@ -72,6 +86,11 @@ internal class Telemetry {
     private val threads = mutableMapOf<String, Tokens>()
     private var reported: Tokens? = null
 
+    // bl-212: the thread a resume goes on with, the turns this session started, and the replayed total of each thread.
+    private var resumed: String? = null
+    private val startedTurns = mutableSetOf<String>()
+    private val baselines = mutableMapOf<String, Tokens>()
+
     // The main thread, the provider the thread/start answer gave, and the model of the thread's requests now.
     private var mainThread: String? = null
     private var provider: String? = null
@@ -82,15 +101,22 @@ internal class Telemetry {
     private val limits = mutableMapOf<String?, Limit>()
     private var lastLimitId: String? = null
 
+    /** The session goes on with the existing thread [threadId] through `thread/resume` (bl-212). */
+    fun resume(threadId: String) {
+        resumed = threadId
+    }
+
     /**
-     * A turn started on the main thread [threadId], whose `thread/start` answer named [provider] and [model] (m3-23):
-     * occupancy is read from that thread, on that model.
+     * The turn [turnId] started on the main thread [threadId], whose `thread/start` or `thread/resume` answer named
+     * [provider] and [model] (m3-23): occupancy is read from that thread, on that model.
      */
     fun startTurn(
         threadId: String,
+        turnId: String,
         provider: String?,
         model: String?,
     ) {
+        startedTurns += turnId
         mainThread = threadId
         this.provider = provider
         this.model = model
@@ -135,7 +161,12 @@ internal class Telemetry {
     private fun key(model: String?): String? = if (provider == null || model == null) null else "$provider/$model"
 
     private fun usage(update: ThreadTokenUsageUpdatedNotification): Signal? {
-        threads[update.threadId] = tokensOf(update.tokenUsage.total)
+        val total = tokensOf(update.tokenUsage.total)
+        if (update.threadId == resumed && update.turnId !in startedTurns) {
+            baselines[update.threadId] = total
+            return null
+        }
+        threads[update.threadId] = total - (baselines[update.threadId] ?: ZERO)
         val sum = threads.values.reduce(Tokens::plus)
         if (sum == reported) return null
         reported = sum
@@ -200,6 +231,8 @@ internal class Telemetry {
         }
 
     companion object {
+        private val ZERO = Tokens(0, 0, 0, 0)
+
         const val TOKEN_USAGE = "thread/tokenUsage/updated"
         const val RATE_LIMITS = "account/rateLimits/updated"
         const val MODEL_REROUTED = "model/rerouted"
