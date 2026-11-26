@@ -71,7 +71,7 @@ class CloneWorkspaceCommandTest {
     private fun refs(repo: TestRepo): List<String> = repo.git("for-each-ref").lines()
 
     @Test
-    fun `in a clone workspace the agent moves no ref of the project, writes neither its config nor its exclude, and cannot push to origin`() {
+    fun `in a clone the agent moves no project ref, writes neither its config nor its exclude, and cannot push to origin`() {
         fixture.issue("t-1")
         writeAgent()
         fixture.writeWorkflow(extra = verify)
@@ -132,10 +132,14 @@ class CloneWorkspaceCommandTest {
         assertEquals("/tmp/x", repo.git("config", "--local", "core.hooksPath"), "the agent wrote the shared config")
         assertContains(fixture.projectDir.resolve(".git/info/exclude").readText(), "agent-was-here")
     }
+
     @Test
     fun `in a clone the diff_policy base is the project's, so moving main and the base ref in the clone does not hide a protected edit`() {
         fixture.issue("t-1")
-        fixture.projectDir.resolve("guarded").toFile().mkdirs()
+        fixture.projectDir
+            .resolve("guarded")
+            .toFile()
+            .mkdirs()
         fixture.projectDir.resolve("guarded/data.txt").writeText("keep me\n")
         fixture.agentScript.writeText(
             """

@@ -233,7 +233,9 @@ class PullRequestDeliveryCommandTest {
         )
         val repo =
             if (clone) {
-                fixture.workflow.writeText(fixture.workflow.readText().replace("  root: ./workspaces\n", "  root: ./workspaces\n  git: clone\n"))
+                fixture.workflow.writeText(
+                    fixture.workflow.readText().replace("  root: ./workspaces\n", "  root: ./workspaces\n  git: clone\n"),
+                )
                 TestRepo(fixture.projectDir, fixture.homeDir).init(seed = false)
             } else {
                 fixture.useGitWorktrees()
