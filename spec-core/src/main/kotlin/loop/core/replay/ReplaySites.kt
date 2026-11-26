@@ -230,16 +230,20 @@ class ReplaySites(
         to: Path,
         alias: Path = from,
     ) {
+        fun pointsInside(link: Path): Boolean {
+            val target = Files.readSymbolicLink(link)
+            return target.isAbsolute && target.normalize().let { it.startsWith(from) || it.startsWith(alias) }
+        }
         val inside =
             Files.walk(from).use { stream ->
                 stream
-                    .filter { !it.startsWith(from.resolve(GIT_DIR)) && Files.isSymbolicLink(it) }
-                    .filter { link -> Files.readSymbolicLink(link).let { it.isAbsolute && (it.normalize().startsWith(from) || it.normalize().startsWith(alias)) } }
+                    .filter { !it.startsWith(from.resolve(GIT_DIR)) && Files.isSymbolicLink(it) && pointsInside(it) }
                     .map { from.relativize(it).toString() }
                     .toList()
             }
         if (inside.isNotEmpty()) {
-            val shown = inside.take(LINKS_SHOWN).joinToString(", ") + if (inside.size > LINKS_SHOWN) " and ${inside.size - LINKS_SHOWN} more" else ""
+            val more = if (inside.size > LINKS_SHOWN) " and ${inside.size - LINKS_SHOWN} more" else ""
+            val shown = inside.take(LINKS_SHOWN).joinToString(", ") + more
             throw IOException("a check could write in the workspace through links to an absolute path inside the workspace: $shown")
         }
         Files.walk(from).use { stream ->

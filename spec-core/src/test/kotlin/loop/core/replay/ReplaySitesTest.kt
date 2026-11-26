@@ -178,7 +178,8 @@ class ReplaySitesTest {
     fun `what cannot be removed on close is reported with git worktree prune as the remedy`() {
         gitWorkspace()
         val recorded = fingerprint(workspace)
-        val site = assertIs<ReplaySite.WorkspaceCopy>(assertIs<Placement.Ready>(sites.place(recorded, Result.success(workspace), project)).site)
+        val placed = assertIs<Placement.Ready>(sites.place(recorded, Result.success(workspace), project))
+        val site = assertIs<ReplaySite.WorkspaceCopy>(placed.site)
         val locked = site.dir.resolve("locked").createDirectories()
         locked.resolve("f.txt").writeText("kept\n")
         locked.toFile().setWritable(false)

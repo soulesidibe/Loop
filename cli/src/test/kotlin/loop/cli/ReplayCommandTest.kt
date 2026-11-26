@@ -348,7 +348,8 @@ class ReplayCommandTest {
         val result = fixture.inProcess("replay", A1, "--verify")
 
         assertEquals(0, result.exitCode, result.toString())
-        assertContains(result.stdout, "check 0 could not run: a replay holds no fake-device resource, the check did not run: echo ran > ran.txt\n")
+        val line = "check 0 could not run: a replay holds no fake-device resource, the check did not run: echo ran > ran.txt\n"
+        assertContains(result.stdout, line)
         assertContains(result.stdout, "New verdict: unverified, on $fingerprint, ")
         assertFalse(workspace.resolve("ran.txt").exists())
     }
