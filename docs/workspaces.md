@@ -1,6 +1,6 @@
 # Workspaces and Loop's own worktree hooks
 
-Loop gives each Issue a Workspace, a folder under `workspace.root` named after the workspace key. Loop has no built in VCS logic: the hooks in `WORKFLOW.md` fill and clean the Workspace. This page documents the hook scripts Loop's own Project uses to make each Workspace a git worktree.
+Loop gives each Issue a Workspace, a folder under `workspace.root` named after the workspace key. Loop has no built in VCS logic: the hooks in `WORKFLOW.md` fill and clean the Workspace. This page documents the hook scripts Loop's own Project uses to make each Workspace a git worktree. With `workspace.git: clone` Loop makes each Workspace a clone of the project itself, before the hooks run, see [clone workspaces](#clone-workspaces).
 
 Policies live in [`spec-decisions.md`](spec-decisions.md), not here:
 
@@ -81,3 +81,55 @@ Runs before Loop deletes the Workspace.
 2. Runs `git worktree prune`.
 
 It never deletes the branch `loop/<key>`, so removing a Workspace never loses committed work. Uncommitted changes in the Workspace are lost.
+
+## Clone workspaces
+
+Added in bl-28. A worktree shares with the project repository everything but `HEAD`, the index and a few per worktree refs: every branch and tag, `refs/loop/base/*`, `.git/config`, `info/exclude`, `info/attributes`, the hooks and the objects. So an agent in a worktree can run `git update-ref refs/heads/main HEAD` and move the operator's `main`, delete a tag, or set `core.hooksPath` in the shared config. With `workspace.git: clone` each Workspace is a clone of the project instead, and none of that reaches the project through git. The policy is in [Clone workspaces](spec-decisions.md#clone-workspaces-extension-bl-28).
+
+### Usage
+
+```yaml
+workspace:
+  root: ./workspaces
+  git: clone
+```
+
+`clone` is the only value. Without the key the hooks own the folder as before. With it, when Loop creates a Workspace folder, before `after_create`, it runs `git clone --shared --no-checkout --no-tags` of the project repository (the folder of `WORKFLOW.md`), then:
+
+1. removes the clone's `origin` remote, so `git push origin ...` from the Workspace fails instead of writing the project's refs;
+2. copies the project's repository local `user.name` and `user.email` into the clone's config, when set;
+3. writes the keep ref `refs/loop/workspace/<key>` in the project at the start commit;
+4. creates and checks out `loop/<key>`, from the project's `refs/heads/loop/<key>` when it exists, else from `LOOP_BASE_REF` (the base Loop fetched), else from the resolved base, else from the project's `HEAD`.
+
+Loop sets no sparse pattern: hiding `.loop/issues/` stays the hooks' job, and the worktree scripts must accept a clone (they make a worktree today, so a workflow that clones uses hooks that only set the sparse pattern and check out `loop/<key>`, or none).
+
+A Workspace that already is a clone of the project (its `.git/objects/info/alternates` names the project's object folder) is reused as it is on a retry or a restart, never reset. A folder whose `.git` is anything else, a worktree's `.git` file included, fails the Attempt with `cannot prepare workspace <key>: the workspace <path> is not a clone of the project, ...`.
+
+### What stays shared
+
+The objects only, read only: the clone borrows the project's object folder through `objects/info/alternates` and writes its own objects in its own folder. Its refs, config, hooks and `info/` are its own. The commits an agent makes live in the clone, so Loop imports a verified commit into the project, see [import](#import-before-push).
+
+### The base ref
+
+Before the hooks and the agent run, Loop writes `refs/loop/base/<base>` in the clone at the commit it fetched in the project, so the prompt's `git merge-base --is-ancestor refs/loop/base/main HEAD` and `git merge refs/loop/base/main` work as in a worktree. Loop never reads a ref of the clone to choose a base, a diff base or a push target: moving `main` or `refs/loop/base/main` in the clone changes nothing Loop checks. `diff_policy` and `changed_line_coverage` resolve their base in the project, for every kind, with or without pull request delivery.
+
+### Import before push
+
+On a verified verdict on a clean committed fingerprint, and again before every push of a Workspace commit (the pull request push, the merge check's push of the merged head), Loop imports that commit into the project by its id: a fetch from the clone with `transfer.fsckObjects` into a temporary repository with no config file, then a plain copy of the objects into the project's object folder, then `refs/heads/loop/<key>` written in the project at that commit. The push then runs as without clones. A commit that fails the object check is never imported or pushed.
+
+In the project Loop writes three refs and no other: `refs/heads/loop/<key>`, `refs/loop/base/*` and `refs/loop/workspace/<key>`.
+
+### The keep ref
+
+The clone borrows objects it does not own. If the operator deletes the branch the clone started from and runs `git gc --prune=now`, those objects would go and the clone would break with `bad object HEAD`. `refs/loop/workspace/<key>` keeps the start commit reachable while the Workspace lives. Loop deletes it when it removes the Workspace; the imported `loop/<key>` branch stays.
+
+### What is lost compared with a worktree
+
+- The operator's git hooks, such as husky or a lint hook, do not run on agent commits: the clone has no hooks.
+- The project's `info/exclude` and `info/attributes` are not shared. Ignore rules belong in `.gitignore`.
+- LFS objects, submodules and git-crypt keys are not shared.
+- `branch.loop/<key>.merge` is unset: the clone has no remote to track.
+
+### Threat model
+
+Clones protect the operator's repository against mistakes and casual misuse by an agent, not against a hostile agent. Verification still runs the agent's build code unsandboxed as the operator, and any write by absolute path, `git push /abs/path/to/project` included, stays possible until the OS sandbox of M5.
