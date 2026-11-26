@@ -422,6 +422,11 @@ class Orchestrator(
      */
     private val reactionsBefore: suspend () -> Result<List<RecordedEvent>> = { Result.success(emptyList()) },
     /**
+     * bl-224: the reaction events and the counter reset traces of the project in the run store, every run, in recording
+     * order, read once at the restore of the retry states to mark the issues a reaction sent back; the default has none.
+     */
+    private val retryEventsBefore: suspend () -> Result<List<RecordedEvent>> = { Result.success(emptyList()) },
+    /**
      * m4-37: the `merge_check_finished` events of the project in the run store, every run, which say whether the merge
      * check passed on a pull request's head, green under `ci: none` for `approved_green`; the default has none.
      */
@@ -600,6 +605,7 @@ class Orchestrator(
             projectId,
             ::onTerminalRetryDropped,
             retryStates,
+            retryEventsBefore,
         ) { park, reason ->
             notices.parked(park, reason)
         }

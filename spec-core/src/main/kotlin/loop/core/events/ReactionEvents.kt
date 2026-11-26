@@ -49,6 +49,12 @@ object ReactionKeys {
 
     /** m4-37: green by the merge check passed on the head. */
     const val GREEN_MERGE_CHECK = "merge_check"
+
+    /**
+     * bl-224: the findings a reaction sent its issue back with, redacted, only when its retry was scheduled. A new process
+     * reads them back for the retry, and they mark the issue as sent back by a reaction. Never shown by `loop trace`.
+     */
+    const val FINDINGS = "findings"
 }
 
 /**
