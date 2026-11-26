@@ -187,6 +187,135 @@ class WorktreeHooksTest {
         }
     }
 
+    @Test
+    fun `parallel hooks create and remove workspaces of one repository at once`() {
+        // bl-239: git worktree add writes another worktree's commondir while a parallel git reads it.
+        repeat(MIXED_ROUNDS) { round ->
+            val fresh = TestRepo(root.resolve("mixed-$round"), root.resolve("home").createDirectories()).init()
+            val workspaces = WorkspaceManager(Workspaces(fresh.dir.resolve("workspaces")), hooks, ShellHookRunner())
+
+            fun keyEnv(key: WorkspaceKey) = fresh.env + hookEnv(fresh.dir.resolve("WORKFLOW.md"), "id-${key.value}", key.value, key)
+            val old = listOf(WorkspaceKey("p-1"), WorkspaceKey("p-2"))
+            val new = listOf(WorkspaceKey("p-3"), WorkspaceKey("p-4"))
+            old.forEach { key -> runBlocking { workspaces.prepare(key, keyEnv(key)) }.getOrThrow() }
+            val removals = java.util.Collections.synchronizedList(mutableListOf<HookResult>())
+            val listener =
+                object : HookListener {
+                    override suspend fun finished(
+                        script: String,
+                        result: HookResult,
+                    ) {
+                        removals += result
+                    }
+                }
+            val start = CountDownLatch(1)
+
+            val results =
+                runBlocking {
+                    val created =
+                        new.map { key ->
+                            async(Dispatchers.IO) {
+                                start.await()
+                                workspaces.prepare(key, keyEnv(key))
+                            }
+                        }
+                    val removed =
+                        old.map { key ->
+                            async(Dispatchers.IO) {
+                                start.await()
+                                workspaces.remove(key, keyEnv(key), listener)
+                            }
+                        }
+                    start.countDown()
+                    created.awaitAll() to removed.awaitAll()
+                }
+
+            results.first.forEachIndexed { i, result ->
+                val workspace =
+                    result.getOrElse {
+                        fail("round $round, ${new[i].value}: ${it.message}\n${(it as? WorkspaceError.Hook)?.result?.output}")
+                    }
+                assertEquals("A project.\n", workspace.path.resolve("README.md").readText(), "round $round")
+                assertTrue(workspace.path.toString() in fresh.worktrees(), "round $round: ${fresh.worktrees()}")
+            }
+            results.second.forEachIndexed { i, result -> assertTrue(result.getOrThrow(), "round $round, ${old[i].value}") }
+            removals.forEach { assertTrue(it.ok, "round $round: ${it.reason}\n${it.output}") }
+            old.forEach { key ->
+                assertFalse(
+                    fresh.dir.resolve("workspaces/${key.value}").toString() in fresh.worktrees(),
+                    "round $round: ${fresh.worktrees()}",
+                )
+                assertTrue(fresh.hasBranch("loop/${key.value}"), "round $round")
+            }
+            assertFalse(fresh.dir.resolve(".git/$LOCK").exists(), "round $round")
+        }
+    }
+
+    @Test
+    fun `a lock left by a dead process is taken over`() {
+        val lock = repo.dir.resolve(".git/$LOCK").createDirectories()
+        lock.resolve("pid").writeText("${deadPid()}\n")
+
+        val workspace = prepare()
+
+        assertTrue(workspace.path.resolve("README.md").exists())
+        assertFalse(lock.exists())
+    }
+
+    @Test
+    fun `a hook that cannot take the lock in time fails and names its holder`() {
+        val holder = ProcessBuilder("sleep", "60").start()
+        try {
+            val lock = repo.dir.resolve(".git/$LOCK").createDirectories()
+            lock.resolve("pid").writeText("${holder.pid()}\n")
+            workspacePath.createDirectories()
+
+            val result =
+                runBlocking {
+                    ShellHookRunner().run(
+                        HookName.AFTER_CREATE,
+                        hooks.afterCreate!!,
+                        workspacePath,
+                        env + ("LOOP_HOOK_LOCK_TIMEOUT" to "1"),
+                        30_000,
+                    )
+                }
+
+            assertEquals(1, result.exitCode, result.output)
+            assertTrue("could not take the lock $lock within 1 s, held by pid ${holder.pid()}" in result.output, result.output)
+            assertEquals("${holder.pid()}\n", lock.resolve("pid").readText())
+            assertFalse(workspacePath.toString() in repo.worktrees(), repo.worktrees().toString())
+        } finally {
+            holder.destroyForcibly().waitFor()
+        }
+    }
+
+    @Test
+    fun `a failing step under the lock keeps git's exit code and frees the lock`() {
+        workspacePath.createDirectories()
+
+        val result =
+            runBlocking {
+                ShellHookRunner().run(
+                    HookName.AFTER_CREATE,
+                    hooks.afterCreate!!,
+                    workspacePath,
+                    env + ("LOOP_BASE_REF" to "no-such-ref"),
+                    30_000,
+                )
+            }
+
+        assertEquals(128, result.exitCode, result.output)
+        assertFalse(repo.dir.resolve(".git/$LOCK").exists())
+    }
+
+    /** The PID of a process that has exited and been reaped. */
+    private fun deadPid(): Long {
+        val process = ProcessBuilder("sh", "-c", "exit 0").start()
+        process.waitFor()
+        return process.pid()
+    }
+
     /** What the hooks control: branch, sparse patterns, worktrees, files at the top. */
     private fun state(workspace: Workspace): List<String> =
         listOf(
@@ -205,6 +334,10 @@ class WorktreeHooksTest {
         )
 
     private companion object {
-        const val PARALLEL_ROUNDS = 10
+        const val PARALLEL_ROUNDS = 30
+
+        /** Each round makes 2 workspaces first, then 2 more while removing those: twice the work of a parallel round. */
+        const val MIXED_ROUNDS = 10
+        const val LOCK = "loop-worktree-hooks.lock"
     }
 }
