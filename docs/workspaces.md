@@ -44,32 +44,33 @@ Loop's own `WORKFLOW.md` and the pilot app's use the plain hooks above, and Loop
 
 ## Scripts
 
-All three scripts are POSIX `sh`, live in `scripts/hooks/`, and are idempotent: running one twice leaves the same end state and keeps the commits on the branch.
+All three scripts are POSIX `sh`, live in `scripts/hooks/`, and are idempotent: running one twice leaves the same end state and keeps the commits on the branch. They source `worktree-lock.sh`, a fourth file in the same folder, so a copy of the scripts takes all four. See [How parallel hooks share the repository](#how-parallel-hooks-share-the-repository).
 
 ### `worktree-after-create.sh`
 
 Runs once, when Loop creates the Workspace folder.
 
 1. Exits 0 if the Workspace is already a worktree of the repository.
-2. Runs `git worktree prune` in the repository, which clears a stale entry left by an earlier failed Attempt.
-3. Runs `git worktree add --no-checkout`: with `-b loop/<key> <path> <base>` when the branch does not exist, else `<path> loop/<key>`.
-4. Sets a non-cone sparse checkout, `sparse-checkout set --no-cone '/*' '!/.loop/issues/'`, so the Workspace has every file except `.loop/issues/`.
-5. Checks the files out with `read-tree -mu HEAD`.
+2. Takes the lock of the repository.
+3. Runs `git worktree prune` in the repository, which clears a stale entry left by an earlier failed Attempt.
+4. Runs `git worktree add --no-checkout`: with `-b loop/<key> <path> <base>` when the branch does not exist, else `<path> loop/<key>`.
+5. Sets a non-cone sparse checkout, `sparse-checkout set --no-cone '/*' '!/.loop/issues/'`, so the Workspace has every file except `.loop/issues/`.
+6. Releases the lock and checks the files out with `read-tree -mu HEAD`.
 
-If the Workspace is already a worktree with an empty checkout (for example after Loop was killed mid creation), it fills the checkout again.
+If the Workspace is already a worktree with an empty checkout (for example after Loop was killed mid creation), it fills the checkout again. It sets the sparse pattern under the lock only while the repository does not have `extensions.worktreeConfig` yet.
 
 The agent therefore does not get the Issue files in its Workspace; it moves its Issue through `loop tool move`. The main checkout is still reachable by absolute path, so this is not a sandbox.
 
 Note: sparse checkout in a worktree turns on `extensions.worktreeConfig` in the main repository's config, so that the sparse pattern stays local to the worktree. The main checkout keeps all its files.
 
-Both calls to `sparse-checkout set` (step 4 and the refill of an empty checkout) are tried up to 5 times, with a short pause between tries, and the hook fails only after the last try, with git's own error. The reason is a race on a repository that does not have `extensions.worktreeConfig` yet: git writes that setting to the shared `.git/config` on the first `sparse-checkout set`, and two `after_create` hooks running at once collide on the config lock (`could not lock config file`, then `failed to initialize worktree config`). Once one of them has written the setting, git skips the write, so the retry succeeds. The retry only absorbs that collision: git keeps doing its one time setup, and the script takes no lock and writes no config of its own. Added in bl-08.
+Both calls to `sparse-checkout set` (step 5 and the refill of an empty checkout) are tried up to 5 times, with a short pause between tries, and the hook fails only after the last try, with git's own error. On a repository that does not have `extensions.worktreeConfig` yet, git writes that setting to the shared `.git/config` on the first `sparse-checkout set`, and two hooks doing it at once collide on the config lock (`could not lock config file`, then `failed to initialize worktree config`). Added in bl-08, the retry was the normal path until bl-239 put the call under the lock; it stays as a safety net. The script writes no config of its own.
 
 ### `worktree-before-run.sh`
 
 Runs before every Attempt.
 
 1. Calls `worktree-after-create.sh` first, so a Workspace that lost its worktree heals itself.
-2. Checks out `loop/<key>` if another branch is checked out, and sets the sparse pattern again if it is missing. A switch that would lose local changes fails the hook, and with it the Attempt.
+2. Checks out `loop/<key>` if another branch is checked out, under the lock, and sets the sparse pattern again if it is missing. A switch that would lose local changes fails the hook, and with it the Attempt.
 
 It never resets or cleans the Workspace, so work from an earlier Attempt stays.
 
@@ -77,10 +78,22 @@ It never resets or cleans the Workspace, so work from an earlier Attempt stays.
 
 Runs before Loop deletes the Workspace.
 
-1. Runs `git worktree remove --force <workspace>` in the repository if the Workspace is a registered worktree.
-2. Runs `git worktree prune`.
+1. If the Workspace is a linked worktree that git will remove (not the main working tree, not locked with `git worktree lock`), deletes its files except `.git`, outside the lock, since a large tree with build output takes seconds to delete.
+2. Takes the lock and runs `git worktree remove --force <workspace>` in the repository if the Workspace is a registered worktree.
+3. Runs `git worktree prune`.
 
 It never deletes the branch `loop/<key>`, so removing a Workspace never loses committed work. Uncommitted changes in the Workspace are lost.
+
+### How parallel hooks share the repository
+
+Loop runs Attempts in parallel, so the hooks of several Workspaces run at the same time against one repository. Their worktrees share the repository's common git folder: the list of worktrees in `.git/worktrees/`, the refs and `.git/config`. Git takes no lock for readers of `.git/worktrees/`. `git worktree add` writes `.git/worktrees/<name>/commondir` with a plain create then write, and a git that lists the worktrees in between (another hook's `worktree add`, `worktree remove` or branch checkout) dies with `failed to read .git/worktrees/<name>/commondir` (bl-239). The first `sparse-checkout set` also writes `.git/config`, see above.
+
+So the hooks take turns through one lock, `worktree-lock.sh`:
+
+- **What it covers.** In `after_create`: `worktree prune`, `worktree add` and the first `sparse-checkout set`. In `before_run`: the branch checkout. In `before_remove`: `worktree remove` and `worktree prune`. Everything that only touches one worktree, the `read-tree` checkout of the files above all, runs outside it, so parallel checkouts still overlap. A locked span takes well under a second.
+- **How it works.** The lock is the folder `loop-worktree-hooks.lock` in the common git folder, made with `mkdir`, which only one process can win, with the holder's PID in a `pid` file inside. A hook waits for it up to `LOOP_HOOK_LOCK_TIMEOUT` seconds, 20 by default, under Loop's hook timeout, then fails with `could not take the lock <path> within 20 s, held by pid <n>`. It releases the lock on exit, even when a step fails, and keeps the step's exit code.
+- **A stale lock.** A hook killed with SIGKILL, as Loop does after the hook timeout, leaves the lock behind. The next hook takes it over when the PID is dead, when the `pid` file is older than 2 minutes (up to 3 with GNU `find`, which rounds down), or when the same lock folder has had no PID for 5 seconds. Takeovers go one at a time behind a second folder, `loop-worktree-hooks.lock.takeover`: under it the waiter reads the lock again and moves it aside only if it still holds the PID it judged stale, or for a lock with no PID is still the same folder. So a waiter never moves a lock another hook has just taken, whether the stale judgement came from a killed hook or from a holder that released between two reads. A hook that took the lock checks that the `pid` file reads back its own PID, and waits again otherwise. A takeover guard left by a hook killed in those few milliseconds is cleared when its PID is dead or it has had no PID for 5 seconds.
+- **Not covered.** Git commands outside the hooks are not locked: the worktrees of `loop replay --verify` (`ReplaySites.kt`) and an agent running git in its own Workspace can still read a half written `commondir` while a hook runs `worktree add`. A hook running as another user, or a holder's PID reused by an unrelated live process, is outside what the lock handles: Loop runs every hook as one user, and the 2 minute rule ends a reused PID. Never take the lock around a call of another hook: `before_run` takes it only after `worktree-after-create.sh` returns, since a child waiting on its live parent would time out.
 
 ## Clone workspaces
 
