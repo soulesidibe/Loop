@@ -582,7 +582,7 @@ class PullRequestDeliveryCommandTest {
         // The check locks the project's loop/t-1 ref, so the import on the verified verdict fails; the server unlocks
         // it when the delivery looks for the pull request, right before the push.
         val lock = fixture.projectDir.resolve(".git/refs/heads/loop/t-1.lock")
-        val repo = setUp("auto", clone = true, check = "test -f hello.txt && mkdir -p ${lock.parent} && touch ${lock}")
+        val repo = setUp("auto", clone = true, check = "test -f hello.txt && mkdir -p ${lock.parent} && touch $lock")
         beforeFind = { Files.deleteIfExists(lock) }
 
         val run = runOnce()

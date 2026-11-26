@@ -2,10 +2,10 @@ package loop.core.workspace
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.withContext
-import loop.core.workflow.HooksConfig
 import kotlinx.coroutines.future.await
+import kotlinx.coroutines.withContext
 import loop.core.verify.WorkspaceGit
+import loop.core.workflow.HooksConfig
 import java.io.IOException
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture

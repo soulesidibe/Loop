@@ -80,7 +80,10 @@ class WorkspaceClones(
                 if (value.code != 0) continue
                 check(git.run(building, "config", name, value.stdout.trim(), cancellation = cancellation), "copy $name into the clone")
             }
-            check(git.run(building, "checkout", "--quiet", "-b", branch, start, cancellation = cancellation), "check out $branch in the clone")
+            check(
+                git.run(building, "checkout", "--quiet", "-b", branch, start, cancellation = cancellation),
+                "check out $branch in the clone",
+            )
             cancellation?.check()
             Files.deleteIfExists(workspace)
             Files.move(building, workspace, StandardCopyOption.ATOMIC_MOVE)
@@ -104,7 +107,10 @@ class WorkspaceClones(
     ) {
         val remotes = git.run(workspace, "remote", cancellation = cancellation)
         check(remotes, "list the remotes of the clone $workspace")
-        for (remote in remotes.stdout.lines().map { it.trim() }.filter { it.isNotEmpty() }) {
+        for (remote in remotes.stdout
+            .lines()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }) {
             check(git.run(workspace, "remote", "remove", remote, cancellation = cancellation), "remove the remote $remote of the clone")
         }
         val branch = branch(key)

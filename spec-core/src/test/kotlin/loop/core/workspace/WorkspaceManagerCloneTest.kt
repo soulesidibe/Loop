@@ -14,13 +14,13 @@ import java.nio.file.Path
 import kotlin.io.path.createTempDirectory
 import kotlin.io.path.exists
 import kotlin.io.path.writeText
+import kotlin.system.measureTimeMillis
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
-import kotlin.system.measureTimeMillis
 
 /**
  * bl-28: with clones, [WorkspaceManager.prepare] makes a new workspace a clone of the project before `after_create`,
@@ -140,7 +140,13 @@ class WorkspaceManagerCloneTest {
                 it.writeText("#!/bin/sh\ncase \" \$* \" in *\" checkout \"*) touch '$started'; exec sleep 60;; esac\nexec git \"\$@\"\n")
                 it.toFile().setExecutable(true)
             }
-        val slow = WorkspaceManager(Workspaces(root), HooksConfig(afterCreate = "populate"), runner, WorkspaceClones(project, WorkspaceGit(hostEnv, git = slowGit.toString())))
+        val slow =
+            WorkspaceManager(
+                Workspaces(root),
+                HooksConfig(afterCreate = "populate"),
+                runner,
+                WorkspaceClones(project, WorkspaceGit(hostEnv, git = slowGit.toString())),
+            )
 
         val took =
             measureTimeMillis {
@@ -193,7 +199,13 @@ class WorkspaceManagerCloneTest {
 
         runBlocking {
             val job = launch(Dispatchers.Default) { manager.prepare(key, emptyMap(), clone = CloneStart(first)) }
-            withTimeout(30_000) { while (git("for-each-ref", "refs/loop/workspace/").isEmpty() || !root.resolve("t-1/.git").exists()) delay(20) }
+            withTimeout(30_000) {
+                while (git("for-each-ref", "refs/loop/workspace/").isEmpty() ||
+                    !root.resolve("t-1/.git").exists()
+                ) {
+                    delay(20)
+                }
+            }
             job.cancelAndJoin()
         }
 
