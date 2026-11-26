@@ -51,6 +51,8 @@ The likely source is Codex's `computer_use` feature (`codex features list` shows
   - error_detection: partial, A new MCP server source would only show up in the startup notifications. Loop has no check that fails the turn, and the issue's response_error fallback was not added. The docs name this as not covered.
   Once approved, Loop runs the merge check again and merges.
 
+2026-11-26 10:19Z loop: Loop could not merge pull request #88: merging main at 31162a8e4a1f6c9cfc10535d627f9b0ce73ec324 into loop/bl-235 conflicts (conflict in docs/plugins/runner-codex-app-server.md, docs/spec-decisions.md). The merge was aborted and the branch is unchanged. The next attempt merges refs/loop/base/main into its branch, resolves the conflict and submits the result again.
+
 ## Agent Brief
 
 **Category:** bug
