@@ -594,6 +594,23 @@ class Orchestrator(
      */
     private val waits = Waits(waiting, projectId)
 
+    /**
+     * bl-188: every verification build and merge check build passes here first, an attempt's, a merge check's and a
+     * restored wait's rerun, so at most `agent.max_concurrent_verifications` (else `agent.max_concurrent_agents`) run at
+     * once. Read from [effective] on every admission, so a reload applies to the builds that have not started yet.
+     */
+    private val buildGate =
+        BuildGate({ effective.config.agent.buildCapacity }) { context, ahead ->
+            log.log(
+                LogLevel.INFO,
+                BUILD_GATE,
+                LogOutcome.SCHEDULED,
+                context,
+                mapOf("ahead" to ahead),
+                "verification waits for a build slot ($ahead ahead)",
+            )
+        }
+
     /** True once [restoreWaiting] resumed the waits a previous process left. */
     private var waitingRestored = false
 
@@ -804,6 +821,8 @@ class Orchestrator(
         // bl-101: before the preflight, so a slot whose release failed is not held while config.yaml stays malformed.
         machineGate.retryReleases(pollContext)
         if (!passesPreflight()) return Dispatched(candidates = 0, attempts = emptyList())
+        // bl-188: a reload that raised the build capacity starts the queued builds it now has room for.
+        buildGate.admit()
         // m4-13: each tracker polled with its own active states; one that fails is skipped this tick, the others go on.
         val polled = trackers.poll(effective.trackers)
         polled.failures.forEach { (id, error) ->
@@ -2434,7 +2453,7 @@ class Orchestrator(
             }
             val wait = Wait.verify(projectId, issue.id, issue.identifier, attemptId, runId, clock.now(), to, kind?.name)
             return waitingFor(wait, write = true, endOnCancel = { executions[issue.id]?.stop != null }) {
-                val passed = verification.verify().also { submitted = it }
+                val passed = buildGate.withBuild(logContext()) { verification.verify() }.also { submitted = it }
                 progress.verified(verification.failingChecks)
                 verdicts = true
                 refuted = verification.findings
@@ -4801,7 +4820,9 @@ class Orchestrator(
             verification.prepare()
             if (!verification.hasChecks) return RecheckOutcome.Skipped
         }
-        if (verification.verify()) return RecheckOutcome.Passed
+        // bl-188: the full rerun is a build and waits for the build gate; the diff policy pass alone builds nothing.
+        val passed = if (diffPolicyOnly) verification.verify() else buildGate.withBuild(context) { verification.verify() }
+        if (passed) return RecheckOutcome.Passed
         return RecheckOutcome.Failed(verification.unverified, verification.findings?.text)
     }
 
@@ -4966,7 +4987,8 @@ class Orchestrator(
             try {
                 waitingFor(wait, write = false, endOnCancel = { false }) {
                     record(ResultSubmitted, mapOf(Results.TO to checkNotNull(to), Results.RESTORED to "true"))
-                    val failure = if (verification.verify()) verification.deliver(to) else null
+                    val passed = buildGate.withBuild(context) { verification.verify() }
+                    val failure = if (passed) verification.deliver(to) else null
                     // A refuted rerun hands its findings to the issue's next attempt, like an attempt's (m2-06).
                     verification.findings?.let { verifyFindings[wait.issueId] = it.text }
                     // An unverified rerun parks the issue before its wait ends, like an attempt's (m2-08).
@@ -5163,6 +5185,9 @@ class Orchestrator(
 
         /** The operator log event of a pause of the delivery queue and its resume (bl-175). */
         const val DELIVERY_QUEUE = "delivery_queue"
+
+        /** bl-188: a build that waits for room in the build gate. */
+        const val BUILD_GATE = "build_gate"
 
         /** The values of the verdict that ends each verification (m2-05). */
         const val VERIFIED = Verification.VERIFIED
