@@ -606,7 +606,8 @@ object CoreChecks {
 
     /**
      * git in [root] with exactly [env] minus every `GIT_` variable but `GIT_CONFIG_NOSYSTEM`, never taking the index
-     * lock, and with replace refs, grafts and the commit graph off: `refs/replace/`, `info/grafts` or
+     * lock, with [WorkspaceGit.PINS] (no hook, no fsmonitor, no signing), and with replace refs, grafts and the commit
+     * graph off: `refs/replace/`, `info/grafts` or
      * `objects/info/commit-graph`, written by hand too, could swap the merge base's tree or move the merge base itself.
      */
     private class Git(
@@ -623,9 +624,8 @@ object CoreChecks {
             vararg args: String,
             input: String? = null,
         ): Run {
-            val command =
-                listOf("git", "-C", root.toString(), "--no-replace-objects", "-c", "core.fsmonitor=false", "-c", "core.commitGraph=false") +
-                    args
+            // bl-28: the same pins as every other git Loop runs in a workspace, whose config the agent may write.
+            val command = listOf("git") + WorkspaceGit.PINS + listOf("-C", root.toString(), "--no-replace-objects") + args
             val builder = ProcessBuilder(command)
             val processEnv = builder.environment()
             processEnv.clear()
