@@ -64,6 +64,10 @@ class PullRequestDeliveryCommandTest {
     /** The pull requests of the fake repository, by head (`acme:loop/<key>`), all open. */
     private val open: MutableMap<String, JsonObject> = Collections.synchronizedMap(mutableMapOf())
 
+    /** Run by the server before it answers a search of pull requests, the delivery's step before its push. */
+    @Volatile
+    private var beforeFind: () -> Unit = {}
+
     /** The bare repository behind `/acme/widgets.git` of the server, created by [setUp]. */
     private val bare: Path get() = root.resolve("remote.git")
 
@@ -102,6 +106,7 @@ class PullRequestDeliveryCommandTest {
         if (method != "GET") writes += "$method $path" to Json.parseToJsonElement(written).jsonObject
         return when {
             method == "GET" && path == pulls -> {
+                beforeFind()
                 val head = query.split("&").firstOrNull { it.startsWith("head=") }?.removePrefix("head=")
                 200 to JsonArray(listOfNotNull(open[head])).toString()
             }
@@ -200,11 +205,16 @@ class PullRequestDeliveryCommandTest {
         Files.setPosixFilePermissions(fixture.agentScript, PosixFilePermissions.fromString("rwxr-xr-x"))
     }
 
-    /** Loop mode with pull request delivery under [policy], then the worktree hooks; [remote] adds the bare remote. */
+    /**
+     * Loop mode with pull request delivery under [policy], then the worktree hooks; [remote] adds the bare remote. With
+     * [clone], `workspace.git: clone` and no hooks instead (bl-28).
+     */
     private fun setUp(
         policy: String,
         remote: Boolean = true,
         merge: Boolean = false,
+        clone: Boolean = false,
+        check: String = "test -f hello.txt",
     ): TestRepo {
         fixture.issue("t-1")
         writeAgent()
@@ -224,10 +234,18 @@ class PullRequestDeliveryCommandTest {
                 |        api_url: "$apiUrl"${if (merge) MERGE_CONFIG else ""}
                 |    verify:
                 |      checks:
-                |        - { type: command, run: "test -f hello.txt" }
+                |        - { type: command, run: "$check" }
                 """.trimMargin(),
         )
-        val repo = fixture.useGitWorktrees()
+        val repo =
+            if (clone) {
+                fixture.workflow.writeText(
+                    fixture.workflow.readText().replace("  root: ./workspaces\n", "  root: ./workspaces\n  git: clone\n"),
+                )
+                TestRepo(fixture.projectDir, fixture.homeDir).init(seed = false)
+            } else {
+                fixture.useGitWorktrees()
+            }
         repo.git("init", "--quiet", "--bare", bare.toString(), cwd = root)
         // Only the preflight reads the remote; the push goes to the explicit URL of acme/widgets on the server.
         if (remote) repo.git("remote", "add", "origin", bare.toString())
@@ -462,10 +480,14 @@ class PullRequestDeliveryCommandTest {
     }
 
     /** Puts a commit of someone else on `main` of the bare remote, so the remote's `main` is ahead of the project's; that commit. */
-    private fun advanceRemoteMain(repo: TestRepo): String {
+    private fun advanceRemoteMain(
+        repo: TestRepo,
+        file: String = "other.txt",
+        text: String = "someone else's work\n",
+    ): String {
         repo.git("checkout", "--quiet", "-b", "upstream")
-        repo.dir.resolve("other.txt").writeText("someone else's work\n")
-        repo.git("add", "other.txt")
+        repo.dir.resolve(file).writeText(text)
+        repo.git("add", file)
         repo.git("-c", "user.name=Other", "-c", "user.email=other@example.com", "commit", "--quiet", "-m", "other work")
         val remoteMain = repo.git("rev-parse", "HEAD")
         repo.git("checkout", "--quiet", "main")
@@ -518,6 +540,128 @@ class PullRequestDeliveryCommandTest {
         val log = fixture.inProcess("log", fixture.workflow.toString(), env = env).also { results += it }
         val sentence = "could not fetch main before the attempt, the hooks start from the last fetched main at ${earlier.take(12)}"
         assertContains(log.stdout, sentence)
+        assertTokenAbsent(repo)
+    }
+
+    /** True when [sha] is an object of the project's own object folder: the project borrows from no clone. */
+    private fun inProject(
+        repo: TestRepo,
+        sha: String,
+    ): Boolean {
+        assertFalse(repo.dir.resolve(".git/objects/info/alternates").exists(), "the project borrows no objects")
+        return repo.gitResult("cat-file", "-e", "$sha^{commit}").exitCode == 0
+    }
+
+    @Test
+    fun `bl-28 from a clone workspace the verified commit is imported into the project, then pushed and delivered`() {
+        val repo = setUp("auto", clone = true)
+        val remoteMain = advanceRemoteMain(repo)
+
+        runOnce()
+
+        val workspace = fixture.workspace("t-1")
+        val verified = repo.git("rev-parse", "HEAD", cwd = workspace)
+        assertFalse(workspace.resolve(".git").toFile().isFile, "a clone, not a worktree")
+        // The push runs from a repository that borrows the project's objects only, so it found the commit there.
+        assertEquals(verified, remoteBranch(repo))
+        assertEquals(verified, repo.git("rev-parse", "refs/heads/loop/t-1"), "the imported branch is at the verified commit")
+        assertTrue(inProject(repo, verified))
+        assertContains(events("branch_pushed").single(), "\"sha\":\"$verified\"")
+        assertEquals(1, posts().size)
+        assertEquals("review", fixture.stateOf("t-1"))
+        // The clone started on the fetched base and sees it at the same commit as the project.
+        assertEquals(remoteMain, repo.git("log", "-1", "--format=%P", verified))
+        assertEquals(remoteMain, repo.git("rev-parse", "refs/loop/base/main", cwd = workspace))
+        assertEquals(remoteMain, repo.git("rev-parse", "refs/loop/base/main"))
+        assertEquals(0, repo.gitResult("merge-base", "--is-ancestor", "refs/loop/base/main", "HEAD", cwd = workspace).exitCode)
+        assertTokenAbsent(repo)
+    }
+
+    @Test
+    fun `bl-28 an import that fails at verification is made again by the pull request push, which delivers`() {
+        // The check locks the project's loop/t-1 ref, so the import on the verified verdict fails; the server unlocks
+        // it when the delivery looks for the pull request, right before the push.
+        val lock = fixture.projectDir.resolve(".git/refs/heads/loop/t-1.lock")
+        val repo = setUp("auto", clone = true, check = "test -f hello.txt && mkdir -p ${lock.parent} && touch $lock")
+        beforeFind = { Files.deleteIfExists(lock) }
+
+        val run = runOnce()
+
+        val workspace = fixture.workspace("t-1")
+        val verified = repo.git("rev-parse", "HEAD", cwd = workspace)
+        assertContains(run.stdout + run.stderr + fixture.humanLog.readText(), "cannot import the verified $verified")
+        assertEquals(verified, repo.git("rev-parse", "refs/heads/loop/t-1"), "the push imported it")
+        assertEquals(verified, remoteBranch(repo))
+        assertEquals(1, posts().size)
+        assertEquals("review", fixture.stateOf("t-1"))
+    }
+
+    @Test
+    fun `bl-28 the base fetch of a verification writes the base ref in the clone and keeps its commit in the project`() {
+        val repo = setUp("human", clone = true)
+        val started = advanceRemoteMain(repo)
+        fixture.workflow.writeText(
+            fixture.workflow.readText().replace(
+                "        - { type: command, run: \"test -f hello.txt\" }\n",
+                "        - { type: command, run: \"test -f hello.txt\" }\n        - { type: diff_policy }\n" +
+                    "      guards:\n        protect: [guarded/]\n",
+            ),
+        )
+        // During its turn the agent's upstream moves on: someone pushes to the remote main.
+        val moveUpstream =
+            "t=$(git --git-dir=$bare rev-parse main^{tree}) && c=$(git --git-dir=$bare -c user.name=Other -c " +
+                "user.email=other@example.com commit-tree \"${'$'}t\" -p main -m moved) && " +
+                "git --git-dir=$bare update-ref refs/heads/main \"${'$'}c\"\n"
+        fixture.agentScript.writeText(fixture.agentScript.readText().replace("mkdir -p .loop\n", moveUpstream + "mkdir -p .loop\n"))
+
+        runOnce()
+
+        val moved = repo.git("--git-dir", bare.toString(), "rev-parse", "main", cwd = root)
+        assertNotEquals(started, moved, "the remote main moved during the turn")
+        val workspace = fixture.workspace("t-1")
+        assertEquals(moved, repo.git("rev-parse", "refs/loop/base/main"))
+        assertEquals(moved, repo.git("rev-parse", "refs/loop/base/main", cwd = workspace), "the clone sees the base the check used")
+        assertEquals(moved, repo.git("rev-parse", "refs/loop/workspace-base/t-1"), "the project keeps the base the clone sees")
+    }
+
+    @Test
+    fun `bl-28 the base fetch of a merge check writes the base ref in the clone, so the agent can merge it after a conflict`() {
+        val repo = setUp("human", merge = true, clone = true)
+
+        runOnce()
+        val remoteMain = advanceRemoteMain(repo, file = "hello.txt", text = "upstream hello\n")
+        approve()
+        runOnce()
+
+        val workspace = fixture.workspace("t-1")
+        assertTrue(workspace.exists(), "a conflict keeps the workspace")
+        assertEquals(remoteMain, repo.git("rev-parse", "refs/loop/base/main", cwd = workspace))
+        assertEquals(remoteMain, repo.git("rev-parse", "refs/loop/workspace-base/t-1"))
+    }
+
+    @Test
+    fun `bl-28 a merge check in a clone workspace merges the moved base and pushes the merged head, imported first`() {
+        val repo = setUp("human", merge = true, clone = true)
+        val forkPoint = repo.git("rev-parse", "HEAD")
+
+        runOnce()
+        val remoteMain = advanceRemoteMain(repo)
+        approve()
+        runOnce()
+
+        val merged = repo.git("rev-parse", "refs/heads/loop/t-1")
+        val parents = repo.git("log", "-1", "--format=%P", merged).split(' ')
+        assertEquals(2, parents.size, "a merge commit")
+        assertEquals(remoteMain, parents[1])
+        assertTrue(inProject(repo, merged), "the merged head is in the project's object folder")
+        assertTrue(inProject(repo, parents[0]), "the verified commit is in the project's object folder")
+        assertEquals(merged, remoteBranch(repo), "the merged head is pushed")
+        assertEquals(forkPoint, repo.git("rev-parse", "main"), "local main is never used or moved")
+        assertEquals(merged, writes.single { it.first == "PUT /api/repos/acme/widgets/pulls/1/merge" }.second.text("sha"))
+        assertContains(events("merge_check_finished").single(), "\"outcome\":\"merged\"")
+        assertEquals("done", fixture.stateOf("t-1"))
+        assertFalse(fixture.workspace("t-1").exists(), "the workspace is removed")
+        assertEquals(1, repo.gitResult("rev-parse", "--verify", "-q", "refs/loop/workspace/t-1").exitCode, "the keep ref is deleted")
         assertTokenAbsent(repo)
     }
 

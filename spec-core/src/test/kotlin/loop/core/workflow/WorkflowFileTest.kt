@@ -141,6 +141,19 @@ class WorkflowFileTest {
     }
 
     @Test
+    fun `bl-28 workspace git is hooks when absent and clone when written`() {
+        assertEquals(WorkspaceGitMode.Hooks, load(minimal).workspaceGit)
+        assertEquals(WorkspaceGitMode.Clone, load(minimal.replace("root: ./workspaces", "root: ./workspaces\n  git: clone")).workspaceGit)
+    }
+
+    @Test
+    fun `bl-28 a workspace git other than clone is refused`() {
+        val error = loadError(minimal.replace("root: ./workspaces", "root: ./workspaces\n  git: worktree"))
+
+        assertEquals("workspace.git must be clone, got \"worktree\"", assertIs<WorkflowError.InvalidConfig>(error).message)
+    }
+
+    @Test
     fun `unknown keys are ignored`() {
         val text = bare.replace("runner:", "hooks:\n  before_run: echo hi\nextra: 1\nrunner:")
 
