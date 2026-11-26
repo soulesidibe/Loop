@@ -634,7 +634,10 @@ data class HooksConfig(
     val onHumanNeeded: String? = null,
 )
 
-/** Spec 5.3.5, plus Loop's `agent.env` (bl-01), `agent.max_wake_turns` (m4-03) and `agent.max_concurrent_agents_by_tracker` (m4-15). */
+/**
+ * Spec 5.3.5, plus Loop's `agent.env` (bl-01), `agent.max_wake_turns` (m4-03), `agent.max_concurrent_agents_by_tracker`
+ * (m4-15) and `agent.max_concurrent_verifications` (bl-188).
+ */
 data class AgentConfig(
     val maxConcurrentAgents: Int = 10,
     val maxTurns: Int = 20,
@@ -658,7 +661,16 @@ data class AgentConfig(
      * `max_wake_turns`, so a chatty background task cannot keep it alive forever.
      */
     val maxWakeTurns: Int = 30,
-)
+    /**
+     * `agent.max_concurrent_verifications` (bl-188): the verification builds and merge check builds that run at once,
+     * a positive integer. Null, the default, falls back to [maxConcurrentAgents], see [buildCapacity].
+     */
+    val maxConcurrentVerifications: Int? = null,
+) {
+    /** The capacity of the build gate: [maxConcurrentVerifications], else [maxConcurrentAgents]. */
+    val buildCapacity: Int
+        get() = maxConcurrentVerifications ?: maxConcurrentAgents
+}
 
 /**
  * Loop's spend budgets (m2-20) and token thresholds (m1-38). Each budget is opt in: null, the default, is no
