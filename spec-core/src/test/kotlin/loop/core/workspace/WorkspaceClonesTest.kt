@@ -218,6 +218,20 @@ class WorkspaceClonesTest {
     }
 
     @Test
+    fun `an import checks every object it fetches, so a malformed commit of the clone never reaches the project`() {
+        create(base = first)
+        val tree = git("rev-parse", "HEAD^{tree}", dir = workspace)
+        val body = folder.resolve("bad-commit.txt").also { it.writeText("tree $tree\nparent $first\n\nno author or committer\n") }
+        val bad = git("hash-object", "--literally", "-t", "commit", "-w", body.toString(), dir = workspace)
+
+        val error = assertFailsWith<IOException> { clones.import(workspace, bad, "loop/t-1") }
+
+        assertContains(error.message.orEmpty(), "fetch $bad from the clone")
+        assertNotEquals("commit", git("cat-file", "-t", bad, ok = false), "the malformed commit is not in the project")
+        assertEquals("", git("for-each-ref", "refs/heads/loop/"))
+    }
+
+    @Test
     fun `an fsmonitor or hooks path the agent sets in the clone's config never runs in a git command Loop runs there`() {
         create(base = first)
         val marker = folder.resolve("hook-ran")
