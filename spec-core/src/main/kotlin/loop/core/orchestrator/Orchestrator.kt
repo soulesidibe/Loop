@@ -2921,11 +2921,19 @@ class Orchestrator(
             val hookEnv = env + fetchedBase?.let { mapOf(LOOP_BASE_REF to it) }.orEmpty()
             val codeKind = workflow.config.kinds?.code
             val configuredBase = codeKind?.guards?.base ?: codeKind?.delivery?.pullRequest?.base
+            val start = cloneStart(fetchedBase, configuredBase)
             val workspace =
-                workspaces.prepare(key, hookEnv, hooks, cloneStart(fetchedBase, configuredBase)).getOrElse { error ->
+                workspaces.prepare(key, hookEnv, hooks, start).getOrElse { error ->
                     recordPhase(AttemptPhase.PreparingWorkspace, mapOf(Phase.WORKSPACE_KEY to key.value))
                     return Executed(AttemptOutcome.Failed, error.describe())
                 }
+            if (workspaces.clones != null && workspace.createdNow && start.base == null) {
+                // bl-28: said, not silent, since the operator's checked out branch is then the start of the work.
+                val reason =
+                    "no base resolves in the project, so the new clone started at its ${WorkspaceClones.branch(key)} branch " +
+                        "when it has one, else at its HEAD; set kinds.code.guards.base or the pull request base"
+                log.log(LogLevel.WARN, "clone_start", LogOutcome.COMPLETED, logContext(), reason = reason)
+            }
             this.workspace = workspace
             this.env = hookEnv
             val beforeRun = workspaces.beforeRun(workspace, hookEnv, hooks)
@@ -3001,6 +3009,18 @@ class Orchestrator(
                 log.log(LogLevel.WARN, "prompt_record", LogOutcome.FAILED, logContext(), reason = reason)
             }
 
+            val guardBase =
+                resolveAttemptBaseRef(workspace.path, fetchedBase, configuredBase)
+                    ?: cloneGuardBase(key)
+                    ?: if (workflow.workspaceGit == WorkspaceGitMode.Clone) {
+                        return Executed(
+                            AttemptOutcome.Failed,
+                            "no base commit resolves in the project for the clone workspace ${key.value}, and its keep ref " +
+                                "${WorkspaceClones.keepRef(key)} is gone; a clone never takes its base from its own refs",
+                        )
+                    } else {
+                        null
+                    }
             val ctx =
                 AttemptContext(
                     runId = runId,
@@ -3009,7 +3029,7 @@ class Orchestrator(
                     attemptId = attemptId,
                     workspace = workspace.path,
                     env = env,
-                    baseRef = resolveAttemptBaseRef(workspace.path, fetchedBase, configuredBase),
+                    baseRef = guardBase,
                 )
             thresholds = TokenThresholds(thresholdEvery, recordedThreshold())
             // An issue or a day already past its budget parks before a turn spends more (m2-20).
@@ -4212,14 +4232,26 @@ class Orchestrator(
                 } else {
                     listOf("main", "master", "origin/HEAD")
                 }
+            val cloned = workflow.workspaceGit == WorkspaceGitMode.Clone
             for (candidate in candidates) {
                 resolveGitCommit(workflow.path.parent, candidate)?.let { return it }
                 // bl-28: a clone's refs are the agent's, so in clone mode the base is resolved in the project only.
-                if (workspace != null && workflow.workspaceGit != WorkspaceGitMode.Clone) {
+                if (workspace != null && !cloned) {
                     resolveGitCommit(workspace, candidate)?.let { return it }
                 }
             }
-            return configuredBase
+            // bl-28: a name would be resolved in the clone, whose refs the agent owns, so clone mode gives none.
+            return if (cloned) null else configuredBase
+        }
+
+        /**
+         * bl-28: the base of the runner's guards in clone mode when [resolveAttemptBaseRef] gives none: the start
+         * commit of the clone, read from its keep ref in the project, never a ref of the clone. Null outside clone
+         * mode, and when even the keep ref is gone.
+         */
+        private suspend fun cloneGuardBase(key: WorkspaceKey): String? {
+            if (workflow.workspaceGit != WorkspaceGitMode.Clone) return null
+            return resolveGitCommit(workflow.path.parent, WorkspaceClones.keepRef(key))
         }
 
         private suspend fun resolveGitCommit(

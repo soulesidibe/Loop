@@ -185,4 +185,51 @@ class CloneWorkspaceCommandTest {
         assertContains(trace.stdout, "command=\"diff_policy base=$main protect=guarded/\"")
         assertEquals("todo", fixture.stateOf("t-1"))
     }
+
+    @Test
+    fun `in a clone a diff_policy base the project cannot resolve stops the check, a ref the agent made never picks it`() {
+        fixture.issue("t-1")
+        fixture.agentScript.writeText(
+            """
+            |#!/bin/sh
+            |set -e
+            |echo changed >> README.md
+            |git -c user.name=Agent -c user.email=agent@example.com commit -qam edit
+            |git update-ref refs/heads/develop HEAD
+            |loop tool move review
+            |
+            """.trimMargin(),
+        )
+        fixture.writeWorkflow(
+            extra =
+                """
+                |agent:
+                |  max_turns: 1
+                |retries:
+                |  max_attempts: 1
+                |kinds:
+                |  code:
+                |    delivery: { policy: auto, auto_merge: { enabled: true } }
+                |    verify:
+                |      checks: [{ type: diff_policy }]
+                |      guards:
+                |        base: develop
+                |        protect: [README.md]
+                """.trimMargin(),
+        )
+        fixture.workflow.writeText(fixture.workflow.readText().replace("  root: ./workspaces\n", "  root: ./workspaces\n  git: clone\n"))
+        fixture.projectDir.resolve("README.md").writeText("A project.\n")
+        val repo = TestRepo(fixture.projectDir, fixture.homeDir).init(seed = false)
+
+        val result = fixture.loop("run", "--once")
+
+        assertEquals(0, result.exitCode, result.toString())
+        assertEquals(1, repo.gitResult("rev-parse", "--verify", "-q", "refs/heads/develop").exitCode, "the project has no develop")
+        val verdict = fixture.query("SELECT data FROM events WHERE kind = 'verdict'").single()["data"].orEmpty()
+        assertFalse(verdict.contains("\"verdict\":\"verified\""), verdict)
+        assertContains(verdict, "develop is not a commit of the project repository")
+        assertEquals("todo", fixture.stateOf("t-1"))
+        // No base resolves in the project, so the new clone started at its HEAD, and Loop said so.
+        assertContains(result.stdout + result.stderr + fixture.humanLog.readText(), "clone_start")
+    }
 }
