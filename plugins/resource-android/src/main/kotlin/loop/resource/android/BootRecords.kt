@@ -66,6 +66,14 @@ internal class BootRecords(
         file(avd).deleteIfExists()
     }
 
+    /** Deletes the record of [avd] when it [matches], under [exclusive], so a record written meanwhile is kept (bl-219). */
+    fun deleteIf(
+        avd: String,
+        matches: (BootRecord) -> Boolean,
+    ) {
+        exclusive { of(avd)?.takeIf(matches)?.let { delete(avd) } }
+    }
+
     fun <T> exclusive(block: () -> T): T =
         THREADS.withLock {
             Files.createDirectories(dir)
