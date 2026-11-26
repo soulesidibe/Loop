@@ -251,11 +251,59 @@ class AcpQuotaResetTest {
         assertNull(rateLimit.secondary)
         assertEquals(failed.turnId, rateLimit.turnId)
         assertTrue(events.indexOf(rateLimit) < events.indexOf(failed))
-        // The raw protocol line echo is runner output as for every frame; what the quota adds names no account.
+        // What the quota adds names no account; the echo of the line is bl-240's test below.
         listOf(rateLimit, failed).forEach { event ->
             val text = event.toString()
             assertFalse(EMAIL in text || ACCOUNT_ID in text, text)
         }
+    }
+
+    @Test
+    fun `bl-240 the echo of the quota error omits its data, the frame still gives rate_limit and the reason`() {
+        val errorLine =
+            buildJsonObject {
+                put("jsonrpc", "2.0")
+                put("id", 4)
+                put(
+                    "error",
+                    buildJsonObject {
+                        put("code", -32000)
+                        put("message", "Resource exhausted")
+                        put("data", parse(logged429(model = null)))
+                    },
+                )
+            }.toString()
+        val notification = """{ "jsonrpc": "2.0", "method": "loop/unknown", "params": {"note": "kept as read"} }"""
+        val undecodable = """not json {"error":{"data":"kept as read"}}"""
+        val server =
+            FakeAcpServer.write(dir) {
+                initialize(id = 1)
+                sessionNew(id = 2, sessionId = "s-quota")
+                sessionSetModel(id = 3, configUpdateModelId = FakeAcpServer.DEFAULT_MODEL, sessionId = "s-quota")
+                awaitClient()
+                raw(notification)
+                raw(undecodable)
+                raw(errorLine)
+            }
+
+        val events = runBlocking { withTimeout(20.seconds) { agyRunner(server).run(context(), "Work").toList() } }
+
+        val outputs = events.filterIsInstance<RunnerEvent.Output>()
+        outputs.forEach { output -> assertFalse(EMAIL in output.line || ACCOUNT_ID in output.line, output.line) }
+        val echoed = outputs.single { "Resource exhausted" in it.line }
+        assertEquals(RunnerEvent.Output.Stream.Stdout, echoed.stream)
+        assertTrue("\"code\":-32000" in echoed.line, echoed.line)
+        assertTrue("[error data omitted, " in echoed.line, echoed.line)
+        assertTrue(outputs.any { it.stream == RunnerEvent.Output.Stream.Stdout && it.line == notification })
+        assertTrue(outputs.any { it.stream == RunnerEvent.Output.Stream.Stdout && it.line == undecodable })
+        // The decoded frame keeps the data, so bl-215's telemetry reads the reset and the model as before.
+        val failed = assertIs<RunnerEvent.TurnFailed>(events.last())
+        assertEquals(RunnerEvent.TurnFailed.Category.RunnerUnavailable, failed.category)
+        assertEquals(RESET_DELAY, failed.retryAfter)
+        assertTrue("the quota resets at $RESET_AT" in failed.reason, failed.reason)
+        val rateLimit = events.filterIsInstance<RunnerEvent.RateLimit>().single()
+        assertEquals("gemini", rateLimit.limitId)
+        assertEquals("quota_exhausted", rateLimit.reached)
     }
 
     @Test
