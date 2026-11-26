@@ -53,6 +53,14 @@ The likely source is Codex's `computer_use` feature (`codex features list` shows
 
 2026-11-26 10:19Z loop: Loop could not merge pull request #88: merging main at 31162a8e4a1f6c9cfc10535d627f9b0ce73ec324 into loop/bl-235 conflicts (conflict in docs/plugins/runner-codex-app-server.md, docs/spec-decisions.md). The merge was aborted and the branch is unchanged. The next attempt merges refs/loop/base/main into its branch, resolves the conflict and submits the result again.
 
+2026-11-26 13:10Z agent 896ccc84: Filed the follow up default:bl-239 in the tracker default: WorktreeHooksTest parallel after_create test fails intermittently on a commondir read
+
+2026-11-26 13:10Z agent 896ccc84: The refuted full build failed on `loop.cli.WorktreeHooksTest` `after_create survives two parallel workspaces on a fresh repository`: a parallel `git worktree add` race (`failed to read .git/worktrees/p-1/commondir`). It passed 3 of 3 focused reruns. It tests `scripts/hooks/`, a protected path bl-235 does not touch, so it is filed as a follow up and not changed here. Main moved to 1717465 and merged cleanly. After the merge, the codex runner module passes (237 tests, after one timing flake in `17_5 item 6` that passed on 4 reruns), and ktlint passes.
+
+2026-11-26 13:33Z agent 896ccc84: The second refuted full build failed on another `:cli` test, `ClaudeCodeTrackerToolsTest` m4-14. The fake Claude Code of the GitHub issue exited with code 1 after 0.7 s, so it made no tracker calls. It passed 3 of 3 focused reruns. Over 8 minutes the machine's load average stayed between 233 and 462, with XprotectService and syspolicyd at the top, which explains a different timing flake in each full build. bl-235 touches only the Codex runner and its docs, so nothing changed on the branch. The base is unchanged.
+
+2026-11-26 13:39Z loop: Loop updated pull request #88 for this issue: https://github.com/soulesidibe/Loop/pull/88
+
 ## Agent Brief
 
 **Category:** bug
