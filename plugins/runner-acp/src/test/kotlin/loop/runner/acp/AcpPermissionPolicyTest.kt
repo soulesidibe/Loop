@@ -401,6 +401,60 @@ class AcpPermissionPolicyTest {
         assertTrue(AcpPermissionPolicy.INTERNAL_LOOP_DIR in cmdDeny.note, cmdDeny.note)
     }
 
+    @Test
+    fun `bl-205 read only declines every MCP tool, writes under internal Loop directories, fetch and a mutating tool of kind think`() {
+        val internalDir = home.resolve(".loop/attempts/proj-1/att-1").createDirectories()
+        val readOnly =
+            AcpPermissionPolicy(
+                workspace = workspace,
+                holdout = HoldoutFolder(holdoutDir, home),
+                protectedRoots = ProtectedWorkspaceRoots(workspace, home),
+                strictMcp = false,
+                launcher = customLauncher,
+                protectedWriteDirs = { listOf(HoldoutFolder(internalDir, home)) },
+                readOnly = true,
+            )
+
+        fun declined(
+            toolCall: JsonObject,
+            reason: String,
+        ) {
+            val answer = assertIs<AcpPermissionPolicy.Answer.Write>(readOnly.answer(permissionRequest(toolCall = toolCall)))
+            assertEquals("opt-reject-once", outcomeOf(answer)["optionId"]!!.jsonPrimitive.content, answer.note)
+            assertTrue(reason in answer.note, answer.note)
+        }
+
+        declined(buildJsonObject { put("name", "mcp_github_push") }, AcpPermissionPolicy.READ_ONLY)
+        declined(buildJsonObject { put("name", "mcp__loop__move") }, AcpPermissionPolicy.READ_ONLY)
+        declined(
+            buildJsonObject {
+                put("name", "write_file")
+                put("kind", "edit")
+                put("rawInput", buildJsonObject { put("Path", internalDir.resolve("settings.json").toString()) })
+            },
+            AcpPermissionPolicy.INTERNAL_LOOP_DIR,
+        )
+        declined(
+            buildJsonObject {
+                put("name", "web_fetch")
+                put("kind", "fetch")
+                put("rawInput", buildJsonObject { put("url", "https://example.com") })
+            },
+            AcpPermissionPolicy.UNSUPPORTED_TOOL,
+        )
+        declined(
+            buildJsonObject {
+                put("name", "write_file")
+                put("kind", "think")
+                put("rawInput", buildJsonObject { put("Path", workspace.resolve("notes.md").toString()) })
+            },
+            AcpPermissionPolicy.READ_ONLY,
+        )
+
+        val think = readOnly.answer(permissionRequest(toolCall = buildJsonObject { put("kind", "think") }))
+        assertEquals("opt-allow-once", outcomeOf(assertIs(think))["optionId"]!!.jsonPrimitive.content)
+    }
+
     /**
      * A `session/request_permission` frame of the shape agy 1.5.18 sends for a file tool called by URI: the recorded
      * frame envelope, `args` and `rawInput` carrying the `Path` as given, and `locations[].path`. Each path is optional

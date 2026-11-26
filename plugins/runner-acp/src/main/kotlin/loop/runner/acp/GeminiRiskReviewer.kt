@@ -16,6 +16,7 @@ import loop.api.RiskReviewer
 import loop.api.RunId
 import loop.api.RunnerEvent
 import loop.api.RunnerEvent.Output.Stream
+import java.util.Locale
 import kotlin.time.Duration.Companion.milliseconds
 
 /**
@@ -26,10 +27,11 @@ import kotlin.time.Duration.Companion.milliseconds
  * write, edit, delete or move is declined, reads and searches are allowed except under the holdout folder of [settings],
  * and no Loop tool is passed. A review never resumes, and its isolated folder is removed when it ends.
  *
- * The answer is the text of the turn's final agent message, its `agent_message_chunk` texts after the last tool call,
- * with the session's tokens and no cost, which ACP does not report. A turn past [RiskReviewRequest.timeoutMs] is stopped,
+ * The answer is the text of the turn's last agent message, as for the Codex reviewer, with the session's tokens and no
+ * cost, which ACP does not report. A message is a run of `agent_message_chunk` texts; a tool call, an update of one or a
+ * chunk with another `messageId` ends it, and a message with no text is skipped. A turn past [RiskReviewRequest.timeoutMs] is stopped,
  * with its `agy`, and is a [RiskReviewError.Timeout]; a turn that fails, asks for input, cannot start or ends with no
- * agent message is a [RiskReviewError.Crashed].
+ * agent message, or with no terminal event, is a [RiskReviewError.Crashed].
  */
 class GeminiRiskReviewer(
     private val settings: AcpSettings,
@@ -40,14 +42,14 @@ class GeminiRiskReviewer(
         val reviewSettings =
             settings.copy(
                 preset = AcpSettings.PRESET_AGY,
-                model = request.model,
+                model = request.model.trim().lowercase(Locale.ROOT),
                 strictMcp = true,
                 readOnly = true,
                 turnTimeout = request.timeoutMs.coerceIn(1, AcpSettings.MAX_TIMEOUT_MS).milliseconds,
             )
         val runner = AcpRunner(reviewSettings, hostEnv, removedEnvNames)
         val answer = Answer()
-        val end =
+        val ended =
             try {
                 withTimeoutOrNull(request.timeoutMs) {
                     var terminal: RunnerEvent? = null
@@ -55,14 +57,14 @@ class GeminiRiskReviewer(
                         answer.read(event)
                         if (event.isTerminal()) terminal = event
                     }
-                    terminal
+                    Ended(terminal)
                 } ?: return Result.failure(RiskReviewError.Timeout("no answer within ${request.timeoutMs} ms"))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 return Result.failure(RiskReviewError.Crashed("agy cannot run the review: ${e.message}", e))
             }
-        return when (end) {
+        return when (val end = ended.terminal) {
             is RunnerEvent.TurnCompleted ->
                 answer.text?.let { Result.success(RiskReview(it, answer.tokens, null)) }
                     ?: Result.failure(RiskReviewError.Crashed("agy ended the turn with no answer"))
@@ -73,14 +75,21 @@ class GeminiRiskReviewer(
         }
     }
 
-    /** What the review collected from the runner's events: the agent's final message and the session's tokens. */
+    /** How the turn's events ended: with the [terminal] event, or null when the runner sent none. */
+    private class Ended(
+        val terminal: RunnerEvent?,
+    )
+
+    /** What the review collected from the runner's events: the agent's last message and the session's tokens. */
     private class Answer {
         private val message = StringBuilder()
+        private var messageId: String? = null
+        private var last: String? = null
         var tokens: LedgerTokens? = null
             private set
 
-        /** The text of the agent message after the last tool call; null when the agent wrote none. */
-        val text: String? get() = message.toString().takeIf { it.isNotBlank() }
+        /** The text of the last agent message that has any; null when the agent wrote none. */
+        val text: String? get() = message.toString().takeIf { it.isNotBlank() } ?: last
 
         fun read(event: RunnerEvent) {
             when (event) {
@@ -91,16 +100,31 @@ class GeminiRiskReviewer(
             }
         }
 
-        /** Reads a `session/update` on [line], a protocol line of `agy`: a message chunk adds to it, a tool call ends it. */
+        /**
+         * Reads a `session/update` on [line], a protocol line of `agy`: a message chunk adds to the current message, a
+         * tool call, an update of one or a chunk of another message ends it.
+         */
         private fun update(line: String) {
             if (SESSION_UPDATE !in line) return
             val frame = AcpFraming.decode(line) as? AcpFrame.Notification ?: return
             if (frame.method != AcpHandshake.METHOD_SESSION_UPDATE) return
             val update = (frame.params as? JsonObject)?.get("update") as? JsonObject ?: return
             when (update.string("sessionUpdate")) {
-                AGENT_MESSAGE_CHUNK -> (update["content"] as? JsonObject)?.string("text")?.let { message.append(it) }
-                TOOL_CALL, TOOL_CALL_UPDATE -> message.clear()
+                AGENT_MESSAGE_CHUNK -> {
+                    val id = update.string("messageId")
+                    if (id != null && id != messageId) endMessage()
+                    messageId = id
+                    (update["content"] as? JsonObject)?.string("text")?.let { message.append(it) }
+                }
+                TOOL_CALL, TOOL_CALL_UPDATE -> endMessage()
             }
+        }
+
+        /** Ends the current message, kept as the last one when it has any text. */
+        private fun endMessage() {
+            message.toString().takeIf { it.isNotBlank() }?.let { last = it }
+            message.clear()
+            messageId = null
         }
 
         private fun JsonObject.string(key: String): String? = (get(key) as? JsonPrimitive)?.takeIf { it.isString }?.content

@@ -91,6 +91,52 @@ class GeminiRiskReviewerTest {
     }
 
     @Test
+    fun `bl-205 the model is set trimmed and in lower case, as the routing reads it`() {
+        val server =
+            FakeAcpServer.write(dir) {
+                handshake(model = MODEL)
+                awaitClient()
+                agentChunk(verdict)
+                response(4, promptResult())
+            }
+
+        assertEquals(verdict, review(server, model = "  Gemini-4-Neon-High ").getOrThrow().text)
+
+        val setModel = received(server).single { it.method == "session/set_model" }.getValue("params").jsonObject
+        assertEquals(MODEL, setModel.getValue("modelId").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `bl-205 a tool call update after the final message keeps the answer`() {
+        val server =
+            FakeAcpServer.write(dir) {
+                handshake()
+                awaitClient()
+                toolCall("read_file")
+                agentChunk(verdict)
+                toolCallUpdate("call-1", "completed")
+                response(4, promptResult())
+            }
+
+        assertEquals(verdict, review(server).getOrThrow().text)
+    }
+
+    @Test
+    fun `bl-205 of two agent messages with their own ids, the answer is the last one`() {
+        val server =
+            FakeAcpServer.write(dir) {
+                handshake()
+                awaitClient()
+                agentChunk("Here is my assessment.", messageId = "m-1")
+                agentChunk(verdict.substring(0, 10), messageId = "m-2")
+                agentChunk(verdict.substring(10), messageId = "m-2")
+                response(4, promptResult())
+            }
+
+        assertEquals(verdict, review(server).getOrThrow().text)
+    }
+
+    @Test
     fun `bl-205 a command is declined, even a plain read, since the reviewer runs read only`() {
         val server =
             FakeAcpServer.write(dir) {
@@ -322,19 +368,33 @@ class GeminiRiskReviewerTest {
         sessionSetModel(id = 3, configUpdateModelId = model, sessionId = SESSION)
     }
 
-    private fun FakeAcpServer.Script.agentChunk(text: String) =
-        update(
-            buildJsonObject {
-                put("sessionUpdate", "agent_message_chunk")
-                put(
-                    "content",
-                    buildJsonObject {
-                        put("type", "text")
-                        put("text", text)
-                    },
-                )
-            },
-        )
+    private fun FakeAcpServer.Script.agentChunk(
+        text: String,
+        messageId: String? = null,
+    ) = update(
+        buildJsonObject {
+            put("sessionUpdate", "agent_message_chunk")
+            if (messageId != null) put("messageId", messageId)
+            put(
+                "content",
+                buildJsonObject {
+                    put("type", "text")
+                    put("text", text)
+                },
+            )
+        },
+    )
+
+    private fun FakeAcpServer.Script.toolCallUpdate(
+        id: String,
+        status: String,
+    ) = update(
+        buildJsonObject {
+            put("sessionUpdate", "tool_call_update")
+            put("toolCallId", id)
+            put("status", status)
+        },
+    )
 
     private fun FakeAcpServer.Script.toolCall(name: String) =
         update(
