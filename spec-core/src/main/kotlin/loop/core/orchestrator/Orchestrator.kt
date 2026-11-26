@@ -601,7 +601,14 @@ class Orchestrator(
      */
     private val buildGate =
         BuildGate({ effective.config.agent.buildCapacity }) { context, ahead ->
-            log.log(LogLevel.INFO, BUILD_GATE, LogOutcome.SCHEDULED, context, mapOf("ahead" to ahead), "verification waits for a build slot ($ahead ahead)")
+            log.log(
+                LogLevel.INFO,
+                BUILD_GATE,
+                LogOutcome.SCHEDULED,
+                context,
+                mapOf("ahead" to ahead),
+                "verification waits for a build slot ($ahead ahead)",
+            )
         }
 
     /** True once [restoreWaiting] resumed the waits a previous process left. */

@@ -134,7 +134,10 @@ class BuildGateOrchestratorTest {
 
             assertEquals(2, runner.calls.size, "both attempts hold an agent slot")
             assertEquals(listOf("bl-1"), checks.issues())
-            assertTrue(logLines.any { "event=build_gate" in it && "issue_identifier=bl-2" in it && "1 ahead" in it }, logLines.joinToString("\n"))
+            assertTrue(
+                logLines.any { "event=build_gate" in it && "issue_identifier=bl-2" in it && "1 ahead" in it },
+                logLines.joinToString("\n"),
+            )
 
             checks.releaseNext()
             runCurrent()

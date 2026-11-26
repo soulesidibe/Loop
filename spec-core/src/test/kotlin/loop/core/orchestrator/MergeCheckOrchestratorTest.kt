@@ -6,9 +6,9 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -2904,7 +2904,13 @@ class MergeCheckOrchestratorTest {
 
             assertEquals(1, checks.most)
             assertEquals(1, remote.merges.size, "the merge check passed and merged")
-            assertEquals(WaitReason.Approval, waiting.records.values.single().reason, "the rerun verified t-2, which waits for approval")
+            assertEquals(
+                WaitReason.Approval,
+                waiting.records.values
+                    .single()
+                    .reason,
+                "the rerun verified t-2, which waits for approval",
+            )
             job.cancelAndJoin()
         }
 
