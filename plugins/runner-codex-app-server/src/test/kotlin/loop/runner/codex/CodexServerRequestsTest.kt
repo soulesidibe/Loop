@@ -422,7 +422,7 @@ class CodexServerRequestsTest {
      * them from starting, `computer_use` off alone does not.
      */
     @Test
-    fun `bl-235 under strict MCP thread start turns the plugins and computer_use features off beside apps, and leaves them alone without it`() {
+    fun `bl-235 under strict MCP thread start turns plugins and computer_use off beside apps, and no feature without it`() {
         val features =
             listOf(true, false).associateWith { strict ->
                 val server =

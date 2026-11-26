@@ -239,12 +239,16 @@ class CodexThreadResumeTest {
 
     /** A plugin's MCP server, such as `cua_repl`, started on a resumed thread too on codex 0.167.0, until `plugins` was off. */
     @Test
-    fun `bl-235 under strict MCP the resume turns the plugins and computer_use features off beside apps, and leaves them alone without it`() {
+    fun `bl-235 under strict MCP the resume turns plugins and computer_use off beside apps, and no feature without it`() {
         val features =
             listOf(true, false).associateWith { strict ->
                 val server =
                     server("resume-$strict") {
-                        resumeHandshake(threadId = THREAD, turnId = "turn-9", config = if (strict) FakeAppServer.configReadResult() else null)
+                        resumeHandshake(
+                            threadId = THREAD,
+                            turnId = "turn-9",
+                            config = if (strict) FakeAppServer.configReadResult() else null,
+                        )
                         turnCompleted(turnId = "turn-9", threadId = THREAD)
                     }
                 val session = assertNotNull(runner(server, strictMcp = strict).resumeSession(context(), THREAD))

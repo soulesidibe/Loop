@@ -2671,7 +2671,7 @@ Seen in the real run of bl-212 (above): under `strict_mcp` a Codex thread, start
 - **Other sources.** None left in the probe: `node_repl` is disabled by name, `codex_apps` by `apps`, and every plugin server by `plugins`, so a strict session needs no fallback that fails on an unknown server. A trusted project's `.codex/config.toml` servers are still listed by `config/read` and disabled by name (m3-20).
 - **Not covered.** A later Codex that starts an MCP server from yet another source. The startup notifications would show it, as they showed `cua_repl`.
 
-Tests: `plugins/runner-codex-app-server/src/test/kotlin/loop/runner/codex/CodexServerRequestsTest.kt` (`bl-235 under strict MCP thread start turns the plugins and computer_use features off beside apps, and leaves them alone without it`, and the m3-20 strict tests with the new features), `CodexThreadResumeTest.kt` (`bl-235 under strict MCP the resume turns the plugins and computer_use features off beside apps, and leaves them alone without it`, and the bl-212 strict resume test).
+Tests: `plugins/runner-codex-app-server/src/test/kotlin/loop/runner/codex/CodexServerRequestsTest.kt` (`bl-235 under strict MCP thread start turns plugins and computer_use off beside apps, and no feature without it`, and the m3-20 strict tests with the new features), `CodexThreadResumeTest.kt` (`bl-235 under strict MCP the resume turns plugins and computer_use off beside apps, and no feature without it`, and the bl-212 strict resume test).
 
 ### Drain (extension, m4-10)
 
