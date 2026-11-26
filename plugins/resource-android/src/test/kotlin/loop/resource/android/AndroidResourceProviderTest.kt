@@ -300,6 +300,45 @@ class AndroidResourceProviderTest {
     }
 
     @Test
+    fun `bl-219 a failed boot stops only the emulator it started, never the one recorded for another holder of the avd`() {
+        android.flag("boot-never")
+        val provider = android.provider(boot = 5.seconds)
+        var failure: Throwable? = null
+        val first = Thread { failure = runCatching { provider.prepare(AVD, ATTEMPT) }.exceptionOrNull() }
+        first.start()
+        val deadline = System.currentTimeMillis() + 5_000
+        while ((android.calls().none { "getprop" in it } || android.bootValue("emulator-5554") != "0") &&
+            System.currentTimeMillis() < deadline
+        ) {
+            Thread.sleep(20)
+        }
+        // Another holder of the avd recorded its own emulator while the boot of attempt-1 waited.
+        val other = liveProcess()
+        android.runningEmulator("emulator-5556", "pixel_api35")
+        BootRecords(android.stateDir).write(
+            BootRecord(
+                "pixel_api35",
+                "emulator-5556",
+                pid = other.pid(),
+                owner = "other-run",
+                attempt = "attempt-2",
+                started = startOf(other),
+            ),
+        )
+
+        first.join(20_000)
+
+        assertFalse(first.isAlive, "the failed boot did not end")
+        assertTrue(failure is ResourceException, "$failure")
+        assertTrue("adb -s emulator-5554 emu kill" in android.calls(), "${android.calls()}")
+        assertTrue(other.isAlive, "the failed boot killed the emulator of the other holder")
+        assertTrue(android.calls().none { "-s emulator-5556 emu kill" in it }, "${android.calls()}")
+        assertEquals(listOf("emulator-5556"), android.emulatorsOf("pixel_api35"))
+        val record = android.stateDir.resolve("booted/pixel_api35.properties").readText()
+        assertTrue("attempt=attempt-2" in record, record)
+    }
+
+    @Test
     fun `recover never stops an emulator on the serial of a record whose emulator is dead, such as one started by hand on that port`() {
         crashedRecord(pid = deadPid(), started = 1)
         android.runningEmulator("emulator-5554", "pixel_api35")

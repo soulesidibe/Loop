@@ -174,7 +174,7 @@ class AndroidResourceProvider internal constructor(
         // A prepare of the same attempt whose outcome was lost booted it, and it still runs: wait for that boot (bl-208).
         val mine = started[avd]?.takeIf { record != null && record.attempt == attempt && record.owner == owner && it.process.isAlive }
         if (record != null && mine != null) {
-            waitOrStop(avd, record.serial, mine)
+            waitOrStop(avd, record.serial, mine, attempt)
             return record.serial
         }
         // Any other record is stale: stop its emulator, still running, before booting again.
@@ -209,20 +209,27 @@ class AndroidResourceProvider internal constructor(
                 started[avd] = emulator
                 serial to emulator
             }
-        waitOrStop(avd, serial, emulator)
+        waitOrStop(avd, serial, emulator, attempt)
         return serial
     }
 
-    /** Waits for the boot of [emulator] on [serial]; one that fails stops the emulator of [avd] before throwing. */
+    /**
+     * Waits for the boot of [emulator] on [serial], started for [attempt]; one that fails stops that emulator before
+     * throwing, by its own serial and pid, never the one the record of [avd] names now, which can be another holder's
+     * (bl-219).
+     */
     private fun waitOrStop(
         avd: String,
         serial: String,
         emulator: Started,
+        attempt: String,
     ) {
         try {
             waitBooted(serial, TimeSource.Monotonic.markNow() + timeouts.boot, emulator)
         } catch (e: ResourceException) {
-            records.of(avd)?.let { record -> runCatching { stop(record) }.exceptionOrNull()?.let(e::addSuppressed) }
+            val handle = emulator.process.toHandle()
+            val own = BootRecord(avd, serial, pid = handle.pid(), owner = owner, attempt = attempt, started = startOf(handle))
+            runCatching { stop(own) }.exceptionOrNull()?.let(e::addSuppressed)
             throw e
         }
     }
@@ -303,10 +310,12 @@ class AndroidResourceProvider internal constructor(
 
     /**
      * Stops the emulator of [record] while its process runs: with `adb -s <serial> emu kill` when its serial is
-     * connected, then by killing the process when it does not end. True when it is gone, and its record with it, and
-     * when [deleteLog], its log too once nothing failed; false when it still runs, the record kept for the read only
-     * check and [recover]. A record whose process is dead is dropped and nothing is stopped. A failing `emu kill`
-     * throws once the process is killed.
+     * connected, then by killing the process when it does not end. True when it is gone, and its record with it while
+     * the record still names that emulator (bl-219), and when [deleteLog], its log too once nothing failed; false when
+     * it still runs, the record kept for the read only check and [recover]. A record whose process is dead is dropped
+     * and nothing is stopped. A failing `emu kill` throws once the process is killed. Never called inside
+     * [BootRecords.exclusive]: its drop takes the folder lock again, which `FileChannel.lock` refuses in the same JVM
+     * with an `OverlappingFileLockException`.
      */
     private fun stop(
         record: BootRecord,
@@ -314,8 +323,7 @@ class AndroidResourceProvider internal constructor(
     ): Boolean {
         val emulator = process(record)
         if (emulator == null) {
-            started.remove(record.avd)
-            records.delete(record.avd)
+            drop(record)
             if (deleteLog) logOf(record).deleteIfExists()
             return true
         }
@@ -337,12 +345,20 @@ class AndroidResourceProvider internal constructor(
             gone = awaitGone(record.serial, emulator)
         }
         if (gone) {
-            started.remove(record.avd)
-            records.delete(record.avd)
+            drop(record)
             if (deleteLog && failure == null) logOf(record).deleteIfExists()
         }
         failure?.let { throw ResourceException(it) }
         return gone
+    }
+
+    /**
+     * Drops the record of the emulator of [record] and the process this provider kept for it, when they still name
+     * that emulator, by serial and pid: a record or a process of another emulator of the same AVD stays (bl-219).
+     */
+    private fun drop(record: BootRecord) {
+        started.computeIfPresent(record.avd) { _, emulator -> emulator.takeIf { it.process.pid() != record.pid } }
+        records.deleteIf(record.avd) { it.serial == record.serial && it.pid == record.pid }
     }
 
     /**

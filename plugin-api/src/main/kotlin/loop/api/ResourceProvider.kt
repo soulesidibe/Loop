@@ -23,6 +23,9 @@ public interface ResourceProvider {
      *
      * [attemptId] is the holder of the lock (bl-208): an attempt id, or `check-<uuid>` and `recheck-<uuid>` for the
      * checks of Loop. A provider uses it where it names what it creates, such as a simulator or a boot record.
+     * This signature replaced m4-24's `prepare(resource)`, a change that breaks binaries as well as sources (bl-219): a
+     * plugin jar built against the old one fails its first prepare with an `AbstractMethodError`, which Loop catches as
+     * a prepare failure, so it must be built again.
      *
      * A prepare must be idempotent (bl-208): Loop can call it again for the same holder when the outcome of a first
      * call was lost, canceled on shutdown or not written, and the second call reuses or cleans what the first made, so
