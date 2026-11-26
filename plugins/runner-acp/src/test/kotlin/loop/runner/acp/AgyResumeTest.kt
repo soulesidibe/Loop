@@ -335,6 +335,34 @@ class AgyResumeTest {
     }
 
     @Test
+    fun `a new session of the same issue removes the kept folder, a resumed one included, and keeps other issues' folders`() {
+        val heldA = server("held-a") { agyHandshake(sessionId = "agy-a") }
+        val otherIssue = server("other") { agyHandshake(sessionId = "agy-other") }
+        val loader =
+            server("loader") {
+                initialize(id = 1, loadSession = true)
+                sessionLoad(id = 2, sessionId = "agy-a")
+                sessionSetModel(id = 3, configUpdateModelId = FakeAcpServer.DEFAULT_MODEL, sessionId = "agy-a")
+                promptTurn(id = 4)
+            }
+        val fresh = server("fresh") { agyHandshake(sessionId = "agy-c") }
+        val runner = runner(heldA, otherIssue, loader, fresh)
+
+        turns(runner.openSession(context(attempt = "attempt-1")), "Work")
+        turns(runner.openSession(context(attempt = "attempt-9", issueId = "issue-9")), "Work")
+        val keptA = home.resolve(geminiDir(0))
+        val keptOther = home.resolve(geminiDir(1))
+        turns(assertNotNull(runner.resumeSession(context(attempt = "attempt-2"), "agy-a")), "Continue")
+        assertTrue(keptA.exists(), "a resumed session is kept again when it stops")
+
+        turns(runner.openSession(context(attempt = "attempt-3")), "Fresh start")
+
+        assertFalse(keptA.exists(), "the next session of the issue supersedes the resumed one")
+        assertTrue(keptOther.exists(), "a kept folder of another issue stays")
+        assertTrue(home.resolve(geminiDir(3)).exists(), "the newest session is kept")
+    }
+
+    @Test
     fun `bl-230 a new session of the same issue never removes a kept folder when it opens, only once it is kept itself`() {
         val heldA = server("held-a") { agyHandshake(sessionId = "agy-a") }
         val otherIssue = server("other") { agyHandshake(sessionId = "agy-other") }
