@@ -4,8 +4,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import loop.core.workflow.HooksConfig
+import kotlinx.coroutines.future.await
+import loop.core.verify.WorkspaceGit
 import java.io.IOException
 import java.nio.file.Path
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionException
+import java.util.concurrent.Executor
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
@@ -29,9 +34,10 @@ class WorkspaceManager(
      * with [WorkspaceError.Hook].
      *
      * bl-28: with [clones], before any hook, a folder without `.git` becomes a clone of the project starting at
-     * [clone]'s base, a clone of the project is reused as it is, and any other `.git` fails the call with
-     * [WorkspaceError.Clone]. Then [CloneStart.baseRef], when given, is written in the clone. A failed clone of a
-     * folder created now deletes the folder and the keep ref.
+     * [clone]'s base (and counts as created now, so `after_create` runs on it), a clone of the project is checked
+     * ([WorkspaceClones.reuse]) and reused as it is, and any other `.git` fails the call with [WorkspaceError.Clone].
+     * Then [CloneStart.baseRef], when given, is written in the clone. A clone made by this call that fails or is
+     * cancelled, in the clone step or in `after_create`, has its folder and its keep refs deleted.
      */
     suspend fun prepare(
         key: WorkspaceKey,
@@ -39,19 +45,21 @@ class WorkspaceManager(
         listener: HookListener = HookListener.NONE,
         clone: CloneStart = CloneStart(),
     ): Result<Workspace> {
-        val workspace = workspaces.prepare(key).getOrElse { return Result.failure(it) }
+        val prepared = workspaces.prepare(key).getOrElse { return Result.failure(it) }
+        var workspace = prepared
         clones?.let { clones ->
-            cloneStep(clones, workspace, clone)?.let { reason ->
-                val cleanup =
-                    if (workspace.createdNow) {
-                        val folder = workspaces.delete(key).exceptionOrNull()
-                        val keep = runCatching { withContext(Dispatchers.IO) { clones.dropKeep(key) } }.exceptionOrNull()
-                        listOfNotNull(folder, keep).joinToString("") { "; the partial clone was not removed: ${it.message}" }
-                    } else {
-                        ""
-                    }
-                return Result.failure(WorkspaceError.Clone("cannot prepare workspace ${key.value}: $reason$cleanup"))
-            }
+            val made =
+                try {
+                    cloneStep(clones, prepared, clone)
+                } catch (e: Throwable) {
+                    // Cancelled or broken half way: the folder this call created and the keep refs go.
+                    val cleanup = withContext(NonCancellable) { dropClone(key, prepared.createdNow) }
+                    cleanup.forEach { e.addSuppressed(it) }
+                    if (e is CancellationException || e !is IOException) throw e
+                    val left = cleanup.joinToString("") { "; the partial clone was not removed: ${it.message}" }
+                    return Result.failure(WorkspaceError.Clone("cannot prepare workspace ${key.value}: ${e.message ?: e}$left"))
+                }
+            if (made) workspace = prepared.copy(createdNow = true)
         }
         if (!workspace.createdNow) return Result.success(workspace)
         val result =
@@ -59,17 +67,29 @@ class WorkspaceManager(
                 run(HookName.AFTER_CREATE, hooks.afterCreate, workspace.path, env, hooks.timeoutMs, listener)
             } catch (e: Throwable) {
                 // Cancelled or broken half way: same partial cleanup as a failure.
-                withContext(NonCancellable) { workspaces.delete(key) }
-                    .exceptionOrNull()
-                    ?.let { e.addSuppressed(it) }
+                withContext(NonCancellable) { dropClone(key, folder = true) }.forEach { e.addSuppressed(it) }
                 throw e
             }
         if (result == null || result.ok) return Result.success(workspace)
         // Partial cleanup (spec-decisions row 183): the next attempt runs after_create again
         // instead of reusing a half populated folder. A reused workspace is never removed here.
         val message = "cannot prepare workspace ${key.value}: ${result.reason}"
-        val cleanup = workspaces.delete(key).exceptionOrNull()?.let { "; the partial workspace was not removed: ${it.message}" } ?: ""
+        val cleanup = dropClone(key, folder = true).joinToString("") { "; the partial workspace was not removed: ${it.message}" }
         return Result.failure(WorkspaceError.Hook(message + cleanup, result))
+    }
+
+    /**
+     * Deletes the folder of [key] when [folder], and its keep refs when this manager clones; what failed. A keep ref
+     * of a workspace whose folder stays is kept.
+     */
+    private suspend fun dropClone(
+        key: WorkspaceKey,
+        folder: Boolean,
+    ): List<Throwable> {
+        if (!folder) return emptyList()
+        val deleted = workspaces.delete(key).exceptionOrNull()
+        val keep = dropKeep(key).exceptionOrNull()
+        return listOfNotNull(deleted, keep)
     }
 
     /**
@@ -80,28 +100,46 @@ class WorkspaceManager(
         WorkspaceManager(workspaces, hooks.copy(afterCreate = null, beforeRun = null, afterRun = null, beforeRemove = null), runner)
 
     /**
-     * bl-28: makes [workspace] a clone or checks it is one, then writes the base ref; the reason it failed, null when
-     * it did not.
+     * bl-28: makes [workspace] a clone or checks it is one, then writes the base ref; true when it made the clone. The
+     * git steps run on a thread of their own, and a cancel of the caller stops the running git through a
+     * [WorkspaceGit.Cancellation], then waits for the steps to end before it is rethrown, so the cleanup never races
+     * them. Fails with an [IOException] naming the reason.
      */
     private suspend fun cloneStep(
         clones: WorkspaceClones,
         workspace: Workspace,
         clone: CloneStart,
-    ): String? =
-        withContext(Dispatchers.IO) {
-            try {
-                when (val state = clones.state(workspace.path)) {
-                    CloneState.Absent -> clones.create(workspace.path, workspace.key, clone.base)
-                    CloneState.Clone -> Unit
-                    is CloneState.Foreign ->
-                        return@withContext "the workspace ${workspace.path} is not a clone of the project, ${state.reason}"
-                }
-                clone.baseRef?.let { clones.writeBase(workspace.path, it.name, it.sha) }
-                null
-            } catch (e: IOException) {
-                e.message ?: e.toString()
-            }
+    ): Boolean {
+        val cancellation = WorkspaceGit.Cancellation()
+        val steps =
+            CompletableFuture.supplyAsync({
+                val made =
+                    when (val state = clones.state(workspace.path)) {
+                        CloneState.Absent -> {
+                            clones.create(workspace.path, workspace.key, clone.base, cancellation)
+                            true
+                        }
+                        CloneState.Clone -> {
+                            clones.reuse(workspace.path, workspace.key, cancellation)
+                            false
+                        }
+                        is CloneState.Foreign ->
+                            throw IOException("the workspace ${workspace.path} is not a clone of the project, ${state.reason}")
+                    }
+                clone.baseRef?.let { clones.writeBase(workspace.path, workspace.key, it.name, it.sha, cancellation) }
+                made
+            }, CLONE_STEPS)
+        try {
+            // A stage of its own, since a cancelled await cancels the future it waits on, and the join below waits on steps.
+            return steps.thenApply { it }.await()
+        } catch (e: CancellationException) {
+            cancellation.cancel()
+            withContext(NonCancellable + Dispatchers.IO) { runCatching { steps.join() } }
+            throw e
+        } catch (e: CompletionException) {
+            throw e.cause ?: e
         }
+    }
 
     /** The existing workspace of [key], null when there is none; nothing is created and no hook runs (m2-04). */
     fun locate(key: WorkspaceKey): Result<Path?> = workspaces.locate(key)
@@ -197,6 +235,11 @@ class WorkspaceManager(
             }
         listener.finished(script, result)
         return result
+    }
+
+    private companion object {
+        /** A new daemon thread for each clone step, so a step left behind holds no shared thread. */
+        val CLONE_STEPS = Executor { task -> Thread(task, "loop-workspace-clone").apply { isDaemon = true }.start() }
     }
 }
 

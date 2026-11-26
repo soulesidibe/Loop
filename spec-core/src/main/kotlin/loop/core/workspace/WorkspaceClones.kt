@@ -8,6 +8,8 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.PosixFilePermissions
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.io.path.ExperimentalPathApi
+import kotlin.io.path.deleteRecursively
 
 /**
  * bl-28: clone workspaces, `workspace.git: clone`. Each workspace is a `git clone --shared` of the project repository
@@ -30,41 +32,106 @@ class WorkspaceClones(
      * Makes [workspace], an empty folder, a clone of the project on `loop/<key>`, its files checked out. The branch
      * starts at the project's `refs/heads/loop/<key>` when it exists, else at [base] resolved in the project, else at
      * the project's `HEAD`. The clone gets no `origin` remote, the project's local `user.name` and `user.email` when
-     * set, and the project the keep ref of [key] at the start commit. No sparse pattern: that is the hooks' job. Fails
-     * with an [IOException] naming the step and git's first line; the caller deletes the folder and the keep ref.
+     * set, and the project the keep ref of [key] at the start commit. No sparse pattern: that is the hooks' job.
+     *
+     * The clone is built in a sibling folder ([building]) and moved into place only once every step is done, so a
+     * kill half way never leaves a half made clone at [workspace]; the next build clears what such a kill left. A
+     * failure deletes the sibling folder and throws an [IOException] naming the step and git's first line; the caller
+     * deletes the keep ref. [cancellation] stops the running git.
      */
     fun create(
         workspace: Path,
         key: WorkspaceKey,
         base: String?,
+        cancellation: WorkspaceGit.Cancellation? = null,
     ) {
+        if (Files.isDirectory(workspace, LinkOption.NOFOLLOW_LINKS) && entries(workspace) { true }.isNotEmpty()) {
+            throw IOException("the workspace $workspace is not empty and has no .git, Loop clones into an empty folder only")
+        }
         val branch = branch(key)
         val start =
-            projectCommit("refs/heads/$branch")
-                ?: base?.let { projectCommit(it) ?: throw IOException("the base $it is not a commit of the project at $projectDir") }
-                ?: projectCommit("HEAD")
+            projectCommit("refs/heads/$branch", cancellation)
+                ?: base?.let {
+                    projectCommit(it, cancellation) ?: throw IOException("the base $it is not a commit of the project at $projectDir")
+                }
+                ?: projectCommit("HEAD", cancellation)
                 ?: throw IOException("the project at $projectDir has no commit to start the clone from")
-        val clone =
-            git.run(
-                projectDir,
-                "clone",
-                "--quiet",
-                "--shared",
-                "--no-checkout",
-                "--no-tags",
-                "--template=",
-                projectDir.toString(),
-                workspace.toString(),
-            )
-        check(clone, "clone the project into $workspace")
-        check(git.run(projectDir, "update-ref", keepRef(key), start), "write ${keepRef(key)}")
-        check(git.run(workspace, "remote", "remove", "origin"), "remove the origin remote of the clone")
-        for (name in IDENTITY) {
-            val value = git.run(projectDir, "config", "--local", "--get", name)
-            if (value.code != 0) continue
-            check(git.run(workspace, "config", name, value.stdout.trim()), "copy $name into the clone")
+        val building = building(workspace)
+        delete(building)
+        try {
+            check(git.run(projectDir, "update-ref", keepRef(key), start, cancellation = cancellation), "write ${keepRef(key)}")
+            val clone =
+                git.run(
+                    projectDir,
+                    "clone",
+                    "--quiet",
+                    "--shared",
+                    "--no-checkout",
+                    "--no-tags",
+                    "--template=",
+                    projectDir.toString(),
+                    building.toString(),
+                    cancellation = cancellation,
+                )
+            check(clone, "clone the project into $building")
+            check(git.run(building, "remote", "remove", "origin", cancellation = cancellation), "remove the origin remote of the clone")
+            for (name in IDENTITY) {
+                val value = git.run(projectDir, "config", "--local", "--get", name, cancellation = cancellation)
+                if (value.code != 0) continue
+                check(git.run(building, "config", name, value.stdout.trim(), cancellation = cancellation), "copy $name into the clone")
+            }
+            check(git.run(building, "checkout", "--quiet", "-b", branch, start, cancellation = cancellation), "check out $branch in the clone")
+            cancellation?.check()
+            Files.deleteIfExists(workspace)
+            Files.move(building, workspace, StandardCopyOption.ATOMIC_MOVE)
+        } catch (e: Throwable) {
+            runCatching { delete(building) }.exceptionOrNull()?.let { e.addSuppressed(it) }
+            throw e
         }
-        check(git.run(workspace, "checkout", "--quiet", "-b", branch, start), "check out $branch in the clone")
+    }
+
+    /**
+     * Checks that [workspace], a clone of the project ([state]), still holds what [create] made, before it is reused
+     * as it is: a remote is removed, so a push by name cannot reach the project; a missing `loop/<key>` branch fails
+     * with an [IOException] naming it, since the clone was not finished; a missing keep ref is written back at the
+     * newest commit on the first parent line of `loop/<key>` that the project has. Where `HEAD` stands is the agent's
+     * and the hooks' (`before_run` checks the branch out). [cancellation] stops the running git.
+     */
+    fun reuse(
+        workspace: Path,
+        key: WorkspaceKey,
+        cancellation: WorkspaceGit.Cancellation? = null,
+    ) {
+        val remotes = git.run(workspace, "remote", cancellation = cancellation)
+        check(remotes, "list the remotes of the clone $workspace")
+        for (remote in remotes.stdout.lines().map { it.trim() }.filter { it.isNotEmpty() }) {
+            check(git.run(workspace, "remote", "remove", remote, cancellation = cancellation), "remove the remote $remote of the clone")
+        }
+        val branch = branch(key)
+        val tip =
+            git
+                .run(workspace, "rev-parse", "--verify", "-q", "refs/heads/$branch^{commit}", cancellation = cancellation)
+                .takeIf { it.code == 0 }
+                ?.stdout
+                ?.trim()
+                ?.takeIf { COMMIT_ID.matches(it) }
+                ?: throw IOException(
+                    "the clone $workspace has no branch $branch, it was not finished, remove the workspace so Loop makes a new one",
+                )
+        if (projectCommit(keepRef(key), cancellation) != null) return
+        val line = git.run(workspace, "rev-list", "--first-parent", "--max-count=$KEEP_SEARCH_MAX", tip, cancellation = cancellation)
+        check(line, "read the history of $branch in the clone")
+        val kept =
+            line.stdout
+                .lineSequence()
+                .map { it.trim() }
+                .filter { COMMIT_ID.matches(it) }
+                .firstOrNull { sha -> git.run(projectDir, "cat-file", "-e", "$sha^{commit}", cancellation = cancellation).code == 0 }
+                ?: throw IOException(
+                    "the keep ref ${keepRef(key)} is missing and no commit of $branch is in the project, remove the workspace " +
+                        "so Loop makes a new one",
+                )
+        check(git.run(projectDir, "update-ref", keepRef(key), kept, cancellation = cancellation), "write ${keepRef(key)}")
     }
 
     /**
@@ -92,20 +159,29 @@ class WorkspaceClones(
         return if (clone) CloneState.Clone else CloneState.Foreign("$dotGit does not borrow the objects of the project at $projectDir")
     }
 
-    /** Writes `refs/loop/base/[base]` in the clone [workspace] at [sha], a commit Loop resolved in the project. */
+    /**
+     * Writes `refs/loop/base/[base]` in the clone [workspace] of [key] at [sha], a commit Loop resolved in the project,
+     * and the base keep ref of [key] in the project at it ([baseKeepRef]), so a rewritten base and a gc there cannot
+     * drop a base commit the clone merged and borrows. [cancellation] stops the running git.
+     */
     fun writeBase(
         workspace: Path,
+        key: WorkspaceKey,
         base: String,
         sha: String,
+        cancellation: WorkspaceGit.Cancellation? = null,
     ) {
         requireCommitId(sha)
-        check(git.run(workspace, "update-ref", "$BASE_REFS$base", sha), "write $BASE_REFS$base in the clone")
+        check(git.run(projectDir, "update-ref", baseKeepRef(key), sha, cancellation = cancellation), "write ${baseKeepRef(key)}")
+        check(git.run(workspace, "update-ref", "$BASE_REFS$base", sha, cancellation = cancellation), "write $BASE_REFS$base in the clone")
     }
 
     /**
      * Imports the commit [sha] of the clone [workspace] into the project and points `refs/heads/[branch]` of the project
      * at it, host side and without any token. The fetch runs in a temporary bare repository that borrows the project's
-     * objects, with no config file, Loop's pins and `transfer.fsckObjects`, by commit id; its objects then reach the
+     * objects, with no config file, Loop's pins and `transfer.fsckObjects`, by commit id. It holds the project's keep
+     * refs of the workspace, its `refs/heads/[branch]` and its `refs/loop/base/` commits as its own refs, so git tells the
+     * clone it has them and only the objects the project lacks travel and are checked. Its objects then reach the
      * project's object folder by plain file copy, and only then, in the project, git checks the commit is there and
      * writes the branch. A branch already at [sha] is left alone. Fails with an [IOException].
      */
@@ -129,6 +205,9 @@ class WorkspaceClones(
                     "$objects\n",
                 )
                 val gitDir = "--git-dir=$repository"
+                haves(branch).forEachIndexed { index, have ->
+                    check(git.run(dir, gitDir, "update-ref", "$HAVE_REF$index", have, extra = NO_CONFIG_FILES), "prepare the import")
+                }
                 val fetch =
                     listOf(gitDir) + IMPORT_PINS +
                         listOf(
@@ -158,16 +237,44 @@ class WorkspaceClones(
         }
     }
 
-    /** Deletes the keep ref of [key] in the project; nothing to do when it is not there. */
+    /** Deletes the keep ref and the base keep ref of [key] in the project; nothing to do for one that is not there. */
     fun dropKeep(key: WorkspaceKey) {
-        if (projectCommit(keepRef(key)) == null) return
-        check(git.run(projectDir, "update-ref", "-d", keepRef(key)), "delete ${keepRef(key)}")
+        for (ref in listOf(keepRef(key), baseKeepRef(key))) {
+            if (projectCommit(ref) == null) continue
+            check(git.run(projectDir, "update-ref", "-d", ref), "delete $ref")
+        }
+    }
+
+    /**
+     * The commits of the project the import of [branch] tells the clone it has: the keep refs of its workspace, the
+     * project's `refs/heads/[branch]` and every `refs/loop/base/` ref, each a commit the clone borrows or merged.
+     */
+    private fun haves(branch: String): List<String> {
+        val own =
+            branch
+                .takeIf { it.startsWith(BRANCH_PREFIX) }
+                ?.let { WorkspaceKey(it.removePrefix(BRANCH_PREFIX)) }
+                ?.let { listOf(keepRef(it), baseKeepRef(it)) }
+                .orEmpty()
+        val bases =
+            git
+                .run(projectDir, "for-each-ref", "--format=%(refname)", BASE_REFS)
+                .takeIf { it.code == 0 }
+                ?.stdout
+                ?.lines()
+                ?.map { it.trim() }
+                ?.filter { it.isNotEmpty() }
+                .orEmpty()
+        return (own + "refs/heads/$branch" + bases).mapNotNull { projectCommit(it) }.distinct()
     }
 
     /** The commit [ref] of the project resolves to, null when none. */
-    fun projectCommit(ref: String): String? =
+    fun projectCommit(
+        ref: String,
+        cancellation: WorkspaceGit.Cancellation? = null,
+    ): String? =
         git
-            .run(projectDir, "rev-parse", "--verify", "-q", "$ref^{commit}")
+            .run(projectDir, "rev-parse", "--verify", "-q", "$ref^{commit}", cancellation = cancellation)
             .takeIf { it.code == 0 }
             ?.stdout
             ?.trim()
@@ -202,6 +309,13 @@ class WorkspaceClones(
             entries(dir) { Files.isRegularFile(it) && LOOSE_FILE.matches(it.fileName.toString()) }
                 .forEach { copyOnce(it, objects.resolve(dir.fileName.toString()).resolve(it.fileName.toString())) }
         }
+    }
+
+    /** Deletes [dir] and what it holds, links not followed; nothing to do when it is not there. */
+    @OptIn(ExperimentalPathApi::class)
+    private fun delete(dir: Path) {
+        if (!Files.exists(dir, LinkOption.NOFOLLOW_LINKS)) return
+        dir.deleteRecursively()
     }
 
     private fun entries(
@@ -242,6 +356,19 @@ class WorkspaceClones(
 
         /** The project ref that keeps the start commit of the clone of [key], and the objects it borrows, from a gc. */
         fun keepRef(key: WorkspaceKey): String = "refs/loop/workspace/${key.value}"
+
+        /** The project ref that keeps the last base commit Loop wrote in the clone of [key] ([writeBase]) from a gc. */
+        fun baseKeepRef(key: WorkspaceKey): String = "refs/loop/workspace-base/${key.value}"
+
+        /** The sibling folder a new clone of [workspace] is built in before it is moved into place. */
+        fun building(workspace: Path): Path = workspace.resolveSibling(".loop-clone-${workspace.fileName}")
+
+        private const val BRANCH_PREFIX = "loop/"
+
+        private const val HAVE_REF = "refs/have/"
+
+        /** How far back on the first parent line [reuse] looks for a commit the project has. */
+        private const val KEEP_SEARCH_MAX = 1000
 
         private const val BASE_REFS = "refs/loop/base/"
 

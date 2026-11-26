@@ -43,11 +43,13 @@ class WorkspaceClonesTest {
         vararg args: String,
         dir: Path = project,
         ok: Boolean = true,
+        input: Path? = null,
     ): String {
         val process =
             ProcessBuilder(listOf("git", "-c", "user.name=t", "-c", "user.email=t@example.com") + args)
                 .directory(dir.toFile())
                 .redirectErrorStream(true)
+                .apply { input?.let { redirectInput(it.toFile()) } }
                 .apply {
                     environment().keys.removeIf { it.startsWith("GIT_") }
                     environment()["HOME"] = home.toString()
@@ -73,6 +75,9 @@ class WorkspaceClonesTest {
     }
 
     private val first: String
+
+    private fun packFiles(packs: Path): Set<String> =
+        if (Files.isDirectory(packs)) Files.list(packs).use { list -> list.map { it.fileName.toString() }.toList().toSet() } else emptySet()
 
     init {
         git("init", "-q", "--initial-branch=main")
@@ -177,13 +182,90 @@ class WorkspaceClonesTest {
     }
 
     @Test
+    fun `a base written in the clone is kept in the project too, so a rewritten base and a gc leave the clone working`() {
+        create(base = first)
+        git("checkout", "-q", "-b", "rewritten")
+        val base = commit("base.txt", "base\n")
+        git("checkout", "-q", "main")
+        git("update-ref", "refs/loop/base/main", base)
+        clones.writeBase(workspace, key, "main", base)
+        git("merge", "-q", "--no-edit", "refs/loop/base/main", dir = workspace)
+        assertEquals(base, git("rev-parse", "refs/loop/workspace-base/t-1"))
+
+        git("update-ref", "refs/loop/base/main", first)
+        git("branch", "-q", "-D", "rewritten")
+        git("reflog", "expire", "--expire=now", "--all")
+        git("gc", "-q", "--prune=now")
+
+        git("log", "-1", dir = workspace)
+        git("fsck", "--connectivity-only", dir = workspace)
+        clones.dropKeep(key)
+        assertEquals("", git("for-each-ref", "refs/loop/workspace/", "refs/loop/workspace-base/"))
+    }
+
+    @Test
+    fun `a new clone is built aside and moved into place, a leftover of a killed build is cleared first`() {
+        Files.createDirectories(workspace)
+        val leftover = Files.createDirectories(root.resolve(".loop-clone-t-1"))
+        leftover.resolve("junk").writeText("half made\n")
+
+        clones.create(workspace, key, first)
+
+        assertFalse(leftover.exists(), "the leftover of a killed build is gone")
+        assertIs<CloneState.Clone>(clones.state(workspace))
+        assertEquals(listOf("t-1"), Files.list(root).use { list -> list.map { it.fileName.toString() }.toList() })
+    }
+
+    @Test
+    fun `a folder with files but no git is not cloned into, and nothing is written in the project`() {
+        Files.createDirectories(workspace).resolve("notes.txt").writeText("operator notes\n")
+
+        val error = assertFailsWith<IOException> { clones.create(workspace, key, first) }
+
+        assertContains(error.message.orEmpty(), "not empty")
+        assertEquals("operator notes\n", workspace.resolve("notes.txt").readText())
+        assertEquals("", git("for-each-ref", "refs/loop/"))
+    }
+
+    @Test
+    fun `reuse removes a remote, so a push by name cannot reach the project`() {
+        create(base = first)
+        git("remote", "add", "origin", project.toString(), dir = workspace)
+
+        clones.reuse(workspace, key)
+
+        assertEquals("", git("remote", dir = workspace))
+    }
+
+    @Test
+    fun `reuse of a clone with no loop branch fails with a named reason`() {
+        // What a kill between the clone and the checkout left before the build moved aside.
+        git("clone", "-q", "--shared", "--no-checkout", project.toString(), workspace.toString(), dir = root)
+
+        val error = assertFailsWith<IOException> { clones.reuse(workspace, key) }
+
+        assertContains(error.message.orEmpty(), "has no branch loop/t-1")
+    }
+
+    @Test
+    fun `reuse writes back a missing keep ref at the first commit of the branch the project has`() {
+        create(base = first)
+        commit("agent.txt", "agent\n", dir = workspace)
+        clones.dropKeep(key)
+
+        clones.reuse(workspace, key)
+
+        assertEquals(first, git("rev-parse", "refs/loop/workspace/t-1"))
+    }
+
+    @Test
     fun `the base ref written in the clone lets the agent check and merge it, and moving it changes nothing in the project`() {
         create(base = first)
         commit("agent.txt", "agent\n", dir = workspace)
         val base = commit("base.txt", "base\n")
         git("update-ref", "refs/loop/base/main", base)
 
-        clones.writeBase(workspace, "main", base)
+        clones.writeBase(workspace, key, "main", base)
 
         assertEquals(base, git("rev-parse", "refs/loop/base/main", dir = workspace))
         git("merge-base", "--is-ancestor", "refs/loop/base/main", "HEAD", dir = workspace, ok = false)
@@ -205,6 +287,45 @@ class WorkspaceClonesTest {
         assertEquals(work, git("rev-parse", "refs/heads/loop/t-1"))
         clones.import(workspace, work, "loop/t-1")
         assertEquals(work, git("rev-parse", "refs/heads/loop/t-1"))
+    }
+
+    @Test
+    fun `an import on a project with history lands a pack of the new objects only`() {
+        // Send back of PR #98: without haves the clone packed every object it reaches, borrowed history included.
+        repeat(HISTORY) { commit("file-$it.txt", "line $it\n".repeat(200)) }
+        create(base = "main")
+        val work = commit("agent.txt", "agent\n", dir = workspace)
+        val packs = project.resolve(".git/objects/pack")
+        val before = packFiles(packs)
+
+        clones.import(workspace, work, "loop/t-1")
+
+        val landed = packFiles(packs) - before
+        val indexes = landed.filter { it.endsWith(".idx") }
+        assertEquals(1, indexes.size, "one pack landed: $landed")
+        val objects = git("show-index", input = packs.resolve(indexes.single())).lines().filter { it.isNotBlank() }
+        // The commit, its tree and its blob, plus at most the delta base git appends to complete a thin pack.
+        assertTrue(objects.size <= NEW_OBJECTS_MAX, "the new objects only, not the ${HISTORY * 3} of the history: $objects")
+        assertEquals(work, git("rev-parse", "refs/heads/loop/t-1"))
+    }
+
+    @Test
+    fun `an import seeds the base refs of the project as haves, so a merged base is not copied again`() {
+        create(base = first)
+        repeat(HISTORY) { commit("base-$it.txt", "base $it\n".repeat(200)) }
+        val base = git("rev-parse", "HEAD")
+        git("update-ref", "refs/loop/base/main", base)
+        clones.writeBase(workspace, key, "main", base)
+        git("merge", "-q", "--no-edit", "refs/loop/base/main", dir = workspace)
+        val work = commit("agent.txt", "agent\n", dir = workspace)
+        val packs = project.resolve(".git/objects/pack")
+        val before = packFiles(packs)
+
+        clones.import(workspace, work, "loop/t-1")
+
+        val indexes = (packFiles(packs) - before).filter { it.endsWith(".idx") }
+        val objects = indexes.flatMap { git("show-index", input = packs.resolve(it)).lines().filter { line -> line.isNotBlank() } }
+        assertTrue(objects.size <= NEW_OBJECTS_MAX, "the agent's objects only, not the ${HISTORY * 3} of the merged base: $objects")
     }
 
     @Test
@@ -248,7 +369,7 @@ class WorkspaceClonesTest {
         val work = commit("agent.txt", "agent\n", dir = workspace)
         Files.deleteIfExists(marker)
 
-        clones.writeBase(workspace, "main", first)
+        clones.writeBase(workspace, key, "main", first)
         clones.import(workspace, work, "loop/t-1")
         assertIs<CloneState.Clone>(clones.state(workspace))
         WorkspaceGit(hostEnv).run(workspace, "status", "--porcelain")
@@ -257,5 +378,12 @@ class WorkspaceClonesTest {
         // The same command without Loop's pins runs the hook, so the test proves the pins.
         git("update-ref", "refs/loop/probe", first, dir = workspace)
         assertTrue(marker.exists(), "the hook is live without the pins")
+    }
+
+    private companion object {
+        const val HISTORY = 30
+
+        /** A commit, its tree, its blob and one delta base `index-pack --fix-thin` may append. */
+        const val NEW_OBJECTS_MAX = 4
     }
 }

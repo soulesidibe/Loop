@@ -1,6 +1,12 @@
 package loop.core.workspace
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import loop.core.verify.WorkspaceGit
 import loop.core.workflow.HooksConfig
 import java.nio.file.Files
@@ -14,6 +20,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import kotlin.system.measureTimeMillis
 
 /**
  * bl-28: with clones, [WorkspaceManager.prepare] makes a new workspace a clone of the project before `after_create`,
@@ -126,6 +133,92 @@ class WorkspaceManagerCloneTest {
     }
 
     @Test
+    fun `a cancel during the clone stops its git and removes the folder, the build folder and the keep ref`() {
+        val started = folder.resolve("checkout-started")
+        val slowGit =
+            folder.resolve("slow-git").also {
+                it.writeText("#!/bin/sh\ncase \" \$* \" in *\" checkout \"*) touch '$started'; exec sleep 60;; esac\nexec git \"\$@\"\n")
+                it.toFile().setExecutable(true)
+            }
+        val slow = WorkspaceManager(Workspaces(root), HooksConfig(afterCreate = "populate"), runner, WorkspaceClones(project, WorkspaceGit(hostEnv, git = slowGit.toString())))
+
+        val took =
+            measureTimeMillis {
+                runBlocking {
+                    val job = launch(Dispatchers.Default) { slow.prepare(key, emptyMap(), clone = CloneStart(first)) }
+                    withTimeout(30_000) { while (!started.exists()) delay(20) }
+                    job.cancelAndJoin()
+                }
+            }
+
+        assertTrue(took < 30_000, "the cancel stopped the running git, took $took ms")
+        assertFalse(root.resolve("t-1").exists(), "the folder made by this call is gone")
+        assertFalse(root.resolve(".loop-clone-t-1").exists(), "the build folder is gone")
+        assertEquals("", git("for-each-ref", "refs/loop/workspace/"))
+        assertEquals(emptyList(), sawGit)
+    }
+
+    @Test
+    fun `an empty folder a killed run left is cloned into and counts as created, so after_create runs`() {
+        Files.createDirectories(root.resolve("t-1"))
+
+        val workspace = runBlocking { manager.prepare(key, emptyMap(), clone = CloneStart(first)) }.getOrThrow()
+
+        assertTrue(workspace.createdNow)
+        assertEquals(listOf(true), sawGit)
+    }
+
+    @Test
+    fun `a failed after_create removes the clone and its keep ref`() {
+        val failing =
+            HookRunner { hook, _, _, _, timeoutMs ->
+                HookResult(hook, 1, timedOut = false, timeoutMs = timeoutMs, durationMs = 1, output = "no")
+            }
+        val manager = WorkspaceManager(Workspaces(root), HooksConfig(afterCreate = "populate"), failing, clones)
+
+        val error = runBlocking { manager.prepare(key, emptyMap(), clone = CloneStart(first, CloneBase("main", first))) }.exceptionOrNull()
+
+        assertIs<WorkspaceError.Hook>(error)
+        assertFalse(root.resolve("t-1").exists())
+        assertEquals("", git("for-each-ref", "refs/loop/workspace/", "refs/loop/workspace-base/"))
+    }
+
+    @Test
+    fun `a cancelled after_create removes the clone and its keep ref`() {
+        val hanging =
+            HookRunner { _, _, _, _, _ ->
+                awaitCancellation()
+            }
+        val manager = WorkspaceManager(Workspaces(root), HooksConfig(afterCreate = "populate"), hanging, clones)
+
+        runBlocking {
+            val job = launch(Dispatchers.Default) { manager.prepare(key, emptyMap(), clone = CloneStart(first)) }
+            withTimeout(30_000) { while (git("for-each-ref", "refs/loop/workspace/").isEmpty() || !root.resolve("t-1/.git").exists()) delay(20) }
+            job.cancelAndJoin()
+        }
+
+        assertFalse(root.resolve("t-1").exists())
+        assertEquals("", git("for-each-ref", "refs/loop/workspace/"))
+    }
+
+    @Test
+    fun `a reused clone with a remote has it removed, one with no loop branch fails with a named reason and is kept`() {
+        val workspace = runBlocking { manager.prepare(key, emptyMap(), clone = CloneStart(first)) }.getOrThrow()
+        git("remote", "add", "origin", project.toString(), dir = workspace.path)
+
+        runBlocking { manager.prepare(key, emptyMap(), clone = CloneStart(first)) }.getOrThrow()
+        assertEquals("", git("remote", dir = workspace.path))
+
+        val other = WorkspaceKey("t-2")
+        val half = root.resolve("t-2")
+        git("clone", "-q", "--shared", "--no-checkout", project.toString(), half.toString(), dir = root)
+        val error = runBlocking { manager.prepare(other, emptyMap(), clone = CloneStart(first)) }.exceptionOrNull()
+
+        assertContains(assertIs<WorkspaceError.Clone>(error).message!!, "has no branch loop/t-2")
+        assertTrue(half.resolve(".git").exists(), "a folder Loop did not create now is never deleted")
+    }
+
+    @Test
     fun `removal deletes the folder and the keep ref, and the imported branch stays`() {
         val workspace = runBlocking { manager.prepare(key, emptyMap(), clone = CloneStart(first)) }.getOrThrow()
         workspace.path.resolve("work.txt").writeText("work\n")
@@ -138,7 +231,7 @@ class WorkspaceManagerCloneTest {
 
         assertTrue(removed)
         assertFalse(workspace.path.exists())
-        assertEquals("", git("for-each-ref", "refs/loop/workspace/"))
+        assertEquals("", git("for-each-ref", "refs/loop/workspace/", "refs/loop/workspace-base/"))
         assertEquals(work, git("rev-parse", "refs/heads/loop/t-1"))
     }
 
