@@ -1,7 +1,7 @@
 ---
 id: bl-239
 title: "WorktreeHooksTest parallel after_create test fails intermittently on a commondir read"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-human]
 blocked_by: []
@@ -46,3 +46,7 @@ Bug, ready-for-human, priority 2. This issue now carries bl-57 (the same test, s
 
 - No added retries, longer sleeps, or disabled tests.
 - bl-07 (the loop run stall under load) and other flakes (bl-15, bl-62, bl-63, bl-183, bl-186).
+
+2026-11-26 soule:
+
+Merged in #102 (e9dd6a2), done by hand in the human lane. Cause confirmed by a stress script outside Gradle (fresh repository, 4 after_create then 4 before_remove hooks in parallel, 500 rounds): 3 failures before, all `failed to read .git/worktrees/<name>/commondir`, and 354 sparse retries; 0 failures and 0 retries after. The hooks now take one mkdir lock, `scripts/hooks/worktree-lock.sh`, in the common git folder around worktree prune, worktree add and the first sparse pattern, the before_run branch checkout, and worktree remove and prune. `PARALLEL_ROUNDS` is 30, `WorktreeHooksTest` passed 20 times in a row, build green. Round 1 was sent back by two Fable rechecks (non atomic stale lock takeover, before_remove deleting files before git agreed); round 2 serialized takeovers behind `<lock>.takeover` and guarded the early delete, and its Sonnet and Fable reviews found only lows, filed in bl-248.
