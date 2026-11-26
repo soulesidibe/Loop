@@ -14,6 +14,8 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.BufferedReader
+import java.io.ByteArrayInputStream
+import java.io.OutputStream
 import java.nio.channels.Channels
 import java.nio.channels.Pipe
 import kotlin.test.Test
@@ -692,5 +694,33 @@ class LoopMcpServerTest {
             done.await()
         }
         assertTrue(!client.serving.isAlive, "the server still runs after the end of its input")
+    }
+
+    /**
+     * The transport starts reading inside `createSession`, so an input that ends at once can close the session before
+     * `serve` returns from it. The end is still seen: every one of these servers returns.
+     */
+    @Test
+    fun `the server returns when its input ends before the session is set up`() {
+        repeat(200) { round ->
+            val serving =
+                Thread {
+                    runBlocking {
+                        LoopMcpServer.serve(
+                            ByteArrayInputStream(ByteArray(0)),
+                            OutputStream.nullOutputStream(),
+                            "test",
+                            SubmitResultHandler { ToolReply("ok") },
+                            MoveHandler { ToolReply("moved") },
+                            CommentHandler { ToolReply("commented") },
+                        )
+                    }
+                }.apply {
+                    isDaemon = true
+                    start()
+                }
+            serving.join(10_000)
+            assertTrue(!serving.isAlive, "server $round still runs after its input ended")
+        }
     }
 }

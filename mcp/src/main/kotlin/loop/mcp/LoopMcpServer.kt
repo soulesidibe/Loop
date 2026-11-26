@@ -406,8 +406,10 @@ object LoopMcpServer {
         val server = create(version, submitResult, move, comment, trimmer, resources, ask, followup)
         val transport = StdioServerTransport(input.asSource().buffered(), output.asSink().buffered())
         val closed = CompletableDeferred<Unit>()
-        val session = server.createSession(transport)
-        session.onClose { closed.complete(Unit) }
+        // Listened to before createSession, which starts the transport: an input that ends at once can close it
+        // before createSession returns, and a listener added to the session after that would never hear the close.
+        transport.onClose { closed.complete(Unit) }
+        server.createSession(transport)
         closed.await()
     }
 
