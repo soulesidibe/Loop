@@ -3,7 +3,10 @@ package loop.runner.codex
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import loop.runner.codex.protocol.CodexJson
 import loop.runner.codex.protocol.JSONRPCError
 import loop.runner.codex.protocol.JSONRPCNotification
@@ -88,6 +91,40 @@ object ProtocolFraming {
             else -> Frame.Malformed(line, "not a JSON-RPC message")
         }
     }
+
+    /**
+     * The text runner output echoes for the stdout line of [frame] (bl-240), by the rule of the acp runner's
+     * `AcpFraming.echo`: an error response's `data`, and any member besides `code` and `message` in its error or besides
+     * `jsonrpc`, `id` and `error` in its envelope, can hold a provider's error body with account fields, so it is echoed
+     * as `id` (and `jsonrpc` when the line had one), `code`, `message` and a `data` marker, `[error data omitted, N
+     * chars]`, N the length of the omitted values as compact JSON. Every other line, an undecodable one included, is
+     * echoed as read. The frame itself keeps the data.
+     */
+    fun echo(frame: Frame): String {
+        if (frame !is Frame.Error) return frame.line
+        val envelope = CodexJson.format.parseToJsonElement(frame.line) as JsonObject
+        val error = envelope["error"] as? JsonObject ?: return frame.line
+        // A null member carries nothing to omit.
+        val omitted =
+            (envelope.filterKeys { it !in ENVELOPE_KEPT }.values + error.filterKeys { it !in ERROR_KEPT }.values)
+                .filterNot { it is JsonNull }
+        if (omitted.isEmpty()) return frame.line
+        return buildJsonObject {
+            envelope["jsonrpc"]?.let { put("jsonrpc", it) }
+            envelope["id"]?.let { put("id", it) }
+            put(
+                "error",
+                buildJsonObject {
+                    error["code"]?.let { put("code", it) }
+                    error["message"]?.let { put("message", it) }
+                    put("data", "[error data omitted, ${omitted.sumOf { it.toString().length }} chars]")
+                },
+            )
+        }.toString()
+    }
+
+    private val ENVELOPE_KEPT = setOf("jsonrpc", "id", "error")
+    private val ERROR_KEPT = setOf("code", "message")
 
     /** The UTF-8 length of [line], counted only when it can pass the maximum: a UTF-16 unit takes at most 3 bytes. */
     private fun utf8Length(line: String): Int =
