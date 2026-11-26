@@ -1,6 +1,7 @@
 package loop.runner.acp.real
 
 import loop.api.RealIntegration
+import loop.runner.acp.AcpSettings
 import loop.runner.acp.AgyPreflight
 import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.io.TempDir
@@ -49,7 +50,7 @@ class AgyRealProfileTest {
                         resolveBinary = { _, _ -> "/usr/local/bin/agy" },
                         runProbe = { argv, _, _ ->
                             if ("--version" in argv) {
-                                AgyPreflight.ProbeOutput(0, "1.5.16\n", "")
+                                AgyPreflight.ProbeOutput(0, "${AcpSettings.PINNED_AGY_VERSION}\n", "")
                             } else {
                                 AgyPreflight.ProbeOutput(1, "", "Error: not logged in")
                             }
@@ -74,7 +75,7 @@ class AgyRealProfileTest {
                 resolveBinary = { _, _ -> "/usr/local/bin/agy" },
                 runProbe = { argv, _, _ ->
                     if ("--version" in argv) {
-                        AgyPreflight.ProbeOutput(0, "1.5.16\n", "")
+                        AgyPreflight.ProbeOutput(0, "${AcpSettings.PINNED_AGY_VERSION}\n", "")
                     } else {
                         AgyPreflight.ProbeOutput(0, "gemini-3.8-flash-low  Flash\n", "")
                     }

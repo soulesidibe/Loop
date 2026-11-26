@@ -42,8 +42,18 @@ data class AcpSettings(
         /** The Antigravity CLI preset name. */
         const val PRESET_AGY: String = "agy"
 
-        /** Pinned `agy` version from Spike 0 (major `1` is enforced at `initialize`). */
-        const val PINNED_AGY_VERSION: String = "1.5.16"
+        /**
+         * Pinned `agy` version. Its major, `1`, is enforced at preflight and at `initialize`, with [MIN_AGY_VERSION] as the
+         * floor. Spike 0 and the recorded sessions ran on 1.5.16.
+         */
+        const val PINNED_AGY_VERSION: String = "1.5.18"
+
+        /** The oldest `agy` Loop runs: 1.5.18 applies permission prompts to files read or edited through `file:///` URIs. */
+        const val MIN_AGY_VERSION: String = "1.5.18"
+
+        /** Why [MIN_AGY_VERSION] is the floor, for the refusal message. */
+        const val MIN_AGY_REASON: String =
+            "older agy skips the permission prompts for files read or edited through file:/// URIs, so Loop's guards never see them"
 
         /** Default `turn_timeout_ms`: 1 hour. */
         const val DEFAULT_TURN_TIMEOUT_MS: Long = 3_600_000L
