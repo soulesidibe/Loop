@@ -10,6 +10,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
+import loop.api.RunnerEvent
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicLong
 
@@ -18,6 +19,13 @@ import java.util.concurrent.atomic.AtomicLong
  */
 internal sealed interface AcpHandshakeFailure {
     val reason: String
+
+    /**
+     * The category of the [loop.api.RunnerEvent.TurnFailed] this failure ends the turn with, when it is not read from
+     * an error answer. An `agy` of another major or older than the minimum is `runner_unavailable`: the run holds and
+     * probes until `agy` is updated, and no attempt spends a `max_attempts` slot on it (bl-236).
+     */
+    val category: RunnerEvent.TurnFailed.Category? get() = null
 
     data class ErrorAnswer(
         val method: String,
@@ -53,6 +61,7 @@ internal sealed interface AcpHandshakeFailure {
     ) : AcpHandshakeFailure {
         override val reason: String
             get() = "response_error: agy $found is not of the pinned major version ${pinned.substringBefore('.')} (pinned $pinned)"
+        override val category: RunnerEvent.TurnFailed.Category get() = RunnerEvent.TurnFailed.Category.RunnerUnavailable
     }
 
     /** Under `preset: agy`, an `agy` on the pinned major but older than [AcpSettings.MIN_AGY_VERSION]. */
@@ -63,6 +72,7 @@ internal sealed interface AcpHandshakeFailure {
     ) : AcpHandshakeFailure {
         override val reason: String
             get() = "response_error: agy $found is older than the minimum version $minimum (pinned $pinned)"
+        override val category: RunnerEvent.TurnFailed.Category get() = RunnerEvent.TurnFailed.Category.RunnerUnavailable
     }
 
     data class ModelMismatch(

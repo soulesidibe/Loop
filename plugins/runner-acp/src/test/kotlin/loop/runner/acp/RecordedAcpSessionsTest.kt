@@ -264,6 +264,7 @@ class RecordedAcpSessionsTest {
                 "(pinned ${AcpSettings.PINNED_AGY_VERSION})",
             failed.reason,
         )
+        assertEquals(RunnerEvent.TurnFailed.Category.RunnerUnavailable, failed.category)
     }
 
     private fun replayServer(

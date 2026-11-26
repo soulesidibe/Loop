@@ -39,9 +39,11 @@ import kotlin.time.Instant
  * reads them too, the one reviews read of the poll shared. `mergeable_state` `dirty` with a known
  * `mergeable` is a conflict; anything else, a failed read included, keeps the wait and records nothing.
  *
- * A conflict under `send_to_agent` records `reaction_triggered` and hands the wait to [sendBack] with the conflict
- * findings of the merge check: the orchestrator ends the wait and schedules a retry on a `max_attempts` slot. Under
- * `notify_human` it records `reaction_skipped` once per wait, since M4 sends no notice for a reaction.
+ * A conflict under `send_to_agent` hands the wait to [sendBack] with the conflict findings: the orchestrator ends the
+ * wait and schedules a retry on a `max_attempts` slot, then the reaction records `reaction_triggered`, with the findings
+ * when the retry is scheduled (bl-224). A wait a human approved or sent back while GitHub was read is kept and records
+ * `reaction_skipped` with `human_decided`. Under `notify_human` it records `reaction_skipped` once per wait, since M4
+ * sends no notice for a reaction.
  */
 class Reactions(
     /** The run's delivery client for a workflow, the memoized executor of m3-15. */
@@ -49,10 +51,10 @@ class Reactions(
     /** Records an event of [Wait]'s issue and attempt. */
     private val record: suspend (Wait, EventDefinition, Map<String, String>) -> Unit,
     /**
-     * Ends the wait and sends its issue back to its agent with the findings, on a `max_attempts` slot. True when the
-     * retry is scheduled, false when that slot was the last one and the issue parked.
+     * Ends the wait, unless a human decided it since the tick read it (bl-224), and sends its issue back to its agent
+     * with the findings, on a `max_attempts` slot. What came of it, see [SendBackOutcome].
      */
-    private val sendBack: suspend (Wait.Approval, Issue, String) -> Boolean,
+    private val sendBack: suspend (Wait.Approval, Issue, String) -> SendBackOutcome,
     /** The log context of a wait. */
     private val contextOf: (Wait) -> LogContext,
     private val log: KeyValueLog,
@@ -176,7 +178,6 @@ class Reactions(
                 val tip = read(one, "read the base before the merge_conflict reaction") { executor.baseTip() } ?: return false
                 val base = baseOf(workflow)
                 val detail = "GitHub reports pull request #${one.number} as dirty, it conflicts with $base"
-                record(one.wait, ReactionTriggered, data)
                 log.log(
                     LogLevel.WARN,
                     REACTIONS,
@@ -186,7 +187,19 @@ class Reactions(
                     detail,
                 )
                 polls -= one.issue.id
-                sendBack(one.wait, one.issue, redactor.redact(MergeCheck.conflictFindings(base, tip, detail)))
+                val findings = redactor.redact(MergeCheck.reactionConflictFindings(base, tip, detail))
+                // bl-224: recorded after the send back, so the event holds the findings only when the retry is scheduled.
+                when (sendBack(one.wait, one.issue, findings)) {
+                    SendBackOutcome.Scheduled -> record(one.wait, ReactionTriggered, data + (ReactionKeys.FINDINGS to findings))
+                    SendBackOutcome.Parked -> record(one.wait, ReactionTriggered, data)
+                    SendBackOutcome.Decided ->
+                        record(
+                            one.wait,
+                            ReactionSkipped,
+                            data + (ReactionKeys.REASON to ReactionSkipped.HUMAN_DECIDED),
+                        )
+                    SendBackOutcome.Kept -> Unit
+                }
                 return true
             }
         }

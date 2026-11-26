@@ -46,8 +46,9 @@ sealed interface CiFailedOutcome {
  * Under `send_to_agent`, while the issue's count of `ci_failed` reactions is below `retries` (no `retries` bounds it by
  * `max_attempts` only), [decide] gives [CiFailedOutcome.SendBack] with the findings: the failed runs and their URLs, and
  * the failed job and step names from the jobs read of m4-07, since the agent cannot open the run URLs. The CI wait then
- * comments and calls [send], which records `reaction_triggered` and hands the wait to [sendBack]: the orchestrator ends
- * the wait and schedules a retry on a `max_attempts` slot, `loop.retry_kind` = `reaction`. Past `retries` the red
+ * comments and calls [send], which hands the wait to [sendBack]: the orchestrator ends the wait and schedules a retry on
+ * a `max_attempts` slot, `loop.retry_kind` = `reaction`. `reaction_triggered` follows, with the findings when the retry
+ * is scheduled, so they reach the retry after a restart (bl-224). Past `retries` the red
  * verdict keeps today's path, `reaction_skipped` with `retries_spent` and a comment saying so. The count is the
  * `reaction_triggered` events of the issue the run store holds, [reactionsBefore], so it survives a restart, and the
  * count kept in this process, the larger one; a store that cannot be read keeps today's path. Under `notify_human` the
@@ -58,8 +59,11 @@ class CiFailedReaction(
     private val reactionsBefore: suspend () -> Result<List<RecordedEvent>>,
     /** Records an event of [Wait]'s issue and attempt. */
     private val record: suspend (Wait, EventDefinition, Map<String, String>) -> Unit,
-    /** Ends the wait and sends its issue back to its agent with the findings, on a `max_attempts` slot. */
-    private val sendBack: suspend (Wait, Issue, String) -> Unit,
+    /**
+     * Ends the wait and sends its issue back to its agent with the findings, on a `max_attempts` slot. True when the
+     * retry is scheduled, false when that slot was the last one and the issue parked.
+     */
+    private val sendBack: suspend (Wait, Issue, String) -> Boolean,
     /** The log context of a wait. */
     private val contextOf: (Wait) -> LogContext,
     private val log: KeyValueLog,
@@ -114,7 +118,7 @@ class CiFailedReaction(
         )
     }
 
-    /** Sends the issue of [wait] back to its agent as [outcome] says: counts it, records `reaction_triggered`, logs it. */
+    /** Sends the issue of [wait] back to its agent as [outcome] says: counts it, logs it, records `reaction_triggered`. */
     suspend fun send(
         workflow: WorkflowFile,
         wait: Wait.Merge,
@@ -123,7 +127,6 @@ class CiFailedReaction(
     ) {
         val reaction = workflow.config.reactions.ciFailed ?: Reaction(ReactionAction.SendToAgent, outcome.retries)
         counted[wait.issueId] = outcome.retry
-        record(wait, ReactionTriggered, data(wait, reaction) + (ReactionKeys.RETRY to outcome.retry.toString()))
         log.log(
             LogLevel.WARN,
             REACTIONS,
@@ -132,7 +135,10 @@ class CiFailedReaction(
             mapOf(ReactionKeys.REACTION to ReactionsConfig.CI_FAILED, ReactionKeys.RETRY to outcome.retry),
             "the Actions runs of pull request #${wait.numberText} failed, the issue goes back to its agent",
         )
-        sendBack(wait, issue, outcome.findings)
+        val scheduled = sendBack(wait, issue, outcome.findings)
+        // bl-224: recorded after the send back, so the event holds the findings only when the retry is scheduled.
+        val findings = if (scheduled) mapOf(ReactionKeys.FINDINGS to outcome.findings) else emptyMap()
+        record(wait, ReactionTriggered, data(wait, reaction) + (ReactionKeys.RETRY to outcome.retry.toString()) + findings)
     }
 
     private fun data(
