@@ -1,7 +1,5 @@
 package loop.core.channel
 
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -19,6 +17,7 @@ import loop.core.workspace.HookName
 import loop.core.workspace.HookResult
 import loop.core.workspace.HookRunner
 import loop.core.workspace.ShellHookRunner
+import loop.core.workspace.runStoppable
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.PosixFilePermissions
@@ -182,15 +181,16 @@ class HumanNotices(
                     )
                 file.writeText(json(notice))
                 listener.started(hook, script)
-                runner.run(
+                runner.runStoppable(
                     hook,
                     "exec < \"\$$NOTICE_FILE\"\n$script",
                     settings.folder,
                     env + variables(notice) + (NOTICE_FILE to file.toString()),
                     settings.timeoutMs,
+                    listener,
+                    shown = script,
                 )
             } catch (e: CancellationException) {
-                withContext(NonCancellable) { listener.stopped(hook) }
                 throw e
             } catch (e: Exception) {
                 HookResult(hook, exitCode = null, timedOut = false, timeoutMs = settings.timeoutMs, durationMs = 0, output = e.describe())

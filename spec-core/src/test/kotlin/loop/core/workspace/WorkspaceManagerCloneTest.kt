@@ -40,7 +40,7 @@ class WorkspaceManagerCloneTest {
     private val sawGit = mutableListOf<Boolean>()
 
     private val runner =
-        HookRunner { hook, _, cwd, _, timeoutMs ->
+        HookRunner { hook, _, cwd, _, timeoutMs, _ ->
             sawGit += cwd.resolve(".git").exists()
             HookResult(hook, 0, timedOut = false, timeoutMs = timeoutMs, durationMs = 1, output = "")
         }
@@ -177,7 +177,7 @@ class WorkspaceManagerCloneTest {
     @Test
     fun `a failed after_create removes the clone and its keep ref`() {
         val failing =
-            HookRunner { hook, _, _, _, timeoutMs ->
+            HookRunner { hook, _, _, _, timeoutMs, _ ->
                 HookResult(hook, 1, timedOut = false, timeoutMs = timeoutMs, durationMs = 1, output = "no")
             }
         val manager = WorkspaceManager(Workspaces(root), HooksConfig(afterCreate = "populate"), failing, clones)
@@ -192,7 +192,7 @@ class WorkspaceManagerCloneTest {
     @Test
     fun `a cancelled after_create removes the clone and its keep ref`() {
         val hanging =
-            HookRunner { _, _, _, _, _ ->
+            HookRunner { _, _, _, _, _, _ ->
                 awaitCancellation()
             }
         val manager = WorkspaceManager(Workspaces(root), HooksConfig(afterCreate = "populate"), hanging, clones)

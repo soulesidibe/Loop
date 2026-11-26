@@ -80,6 +80,18 @@ internal object TraceLines {
         }
     }
 
+    /**
+     * The line of an event recorded outside any attempt, followed by its output lines like a timeline line, so a failed
+     * `before_remove` shows its last output lines (bl-04).
+     */
+    fun issueLevelLines(
+        event: RecordedEvent,
+        fullIds: Boolean,
+    ): List<String> {
+        val output = EventDefinitions.of(event.kind)?.traceOutput(event).orEmpty()
+        return listOf(line(event, fullIds)) + output.map { "$OUTPUT_INDENT$it".trimEnd() }
+    }
+
     /** `HH:MM:SS  name  details`, the details from the event's definition, every field for a kind Loop does not know. */
     fun line(
         event: RecordedEvent,

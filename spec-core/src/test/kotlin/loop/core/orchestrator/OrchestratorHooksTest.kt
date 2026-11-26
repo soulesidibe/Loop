@@ -287,6 +287,46 @@ class OrchestratorHooksTest {
         }
 
     @Test
+    fun `bl-04 a before_run stopped by a cancel is recorded as hook_finished with stopped and no exit code`() =
+        runTest {
+            hookRunner.onRun = { if (it == HookName.BEFORE_RUN) awaitCancellation() }
+            hookRunner.output[HookName.BEFORE_RUN] = "fetching\n"
+            val job = launch { orchestrator(FakeTracker(listOf(issue("m1-04")))).tick() }
+
+            runCurrent()
+            job.cancelAndJoin()
+
+            val event = hookEvents().single { it.data["hook"] == "before_run" }
+            assertEquals(
+                mapOf(
+                    "hook" to "before_run",
+                    "command" to "sh before_run.sh",
+                    "timed_out" to "false",
+                    "stopped" to "true",
+                    "duration_ms" to "12",
+                    "output" to "fetching\n",
+                ),
+                event.data,
+            )
+            assertEquals(AttemptId("a1"), event.attemptId)
+            assertFalse("stopped" in hookEvents().single { it.data["hook"] == "after_create" }.data, "a hook that ended has no stopped key")
+        }
+
+    @Test
+    fun `bl-04 the PreparingWorkspace phase is recorded before after_create and before_run`() =
+        runTest {
+            orchestrator(FakeTracker(listOf(issue("m1-04")))).tick()
+
+            val order =
+                sink.events
+                    .filter { it.kind == "hook_finished" || (it.kind == "phase" && it.phase == "PreparingWorkspace") }
+                    .map { it.data["hook"] ?: it.phase }
+            assertEquals(listOf("PreparingWorkspace", "after_create", "before_run", "after_run"), order)
+            val phase = sink.events.single { it.phase == "PreparingWorkspace" }
+            assertEquals(root.resolve("workspaces/m1-04").toString(), phase.data["workspace"])
+        }
+
+    @Test
     fun `removeWorkspace runs before_remove and removes the workspace`() =
         runTest {
             val orchestrator = orchestrator(FakeTracker(listOf(issue("m1-04"))))

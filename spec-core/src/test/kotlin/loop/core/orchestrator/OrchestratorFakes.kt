@@ -1,5 +1,6 @@
 package loop.core.orchestrator
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -575,8 +576,8 @@ data class HookCall(
 /**
  * Records every hook call and returns a canned result: exit code 0 unless set in
  * [exitCodes], timed out for the hooks in [timedOut], with [output], cut for the hooks in
- * [truncated]. [onRun] runs
- * first and may suspend or throw.
+ * [truncated]. [onRun] runs first and may suspend or throw; a cancel there hands the
+ * stopped result, with [output] as the tail kept so far, before it is thrown on (bl-04).
  */
 class FakeHookRunner : HookRunner {
     val calls = mutableListOf<HookCall>()
@@ -596,9 +597,25 @@ class FakeHookRunner : HookRunner {
         cwd: Path,
         env: Map<String, String>,
         timeoutMs: Long,
+        stopped: (HookResult) -> Unit,
     ): HookResult {
         calls += HookCall(hook, script, cwd, env, timeoutMs)
-        onRun(hook)
+        try {
+            onRun(hook)
+        } catch (e: CancellationException) {
+            stopped(
+                HookResult(
+                    hook,
+                    null,
+                    timedOut = false,
+                    timeoutMs = timeoutMs,
+                    durationMs = 12,
+                    output = output[hook] ?: "",
+                    stopped = true,
+                ),
+            )
+            throw e
+        }
         val late = hook in timedOut
         return HookResult(
             hook = hook,

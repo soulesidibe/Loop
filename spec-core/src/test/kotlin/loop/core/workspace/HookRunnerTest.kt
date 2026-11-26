@@ -1,6 +1,7 @@
 package loop.core.workspace
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -160,6 +161,30 @@ class HookRunnerTest {
         } finally {
             session?.process?.pid()?.let { signalGroup(it, "KILL") }
         }
+    }
+
+    @Test
+    fun `bl-04 a hook stopped by a cancel hands the output it wrote so far`() {
+        var partial: HookResult? = null
+        runBlocking {
+            val job =
+                launch {
+                    runner.run(HookName.BEFORE_RUN, "echo fetching; touch ready; sleep 30", workspace, env, 20_000) { partial = it }
+                }
+            val ready = workspace.resolve("ready")
+            val deadline = System.nanoTime() + 10_000_000_000L
+            while (!ready.toFile().exists() && System.nanoTime() < deadline) delay(20)
+            assertTrue(ready.toFile().exists(), "the hook started")
+            job.cancel()
+            job.join()
+        }
+
+        val result = assertNotNull(partial, "the runner handed a partial result")
+        assertEquals(HookName.BEFORE_RUN, result.hook)
+        assertTrue(result.stopped)
+        assertNull(result.exitCode)
+        assertFalse(result.timedOut)
+        assertEquals("fetching\n", result.output)
     }
 
     /** True once process group [pgid] has no member, polled up to 2 s. */

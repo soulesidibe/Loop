@@ -19,8 +19,8 @@ enum class HookName(
 }
 
 /**
- * What one hook run did. [exitCode] is null when the hook timed out or could not
- * start. [output] is the tail of stdout and stderr merged.
+ * What one hook run did. [exitCode] is null when the hook timed out, could not
+ * start or was stopped. [output] is the tail of stdout and stderr merged.
  */
 data class HookResult(
     val hook: HookName,
@@ -33,6 +33,8 @@ data class HookResult(
     val stopFailed: Boolean = false,
     /** True when [output] is a cut tail: its start, up to the first whole line, was dropped. */
     val outputTruncated: Boolean = false,
+    /** True when a cancel of the caller stopped the hook before it ended (bl-04); [output] is the tail kept so far. */
+    val stopped: Boolean = false,
 ) {
     val ok: Boolean get() = !timedOut && exitCode == 0
 
@@ -42,6 +44,7 @@ data class HookResult(
             when {
                 ok -> null
                 timedOut -> "hook ${hook.id} timed out after $timeoutMs ms"
+                stopped -> "hook ${hook.id} was stopped"
                 exitCode != null -> "hook ${hook.id} failed with exit code $exitCode"
                 else -> "hook ${hook.id} could not start: ${output.trim().lineSequence().lastOrNull().orEmpty()}"
             }
@@ -49,11 +52,25 @@ data class HookResult(
 
 /** Runs one hook script; the seam between the workspace manager and processes. */
 fun interface HookRunner {
+    /**
+     * Runs [script] and returns what it did. When a cancel of the caller stops the hook, [stopped] is called with
+     * the run so far, its output tail included, before the cancel is thrown on (bl-04).
+     */
     suspend fun run(
         hook: HookName,
         script: String,
         cwd: Path,
         env: Map<String, String>,
         timeoutMs: Long,
+        stopped: (HookResult) -> Unit,
     ): HookResult
+
+    /** Runs [script] with no interest in a stopped run's partial result. */
+    suspend fun run(
+        hook: HookName,
+        script: String,
+        cwd: Path,
+        env: Map<String, String>,
+        timeoutMs: Long,
+    ): HookResult = run(hook, script, cwd, env, timeoutMs) {}
 }

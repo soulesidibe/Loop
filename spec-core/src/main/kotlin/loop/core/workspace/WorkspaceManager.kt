@@ -12,6 +12,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
 import java.util.concurrent.Executor
 import kotlin.coroutines.cancellation.CancellationException
+import kotlin.time.TimeSource
 
 /**
  * The workspace manager of spec 9: per issue directories under the root
@@ -31,7 +32,8 @@ class WorkspaceManager(
     /**
      * Creates or reuses the workspace of [key]. `after_create` runs only when the
      * directory was created by this call; its failure or timeout fails the call
-     * with [WorkspaceError.Hook].
+     * with [WorkspaceError.Hook]. [created] is called once the directory exists,
+     * before the clone step and `after_create`, so a caller can record that before the hook (bl-04).
      *
      * bl-28: with [clones], before any hook, a folder without `.git` becomes a clone of the project starting at
      * [clone]'s base (and counts as created now, so `after_create` runs on it), a clone of the project is checked
@@ -44,8 +46,10 @@ class WorkspaceManager(
         env: Map<String, String>,
         listener: HookListener = HookListener.NONE,
         clone: CloneStart = CloneStart(),
+        created: suspend (Workspace) -> Unit = {},
     ): Result<Workspace> {
         val prepared = workspaces.prepare(key).getOrElse { return Result.failure(it) }
+        created(prepared)
         var workspace = prepared
         clones?.let { clones ->
             val made =
@@ -226,13 +230,7 @@ class WorkspaceManager(
     ): HookResult? {
         if (script.isNullOrBlank()) return null
         listener.started(hook, script)
-        val result =
-            try {
-                runner.run(hook, script, cwd, env, timeoutMs)
-            } catch (e: CancellationException) {
-                withContext(NonCancellable) { listener.stopped(hook) }
-                throw e
-            }
+        val result = runner.runStoppable(hook, script, cwd, env, timeoutMs, listener)
         listener.finished(script, result)
         return result
     }
@@ -258,6 +256,40 @@ data class CloneBase(
     val sha: String,
 )
 
+/**
+ * Runs [script] with this runner. A cancel of the caller tells [listener] about the stopped run, with
+ * [shown] as its script, then is thrown on: the runner's partial result, or one with the time measured
+ * here and no output when the runner kept none (bl-04).
+ */
+internal suspend fun HookRunner.runStoppable(
+    hook: HookName,
+    script: String,
+    cwd: Path,
+    env: Map<String, String>,
+    timeoutMs: Long,
+    listener: HookListener,
+    shown: String = script,
+): HookResult {
+    val started = TimeSource.Monotonic.markNow()
+    var partial: HookResult? = null
+    try {
+        return run(hook, script, cwd, env, timeoutMs) { partial = it }
+    } catch (e: CancellationException) {
+        val result =
+            partial ?: HookResult(
+                hook = hook,
+                exitCode = null,
+                timedOut = false,
+                timeoutMs = timeoutMs,
+                durationMs = started.elapsedNow().inWholeMilliseconds,
+                output = "",
+                stopped = true,
+            )
+        withContext(NonCancellable) { listener.stopped(shown, result) }
+        throw e
+    }
+}
+
 /** Told about each hook run, to record and log it (plan R2, R3). All default to nothing. */
 interface HookListener {
     suspend fun started(
@@ -270,8 +302,11 @@ interface HookListener {
         result: HookResult,
     ) {}
 
-    /** The hook was stopped by a cancel of the caller, before it ended. */
-    suspend fun stopped(hook: HookName) {}
+    /** The hook was stopped by a cancel of the caller, before it ended; [result] is the run so far (bl-04). */
+    suspend fun stopped(
+        script: String,
+        result: HookResult,
+    ) {}
 
     companion object {
         val NONE: HookListener = object : HookListener {}

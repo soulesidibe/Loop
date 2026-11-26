@@ -113,7 +113,7 @@ class TraceCommand(
                         appendLine(TraceLines.header(++number, block.events, fullIds))
                         TraceLines.timeline(block.events, fullIds).forEach { appendLine("  $it".trimEnd()) }
                     }
-                    is Block.IssueLevel -> appendLine(TraceLines.line(block.event, fullIds))
+                    is Block.IssueLevel -> TraceLines.issueLevelLines(block.event, fullIds).forEach { appendLine(it) }
                 }
             }
         }.trimEnd()

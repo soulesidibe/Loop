@@ -1,6 +1,7 @@
 package loop.core.workspace
 
 import loop.core.process.SessionProcess
+import loop.core.process.ShellResult
 import loop.core.process.ShellRun
 import java.nio.file.Path
 import kotlin.time.Duration
@@ -25,20 +26,27 @@ class ShellHookRunner(
         cwd: Path,
         env: Map<String, String>,
         timeoutMs: Long,
+        stopped: (HookResult) -> Unit,
     ): HookResult {
-        val result = shell.run(script, cwd, env, timeoutMs)
-        val output = result.startError?.let { "loop: Loop requires perl on PATH to run hooks: $it" } ?: result.output
-        return HookResult(
+        val result = shell.run(script, cwd, env, timeoutMs) { stopped(hookResult(hook, timeoutMs, it).copy(stopped = true)) }
+        return hookResult(hook, timeoutMs, result)
+    }
+
+    private fun hookResult(
+        hook: HookName,
+        timeoutMs: Long,
+        result: ShellResult,
+    ): HookResult =
+        HookResult(
             hook = hook,
             exitCode = result.exitCode,
             timedOut = result.timedOut,
             timeoutMs = timeoutMs,
             durationMs = result.durationMs,
-            output = output,
+            output = result.startError?.let { "loop: Loop requires perl on PATH to run hooks: $it" } ?: result.output,
             stopFailed = result.stopFailed,
             outputTruncated = result.outputTruncated,
         )
-    }
 
     companion object {
         /** Bytes of output kept, the tail (plan R3). */

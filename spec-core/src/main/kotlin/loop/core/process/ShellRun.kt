@@ -1,5 +1,6 @@
 package loop.core.process
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -43,7 +44,8 @@ data class ShellResult(
  * the whole group is stopped, so a background child cannot outlive the script or hold its output
  * pipe open. Output is read on a separate thread into a bounded tail and read for at most
  * [drainTimeout] after the stop (plan R6). With `keepAll`, the whole output is kept as well, for a
- * check's evidence (m2-05).
+ * check's evidence (m2-05). With `onStopped`, a cancel of the caller hands the run so far, its tail
+ * included, once the group is stopped and the tail drained, before the cancel is thrown on (bl-04).
  */
 class ShellRun(
     private val grace: Duration = 2.seconds,
@@ -56,6 +58,7 @@ class ShellRun(
         env: Map<String, String>,
         timeoutMs: Long,
         keepAll: Boolean = false,
+        onStopped: ((ShellResult) -> Unit)? = null,
     ): ShellResult {
         val started = TimeSource.Monotonic.markNow()
         val session =
@@ -100,6 +103,25 @@ class ShellRun(
                 fullOutput = full?.text(),
                 fullOutputTruncated = full?.truncated ?: false,
             )
+        } catch (e: CancellationException) {
+            if (onStopped != null && !stopped) {
+                withContext(NonCancellable) {
+                    val stopFailed = !session.stop(grace)
+                    stopped = true
+                    withTimeoutOrNull(drainTimeout) { reader.join() }
+                    onStopped(
+                        ShellResult(
+                            exitCode = null,
+                            timedOut = false,
+                            durationMs = started.elapsedNow().inWholeMilliseconds,
+                            output = tail.text(),
+                            stopFailed = stopFailed,
+                            outputTruncated = tail.truncated,
+                        ),
+                    )
+                }
+            }
+            throw e
         } finally {
             if (!stopped) withContext(NonCancellable) { session.stop(grace) }
             runCatching { session.process.inputStream.close() }
