@@ -107,6 +107,7 @@ class AgyPreflight(
         private const val VERSION_TIMEOUT_SECONDS = 10L
         private const val MODELS_TIMEOUT_SECONDS = 15L
         private val SEMVER = Regex("""\b(\d+\.\d+(?:\.\d+)?(?:[-+][A-Za-z0-9.-]+)?)\b""")
+        private val VERSION_LINE = Regex("""^[vV]?(\d+\.\d+(?:\.\d+)?(?:[-+][A-Za-z0-9.-]+)?)$""")
         private val ANSI = Regex("""\u001B\[[0-9;]*[A-Za-z]""")
         private val LOGIN_MARKERS =
             listOf(
@@ -121,7 +122,16 @@ class AgyPreflight(
                 "403",
             )
 
-        internal fun extractSemver(text: String): String? = SEMVER.find(text)?.groupValues?.get(1)
+        /**
+         * The version `agy --version` printed in [text]: the last line that is only a version (an optional `v`
+         * prefix and terminal styling aside), else the last version-like token of the whole text. A banner such as
+         * `new version 1.6.0 available` printed before or after the real version never decides it.
+         */
+        internal fun extractSemver(text: String): String? {
+            val lines = text.lineSequence().map { ANSI.replace(it.substringAfterLast('\r'), "").trim() }.toList()
+            lines.asReversed().firstNotNullOfOrNull { VERSION_LINE.matchEntire(it)?.groupValues?.get(1) }?.let { return it }
+            return lines.flatMap { line -> SEMVER.findAll(line).map { it.groupValues[1] } }.lastOrNull()
+        }
 
         internal fun parseModelIds(stdout: String): Set<String> =
             stdout
