@@ -553,21 +553,28 @@ object RunnerOutputRecordFailed : EventDefinition("runner_output_record_failed")
     override val sample = mapOf(REASON to "disk full")
 }
 
-/** One hook run, in or outside an attempt (m1-04); a failed or timed out one prints its last output lines. */
+/**
+ * One hook run, in or outside an attempt (m1-04); a failed, timed out or stopped one prints its last output lines.
+ * Outside an attempt, such as `before_remove` from the terminal retry cleanup, it prints as an issue level line (bl-04).
+ */
 object HookFinished : EventDefinition("hook_finished") {
     const val HOOK = "hook"
     const val COMMAND = "command"
     const val EXIT_CODE = "exit_code"
     const val TIMED_OUT = "timed_out"
+
+    /** `true` when a cancel of the caller stopped the hook before it ended, left out otherwise (bl-04). */
+    const val STOPPED = "stopped"
+
     const val DURATION_MS = "duration_ms"
     const val OUTPUT = "output"
     const val OUTPUT_TRUNCATED = "output_truncated"
     private const val OUTPUT_LINES = 20
 
-    /** The keys printed, in order; `command` and `output` are left out. */
-    private val TRACE_KEYS = listOf(HOOK, EXIT_CODE, TIMED_OUT, DURATION_MS)
+    /** The keys printed, in order, each only when present; `command` and `output` are left out. */
+    private val TRACE_KEYS = listOf(HOOK, EXIT_CODE, TIMED_OUT, STOPPED, DURATION_MS)
 
-    override val trace = TraceShow.TIMELINE
+    override val trace = TraceShow.TIMELINE_AND_ISSUE_LEVEL
     override val human = HumanShow.ISSUE
     override val sample =
         mapOf(
@@ -598,6 +605,7 @@ object HookFinished : EventDefinition("hook_finished") {
         facts: HumanFacts,
     ): String? {
         val hook = data[HOOK] ?: return null
+        if (data[STOPPED] == "true") return "hook $hook was stopped"
         if (data[TIMED_OUT] == "true") {
             val after = data[DURATION_MS]?.toLongOrNull()?.let { " after ${HumanText.duration(it)}" }.orEmpty()
             return "hook $hook timed out$after"

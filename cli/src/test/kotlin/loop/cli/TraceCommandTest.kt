@@ -311,6 +311,105 @@ class TraceCommandTest {
         assertEquals("still waiting", lines[afterRun + 1].trim())
     }
 
+    @Test
+    fun `bl-04 a hook stopped by a cancel shows stopped=true after timed_out, with the output kept so far`() {
+        fixture.issue("t-1")
+        val started = fixture.attemptStarted("a-1", "t-1")
+        fixture.seed(
+            started,
+            started.copy(
+                kind = "hook_finished",
+                data =
+                    mapOf(
+                        "hook" to "before_run",
+                        "command" to "sh before.sh",
+                        "timed_out" to "false",
+                        "stopped" to "true",
+                        "duration_ms" to "830",
+                        "output" to "fetching\n",
+                    ),
+            ),
+            fixture.attemptFinished("a-1", "t-1"),
+        )
+
+        val lines = fixture.inProcess("trace", "t-1", cwd = fixture.projectDir).stdout.lines()
+
+        val hook = lines.indexOfFirst { "hook_finished" in it }
+        assertTrue(hook >= 0, lines.joinToString("\n"))
+        assertTrue(lines[hook].endsWith("hook=before_run timed_out=false stopped=true duration_ms=830"), lines[hook])
+        assertEquals("fetching", lines[hook + 1].trim())
+    }
+
+    @Test
+    fun `bl-04 a hook run outside an attempt, such as before_remove, is an issue level block with its output when it failed`() {
+        val lines =
+            trace(
+                *failedAttempt("a1", "13:48:40", "13:48:41").toTypedArray(),
+                event(
+                    "hook_finished",
+                    "13:48:50",
+                    data =
+                        mapOf(
+                            "hook" to "before_remove",
+                            "command" to "git worktree remove .",
+                            "exit_code" to "128",
+                            "timed_out" to "false",
+                            "duration_ms" to "15",
+                            "output" to "removing\nfatal: not a working tree\n",
+                        ),
+                ),
+                *failedAttempt("a2", "13:49:01", "13:49:02").toTypedArray(),
+            )
+
+        val hook = lines.indexOf("13:48:50  ${"hook_finished".padEnd(NAME_WIDTH)}hook=before_remove exit_code=128 timed_out=false duration_ms=15")
+        val first = lines.indexOfFirst { it.startsWith("Attempt 1 ") }
+        val second = lines.indexOfFirst { it.startsWith("Attempt 2 ") }
+        assertTrue(hook >= 0, lines.joinToString("\n"))
+        assertTrue(first in 0 until hook && hook < second, lines.joinToString("\n"))
+        val output = " ".repeat(10 + NAME_WIDTH)
+        assertEquals(listOf("${output}removing", "${output}fatal: not a working tree"), lines.subList(hook + 1, hook + 3))
+    }
+
+    @Test
+    fun `bl-04 a passing hook run outside an attempt prints its line alone`() {
+        val lines =
+            trace(
+                *failedAttempt("a1", "13:48:40", "13:48:41").toTypedArray(),
+                event(
+                    "hook_finished",
+                    "13:48:50",
+                    data =
+                        mapOf(
+                            "hook" to "before_remove",
+                            "command" to "rm -rf build",
+                            "exit_code" to "0",
+                            "timed_out" to "false",
+                            "duration_ms" to "4",
+                            "output" to "removed\n",
+                        ),
+                ),
+            )
+
+        val hook = "13:48:50  ${"hook_finished".padEnd(NAME_WIDTH)}hook=before_remove exit_code=0 timed_out=false duration_ms=4"
+        assertEquals(hook, lines.last { it.isNotBlank() }, lines.joinToString("\n"))
+        assertFalse(lines.any { "removed" in it }, lines.joinToString("\n"))
+    }
+
+    @Test
+    fun `bl-04 the PreparingWorkspace phase line comes before the after_create and before_run hook lines`() {
+        fixture.writeWorkflow(extra = "hooks:\n  after_create: echo created\n  before_run: echo before")
+        fixture.issue("t-1")
+        val run = fixture.loop("run", fixture.workflow.toString(), "--once")
+        assertEquals(0, run.exitCode, run.toString())
+
+        val lines = fixture.inProcess("trace", "t-1", cwd = fixture.projectDir).stdout.lines()
+
+        val phase = lines.indexOf(phaseLine(lines, "PreparingWorkspace"))
+        val afterCreate = lines.indexOfFirst { "hook_finished" in it && "hook=after_create" in it }
+        val beforeRun = lines.indexOfFirst { "hook_finished" in it && "hook=before_run" in it }
+        assertTrue(phase in 0 until afterCreate && afterCreate < beforeRun, lines.joinToString("\n"))
+    }
+
     // Retries, parking and input required (m1-07, plan review item 10).
 
     private fun event(

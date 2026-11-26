@@ -1,5 +1,10 @@
 package loop.core.workspace
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import loop.core.workflow.HooksConfig
 import java.nio.file.Path
@@ -12,6 +17,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -27,7 +33,7 @@ class WorkspaceManagerTest {
         exitCode: Int,
         action: (Path) -> Unit = {},
     ): HookRunner =
-        HookRunner { hook, _, cwd, _, timeoutMs ->
+        HookRunner { hook, _, cwd, _, timeoutMs, _ ->
             action(cwd)
             HookResult(hook, exitCode, timedOut = false, timeoutMs = timeoutMs, durationMs = 1, output = "")
         }
@@ -36,6 +42,108 @@ class WorkspaceManagerTest {
         hooks: HooksConfig,
         runner: HookRunner,
     ): WorkspaceManager = WorkspaceManager(Workspaces(root), hooks, runner)
+
+    /** A listener that keeps what it is told: the order of the calls and each stopped hook's result. */
+    private class Recording : HookListener {
+        val calls = mutableListOf<String>()
+        val stopped = mutableListOf<Pair<String, HookResult>>()
+
+        override suspend fun started(
+            hook: HookName,
+            script: String,
+        ) {
+            calls += "started ${hook.id}"
+        }
+
+        override suspend fun stopped(
+            script: String,
+            result: HookResult,
+        ) {
+            stopped += script to result
+        }
+    }
+
+    /** Runs before_run with [runner], which must suspend, and cancels it once started. */
+    private fun stopBeforeRun(runner: HookRunner): Recording {
+        val manager = manager(HooksConfig(beforeRun = "sync"), runner)
+        val workspace = runBlocking { manager.prepare(key, emptyMap()) }.getOrThrow()
+        val listener = Recording()
+        val started = CompletableDeferred<Unit>()
+        runBlocking {
+            val job =
+                launch {
+                    manager.beforeRun(
+                        workspace,
+                        emptyMap(),
+                        object : HookListener by listener {
+                            override suspend fun started(
+                                hook: HookName,
+                                script: String,
+                            ) {
+                                listener.started(hook, script)
+                                started.complete(Unit)
+                            }
+                        },
+                    )
+                }
+            started.await()
+            job.cancelAndJoin()
+        }
+        return listener
+    }
+
+    @Test
+    fun `bl-04 a hook stopped by a cancel is reported with the output the runner kept so far`() {
+        val listener =
+            stopBeforeRun { hook, _, _, _, timeoutMs, stopped ->
+                try {
+                    awaitCancellation()
+                } catch (e: CancellationException) {
+                    stopped(HookResult(hook, null, timedOut = false, timeoutMs = timeoutMs, durationMs = 7, output = "half\n", stopped = true))
+                    throw e
+                }
+            }
+
+        val (script, result) = listener.stopped.single()
+        assertEquals("sync", script)
+        assertEquals(HookName.BEFORE_RUN, result.hook)
+        assertTrue(result.stopped)
+        assertNull(result.exitCode)
+        assertFalse(result.timedOut)
+        assertEquals("half\n", result.output)
+        assertEquals(7, result.durationMs)
+    }
+
+    @Test
+    fun `bl-04 a hook stopped by a cancel is reported with an empty output when the runner kept none`() {
+        val listener = stopBeforeRun { _, _, _, _, _, _ -> awaitCancellation() }
+
+        val (_, result) = listener.stopped.single()
+        assertEquals(HookName.BEFORE_RUN, result.hook)
+        assertTrue(result.stopped)
+        assertNull(result.exitCode)
+        assertFalse(result.timedOut)
+        assertEquals("", result.output)
+        assertTrue(result.durationMs >= 0)
+    }
+
+    @Test
+    fun `bl-04 prepare tells the caller the workspace exists before after_create runs`() {
+        val order = mutableListOf<String>()
+        val manager = manager(HooksConfig(afterCreate = "populate"), runner(exitCode = 0) { order += "after_create in ${it.fileName}" })
+
+        runBlocking {
+            manager.prepare(key, emptyMap()) { created ->
+                assertTrue(created.path.exists(), "the folder exists when the caller is told")
+                order += "created ${created.path.fileName}"
+            }
+        }.getOrThrow()
+
+        assertEquals(listOf("created m1-04", "after_create in m1-04"), order)
+        val again = mutableListOf<String>()
+        runBlocking { manager.prepare(key, emptyMap()) { again += it.path.fileName.toString() } }.getOrThrow()
+        assertEquals(listOf("m1-04"), again, "a reused workspace is reported too, with no after_create")
+    }
 
     @Test
     fun `a failed after_create removes the workspace it just created`() {

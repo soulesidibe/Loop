@@ -1009,7 +1009,7 @@ class OrchestratorTest {
                 WorkspaceManager(
                     Workspaces(workflow.workspaceRoot),
                     HooksConfig(afterCreate = "populate"),
-                    HookRunner { _, _, _, _, _ -> throw IllegalArgumentException("bad path") },
+                    HookRunner { _, _, _, _, _, _ -> throw IllegalArgumentException("bad path") },
                 )
 
             val result = orchestrator(FakeTracker(listOf(issue("m1-02"))), sink = sink, workspaces = workspaces).tick()

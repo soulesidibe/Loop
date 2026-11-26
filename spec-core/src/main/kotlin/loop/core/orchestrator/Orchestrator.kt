@@ -2877,15 +2877,20 @@ class Orchestrator(
             // bl-59: every hook of the attempt, not the agent, gets the base fetched right before them.
             val fetchedBase = attemptBase()
             val hookEnv = env + fetchedBase?.let { mapOf(LOOP_BASE_REF to it) }.orEmpty()
+            // bl-04: the phase is recorded once the folder exists, before after_create and before_run, as plan 10.1 shows it.
+            var phaseRecorded = false
             val workspace =
-                workspaces.prepare(key, hookEnv, hooks).getOrElse { error ->
-                    recordPhase(AttemptPhase.PreparingWorkspace, mapOf(Phase.WORKSPACE_KEY to key.value))
-                    return Executed(AttemptOutcome.Failed, error.describe())
-                }
+                workspaces
+                    .prepare(key, hookEnv, hooks) { created ->
+                        recordPhase(AttemptPhase.PreparingWorkspace, mapOf(Phase.WORKSPACE to created.path.toString()))
+                        phaseRecorded = true
+                    }.getOrElse { error ->
+                        if (!phaseRecorded) recordPhase(AttemptPhase.PreparingWorkspace, mapOf(Phase.WORKSPACE_KEY to key.value))
+                        return Executed(AttemptOutcome.Failed, error.describe())
+                    }
             this.workspace = workspace
             this.env = hookEnv
             val beforeRun = workspaces.beforeRun(workspace, hookEnv, hooks)
-            recordPhase(AttemptPhase.PreparingWorkspace, mapOf(Phase.WORKSPACE to workspace.path.toString()))
             // Spec 9.4 and spec-decisions answer 2: fatal to this attempt only.
             beforeRun?.reason?.let { return Executed(AttemptOutcome.Failed, it) }
             discardStaleResult(workspace.path)?.let { return Executed(AttemptOutcome.Failed, it) }
@@ -5029,6 +5034,14 @@ class Orchestrator(
             script: String,
             result: HookResult,
         ) {
+            log(recordRun(script, result))
+        }
+
+        /** One `hook_finished` for a run that ended or was stopped (bl-04), redacted; returns the redacted result. */
+        private suspend fun recordRun(
+            script: String,
+            result: HookResult,
+        ): HookResult {
             val (command, redacted) = redact(script, result)
             val data =
                 mapOfNotNull(
@@ -5036,12 +5049,13 @@ class Orchestrator(
                     HookFinished.COMMAND to command.take(HOOK_COMMAND_MAX),
                     HookFinished.EXIT_CODE to result.exitCode?.toString(),
                     HookFinished.TIMED_OUT to result.timedOut.toString(),
+                    HookFinished.STOPPED to if (result.stopped) "true" else null,
                     HookFinished.DURATION_MS to result.durationMs.toString(),
                     HookFinished.OUTPUT to redacted.output,
                     HookFinished.OUTPUT_TRUNCATED to if (redacted.outputTruncated) "true" else null,
                 )
             record(HookFinished, data)
-            log(redacted)
+            return redacted
         }
 
         /**
@@ -5053,7 +5067,12 @@ class Orchestrator(
             result: HookResult,
         ): Pair<String, HookResult> = redactor.redact(script) to result.copy(output = redactor.redact(result.output))
 
-        override suspend fun stopped(hook: HookName) {
+        override suspend fun stopped(
+            script: String,
+            result: HookResult,
+        ) {
+            recordRun(script, result)
+            val hook = result.hook
             log.log(LogLevel.WARN, "hook", LogOutcome.FAILED, context(), mapOf("hook" to hook.id), "hook ${hook.id} was stopped")
         }
 

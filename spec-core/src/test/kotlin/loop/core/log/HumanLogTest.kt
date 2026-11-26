@@ -775,6 +775,20 @@ class HumanLogTest {
     }
 
     @Test
+    fun `bl-04 a hook stopped by a cancel says it was stopped, not that it failed`() {
+        val log = humanLog()
+
+        log.recorded(
+            event(
+                "hook_finished",
+                mapOf("hook" to "before_run", "timed_out" to "false", "stopped" to "true", "duration_ms" to "830", "output" to "fetching\n"),
+            ),
+        )
+
+        assertEquals(listOf("17:02:11  m1-13  hook before_run was stopped"), lines)
+    }
+
+    @Test
     fun `twenty idle polls give one nothing to do line, work found and idle again give one more each`() {
         val log = humanLog()
 

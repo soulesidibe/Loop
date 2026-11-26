@@ -1,6 +1,11 @@
 package loop.core.orchestrator
 
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import loop.api.ProjectId
 import loop.api.RecordedEvent
@@ -20,6 +25,7 @@ import loop.core.workspace.Workspaces
 import java.nio.file.Path
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -155,6 +161,24 @@ class OrchestratorRedactionTest {
             val hook = sink.events.single { it.kind == "hook_finished" }
             assertTrue(hook.data.getValue("command").startsWith("echo " + "x".repeat(175) + "[redacted:"), hook.data.toString())
             assertTrue(hook.data.getValue("output").contains("failed with [redacted:LOOP_TRACKER_TOKEN]"), hook.data.toString())
+            assertNoTrace()
+        }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `bl-04 a hook stopped by a cancel is recorded redacted, its command and its output`() =
+        runTest {
+            hookRunner.onRun = { if (it == HookName.BEFORE_RUN) awaitCancellation() }
+            hookRunner.output[HookName.BEFORE_RUN] = "fetching with $secret\n"
+            val job = launch { orchestrator(FakeRunner(), workflow(HooksConfig(beforeRun = "echo $secret"))).tick() }
+
+            runCurrent()
+            job.cancelAndJoin()
+
+            val hook = sink.events.single { it.kind == "hook_finished" }
+            assertEquals("true", hook.data["stopped"], hook.data.toString())
+            assertEquals("echo [redacted:LOOP_TRACKER_TOKEN]", hook.data["command"])
+            assertEquals("fetching with [redacted:LOOP_TRACKER_TOKEN]\n", hook.data["output"])
             assertNoTrace()
         }
 
