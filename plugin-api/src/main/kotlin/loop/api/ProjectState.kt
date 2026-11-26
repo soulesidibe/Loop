@@ -135,6 +135,22 @@ public interface WaitingIssues {
     ): Result<Unit>
 
     /**
+     * Removes the record of [issueId] only when it is a [WaitReason.Approval] wait neither approved nor sent back (bl-224),
+     * so a reaction that read the wait earlier never deletes a `loop approve` or a `loop send-back` committed since. The
+     * record as it was before the call, removed or not, null when [issueId] does not wait. This default reads then
+     * removes; a store that can do it in one transaction overrides it.
+     */
+    public suspend fun endUndecidedApproval(
+        projectId: ProjectId,
+        issueId: String,
+    ): Result<WaitingIssue?> =
+        waitingIssues(projectId).mapCatching { records ->
+            val found = records.firstOrNull { it.issueId == issueId } ?: return@mapCatching null
+            if (found.reason == WaitReason.Approval && !found.approved && !found.sentBack) endWaiting(projectId, issueId).getOrThrow()
+            found
+        }
+
+    /**
      * Marks the [WaitReason.Approval] wait of [issueId] approved by [by] at [at] (m2-24), in its data under
      * [WaitingIssue.APPROVED_BY] and [WaitingIssue.APPROVED_AT]. A wait already approved, a wait sent back (m4-32), or a
      * wait for another reason, is left as it is. The record as it is after the call, null when [issueId] does not wait.

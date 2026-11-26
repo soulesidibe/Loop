@@ -44,6 +44,17 @@ Item 5 (strict MCP on a resumed thread) is split out with the `cua_repl` finding
 
 2026-11-26 08:54Z loop: Loop did not dispatch this issue because it is not ready: its description needs a non empty `## Acceptance criteria` section. Add it and Loop picks the issue up on a later poll.
 
+2026-11-26 09:44Z agent eb5441b2: bl-232 done on loop/bl-232 (5ac738c, c336be2).
+  - Usage baseline: Telemetry.resume keeps the resumed thread for the baseline only when no turn of the session started yet, so turn 1 of resumeSession still leaves the held attempt's tokens out, and after a respawn a replay of a turn Loop never learned counts as an update. Checking at update time instead would have broken the existing resumeSession test, where Codex replays after the turn/start answer.
+  - Tests in CodexThreadResumeTest: a replay of an unknown turn after a started turn (it failed first: usage dropped from 18000 to 10000), a new app server that exits after its thread/resume answer and before turn/start, and resumeSession followed by a later turn's respawn. The two respawn tests passed from the start because they cover behavior that already worked. The module tests pass (235, 0 failed, 1 skipped real smoke test), and so does ktlintCheck.
+  - Docs: self-hosting.md now names the three runners that resume after a hold in one sentence. The Codex profile notes that a continuation prompt can be sent twice, and has the new usage rule. spec-decisions.md is updated to match.
+  Residual human step (item 2): I did not rename the two tests. deleted_tests refutes any test name that disappears, so a rename by the agent fails verification. Proposed renames for the maintainer on main after the merge, in CodexAppServerRunnerTest.kt, with their kdoc notes about the kept name removed:
+  1. `m4-46 it resumes no session across attempts, so after a network hold Loop opens a fresh one with the brief` to `bl-212 resumeSession returns a session that resumes the held attempt's thread`
+  2. `17_5 the app server exiting mid continuation turn fails that turn, and a later turn fails at once on the gone server` to `17_5 the app server exiting mid continuation turn fails that turn, and a later turn respawns once and fails when the new one exits too`
+  Also in docs/spec-decisions.md, update the two places that quote the old m4-46 name.
+
+2026-11-26 09:54Z loop: Loop opened pull request #90 for this issue: https://github.com/soulesidibe/Loop/pull/90
+
 ## Agent Brief
 
 **Category:** enhancement
