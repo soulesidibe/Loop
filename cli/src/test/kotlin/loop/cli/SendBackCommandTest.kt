@@ -226,7 +226,7 @@ class SendBackCommandTest {
     }
 
     @Test
-    fun `a bare id finds the issue in the primary tracker and a namespaced id in its own tracker, where the reason is commented`() {
+    fun `a bare id finds the issue in the primary tracker and a namespaced id in its own tracker`() {
         val other = fixture.projectDir.resolve("other").createDirectories()
         fixture.writeWorkflow(extra = "trackers:\n  - id: local\n    kind: files\n    provider:\n      dir: ./other\n")
         // bl-221: x-1 is a real issue of the second tracker, so its comment lands there.
