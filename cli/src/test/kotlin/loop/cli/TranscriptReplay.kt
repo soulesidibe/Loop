@@ -38,14 +38,18 @@ fun main(args: Array<String>) {
     val transcript = Path.of(args[0])
     val record = Path.of(args[1])
     val argv = args.drop(2)
-    record.resolve("argv").writeText(argv.joinToString("\n"))
+    // Two attempts of one run may replay at once into the same record folder: each file is replaced atomically, since
+    // concurrent `Files.copy` with REPLACE_EXISTING deletes then creates the target and one of them can fail.
+    TranscriptReplay.replaceAtomically(record.resolve("argv")) { it.writeText(argv.joinToString("\n")) }
     val mcpConfig =
         argv
             .zipWithNext()
             .firstOrNull { it.first == "--mcp-config" }
             ?.second
             ?.let { Path.of(it) }
-    mcpConfig?.let { Files.copy(it, record.resolve("mcp.json"), StandardCopyOption.REPLACE_EXISTING) }
+    mcpConfig?.let { config ->
+        TranscriptReplay.replaceAtomically(record.resolve("mcp.json")) { Files.copy(config, it, StandardCopyOption.REPLACE_EXISTING) }
+    }
     // The first user message line; Claude Code with `--input-format stream-json` keeps stdin open (m3-07).
     readlnOrNull()
     val servers =
@@ -77,6 +81,20 @@ fun main(args: Array<String>) {
 }
 
 object TranscriptReplay {
+    /** Writes [target] through [write] into a temporary file of its own folder, then moves it over [target] atomically. */
+    fun replaceAtomically(
+        target: Path,
+        write: (Path) -> Unit,
+    ) {
+        val temp = Files.createTempFile(target.parent, ".${target.fileName}", ".tmp")
+        try {
+            write(temp)
+            Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        } finally {
+            Files.deleteIfExists(temp)
+        }
+    }
+
     data class ToolUse(
         val id: String,
         val name: String,
