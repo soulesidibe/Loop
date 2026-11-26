@@ -135,6 +135,18 @@ data class KindDeliverable(
  * work tree: verification, `diff_policy`, the restore and the pinned base read it with git. [Plain] is a folder Loop
  * never reads with git, fingerprinted `tree:<hash>` even inside a work tree.
  */
+/**
+ * bl-28: `workspace.git`. [Hooks], the default and never written, leaves the workspace folder to the hooks, today a git
+ * worktree that shares the project's refs and config. [Clone] makes each new workspace a `git clone --shared` of the
+ * project with its own refs, config, hooks and info, see `docs/workspaces.md`.
+ */
+enum class WorkspaceGitMode(
+    val wire: String,
+) {
+    Hooks("hooks"),
+    Clone("clone"),
+}
+
 enum class KindWorkspace(
     val wire: String,
 ) {
