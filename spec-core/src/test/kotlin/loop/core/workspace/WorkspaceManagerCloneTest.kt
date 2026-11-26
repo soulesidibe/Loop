@@ -7,6 +7,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import loop.core.verify.LazyFetchTrap
 import loop.core.verify.WorkspaceGit
 import loop.core.workflow.HooksConfig
 import java.nio.file.Files
@@ -84,6 +85,25 @@ class WorkspaceManagerCloneTest {
         assertEquals(first, git("rev-parse", "HEAD", dir = workspace.path))
         assertEquals(first, git("rev-parse", "refs/loop/base/main", dir = workspace.path))
         assertEquals(first, git("rev-parse", "refs/loop/workspace/t-1"))
+    }
+
+    @Test
+    fun `bl-246 a reuse of a clone holding a promisor the agent configured never runs it and fails with a named reason`() {
+        val workspace = runBlocking { manager.prepare(key, emptyMap(), clone = CloneStart(first)) }.getOrThrow()
+        val trap = LazyFetchTrap(workspace.path, folder.resolve("lazy-fetch-ran"), "refs/heads/loop/t-1").arm()
+        trap.proveLive()
+        // The same prepare without the variable runs the agent's program.
+        val unguarded = WorkspaceManager(Workspaces(root), HooksConfig(), runner, WorkspaceClones(project, LazyFetchTrap.unguarded(hostEnv)))
+        runBlocking { unguarded.prepare(key, emptyMap(), clone = CloneStart(first)) }
+        assertTrue(trap.marker.exists(), "the reuse does not fetch unguarded, so the test proves nothing")
+        Files.delete(trap.marker)
+
+        val reused = runBlocking { manager.prepare(key, emptyMap(), clone = CloneStart(first)) }
+
+        assertFalse(trap.marker.exists(), "the reuse ran the agent's program")
+        val error = assertIs<WorkspaceError.Clone>(reused.exceptionOrNull())
+        assertContains(error.message.orEmpty(), "has no branch loop/t-1")
+        assertTrue(workspace.path.resolve(".git").exists(), "a reused workspace is kept")
     }
 
     @Test

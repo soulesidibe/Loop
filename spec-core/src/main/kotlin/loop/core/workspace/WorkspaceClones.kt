@@ -17,8 +17,9 @@ import kotlin.io.path.deleteRecursively
  * hooks and info, so nothing an agent runs in it through git changes the operator's repository.
  *
  * The clone's config belongs to the agent, so every git command here runs through [git], with Loop's pins on its
- * command line (no hook, no fsmonitor) and the minimal environment. Loop never reads a ref of the clone to choose a
- * base, a diff base or a push target: it passes commit ids it resolved in the project.
+ * command line (no hook, no fsmonitor), the minimal environment and lazy fetch off. Loop never reads a ref of the clone
+ * to choose a base, a diff base or a push target: it passes commit ids it resolved in the project. Lazy fetch off needs
+ * git 2.45 or later, so [create] and [reuse] refuse an older git (bl-246).
  *
  * In the project Loop writes three refs only: `refs/heads/loop/<key>` at an imported commit ([import]),
  * `refs/loop/workspace/<key>` at the start commit of a live clone ([keepRef]), and `refs/loop/base/<base>`, which the
@@ -31,7 +32,8 @@ class WorkspaceClones(
     /**
      * Makes [workspace], an empty folder, a clone of the project on `loop/<key>`, its files checked out. The branch
      * starts at the project's `refs/heads/loop/<key>` when it exists, else at [base] resolved in the project, else at
-     * the project's `HEAD`. The clone gets no `origin` remote, the project's local `user.name` and `user.email` when
+     * the project's `HEAD`; the clone's own `loop/<key>`, which `git clone` makes when the project has it checked out,
+     * is reset there (bl-246). The clone gets no `origin` remote, the project's local `user.name` and `user.email` when
      * set, and the project the keep ref of [key] at the start commit. No sparse pattern: that is the hooks' job.
      *
      * The clone is built in a sibling folder ([building]) and moved into place only once every step is done, so a
@@ -45,6 +47,7 @@ class WorkspaceClones(
         base: String?,
         cancellation: WorkspaceGit.Cancellation? = null,
     ) {
+        requireGitVersion(cancellation)
         if (Files.isDirectory(workspace, LinkOption.NOFOLLOW_LINKS) && entries(workspace) { true }.isNotEmpty()) {
             throw IOException("the workspace $workspace is not empty and has no .git, Loop clones into an empty folder only")
         }
@@ -81,7 +84,7 @@ class WorkspaceClones(
                 check(git.run(building, "config", name, value.stdout.trim(), cancellation = cancellation), "copy $name into the clone")
             }
             check(
-                git.run(building, "checkout", "--quiet", "-b", branch, start, cancellation = cancellation),
+                git.run(building, "checkout", "--quiet", "-B", branch, start, cancellation = cancellation),
                 "check out $branch in the clone",
             )
             cancellation?.check()
@@ -98,13 +101,15 @@ class WorkspaceClones(
      * as it is: a remote is removed, so a push by name cannot reach the project; a missing `loop/<key>` branch fails
      * with an [IOException] naming it, since the clone was not finished; a missing keep ref is written back at the
      * newest commit on the first parent line of `loop/<key>` that the project has. Where `HEAD` stands is the agent's
-     * and the hooks' (`before_run` checks the branch out). [cancellation] stops the running git.
+     * and the hooks' (`before_run` checks the branch out). A git older than 2.45 fails it, as in [create].
+     * [cancellation] stops the running git.
      */
     fun reuse(
         workspace: Path,
         key: WorkspaceKey,
         cancellation: WorkspaceGit.Cancellation? = null,
     ) {
+        requireGitVersion(cancellation)
         val remotes = git.run(workspace, "remote", cancellation = cancellation)
         check(remotes, "list the remotes of the clone $workspace")
         for (remote in remotes.stdout
@@ -189,7 +194,9 @@ class WorkspaceClones(
      * refs of the workspace, its `refs/heads/[branch]` and its `refs/loop/base/` commits as its own refs, so git tells the
      * clone it has them and only the objects the project lacks travel and are checked. Its objects then reach the
      * project's object folder by plain file copy, and only then, in the project, git checks the commit is there and
-     * writes the branch. A branch already at [sha] is left alone. Fails with an [IOException].
+     * writes the branch. A branch already at [sha] is left alone. A branch a worktree of the project has checked out
+     * is never moved under the operator (bl-246): the import then fails naming it and that worktree, with no project
+     * ref changed. Fails with an [IOException].
      */
     fun import(
         workspace: Path,
@@ -239,9 +246,70 @@ class WorkspaceClones(
             if (type.code != 0 || type.stdout.trim() != "commit") {
                 throw IOException("the imported $sha is not a commit of the project at $projectDir: ${type.firstLine()}")
             }
+            checkedOut(branch)?.let { worktree ->
+                throw IOException(
+                    "the project has $branch checked out in $worktree, and Loop never moves a checked out branch; " +
+                        "switch that worktree to another branch, then deliver again",
+                )
+            }
             check(git.run(projectDir, "update-ref", "refs/heads/$branch", sha), "write refs/heads/$branch in the project")
         }
     }
+
+    /**
+     * The warning for a new clone of [key] while a worktree of the project, the main checkout or a linked one, has
+     * `loop/<key>` checked out: [import] refuses to move that branch until the operator switches away. Null when no
+     * worktree has it checked out, or when git cannot tell.
+     */
+    fun checkedOutWarning(key: WorkspaceKey): String? {
+        val branch = branch(key)
+        val worktree = runCatching { checkedOut(branch) }.getOrNull() ?: return null
+        return "the project has $branch checked out in $worktree, so delivery will refuse to move that branch until " +
+            "that worktree switches to another branch"
+    }
+
+    /**
+     * The worktree of the project that has `refs/heads/[branch]` checked out, the main checkout or a linked one, null
+     * when none has. Fails with an [IOException] when git cannot tell.
+     */
+    private fun checkedOut(branch: String): Path? {
+        val ref = "refs/heads/$branch"
+        val listed = git.run(projectDir, "for-each-ref", "--format=%(refname) %(worktreepath)", ref)
+        check(listed, "find the worktree that has $branch checked out")
+        return listed.stdout
+            .lineSequence()
+            .firstOrNull { it.startsWith("$ref ") }
+            ?.removePrefix("$ref ")
+            ?.takeIf { it.isNotBlank() }
+            ?.let { Path.of(it) }
+    }
+
+    /**
+     * Fails with an [IOException] naming the version found and the minimum when the installed git is older than
+     * [MIN_GIT], which ignores `GIT_NO_LAZY_FETCH`, so an agent's promisor could run from Loop's own git (bl-246). Only the
+     * leading numbers of `git version` count, since the line can end with a vendor suffix. A version that passed is not
+     * read again.
+     */
+    private fun requireGitVersion(cancellation: WorkspaceGit.Cancellation?) {
+        if (gitChecked) return
+        val outcome = git.run(projectDir, "version", cancellation = cancellation)
+        check(outcome, "read the git version")
+        val line = outcome.stdout.trim().lineSequence().firstOrNull().orEmpty()
+        val found =
+            GIT_VERSION.find(line)?.destructured?.let { (major, minor, patch) ->
+                listOf(major.toInt(), minor.toInt(), patch.ifEmpty { "0" }.toInt())
+            } ?: throw IOException("clone workspaces need git $MIN_GIT_TEXT or later, and git printed \"${line.take(SHOWN_MAX)}\"")
+        val older = found.zip(MIN_GIT).firstOrNull { (a, b) -> a != b }?.let { (a, b) -> a < b } ?: false
+        if (older) {
+            throw IOException(
+                "clone workspaces need git $MIN_GIT_TEXT or later, which can turn lazy fetch off, and found git ${found.joinToString(".")}",
+            )
+        }
+        gitChecked = true
+    }
+
+    @Volatile
+    private var gitChecked: Boolean = false
 
     /** Deletes the keep ref and the base keep ref of [key] in the project; nothing to do for one that is not there. */
     fun dropKeep(key: WorkspaceKey) {
@@ -411,6 +479,14 @@ class WorkspaceClones(
         private val COMMIT_ID = Regex("[0-9a-fA-F]{40}|[0-9a-fA-F]{64}")
 
         private const val SHA256_LENGTH = 64
+
+        /** The first git that honours `GIT_NO_LAZY_FETCH`, which every git Loop runs in a clone sets (bl-246). */
+        private val MIN_GIT = listOf(2, 45, 0)
+
+        private val MIN_GIT_TEXT = MIN_GIT.joinToString(".")
+
+        /** The leading numbers of `git version`, such as `git version 2.54.0 (Apple Git-157)`. */
+        private val GIT_VERSION = Regex("""^git version (\d+)\.(\d+)(?:\.(\d+))?""")
 
         private const val SHOWN_MAX = 80
 
