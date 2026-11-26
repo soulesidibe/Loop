@@ -8,8 +8,9 @@ import kotlin.time.Instant
 /**
  * What holds an agent slot of the project now: the normalized state of each running attempt, as reconciliation
  * last read it, and the number of running merge checks, phase `check` work only. A restored wait's checks and a
- * delivery's merge phase take no slot (bl-173). [attemptTrackers] holds the tracker id of each running attempt, for the
- * per tracker limits (m4-15); an attempt of no tracker of the workflow is left out.
+ * delivery's merge phase take no slot (bl-173). The builds are capped apart: every verification build and merge check
+ * build, a restored wait's included, passes the [BuildGate] (bl-188). [attemptTrackers] holds the tracker id of each
+ * running attempt, for the per tracker limits (m4-15); an attempt of no tracker of the workflow is left out.
  */
 internal data class SlotUse(
     val attemptStates: List<String>,
@@ -36,7 +37,8 @@ internal data class AttemptSlots(
  * `agent.max_concurrent_agents_by_tracker` ([TrackerSlots]) cap attempt launches only, and at most one merge check runs
  * at a time. Step one, [mergeCheckFits], runs first in the tick, so a
  * merge check takes the last free slot ahead of due retries and candidates. Step two, [attempts], fills what is left.
- * A delivery's merge phase asks neither step: it holds no agent slot (bl-173).
+ * A delivery's merge phase asks neither step: it holds no agent slot (bl-173). A slot is checked when work starts only,
+ * so the builds an attempt or a merge check runs later are capped by the [BuildGate] instead (bl-188).
  */
 internal object SlotPlan {
     /** Step one: whether a merge check, phase `check` work, may start now. */

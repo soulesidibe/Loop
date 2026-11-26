@@ -87,4 +87,46 @@ class AcpFramingTest {
         assertEquals(-32601L, decodedErr.code)
         assertEquals("method not found", decodedErr.message)
     }
+
+    @Test
+    fun `bl-240 the echo of an error response omits its data and keeps jsonrpc, id, code and message`() {
+        val data = """{"metadata":{"email":"someone@example.com","consumer":"projects/735190462281"}}"""
+        val line = """{"jsonrpc":"2.0","id":4,"error":{"code":-32000,"message":"Resource exhausted","data":$data}}"""
+
+        val echo = AcpFraming.echo(AcpFraming.decode(line))
+
+        assertEquals(
+            """{"jsonrpc":"2.0","id":4,"error":{"code":-32000,"message":"Resource exhausted","data":"[error data omitted, ${data.length} chars]"}}""",
+            echo,
+        )
+    }
+
+    @Test
+    fun `bl-240 members of an error response besides code and message are omitted too`() {
+        val line =
+            """{"jsonrpc":"2.0","id":null,"account":"735190462281","error":{"code":429,"message":"quota","status":"someone@example.com"}}"""
+
+        val echo = AcpFraming.echo(AcpFraming.decode(line))
+
+        assertEquals(
+            """{"jsonrpc":"2.0","id":null,"error":{"code":429,"message":"quota","data":"[error data omitted, 35 chars]"}}""",
+            echo,
+        )
+    }
+
+    @Test
+    fun `bl-240 every other line is echoed as read, byte for byte`() {
+        val lines =
+            listOf(
+                """{ "jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1"} }""",
+                """{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}""",
+                """{"jsonrpc":"2.0","id":2, "error":{"code":-32601,"message":"method not found"}}""",
+                """{"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":"no data","data":null}}""",
+                """not json {"error":{"data":"someone@example.com"}}""",
+                """{"jsonrpc":"2.0","id":5,"error":{"code":"bad","message":"x","data":{"email":"e"}}}""",
+                "",
+            )
+
+        lines.forEach { line -> assertEquals(line, AcpFraming.echo(AcpFraming.decode(line))) }
+    }
 }
