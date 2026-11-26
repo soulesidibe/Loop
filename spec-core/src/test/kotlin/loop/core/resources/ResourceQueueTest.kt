@@ -1,6 +1,7 @@
 package loop.core.resources
 
 import loop.api.AttemptId
+import loop.api.DirtyResource
 import loop.api.ProjectId
 import loop.api.ResourceLock
 import loop.api.ResourceLockRows
@@ -238,6 +239,31 @@ class ResourceQueueTest {
             requested.change.rows.locks
                 .map { it.attemptId.value },
         )
+    }
+
+    @Test
+    fun `bl-219 a free that expected fewer locks than its attempt holds changes nothing and names the others`() {
+        var rows = ResourceLockRows()
+        for (step in listOf(Step.Request("a1", "avd", "api35", ""), Step.Request("a1", "avd", "api36", ""))) {
+            rows = ResourceQueue.request(rows, request(step, t0), t0).change.rows
+        }
+        val mark = DirtyResource("avd", "api35", ProjectId("p1"), "provider", "changed", t0)
+
+        for (free in listOf<(Set<Pair<String, String>>) -> ResourceChange>(
+            { ResourceQueue.freeAttempt(rows, AttemptId("a1"), t0, listOf(mark), it) },
+            { ResourceQueue.freeKinds(rows, AttemptId("a1"), setOf("avd"), t0, listOf(mark), it) },
+        )) {
+            val refused = free(setOf("avd" to "api35"))
+            assertEquals(rows, refused.rows)
+            assertEquals(listOf("api36"), refused.unexpected.map { it.resourceId })
+            assertEquals(emptyList(), refused.released + refused.granted)
+            assertEquals(emptyList(), refused.marked)
+
+            val freed = free(setOf("avd" to "api35", "avd" to "api36", "avd" to "api37"))
+            assertEquals(emptyList(), freed.unexpected)
+            assertEquals(listOf("api35", "api36"), freed.released.map { it.resourceId })
+            assertEquals(listOf(mark), freed.marked)
+        }
     }
 
     private fun request(

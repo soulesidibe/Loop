@@ -116,15 +116,21 @@ object ResourceQueue {
 
     /**
      * Every lock and queue row of the attempt [attemptId] goes at [now], each freed lock to the oldest request of its
-     * queue, and the resources of [dirty] are marked dirty in the same change (m4-26).
+     * queue, and the resources of [dirty] are marked dirty in the same change (m4-26). With [expected], the kind and
+     * resource id of each lock the caller gave back, nothing changes when the attempt holds a lock outside it (bl-219),
+     * and [ResourceChange.unexpected] lists those locks.
      */
     fun freeAttempt(
         rows: ResourceLockRows,
         attemptId: AttemptId,
         now: Instant,
         dirty: List<DirtyResource> = emptyList(),
-    ): ResourceChange =
-        free(rows, now, lockGoes = { it.attemptId == attemptId }, requestGoes = { it.attemptId == attemptId }, dirty = dirty)
+        expected: Set<Pair<String, String>>? = null,
+    ): ResourceChange {
+        val unexpected = unexpected(rows, expected) { it.attemptId == attemptId }
+        if (unexpected.isNotEmpty()) return ResourceChange(rows, unexpected = unexpected)
+        return free(rows, now, lockGoes = { it.attemptId == attemptId }, requestGoes = { it.attemptId == attemptId }, dirty = dirty)
+    }
 
     /** Every lock and queue row of the project [projectId] goes at [now], each freed lock to the oldest request of its queue left. */
     fun freeProject(
@@ -153,7 +159,8 @@ object ResourceQueue {
      * Every lock and queue row of the attempt [attemptId] whose kind is one of [kinds] goes at [now], each freed lock
      * to the oldest request of its queue, and the resources of [dirty] are marked dirty in the same change (m4-26). A
      * check that holds a resource frees this way what its own attempt holds in the pool of its kind, which the attempt
-     * would otherwise keep until its end, after the check.
+     * would otherwise keep until its end, after the check. With [expected], nothing changes when the attempt holds a
+     * lock of [kinds] outside it, as in [freeAttempt] (bl-219).
      */
     fun freeKinds(
         rows: ResourceLockRows,
@@ -161,14 +168,25 @@ object ResourceQueue {
         kinds: Set<String>,
         now: Instant,
         dirty: List<DirtyResource> = emptyList(),
-    ): ResourceChange =
-        free(
+        expected: Set<Pair<String, String>>? = null,
+    ): ResourceChange {
+        val unexpected = unexpected(rows, expected) { it.attemptId == attemptId && it.kind in kinds }
+        if (unexpected.isNotEmpty()) return ResourceChange(rows, unexpected = unexpected)
+        return free(
             rows,
             now,
             lockGoes = { it.attemptId == attemptId && it.kind in kinds },
             requestGoes = { it.attemptId == attemptId && it.kind in kinds },
             dirty = dirty,
         )
+    }
+
+    /** The locks [goes] picks whose kind and resource id are not in [expected]; none when [expected] is null. */
+    private fun unexpected(
+        rows: ResourceLockRows,
+        expected: Set<Pair<String, String>>?,
+        goes: (ResourceLock) -> Boolean,
+    ): List<ResourceLock> = if (expected == null) emptyList() else rows.locks.filter { goes(it) && (it.kind to it.resourceId) !in expected }
 
     /**
      * The recheck holder [holder] of the dirty resource of [kind] and [resourceId] is done at [now] (m4-26): its lock
@@ -284,12 +302,14 @@ object ResourceQueue {
 /**
  * The resource rows after a change, [rows], with the locks it [released], the locks it [granted], each grant given to
  * the oldest request of its queue or to a request of a free resource, and the dirty marks it added, [marked] (m4-26).
+ * A free that expected other locks changed nothing, and [unexpected] holds the locks it did not expect (bl-219).
  */
 data class ResourceChange(
     val rows: ResourceLockRows,
     val released: List<ResourceLock> = emptyList(),
     val granted: List<ResourceLock> = emptyList(),
     val marked: List<DirtyResource> = emptyList(),
+    val unexpected: List<ResourceLock> = emptyList(),
 )
 
 /** What a request got: the lock, or a place in the queue, 1 for the next one granted, behind [holder]. */

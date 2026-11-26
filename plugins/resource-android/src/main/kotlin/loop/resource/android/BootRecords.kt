@@ -66,6 +66,20 @@ internal class BootRecords(
         file(avd).deleteIfExists()
     }
 
+    /**
+     * Deletes the record of [avd] when it [matches], under [exclusive], so a record written meanwhile is kept (bl-219).
+     * It waits for the folder lock, which a boot of any AVD holds while it lists the devices, bounded by the adb
+     * timeout, and starts its emulator, but never while the emulator boots.
+     * Never called inside [exclusive]: `FileChannel.lock` refuses a second lock of the folder in the same JVM with an
+     * `OverlappingFileLockException`.
+     */
+    fun deleteIf(
+        avd: String,
+        matches: (BootRecord) -> Boolean,
+    ) {
+        exclusive { of(avd)?.takeIf(matches)?.let { delete(avd) } }
+    }
+
     fun <T> exclusive(block: () -> T): T =
         THREADS.withLock {
             Files.createDirectories(dir)
