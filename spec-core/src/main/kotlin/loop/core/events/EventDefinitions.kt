@@ -63,6 +63,8 @@ object EventDefinitions {
             AcceptanceCommandsEmpty,
             AcceptanceCommandsAccepted,
             DiffBaseUnpinned,
+            // m4-41: a verification replayed by `loop replay --verify`.
+            ReplayVerdict,
             // Delivery.
             ApprovalRequested,
             ApprovalGiven,
