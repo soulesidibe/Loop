@@ -141,7 +141,9 @@ import loop.core.merge.Recheck
 import loop.core.merge.RecheckOutcome
 import loop.core.merge.WorkspaceMergeGit
 import loop.core.reactions.CiFailedReaction
+import loop.core.reactions.ReactionMarks
 import loop.core.reactions.Reactions
+import loop.core.reactions.SendBackOutcome
 import loop.core.resources.ResourceGrants
 import loop.core.resources.ResourceLocks
 import loop.core.template.Template
@@ -500,10 +502,7 @@ class Orchestrator(
         Reactions(
             executorFor = ::executorFor,
             record = ::recordWaitEvent,
-            sendBack = { wait, issue, findings ->
-                endWaiting(wait)
-                retries.onReaction(issue, wait.attemptId, effective).also { if (it) verifyFindings[wait.issueId] = findings }
-            },
+            sendBack = ::reactionSendBack,
             contextOf = ::waitContext,
             log = log,
             redactor = redactor,
@@ -523,12 +522,34 @@ class Orchestrator(
             record = ::recordWaitEvent,
             sendBack = { wait, issue, findings ->
                 endWaiting(wait)
-                if (retries.onReaction(issue, wait.attemptId, effective)) verifyFindings[wait.issueId] = findings
+                retries.onReaction(issue, wait.attemptId, effective).also { if (it) verifyFindings[wait.issueId] = findings }
             },
             contextOf = ::waitContext,
             log = log,
             redactor = redactor,
         )
+    }
+
+    /**
+     * The send back of a reaction to an approval wait (m4-34): ends the wait only when it is still neither approved nor
+     * sent back, in the same store change (bl-224), so a `loop approve` or a `loop send-back` committed while the
+     * reaction read GitHub is kept, then schedules the retry on a `max_attempts` slot with the findings.
+     */
+    private suspend fun reactionSendBack(
+        wait: Wait.Approval,
+        issue: Issue,
+        findings: String,
+    ): SendBackOutcome {
+        val ended =
+            waits.endUndecided(wait).getOrElse { error ->
+                log.log(LogLevel.WARN, WAITING, LogOutcome.FAILED, waitContext(wait), reason = error.describe())
+                return SendBackOutcome.Kept
+            }
+        attemptEnded.trySend(Unit)
+        if (!ended) return SendBackOutcome.Decided
+        if (!retries.onReaction(issue, wait.attemptId, effective)) return SendBackOutcome.Parked
+        verifyFindings[wait.issueId] = findings
+        return SendBackOutcome.Scheduled
     }
 
     /** The sink every event goes through, the retry coordinator's too; the observer sees each one first. */
@@ -2855,8 +2876,9 @@ class Orchestrator(
             // m4-32: after `loop send-back` the human's reason, the path a refuted merge check takes, with no slot taken.
             val sentBack = dispatchSentBacks[issue.id]
             val sentBackFindings = sentBack?.let(SendBacks::findings)
-            // The findings of a refutation that ended the last attempt, null otherwise (m2-06).
-            val findings = sentBackFindings ?: verifyFindings[issue.id]
+            // The findings of a refutation that ended the last attempt, null otherwise (m2-06). bl-224: a reaction's from
+            // the run store when a restart lost them.
+            val findings = sentBackFindings ?: verifyFindings[issue.id] ?: storedReactionFindings()
             // bl-19: the folder held earlier work before this attempt, whatever attempt says (a restart, a resume).
             val workspaceReused = !workspace.createdNow
             // bl-06: once per dispatch, so an answer the tracker keeps outside the body (a GitHub comment) is in the
@@ -3007,6 +3029,22 @@ class Orchestrator(
                     val reason = redactor.redact("cannot freeze the acceptance commands: ${error.describe()}").take(REASON_MAX)
                     log.log(LogLevel.WARN, ACCEPTANCE_COMMANDS, LogOutcome.FAILED, logContext(), reason = reason)
                 }
+        }
+
+        /**
+         * The findings of the issue's last reaction that scheduled a retry, from the run store (bl-224), for a retry of
+         * kind `reaction` whose findings this process does not hold, as after a restart. Null for any other retry, and
+         * when the store cannot be read, logged: the retry then renders without them, as before.
+         */
+        private suspend fun storedReactionFindings(): String? {
+            if (dispatchRetryKinds[issue.id] != PromptVariables.RETRY_REACTION) return null
+            val events =
+                reactionsBefore().getOrElse { error ->
+                    val reason = redactor.redact("cannot read the reaction findings: ${error.describe()}").take(REASON_MAX)
+                    log.log(LogLevel.WARN, REACTIONS, LogOutcome.FAILED, logContext(), reason = reason)
+                    return null
+                }
+            return ReactionMarks.findings(events, issue.id)
         }
 
         /** The highest threshold the store already holds for this attempt; 0, logged, when it cannot be read. */
@@ -5116,6 +5154,9 @@ class Orchestrator(
 
         /** The operator log event of a wait (m2-04). */
         const val WAITING = "waiting"
+
+        /** bl-224: the operator log event of a reaction read at dispatch, as the reactions log theirs. */
+        private const val REACTIONS = "reactions"
 
         /** The operator log event of a delivery: an approval wait started, an approved result delivered (m2-24). */
         const val DELIVERY = "delivery"

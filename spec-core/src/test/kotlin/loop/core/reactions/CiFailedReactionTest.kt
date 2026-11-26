@@ -38,6 +38,7 @@ import loop.core.events.CiFinished
 import loop.core.events.CiWaiting
 import loop.core.events.DeliveryFailed
 import loop.core.events.IssueParked
+import loop.core.events.ReactionKeys
 import loop.core.events.ReactionSkipped
 import loop.core.events.ReactionTriggered
 import loop.core.events.RetryScheduled
@@ -449,8 +450,9 @@ class CiFailedReactionTest {
                         "retries" to "2",
                     ),
                 ),
-                setup.all(ReactionTriggered.name),
+                setup.all(ReactionTriggered.name).map { it - ReactionKeys.FINDINGS },
             )
+            val stored = assertNotNull(setup.all(ReactionTriggered.name).single()[ReactionKeys.FINDINGS], "bl-224: the findings are stored")
             assertTrue(setup.all(DeliveryFailed.name).isEmpty(), "the reaction replaces delivery_failed")
             assertNull(setup.wait, "the reaction ended the CI wait")
             val comment = setup.comments().last()
@@ -466,7 +468,7 @@ class CiFailedReactionTest {
 
             val (context, prompt) = setup.runner.calls.single()
             assertEquals(workspace.toString(), context.workspace.toString(), "the issue's workspace resumes")
-            assertContains(prompt, "Work on t-1. Retry kind: reaction.\n")
+            assertContains(prompt, "Work on t-1. Retry kind: reaction.\n$stored")
             assertContains(prompt, "- build (failure): https://github.com/octocat/Hello-World/actions/runs/$RED_RUN")
             assertContains(prompt, "- build, job test (failure), failed step Run ./gradlew test (failure)")
             assertContains(prompt, "You cannot open the run URLs")

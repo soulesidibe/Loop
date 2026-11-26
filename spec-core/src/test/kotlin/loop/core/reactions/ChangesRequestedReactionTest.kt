@@ -36,6 +36,7 @@ import loop.core.delivery.MergeCheck
 import loop.core.events.DeliveryFailed
 import loop.core.events.HumanNotified
 import loop.core.events.IssueParked
+import loop.core.events.ReactionKeys
 import loop.core.events.ReactionSkipped
 import loop.core.events.ReactionTriggered
 import loop.core.events.RetryScheduled
@@ -425,8 +426,9 @@ class ChangesRequestedReactionTest {
                         "retry" to "1",
                     ),
                 ),
-                setup.all(ReactionTriggered.name),
+                setup.all(ReactionTriggered.name).map { it - ReactionKeys.FINDINGS },
             )
+            val stored = assertNotNull(setup.all(ReactionTriggered.name).single()[ReactionKeys.FINDINGS], "bl-224: the findings are stored")
             assertNull(setup.wait, "the reaction ended the wait")
             val retry = setup.all(RetryScheduled.name).single()
             assertEquals("reaction", retry["error"])
@@ -435,7 +437,7 @@ class ChangesRequestedReactionTest {
             runRetry(setup, orchestrator)
 
             val (context, prompt) = setup.runner.calls.single()
-            assertTrue(prompt.startsWith("Work on t-1. Retry kind: reaction.\n"), prompt)
+            assertEquals("Work on t-1. Retry kind: reaction.\n$stored", prompt, "the stored findings are the ones rendered")
             assertContains(prompt, "Review 82 by octocat, changes requested on $HEAD:\nPlease handle the empty list before this ships.")
             assertContains(prompt, "- src/main/kotlin/Lists.kt, line 12: This throws on an empty list.")
             assertContains(prompt, "- src/main/kotlin/Lists.kt, line 30: Rename the helper to firstOrNull.")

@@ -39,7 +39,9 @@ import kotlin.time.Instant
  * body and comment, redacted and cut. The orchestrator ends the wait and schedules a retry on a `max_attempts` slot,
  * `loop.retry_kind` = `reaction`; `reaction_triggered` follows with [ReactionKeys.REVIEW] and [ReactionKeys.HEAD]. When
  * that slot was the last one and the issue parked instead, the event holds no review id and the reviews are not marked
- * sent, so after `loop resume` they reach the agent. When the round was sent and still stands `escalate_after` after its
+ * sent, so after `loop resume` they reach the agent. Since bl-224 the event of a scheduled retry also holds the findings,
+ * which reach the retry after a restart, and a wait a human approved or sent back while GitHub was read is kept: the
+ * reaction records `reaction_skipped` with `human_decided`, counts nothing and marks nothing sent. When the round was sent and still stands `escalate_after` after its
  * reaction, Loop sends nothing more for it: it records `reaction_skipped` with `escalated` and tells the human through
  * [escalate], with the pull request URL, once per round. `retries` bounds the reactions of an issue as for `ci_failed`; a
  * round past it records `retries_spent` and, when `escalate_after` is set, is told to the human at once, once per round.
@@ -56,10 +58,10 @@ class ChangesRequestedReaction(
     /** Records an event of [Wait]'s issue and attempt. */
     private val record: suspend (Wait, EventDefinition, Map<String, String>) -> Unit,
     /**
-     * Ends the wait and sends its issue back to its agent with the findings, on a `max_attempts` slot. True when the
-     * retry is scheduled, false when that slot was the last one and the issue parked.
+     * Ends the wait, unless a human decided it since the tick read it (bl-224), and sends its issue back to its agent
+     * with the findings, on a `max_attempts` slot. What came of it, see [SendBackOutcome].
      */
-    private val sendBack: suspend (Wait.Approval, Issue, String) -> Boolean,
+    private val sendBack: suspend (Wait.Approval, Issue, String) -> SendBackOutcome,
     /** Tells the human that changes are still requested: the wait, the reason, the pull request URL, when. */
     private val escalate: suspend (Wait.Approval, String, String?, Instant) -> Unit,
     /** The log context of a wait. */
@@ -130,7 +132,6 @@ class ChangesRequestedReaction(
                 redactor.redact(it)
             }
         val retry = used + 1
-        counted[issueId] = retry
         log.log(
             LogLevel.WARN,
             REACTIONS,
@@ -139,16 +140,23 @@ class ChangesRequestedReaction(
             mapOf(ReactionKeys.REACTION to ReactionsConfig.CHANGES_REQUESTED, ReactionKeys.RETRY to retry),
             "changes are requested on pull request #${one.number}, the issue goes back to its agent",
         )
-        val scheduled = sendBack(one.wait, one.issue, findings)
-        val ids =
-            if (scheduled) {
-                val now = clock.now()
-                sent.getOrPut(issueId) { mutableMapOf() }.putAll(unsent.associate { it.id to now })
-                mapOf(ReactionKeys.REVIEW to unsent.joinToString(",") { it.id.toString() })
-            } else {
-                emptyMap()
+        val extra =
+            when (sendBack(one.wait, one.issue, findings)) {
+                SendBackOutcome.Scheduled -> {
+                    val now = clock.now()
+                    sent.getOrPut(issueId) { mutableMapOf() }.putAll(unsent.associate { it.id to now })
+                    // bl-224: the findings, so a restart before the retry still gives the reviews marked sent to the agent.
+                    mapOf(ReactionKeys.REVIEW to unsent.joinToString(",") { it.id.toString() }, ReactionKeys.FINDINGS to findings)
+                }
+                SendBackOutcome.Parked -> emptyMap()
+                SendBackOutcome.Decided -> {
+                    record(one.wait, ReactionSkipped, data + (ReactionKeys.REASON to ReactionSkipped.HUMAN_DECIDED))
+                    return true
+                }
+                SendBackOutcome.Kept -> return true
             }
-        record(one.wait, ReactionTriggered, data + ids + (ReactionKeys.RETRY to retry.toString()))
+        counted[issueId] = retry
+        record(one.wait, ReactionTriggered, data + extra + (ReactionKeys.RETRY to retry.toString()))
         return true
     }
 

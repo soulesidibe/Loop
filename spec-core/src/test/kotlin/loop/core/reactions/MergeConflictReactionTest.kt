@@ -24,7 +24,9 @@ import loop.api.SecretRedactor
 import loop.api.WaitReason
 import loop.api.WaitingIssue
 import loop.core.delivery.MergeCheck
+import loop.core.events.BranchPushed
 import loop.core.events.IssueParked
+import loop.core.events.ReactionKeys
 import loop.core.events.ReactionSkipped
 import loop.core.events.ReactionTriggered
 import loop.core.events.RetryScheduled
@@ -32,6 +34,7 @@ import loop.core.log.KeyValueLog
 import loop.core.orchestrator.FIXED_NOW
 import loop.core.orchestrator.FakeHookRunner
 import loop.core.orchestrator.FakeParkedIssues
+import loop.core.orchestrator.FakeRetryStates
 import loop.core.orchestrator.FakeRunner
 import loop.core.orchestrator.FakeSink
 import loop.core.orchestrator.FakeTracker
@@ -67,7 +70,9 @@ import java.util.concurrent.TimeUnit
 import kotlin.io.path.createTempDirectory
 import kotlin.io.path.writeText
 import kotlin.test.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -164,8 +169,12 @@ class MergeConflictReactionTest {
         val reads = mutableListOf<Long>()
         var tip: Result<String> = Result.success(BASE_TIP)
 
+        /** bl-224: runs during each mergeability read, as a `loop approve` or a `loop send-back` committed meanwhile. */
+        var duringRead: suspend () -> Unit = {}
+
         override suspend fun mergeability(number: Long): Result<Mergeability> {
             reads += number
+            duringRead()
             return if (answers.size > 1) answers.removeFirst() else answers.first()
         }
 
@@ -233,6 +242,7 @@ class MergeConflictReactionTest {
         val waiting = FakeWaitingIssues(fallbackWait(head))
         val sink = FakeSink()
         val parked = FakeParkedIssues()
+        val retryStates = FakeRetryStates()
         val runner =
             FakeRunner().apply {
                 onCall = { ctx ->
@@ -269,8 +279,15 @@ class MergeConflictReactionTest {
                 fingerprinter = fingerprinter,
                 deliveryFor = { remote },
                 workspaceGit = workspaceGit,
+                retryStates = retryStates,
+                // bl-224: the run store's events as a new process reads them back.
+                reactionsBefore = { Result.success(sink.events.filter { it.kind == ReactionTriggered.name || it.kind == ReactionSkipped.name }) },
+                retryEventsBefore = { Result.success(sink.events.filter { it.kind in ReactionMarks.KINDS }) },
             )
         }
+
+        /** The stored failure counter of the issue, zero when nothing is stored. */
+        val failures: Int get() = retryStates.records[PROJECT.value to "id-t-1"]?.failures ?: 0
     }
 
     /** One tick and every job it started, after [after] milliseconds of the test clock. */
@@ -294,7 +311,7 @@ class MergeConflictReactionTest {
 
             assertEquals(
                 listOf(mapOf("reaction" to "merge_conflict", "action" to "send_to_agent", "issue" to "t-1", "pull_request" to "7")),
-                setup.all(ReactionTriggered.name),
+                setup.all(ReactionTriggered.name).map { it - ReactionKeys.FINDINGS },
             )
             assertNull(setup.wait, "the reaction ended the wait")
             val retry = setup.all(RetryScheduled.name).single()
@@ -305,11 +322,12 @@ class MergeConflictReactionTest {
             testScheduler.advanceUntilIdle()
 
             val findings =
-                MergeCheck.conflictFindings(
+                MergeCheck.reactionConflictFindings(
                     "main",
                     BASE_TIP,
                     "GitHub reports pull request #7 as dirty, it conflicts with main",
                 )
+            assertEquals(findings, setup.all(ReactionTriggered.name).single()[ReactionKeys.FINDINGS], "bl-224: the findings are stored")
             val (context, prompt) = setup.runner.calls.single()
             assertEquals("Work on t-1. Retry kind: reaction.\n$findings", prompt)
             assertEquals(workspace.toString(), context.workspace.toString(), "the issue's workspace resumes")
@@ -359,6 +377,129 @@ class MergeConflictReactionTest {
             )
             assertEquals(1, setup.runner.calls.size, "the parked issue is not dispatched again")
             assertEquals(1, setup.all(RetryScheduled.name).size)
+        }
+
+    /** Runs the last retry the reaction scheduled, to its verified result, which waits for approval again. */
+    private suspend fun TestScope.runRetry(
+        setup: Setup,
+        orchestrator: Orchestrator,
+    ) {
+        val delay =
+            setup
+                .all(RetryScheduled.name)
+                .last()
+                .getValue("delay_ms")
+                .toLong()
+        tick(orchestrator, after = delay)
+        testScheduler.advanceUntilIdle()
+    }
+
+    /** The findings of the reaction to pull request #7 conflicting with main at [BASE_TIP]. */
+    private val reactionFindings =
+        MergeCheck.reactionConflictFindings("main", BASE_TIP, "GitHub reports pull request #7 as dirty, it conflicts with main")
+
+    @Test
+    fun `after a restart the reaction attempt's approval exit keeps the counter and the next reaction parks on the last slot`() =
+        runTest {
+            val setup = Setup(workflow(maxAttempts = 2))
+            setup.remote.answers += dirty
+            tick(with(setup) { orchestrator() })
+            assertEquals(1, setup.failures, "the reaction takes a max_attempts slot")
+
+            // A new process: nothing in memory, the store's retry states, waits and events as the first one left them.
+            val second = with(setup) { orchestrator() }
+            runRetry(setup, second)
+            assertEquals(1, setup.runner.calls.size)
+            val verified = assertNotNull(setup.wait)
+            assertEquals(WaitReason.Approval, verified.reason)
+            assertEquals(1, setup.failures, "the approval exit of the reaction attempt kept the counter across the restart")
+
+            setup.waiting.records[PROJECT.value to "id-t-1"] =
+                verified.copy(data = verified.data + (WaitKeys.PULL_REQUEST to "https://github.com/acme/widgets/pull/7"))
+            tick(second, after = Reactions.POLL_FLOOR_MS)
+            testScheduler.advanceUntilIdle()
+
+            val parkedEvent = setup.all(IssueParked.name).single()
+            assertEquals(ParkReason.MaxAttempts.wire, parkedEvent["reason"])
+            assertEquals("2", parkedEvent["failures"])
+            assertEquals(1, setup.all(RetryScheduled.name).count { it["restored"] != "true" }, "the second reaction parked")
+            assertEquals(1, setup.runner.calls.size)
+        }
+
+    @Test
+    fun `a restart between the reaction and its retry dispatch still renders the findings`() =
+        runTest {
+            val setup = Setup()
+            setup.remote.answers += dirty
+            tick(with(setup) { orchestrator() })
+
+            val second = with(setup) { orchestrator() }
+            runRetry(setup, second)
+
+            val (_, prompt) = setup.runner.calls.single()
+            assertEquals("Work on t-1. Retry kind: reaction.\n$reactionFindings", prompt)
+        }
+
+    @Test
+    fun `a reaction on an unapproved wait does not tell the agent its result was approved`() =
+        runTest {
+            val setup = Setup()
+            setup.remote.answers += dirty
+            val orchestrator = with(setup) { orchestrator() }
+            tick(orchestrator)
+            runRetry(setup, orchestrator)
+
+            val (_, prompt) = setup.runner.calls.single()
+            assertContains(prompt, "conflicts with main at $BASE_TIP")
+            assertFalse("approved" in prompt, prompt)
+        }
+
+    @Test
+    fun `a loop approve committed while the reaction reads GitHub keeps the wait, schedules no retry, and is delivered`() =
+        runTest {
+            val setup = Setup()
+            // Dirty at the reaction's read, then unknown: the delivery that falls back here leaves a wait no reaction acts on.
+            setup.remote.answers += listOf(dirty, unknown)
+            setup.remote.duringRead = { setup.waiting.approve(PROJECT, "id-t-1", "alice", FIXED_NOW) }
+            val orchestrator = with(setup) { orchestrator() }
+
+            tick(orchestrator)
+
+            assertTrue(setup.all(ReactionTriggered.name).isEmpty())
+            assertEquals(ReactionSkipped.HUMAN_DECIDED, setup.all(ReactionSkipped.name).single()["reason"])
+            assertTrue(setup.all(RetryScheduled.name).isEmpty(), "no retry")
+            assertEquals(0, setup.failures)
+            setup.remote.duringRead = {}
+            tick(orchestrator, after = Reactions.POLL_FLOOR_MS)
+            testScheduler.advanceUntilIdle()
+            assertTrue(setup.runner.calls.isEmpty(), "the agent is not retried")
+            assertEquals(1, setup.all(BranchPushed.name).size, "the approval is delivered: the branch is pushed for its pull request")
+            assertTrue(setup.all(ReactionTriggered.name).isEmpty())
+        }
+
+    @Test
+    fun `a loop send-back committed while the reaction reads GitHub schedules no retry and dispatches with the human's reason`() =
+        runTest {
+            val setup = Setup()
+            setup.remote.answers += dirty
+            setup.remote.duringRead = {
+                setup.waiting.sendBack(PROJECT, "id-t-1", "alice", "Rename the helper before anything else.", FIXED_NOW)
+            }
+            val orchestrator = with(setup) { orchestrator() }
+
+            tick(orchestrator)
+            testScheduler.advanceUntilIdle()
+
+            assertTrue(setup.all(ReactionTriggered.name).isEmpty())
+            assertEquals(ReactionSkipped.HUMAN_DECIDED, setup.all(ReactionSkipped.name).single()["reason"])
+            assertTrue(setup.all(RetryScheduled.name).none { it["error"] == "reaction" }, "no reaction retry")
+            assertEquals(0, setup.failures, "a send back takes no slot")
+            tick(orchestrator, after = 1_000)
+            testScheduler.advanceUntilIdle()
+            val (_, prompt) = setup.runner.calls.single()
+            assertContains(prompt, "Retry kind: sent_back.")
+            assertContains(prompt, "Rename the helper before anything else.")
+            assertFalse("conflicts with main" in prompt, "the reaction's findings are not sent")
         }
 
     @Test
