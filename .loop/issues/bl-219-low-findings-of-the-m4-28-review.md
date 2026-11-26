@@ -1,7 +1,7 @@
 ---
 id: bl-219
 title: "Low findings of the m4-28 review, per lock guards and the device providers"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-agent]
 blocked_by: []
@@ -70,6 +70,11 @@ Filed from the merge risk reviews of m4-28. Triage decides which findings are wo
   - error_detection: loud, The unexpected freed-during-prepare state goes through the failed callback as a warn line, and provider failures still reach the failure callbacks.
   - band floor medium: the reviewer's diff was cut to fit its prompt limit, 4 of 13 changed files left out in whole or in part
   Once approved, Loop runs the merge check again and merges.
+
+2026-11-26 10:25Z loop: Loop did not merge pull request #85, ci: Actions runs did not pass: build (failure). The pull request stays open and the result waits for a new approval.
+  Failed runs:
+  - build (failure): https://github.com/soulesidibe/Loop/actions/runs/45800353591
+  Rerun the runs on GitHub or fix the branch, then approve again with loop approve.
 
 ## Agent Brief
 

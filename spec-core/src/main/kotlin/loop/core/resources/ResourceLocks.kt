@@ -197,26 +197,32 @@ class ResourceLocks(
 
     /**
      * Frees every lock and queue row of the attempt [attemptId], each freed lock recorded with [reason], and marks the
-     * resources of [dirty] dirty in the same change (m4-26), each recorded as `resource_check_failed`.
+     * resources of [dirty] dirty in the same change (m4-26), each recorded as `resource_check_failed`. With [expected],
+     * the kind and resource id of each lock the caller gave back, nothing changes when the attempt holds another lock,
+     * listed in [ResourceChange.unexpected] (bl-219).
      */
     suspend fun freeAttempt(
         attemptId: AttemptId,
         reason: String,
         dirty: List<DirtyResource> = emptyList(),
-    ): Result<ResourceChange> = change(reason) { rows -> ResourceQueue.freeAttempt(rows, attemptId, clock.now(), dirty).let { it to it } }
+        expected: Set<Pair<String, String>>? = null,
+    ): Result<ResourceChange> =
+        change(reason) { rows -> ResourceQueue.freeAttempt(rows, attemptId, clock.now(), dirty, expected).let { it to it } }
 
     /**
      * Frees every lock and queue row of the attempt [attemptId] whose kind is one of [kinds], each freed lock recorded
      * with [reason], and marks the resources of [dirty] dirty in the same change (m4-26), for a check of the attempt
-     * that needs a resource of that pool.
+     * that needs a resource of that pool. With [expected], nothing changes when the attempt holds a lock of [kinds]
+     * outside it, as in [freeAttempt] (bl-219).
      */
     suspend fun freeKinds(
         attemptId: AttemptId,
         kinds: Set<String>,
         reason: String,
         dirty: List<DirtyResource> = emptyList(),
+        expected: Set<Pair<String, String>>? = null,
     ): Result<ResourceChange> =
-        change(reason) { rows -> ResourceQueue.freeKinds(rows, attemptId, kinds, clock.now(), dirty).let { it to it } }
+        change(reason) { rows -> ResourceQueue.freeKinds(rows, attemptId, kinds, clock.now(), dirty, expected).let { it to it } }
 
     /**
      * Ends the recheck of the dirty resource of [kind] and [resourceId] by its holder [holder] (m4-26): the lock goes,

@@ -1,7 +1,7 @@
 ---
 id: bl-232
 title: "Low findings of the bl-212 review, Codex thread resume"
-state: todo
+state: done
 priority: 3
 labels: [ready-for-agent]
 blocked_by: []
