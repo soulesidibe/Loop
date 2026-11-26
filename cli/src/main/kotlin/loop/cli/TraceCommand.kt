@@ -31,7 +31,8 @@ class TraceCommand(
     override fun help(context: Context): String = "Print the recorded attempts of an issue"
 
     override fun body(scope: RedactorScope) {
-        // m1-26: only the messages go through the project's redactor; the store is read only and keeps Redactor.NONE.
+        // m1-26: the store is read only and keeps Redactor.NONE. bl-05: what the command prints goes through the project's
+        // redactor, the messages and the whole rendered trace, so the tracker's identifier and title are covered too.
         val project = host.openProject(workflowPath, Access.READ, scope)
         val workflow = project.workflow
         val ids = project.ids
@@ -78,7 +79,9 @@ class TraceCommand(
         val heading =
             found?.let { "Issue ${ids.name(it.id, it.identifier)} \"${it.title}\"" }
                 ?: "Issue ${named?.let { ids.name(it.issueId, it.issueIdentifier.orEmpty()) } ?: ids.id(typed.value)}"
-        echo(render(heading, projectId, workflow.path, blocks))
+        // bl-05: redacted once, as a whole, right before the echo. Store events were redacted when recorded, and a
+        // marker holds no secret, so this second pass leaves them as they are.
+        echo(redact(render(heading, projectId, workflow.path, blocks)))
     }
 
     /** The issue from the project's tracker; fails with [EXIT_ISSUE] when it cannot be read or is not there. */

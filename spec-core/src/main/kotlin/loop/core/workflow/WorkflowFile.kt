@@ -78,6 +78,11 @@ data class WorkflowFile(
      * it is absent: nothing is exported. The host checks each section against its plugin in the preflight.
      */
     val exporters: Map<String, Any?> = emptyMap(),
+    /**
+     * bl-28: `workspace.git`, how Loop gives a workspace its git repository. [WorkspaceGitMode.Hooks], the default, leaves
+     * the folder to the hooks; [WorkspaceGitMode.Clone] makes each new workspace a `git clone --shared` of the project.
+     */
+    val workspaceGit: WorkspaceGitMode = WorkspaceGitMode.Hooks,
 ) {
     /** m4-11: every tracker of the workflow, the primary one built from the `tracker*` fields above. */
     val trackers: TrackersConfig
@@ -272,6 +277,7 @@ class WorkflowLoader(
                 ?.string("workspace.root", "root")
                 ?.let { resolve(folder, expandEnv("workspace.root", it, envRefs)) }
                 ?: systemTemp.resolve(DEFAULT_WORKSPACES_DIR).toAbsolutePath().normalize()
+        val workspaceGit = parseWorkspaceGit(config.child("workspace"))
 
         val terminalStates = tracker.terminalStates
         checkResourcesDeclared(kinds, resources)
@@ -305,6 +311,7 @@ class WorkflowLoader(
             terminalStates = terminalStates,
             requiredLabels = tracker.requiredLabels,
             workspaceRoot = workspaceRoot,
+            workspaceGit = workspaceGit,
             runner = runner,
             pollingIntervalMs = polling.intervalMs,
             promptTemplate = body,
@@ -648,6 +655,13 @@ class WorkflowLoader(
         if (sections.isEmpty()) throw WorkflowError.InvalidConfig("$name must list at least one section")
         if (sections.any { it.isBlank() }) throw WorkflowError.InvalidConfig("$name must not hold a blank name")
         return sections.map { it.trim() }
+    }
+
+    /** bl-28: `workspace.git`, [WorkspaceGitMode.Hooks] when absent, else `clone`, the only value written. */
+    private fun parseWorkspaceGit(workspace: YamlMap?): WorkspaceGitMode {
+        val written = workspace.string("workspace.git", "git") ?: return WorkspaceGitMode.Hooks
+        if (written.trim() == WorkspaceGitMode.Clone.wire) return WorkspaceGitMode.Clone
+        throw WorkflowError.InvalidConfig("workspace.git must be clone, got \"$written\"")
     }
 
     /**

@@ -135,6 +135,11 @@ sealed class WorkspaceError(
         cause: Throwable? = null,
     ) : WorkspaceError(message, cause)
 
+    /** bl-28: a clone workspace could not be made, or the folder holds a `.git` that is not a clone of the project. */
+    class Clone(
+        message: String,
+    ) : WorkspaceError(message)
+
     /** A fatal hook (`after_create` while preparing) failed or timed out; [result] has its output. */
     class Hook(
         message: String,

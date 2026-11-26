@@ -1,7 +1,7 @@
 ---
 id: bl-28
 title: "An agent can move the operator's real branches from its workspace"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-agent]
 blocked_by: []
@@ -84,6 +84,18 @@ Part 2 is filed as bl-245: replay of a commit that was never imported, and the s
   - Low: CoreChecks.Git (around line 627) pins core.fsmonitor and commitGraph but not core.hooksPath; align it with the WorkspaceGit pins so "every host git call uses the pins" is literally true.
   - Low: import moves refs/heads/loop/<key> with no old value check, and switching from clone back to hooks leaves keep refs behind. One line each in docs/workspaces.md (or an old value check).
   - Make sure residual_human_steps lists all five protected edits with exact text: the WORKFLOW.md switch, the three hook scripts, the ADR and the PLAN section 19 row.
+
+2026-11-26 17:36Z loop: Loop updated pull request #98 for this issue: https://github.com/soulesidibe/Loop/pull/98
+
+2026-11-26 17:40Z loop: Loop did not merge pull request #98 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.40.
+  - alignment: aligned, The diff addresses each round 3 send-back item (seeded import, clone built aside, importing executor on the PR push, no base from a clone ref, keep ref handling, docs) and keeps protected edits under residual_human_steps.
+  - impact: medium (floor medium: the diff changes 972 lines outside tests and docs, over half the limit of 1000), 972 non-test lines change workspace creation, delivery, verification base resolution and the orchestrator, but the mode is opt-in and the default path is unchanged.
+  - verification: strong, Real git end to end tests cover the agent's ref, config and exclude writes in a clone and in a worktree, the diff_policy base, a failed import retried by the PR push, and merge check pushes, with unit tests for the clone and its reuse.
+  - rollback_cost: two_way, The mode is opt in and a revert restores the worktree behavior, though existing clones leave keep refs and imported loop branches in the project.
+  - error_detection: partial, Clone setup, reuse checks and a missing base fail with named reasons, but a failed import at verification only warns, and the pull request push repeats it.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 16 of 19 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
 
 ## Agent Brief
 

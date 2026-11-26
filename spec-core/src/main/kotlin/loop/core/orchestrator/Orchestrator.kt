@@ -62,6 +62,7 @@ import loop.api.WaitingIssues
 import loop.core.channel.HumanNotices
 import loop.core.channel.NoticeSettings
 import loop.core.delivery.AutoMerge
+import loop.core.delivery.CloneDelivery
 import loop.core.delivery.DeliveryFacts
 import loop.core.delivery.DeliveryOutcome
 import loop.core.delivery.MergeCheck
@@ -194,15 +195,21 @@ import loop.core.workflow.TokenCounters
 import loop.core.workflow.ToolOutputTrim
 import loop.core.workflow.WorkflowDiff
 import loop.core.workflow.WorkflowFile
+import loop.core.workflow.WorkspaceGitMode
 import loop.core.workflow.promptLimitFor
+import loop.core.workspace.CloneBase
+import loop.core.workspace.CloneStart
+import loop.core.workspace.CloneState
 import loop.core.workspace.HookListener
 import loop.core.workspace.HookName
 import loop.core.workspace.HookResult
 import loop.core.workspace.Workspace
+import loop.core.workspace.WorkspaceClones
 import loop.core.workspace.WorkspaceKey
 import loop.core.workspace.WorkspaceManager
 import loop.core.workspace.hookEnv
 import java.io.File
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
@@ -479,6 +486,7 @@ class Orchestrator(
             rejected = { rejected },
             onFindings = { issueId, text -> verifyFindings[issueId] = text },
             removeWorkspace = { removeWorkspace(it) },
+            cloneBase = ::writeCloneBase,
             wake = { attemptEnded.trySend(Unit) },
             onCiTimeout = { pauseQueue(it) },
             notices = notices,
@@ -733,6 +741,48 @@ class Orchestrator(
             ): Result<FrozenCommands> = this@Orchestrator.freezeAcceptanceCommands(issueId, identifier, commands, digest, record)
 
             override suspend fun fetchBase(workflow: WorkflowFile): Result<String> = deliveryStep { executorFor(workflow).fetchBase() }
+
+            override suspend fun projectCommit(
+                workflow: WorkflowFile,
+                ref: String,
+            ): String? =
+                try {
+                    withContext(io) {
+                        workspaceGit
+                            .run(workflow.path.parent, "rev-parse", "--verify", "-q", "$ref^{commit}")
+                            .takeIf { it.code == 0 }
+                            ?.stdout
+                            ?.trim()
+                            ?.takeIf { it.isNotEmpty() }
+                    }
+                } catch (e: IOException) {
+                    null
+                }
+
+            override suspend fun writeCloneBase(
+                workflow: WorkflowFile,
+                workspace: Path,
+                base: String,
+                sha: String,
+            ): String? = this@Orchestrator.writeCloneBase(workflow, workspace, base, sha)
+
+            override suspend fun importVerified(
+                workflow: WorkflowFile,
+                workspace: Path,
+                sha: String,
+            ): String? {
+                val clones = workspacesFor(workflow).clones ?: return null
+                return try {
+                    withContext(io) {
+                        if (clones.state(workspace) == CloneState.Clone) {
+                            clones.import(workspace, sha, WorkspaceClones.branch(WorkspaceKey(workspace.fileName.toString())))
+                        }
+                    }
+                    null
+                } catch (e: IOException) {
+                    "cannot import the verified $sha into the project: ${e.message}"
+                }
+            }
 
             override fun pullRequestDelivery(
                 workflow: WorkflowFile,
@@ -2877,17 +2927,27 @@ class Orchestrator(
             // bl-59: every hook of the attempt, not the agent, gets the base fetched right before them.
             val fetchedBase = attemptBase()
             val hookEnv = env + fetchedBase?.let { mapOf(LOOP_BASE_REF to it) }.orEmpty()
+            val codeKind = workflow.config.kinds?.code
+            val configuredBase = codeKind?.guards?.base ?: codeKind?.delivery?.pullRequest?.base
+            val start = cloneStart(fetchedBase, configuredBase)
             // bl-04: the phase is recorded once the folder exists, before after_create and before_run, as plan 10.1 shows it.
             var phaseRecorded = false
             val workspace =
                 workspaces
-                    .prepare(key, hookEnv, hooks) { created ->
+                    .prepare(key, hookEnv, hooks, start) { created ->
                         recordPhase(AttemptPhase.PreparingWorkspace, mapOf(Phase.WORKSPACE to created.path.toString()))
                         phaseRecorded = true
                     }.getOrElse { error ->
                         if (!phaseRecorded) recordPhase(AttemptPhase.PreparingWorkspace, mapOf(Phase.WORKSPACE_KEY to key.value))
                         return Executed(AttemptOutcome.Failed, error.describe())
                     }
+            if (workspaces.clones != null && workspace.createdNow && start.base == null) {
+                // bl-28: said, not silent, since the operator's checked out branch is then the start of the work.
+                val reason =
+                    "no base resolves in the project, so the new clone started at its ${WorkspaceClones.branch(key)} branch " +
+                        "when it has one, else at its HEAD; set kinds.code.guards.base or the pull request base"
+                log.log(LogLevel.WARN, "clone_start", LogOutcome.COMPLETED, logContext(), reason = reason)
+            }
             this.workspace = workspace
             this.env = hookEnv
             val beforeRun = workspaces.beforeRun(workspace, hookEnv, hooks)
@@ -2962,8 +3022,18 @@ class Orchestrator(
                 log.log(LogLevel.WARN, "prompt_record", LogOutcome.FAILED, logContext(), reason = reason)
             }
 
-            val codeKind = workflow.config.kinds?.code
-            val configuredBase = codeKind?.guards?.base ?: codeKind?.delivery?.pullRequest?.base
+            val guardBase =
+                resolveAttemptBaseRef(workspace.path, fetchedBase, configuredBase)
+                    ?: cloneGuardBase(key)
+                    ?: if (workflow.workspaceGit == WorkspaceGitMode.Clone) {
+                        return Executed(
+                            AttemptOutcome.Failed,
+                            "no base commit resolves in the project for the clone workspace ${key.value}, and its keep ref " +
+                                "${WorkspaceClones.keepRef(key)} is gone; a clone never takes its base from its own refs",
+                        )
+                    } else {
+                        null
+                    }
             val ctx =
                 AttemptContext(
                     runId = runId,
@@ -2972,7 +3042,7 @@ class Orchestrator(
                     attemptId = attemptId,
                     workspace = workspace.path,
                     env = env,
-                    baseRef = resolveAttemptBaseRef(workspace.path, fetchedBase, configuredBase),
+                    baseRef = guardBase,
                 )
             thresholds = TokenThresholds(thresholdEvery, recordedThreshold())
             // An issue or a day already past its budget parks before a turn spends more (m2-20).
@@ -4136,6 +4206,26 @@ class Orchestrator(
             return facts.head to facts.tree
         }
 
+        /**
+         * bl-28: what a clone workspace starts from, when the workflow clones: the fetched base, else the base
+         * [resolveAttemptBaseRef] resolves in the project, and `refs/loop/base/<base>` at the fetched base for the agent.
+         */
+        private suspend fun cloneStart(
+            fetchedBase: String?,
+            configuredBase: String?,
+        ): CloneStart {
+            if (workspaces.clones == null) return CloneStart()
+            val base = resolveAttemptBaseRef(null, fetchedBase, configuredBase)
+            val name =
+                kind
+                    ?.config
+                    ?.delivery
+                    ?.pullRequest
+                    ?.base
+            val baseRef = if (name != null && fetchedBase != null) CloneBase(name, fetchedBase) else null
+            return CloneStart(base, baseRef)
+        }
+
         /** The commit `refs/loop/base/[base]` of the project repository is at, null when it has none or git fails (bl-59). */
         private suspend fun lastFetchedBase(base: String): String? = resolveGitCommit(workflow.path.parent, MergeCheck.baseRef(base))
 
@@ -4144,7 +4234,7 @@ class Orchestrator(
          * starts, so the agent cannot move a branch ref inside the workspace to defeat pre-turn checks.
          */
         private suspend fun resolveAttemptBaseRef(
-            workspace: Path,
+            workspace: Path?,
             fetchedBase: String?,
             configuredBase: String?,
         ): String? {
@@ -4155,11 +4245,26 @@ class Orchestrator(
                 } else {
                     listOf("main", "master", "origin/HEAD")
                 }
+            val cloned = workflow.workspaceGit == WorkspaceGitMode.Clone
             for (candidate in candidates) {
                 resolveGitCommit(workflow.path.parent, candidate)?.let { return it }
-                resolveGitCommit(workspace, candidate)?.let { return it }
+                // bl-28: a clone's refs are the agent's, so in clone mode the base is resolved in the project only.
+                if (workspace != null && !cloned) {
+                    resolveGitCommit(workspace, candidate)?.let { return it }
+                }
             }
-            return configuredBase
+            // bl-28: a name would be resolved in the clone, whose refs the agent owns, so clone mode gives none.
+            return if (cloned) null else configuredBase
+        }
+
+        /**
+         * bl-28: the base of the runner's guards in clone mode when [resolveAttemptBaseRef] gives none: the start
+         * commit of the clone, read from its keep ref in the project, never a ref of the clone. Null outside clone
+         * mode, and when even the keep ref is gone.
+         */
+        private suspend fun cloneGuardBase(key: WorkspaceKey): String? {
+            if (workflow.workspaceGit != WorkspaceGitMode.Clone) return null
+            return resolveGitCommit(workflow.path.parent, WorkspaceClones.keepRef(key))
         }
 
         private suspend fun resolveGitCommit(
@@ -4831,8 +4936,36 @@ class Orchestrator(
         return RecheckOutcome.Failed(verification.unverified, verification.findings?.text)
     }
 
+    /**
+     * bl-28: writes `refs/loop/base/[base]` at [sha], a base Loop fetched, in [workspace] when [workflow] clones and it
+     * is a clone of the project, with the base keep ref in the project; why it failed, null otherwise.
+     */
+    private suspend fun writeCloneBase(
+        workflow: WorkflowFile,
+        workspace: Path,
+        base: String,
+        sha: String,
+    ): String? {
+        val clones = workspacesFor(workflow).clones ?: return null
+        return try {
+            withContext(io) {
+                if (clones.state(workspace) == CloneState.Clone) {
+                    clones.writeBase(workspace, WorkspaceKey(workspace.fileName.toString()), base, sha)
+                }
+            }
+            null
+        } catch (e: IOException) {
+            "cannot write the base $base at $sha in the clone $workspace: ${e.message}"
+        }
+    }
+
     /** The executor of [workflow]'s pull request delivery, [NoDelivery] when this host has none. */
-    private fun executorFor(workflow: WorkflowFile): DeliveryExecutor = deliveryFor(workflow) ?: NoDelivery
+    private fun executorFor(workflow: WorkflowFile): DeliveryExecutor {
+        val executor = deliveryFor(workflow) ?: NoDelivery
+        // bl-28: a clone's commit is imported into the project before every push of it.
+        val clones = workspacesFor(workflow).clones ?: return executor
+        return CloneDelivery(executor, clones) { key -> workspacesFor(workflow).locate(key) }
+    }
 
     /** The result of a delivery call on [io], an exception it throws turned into its failure. */
     private suspend fun <T> deliveryStep(block: suspend () -> Result<T>): Result<T> =
@@ -4878,15 +5011,13 @@ class Orchestrator(
 
     /**
      * The pull request delivery of [workflow] (m2-25), recording through [record]. A host with no executor for it
-     * gives a delivery whose every push fails for good, so the result waits for a human and nothing is lost.
+     * gives a delivery whose every push fails for good, so the result waits for a human and nothing is lost. bl-28:
+     * through [executorFor], so with clone workspaces every push, the delivery retry's too, imports its commit first.
      */
     private fun pullRequestDelivery(
         workflow: WorkflowFile,
         record: suspend (EventDefinition, Map<String, String>) -> Unit,
-    ): PullRequestDelivery {
-        val executor = deliveryFor(workflow) ?: NoDelivery
-        return PullRequestDelivery(executor, tracker, redactor, clock, io, record)
-    }
+    ): PullRequestDelivery = PullRequestDelivery(executorFor(workflow), tracker, redactor, clock, io, record)
 
     /** Records a [definition] event for the issue and attempt of [wait], outside any attempt; a sink failure is logged. */
     private suspend fun recordWaitEvent(
