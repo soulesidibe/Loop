@@ -1,7 +1,7 @@
 ---
 id: m4-41
 title: "loop replay runs verification again on the recorded fingerprint"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: [m4-54, m4-40]
@@ -67,3 +67,26 @@ Out of this issue: the extraction of the verification (m4-54), replaying holdout
   - Low, the header can say "The workspace changed since the verdict" when the workspace matched but the copy failed and the placement fell to the rebuild. Carry the placement's `state` on `ReplaySite.Worktree` and print it.
   - Low, a rebuilt worktree holds the commit only. Print one header line: "A rebuilt worktree holds the commit only: no ignored file and no workspace hook setup."
   - Optional: give a replay its own `LOOP_RUN_ID` (for example `replay`) so a check can tell it is a replay.
+
+2026-11-26 05:25Z agent f19affc9: Fixed the findings of the merge risk reviews of pull request #83 on the same branch, after merging main at fa0b30b42c49.
+  - Medium, signals: the placement and the checks now run under a cancelable job with a shutdown hook, registered before the placement. A signal stops the check's process group, removes the site and its worktree registration, and records no replay_verdict. A launcher test sends SIGTERM during a sleep check and checks all of this. It fails without the hook.
+  - A resource check does not run: "a replay holds no <kind> resource, the check did not run", so the verdict is unverified.
+  - A workspace with absolute links into itself is not copied. The links are named, and a clean git fingerprint falls back to the rebuild.
+  - When no base was recorded, the output says diff_policy read guards.base as it is now.
+  - When cleanup fails, stderr names what was left and gives git worktree prune as the remedy. The temp folder is now created after the workspace path is resolved.
+  - The findings of a failed check print under it, never for a hidden check.
+  - The header says why a rebuilt worktree was used, and adds that a rebuilt worktree holds the commit only.
+  - LOOP_RUN_ID is replay.
+  Focused tests: 37 core and 16 replay CLI tests pass, and ktlintCheck passes.
+
+2026-11-26 05:34Z loop: Loop updated pull request #83 for this issue: https://github.com/soulesidibe/Loop/pull/83
+
+2026-11-26 05:37Z loop: Loop did not merge pull request #83 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.47.
+  - alignment: aligned, The diff adds --verify in a new loop.core.replay package with the three placements, exit 4 naming both fingerprints and a replay_verdict event, and it leaves Orchestrator.kt alone.
+  - impact: medium (floor medium: the diff changes 869 lines outside tests and docs, over half the limit of 1000), It adds a CLI mode that runs check commands and creates and removes git worktrees and temp copies, and it adds a new event kind to the registry, over 800 non-test lines.
+  - verification: strong, CLI tests cover the copy, worktree, changed, tree-gone, signal, resource and no-verdict cases and compare the store, issue and workspace before and after, and core unit tests cover sites, verdict and replay.
+  - rollback_cost: costly, A revert is clean in code, but replay_verdict events already written to the machine store stay behind, and older code may not know that event kind.
+  - error_detection: loud, Placement refusals, store errors and signals exit with a named reason, and cleanup failures now go to stderr with git worktree prune as the remedy, though the shutdown hook waits at most 10 seconds.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 5 of 12 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
