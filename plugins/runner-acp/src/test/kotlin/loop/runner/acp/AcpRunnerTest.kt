@@ -169,7 +169,7 @@ class AcpRunnerTest {
     }
 
     @Test
-    fun `agy preset enforces pinned major version 1 and the minimum version on initialize, holding the run when too old`() {
+    fun `agy preset enforces pinned major version 1 and the minimum version on initialize`() {
         val minorBump =
             FakeAcpServer.write(dir, name = "agy") {
                 initialize(agentVersion = "1.9.0")
