@@ -108,6 +108,32 @@ class Waits(
     }
 
     /**
+     * Ends the approval wait of [wait]'s issue only when the store still holds it neither approved nor sent back (bl-224),
+     * through the store's own [WaitingIssues.endUndecidedApproval], one transaction in a store that has one. True when it
+     * ended, or when the store holds no wait of the issue: the issue then goes, as after [end]. False when a `loop approve`
+     * or a `loop send-back` decided it since it was read: the decided wait is kept, in [current] too, and holds its issue
+     * as [hold] says. A failure changes nothing.
+     */
+    suspend fun endUndecided(wait: Wait.Approval): Result<Boolean> =
+        guarded { store.endUndecidedApproval(projectId, wait.issueId) }.map { record ->
+            val found = record?.let(Wait::of)
+            if (found is Wait.Approval && (found.approved || found.sentBack)) {
+                stored[wait.issueId] = found
+                hold(found)
+                return@map false
+            }
+            if (found == null || found is Wait.Approval) {
+                stored -= wait.issueId
+                held -= wait.issueId
+                return@map true
+            }
+            // Another reason now, such as a merge wait: it is not this wait any more, so it is kept.
+            stored[wait.issueId] = found
+            hold(found)
+            false
+        }
+
+    /**
      * Marks the approval wait of [issueId] approved by [by] at [at] (m2-24), through the store's own [WaitingIssues.approve],
      * one transaction in a store that has one, never a read then a write of its own. The wait as it is after the call,
      * whatever its reason, null when [issueId] does not wait.
