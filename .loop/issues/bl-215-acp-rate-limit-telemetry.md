@@ -59,6 +59,23 @@ Reopened with a narrower scope. A usage percent before the quota runs out stays 
   Cause: the test runs two attempts at once on one fake claude and one record folder. Both fakes copied the MCP config to record/mcp.json with Files.copy REPLACE_EXISTING, which deletes and then creates the target. When the copies overlap, one fails, that fake exits 1 before printing any line ("port_exit: exit code 1, no result line"), and the files issue stays in todo. A two thread repro of that copy failed 5644 times in 40000 copies.
   Fix (commit on loop/bl-215): TranscriptReplay now writes each record file to a temporary file of its own and moves it over the target atomically. The same repro with that pattern had 0 failures. The test and its assertions are unchanged. All six cli test classes that use the fake claude pass, and ktlintCheck passes.
 
+2026-11-26 14:03Z agent 12027e80: Turn 3: Loop's build failed on cli ToolMcpCommandTest "in Loop mode a move over MCP...", which is not part of the acp change. loop run --once did not exit in 180s.
+    Cause, from the hang dump: one issue's loop tool mcp process stayed in LoopMcpServer.serve after its input had ended. No reader thread was left and its agent script was at wait. serve only added its close listener to the session after server.createSession returned, but createSession already starts the transport. A close that came before that line was never heard, so closed.await() waited forever. ServerSession keeps its listener in a plain var, so a listener added late may also not be visible to the closing thread.
+    Fix (commit de59f07): serve now listens on the transport before createSession. A new LoopMcpServerTest starts 200 servers on an empty input. Before the fix, server 9 was still running after 10s. After the fix, all 200 return.
+    Also merged main at 0231828 (bl-230) cleanly.
+    Evidence: runner-acp tests pass after the merge. LoopMcpServerTest passes. ToolMcpCommandTest has 12 passed, and the eight other cli classes that use loop tool mcp have 40 passed. ktlintCheck passes.
+
+2026-11-26 14:18Z loop: Loop opened pull request #93 for this issue: https://github.com/soulesidibe/Loop/pull/93
+
+2026-11-26 14:21Z loop: Loop did not merge pull request #93 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.80.
+  - alignment: partial, The quota reset work matches the brief, but the LoopMcpServer close-listener fix and the TranscriptReplay atomic-write change are unrelated flake fixes bundled into the PR.
+  - impact: medium, It changes how the acp runner classifies and holds on rate-limit errors, and the new RESOURCE_EXHAUSTED / QUOTA_EXHAUSTED matching can reclassify errors as runner_unavailable. It also touches the shared MCP server shutdown path.
+  - verification: partial, Parsing, the nested-body case, the past-timestamp case and the hold period are well tested. The real form that agy acp sends is unconfirmed, and the MCP race fix rests on a probabilistic 200-iteration test.
+  - rollback_cost: two_way, The change is code and docs only, with no schema or persisted state, so a revert undoes it. The event shape is unchanged and the rate_limit event reuses an existing type.
+  - error_detection: partial, A parse failure or a past timestamp falls back silently to the old 1 to 15 minute probing, so a wrong guess about the error form would show only as a long hold. The rate_limit event and the reset time in the turn_failed reason do make a successful parse visible.
+  Once approved, Loop runs the merge check again and merges.
+
 ## Agent Brief
 
 **Category:** enhancement
