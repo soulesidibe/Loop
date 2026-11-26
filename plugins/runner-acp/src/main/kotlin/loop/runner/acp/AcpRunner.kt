@@ -87,6 +87,17 @@ class AcpRunner internal constructor(
         launchProcess = ProcessGroupLauncher(maxLineBytes = AcpFraming.MAX_LINE_BYTES)::launch,
     )
 
+    init {
+        // bl-230: the kept folders of issues that reached a terminal state, or of a dead Loop process, go at startup
+        // too, not only at the next agy launch, so their transcripts do not linger.
+        if (settings.isAgyPreset) {
+            val roots = isolationRoots(emptyMap())
+            AgyIsolationDir.sweepStale(roots.home, roots.loopHome).forEach { error ->
+                onWarn("level=warn event=acp_cleanup reason=\"${error.replace('"', '\'').replace('\n', ' ')}\"")
+            }
+        }
+    }
+
     override val capabilities: RunnerCapabilities = CAPABILITIES
 
     override val model: String? get() = settings.model
@@ -212,6 +223,9 @@ class AcpRunner internal constructor(
 
         @Volatile private var running: Turn? = null
 
+        /** Why a guard ended this session (bl-230): a later turn then fails at once, never respawning `agy`. */
+        @Volatile private var endedBy: String? = null
+
         override fun runTurn(
             input: String,
             turn: Int,
@@ -320,8 +334,6 @@ class AcpRunner internal constructor(
             if (!settings.isAgyPreset) return base
             val roots = isolationRoots(env)
             AgyIsolationDir.sweepStale(roots.home, roots.loopHome).forEach { warnings += it }
-            // A new session of the issue supersedes the folders its earlier sessions kept; its own folder is live.
-            AgyIsolationDir.removeKept(roots.home, roots.loopHome, ctx.projectId.value, ctx.issue.id).forEach { warnings += it }
             val isolated =
                 isolationDir
                     ?: AgyIsolationDir
@@ -355,12 +367,17 @@ class AcpRunner internal constructor(
 
         /**
          * At the stop, keeps the folder of a session that reported its runtime session id, so a respawn or a later
-         * attempt can load it (bl-213), and deletes any other.
+         * attempt can load it (bl-213), and deletes any other, and the folder of a session a guard ended (bl-230). A
+         * kept folder makes this session the last of its issue, so the folders its earlier sessions kept go.
          */
         private fun releaseIsolationDir() {
             val dir = isolationDir ?: return
-            if (dir.keep()) {
+            if (endedBy == null && dir.keep()) {
                 isolationDir = null
+                val roots = isolationRoots(agentEnv(ctx))
+                AgyIsolationDir
+                    .removeKept(roots.home, roots.loopHome, ctx.projectId.value, ctx.issue.id, except = dir.path)
+                    .forEach { warn(ctx, it) }
             } else {
                 deleteIsolationDir()
             }
@@ -428,10 +445,16 @@ class AcpRunner internal constructor(
                 running = this
                 latest = TurnIds(sessionId, turnId)
                 try {
+                    endedBy?.let { reason ->
+                        return fail(
+                            null,
+                            "port_exit: a guard ended this session at an earlier turn ($reason), turn $turn cannot start on thread $threadId",
+                        )
+                    }
                     if (turn == 1) {
                         if (!ctx.workspace.isDirectory()) return fail(null, "invalid_workspace_cwd: ${ctx.workspace}")
                         if (settings.isAgyPreset) {
-                            ProtectedRootsCheck.refusal(ctx.workspace, ctx.baseRef)?.let { return fail(null, it) }
+                            ProtectedRootsCheck.refusal(ctx.workspace, ctx.baseRef)?.let { return guardFail(null, it) }
                         }
                         val mcpEnv = ctx.env + mapOf(ENV_SESSION_ID to sessionId.value, ENV_TURN_ID to turnId.value)
                         val mcpServers = AcpMcpConfig.mcpServers(mcpEnv)
@@ -463,7 +486,7 @@ class AcpRunner internal constructor(
                             )
                         }
                         if (settings.isAgyPreset) {
-                            ProtectedRootsCheck.refusal(ctx.workspace, ctx.baseRef)?.let { return killAndFail(process, it) }
+                            ProtectedRootsCheck.refusal(ctx.workspace, ctx.baseRef)?.let { return guardFail(process, it) }
                         }
                         process.stdin.send(handshake.continuePrompt(input))
                         allowInterrupt(process, checkNotNull(handshake.acpSessionId))
@@ -514,7 +537,7 @@ class AcpRunner internal constructor(
                 input: String,
             ) {
                 previous?.let { kill(it) }
-                ProtectedRootsCheck.refusal(ctx.workspace, ctx.baseRef)?.let { return fail(null, it) }
+                ProtectedRootsCheck.refusal(ctx.workspace, ctx.baseRef)?.let { return guardFail(null, it) }
                 checkNotNull(isolationDir).checkBeforeLoad()?.let { refusal ->
                     return fail(null, "port_exit: the agy process of session $established is gone and turn $turn cannot load it: $refusal")
                 }
@@ -592,8 +615,10 @@ class AcpRunner internal constructor(
                                             process.stdin.send(answer.line)
                                             out(loopNote(answer.note))
                                         }
-                                        is AcpPermissionPolicy.Answer.InputRequired ->
+                                        is AcpPermissionPolicy.Answer.InputRequired -> {
+                                            endedBy = "human input request ${answer.reason}"
                                             return killAndEnd(process, RunnerEvent.TurnInputRequired(sessionId, turnId, answer.reason))
+                                        }
                                     }
                                 }
                             }
@@ -621,7 +646,7 @@ class AcpRunner internal constructor(
                                         }
                                         if (settings.isAgyPreset) {
                                             ProtectedRootsCheck.refusal(ctx.workspace, ctx.baseRef)?.let {
-                                                return killAndFail(process, it)
+                                                return guardFail(process, it)
                                             }
                                         }
                                         process.stdin.send(step.promptLine)
@@ -785,6 +810,19 @@ class AcpRunner internal constructor(
                 process: LiveProcess,
                 reason: String,
             ) = killAndEnd(process, RunnerEvent.TurnFailed(sessionId, turnId, null, reason))
+
+            /**
+             * The protected roots check refused the turn for [reason]: fails it, killing [process] when there is one,
+             * and ends the session (bl-230), so no later turn of it respawns `agy` and loads the session, and its
+             * folder is deleted at the stop rather than kept.
+             */
+            private suspend fun guardFail(
+                process: LiveProcess?,
+                reason: String,
+            ) {
+                endedBy = reason
+                if (process != null) killAndFail(process, reason) else fail(null, reason)
+            }
 
             private suspend fun killAndEnd(
                 process: LiveProcess,
