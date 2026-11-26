@@ -1,7 +1,7 @@
 ---
 id: bl-215
 title: "The acp runner holds until the Gemini quota resets when agy reports it exhausted"
-state: todo
+state: done
 priority: 4
 labels: [ready-for-agent]
 blocked_by: []

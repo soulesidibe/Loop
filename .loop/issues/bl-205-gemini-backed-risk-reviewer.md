@@ -1,7 +1,7 @@
 ---
 id: bl-205
 title: "Gemini-backed merge risk reviewer"
-state: todo
+state: done
 priority: 3
 labels: [ready-for-agent]
 blocked_by: []
@@ -60,6 +60,20 @@ Filed from `.loop/specs/gemini-support.md` item 8.
   - Low: test gaps in AcpPermissionPolicyTest for readOnly: a non Loop MCP tool, an internal protected dir, kind fetch, and kind think with a mutating looking name.
   - Low: the `else` branch for no terminal event is unreachable, since withTimeoutOrNull returns null when the flow ends without one and that is reported as Timeout. Report it separately or drop the branch (wording only).
   - Low, docs: say in docs/plugins/runner-acp.md that a review fails closed with protected_workspace_root when the PR touches agent customization roots (.agents, .agent, _agents, _agent) or when the base cannot be resolved from main, master or origin/HEAD; that reads outside the workspace (not the holdout) are allowed as for workers; and that, unlike the Claude Code reviewer, no workspace context file (AGENTS.md, GEMINI.md) is turned off, relying on the gate's protected_paths condition.
+
+2026-11-26 14:35Z agent c679eaed: Filed the follow up default:bl-243 in the tracker default: ClaudeCodeTrackerToolsTest m4-14 test fails intermittently under the full build
+
+2026-11-26 14:40Z loop: Loop updated pull request #91 for this issue: https://github.com/soulesidibe/Loop/pull/91
+
+2026-11-26 14:45Z loop: Loop did not merge pull request #91 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.27.
+  - alignment: aligned, The diff adds the Gemini runtime selection, read-only ACP mode, reviewer, startup warning and docs the brief asks for, and it covers the review feedback items.
+  - impact: medium, It adds a new reviewer path and touches the shared AcpRunner and permission policy, but behavior changes only for gemini- reviewer models and readOnly defaults to false.
+  - verification: strong, Fake ACP server tests cover the answer, timeout, failed turn, declined command and edit, and holdout read, plus policy tests for the read-only edge cases and CLI routing, command and warning tests.
+  - rollback_cost: two_way, It is pure code and docs with no schema, data or persisted state, and a review never keeps its isolated folder, so a revert undoes it.
+  - error_detection: loud, Timeouts, crashes and a missing agy surface as typed RiskReviewError values and a startup warning, and the gate visibly falls back to loop approve, though the read-only policy rests on fail-closed tool-kind matching.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 1 of 13 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
 
 ## Agent Brief
 
