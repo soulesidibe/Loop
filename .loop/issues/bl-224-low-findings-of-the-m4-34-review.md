@@ -2,8 +2,8 @@
 id: bl-224
 title: "Low findings of the m4-34 review, the merge_conflict reaction"
 state: todo
-priority: 3
-labels: [needs-triage]
+priority: 2
+labels: [ready-for-agent]
 blocked_by: []
 ---
 
@@ -35,3 +35,46 @@ Area: `Reactions.kt`, `RetryCoordinator.kt`, `MergeCheck.kt`, `Orchestrator.kt` 
 Filed from the merge risk review of m4-34. Triage decides which findings are worth fixing.
 
 2026-11-25 soule: m4-36 (changes_requested) repeats findings 3 and 6, from the merge risk reviews of pull request #78. Finding 3: its read is three or four GitHub calls per poll, so the window between the tick's snapshot and `endWaiting` is wider. Finding 6 loses data there: the review is stored as sent in `reaction_triggered` while its findings live in `verifyFindings` in memory, so a restart between the reaction and the retry dispatch means the review never reaches the agent and is never sent again. Fix both for all three reactions in one change.
+
+2026-11-26 soule: triaged ready-for-agent, priority raised to 2. Checked against main at 2cec711: findings 1, 3 and 6 now affect merge_conflict, ci_failed and changes_requested (finding 3: merge_conflict and changes_requested only, since ci_failed ends a merge wait). Finding 2 is partly fixed: `park()` clears the mark. bl-226 findings 1 and 5 are the same as findings 1 and 6 here; bl-228 finding 3 is not.
+
+## Agent Brief
+
+**Category:** bug
+**Summary:** a reaction's retry bound and its findings survive a restart, every counter reset clears the mark, and a reaction never deletes a concurrent `loop approve` or `loop send-back`.
+
+**Current behavior:**
+- The mark that keeps an issue's failure counter through a reaction attempt's approval exit (`RetryCoordinator.reacted`) is in memory only. After a restart between a reaction and that exit, the counter resets to zero, so a base that keeps moving plus a restart every cycle exceeds `max_attempts`. merge_conflict has only this bound; ci_failed and changes_requested have it too when `retries` is unset.
+- The terminal, not active, handoff, parked (`fireDue`) and absent from candidates paths reset the counter without clearing the mark.
+- A reaction ends the wait from the tick's snapshot after awaiting GitHub reads, deleting the waiting row by issue id unconditionally, so a `loop approve` or `loop send-back` committed meanwhile is lost and the agent is retried on a slot (merge_conflict and changes_requested).
+- A reaction's findings live in the orchestrator's memory (`verifyFindings`), so a restart between the reaction and the retry dispatch renders the retry with retry kind `reaction` and no findings. For changes_requested the reviews are already stored as sent, so they never reach the agent.
+- The merge_conflict findings say "Your last result was verified and approved", wrong for a reaction on an unapproved wait.
+
+**Desired behavior:**
+1. The reaction mark is derived from what is already stored, with no schema change: an issue counts as reacted when a `reaction_triggered` event of it was recorded after its last counter reset. A restart keeps the failure counter through the reaction attempt's approval exit, so further reactions count toward `max_attempts`.
+2. Every path that resets the counter also clears the mark (one helper around the counter reset), so a later approval exit after such a reset resets the counter.
+3. A reaction ends a wait only when the wait is still neither approved nor sent back, checked in the same store change as the end (a conditional end), so a concurrent `loop approve` is delivered and a concurrent `loop send-back` dispatches with the human's reason; the reaction then schedules no retry and records that it skipped.
+4. A reaction's findings survive a restart until its retry dispatches, for all three reactions, and changes_requested reviews marked sent do reach the agent after a restart.
+5. The merge_conflict findings no longer say the result was approved when the wait was not.
+
+**Key interfaces:**
+- `RetryCoordinator`: `reacted`, `onReaction`, the approval exit's counter reset, and every other reset path.
+- `Reactions.poll` and the send back callbacks the orchestrator passes to the reactions; `Waits.end` and the store's `endWaiting`.
+- The orchestrator's `verifyFindings` and the reactions' findings; the `reaction_triggered` event.
+- `MergeCheck.conflictFindings`.
+
+## Acceptance criteria
+
+- [ ] A test: a reaction sends an issue back, the process restarts, the reaction attempt reaches the approval wait; the failure counter is kept, and a further reaction counts toward `max_attempts` and parks on the last slot.
+- [ ] Tests: after a park, terminal, not active, handoff, parked and absent reset, a later approval exit resets the counter.
+- [ ] A test for merge_conflict and one for changes_requested: `loop approve` committed while the reaction awaits GitHub, the reaction does not end the wait and schedules no retry, and the approval is delivered; the same with `loop send-back`, which then dispatches with the human's reason.
+- [ ] Tests for merge_conflict, ci_failed and changes_requested: a restart between the reaction and its retry dispatch still renders the reaction's findings in `loop.verify_findings`.
+- [ ] A test: a merge_conflict reaction on an unapproved wait does not tell the agent its result was approved.
+- [ ] `docs/spec-decisions.md` updated (the bound is no longer per process; the conditional end; the findings across a restart).
+- [ ] `./gradlew build` passes.
+
+## Out of scope
+
+- bl-224 findings 4 (a per tick cap on the reads) and 7 (note only).
+- bl-226 findings 2 to 4 and 6 to 8, bl-228 findings 1 to 6, bl-229, and bl-222 finding 2 (Loop's own rewrites of an approval wait).
+- A store schema change; derive the mark from stored events instead.
