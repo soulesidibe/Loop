@@ -164,6 +164,58 @@ class WorkspaceGitTest {
     }
 
     @Test
+    fun `bl-246 every process runs with lazy fetch off, set last so a caller's extra variable cannot turn it on`() {
+        forked()
+        val seen = mutableListOf<Map<String, String>>()
+        val recording =
+            WorkspaceGit(hostEnv + ("GIT_NO_LAZY_FETCH" to "0"), startProcess = { builder ->
+                seen += builder.environment().toMap()
+                builder.start()
+            })
+
+        recording.run(repo, "status", extra = mapOf("GIT_NO_LAZY_FETCH" to "0"))
+        recording.stream(repo, listOf("log", "-1"), extra = mapOf("GIT_NO_LAZY_FETCH" to "0")) { it.readBytes() }
+        recording.head(repo)
+        WorkspaceFingerprinter(recording).of(repo).getOrThrow()
+
+        assertTrue(seen.size >= 4, "git ran ${seen.size} times")
+        seen.forEach { env -> assertEquals("1", env["GIT_NO_LAZY_FETCH"], env.toString()) }
+    }
+
+    @Test
+    fun `bl-246 a promisor the agent configures never runs from the fingerprint, the merge check or any other read`() {
+        val (work, base) = forked()
+        val trap = LazyFetchTrap(repo, folder.resolve("lazy-fetch-ran"), "refs/heads/loop/t-1").arm()
+        trap.proveLive()
+        // Each call Loop makes in a workspace, live unguarded: without the variable it runs the agent's program.
+        val calls: List<Pair<String, (WorkspaceGit) -> Unit>> =
+            listOf(
+                "fingerprint" to { git -> WorkspaceFingerprinter(git).of(repo).getOrThrow() },
+                "merge" to { git -> git.merge(repo, base, "bl-246: merge the base") },
+                "ancestor" to { git -> git.isAncestor(repo, base, "HEAD") },
+                "status" to { git -> git.run(repo, "status", "--porcelain") },
+            )
+        val dead =
+            calls.filter { (_, call) ->
+                runCatching { call(LazyFetchTrap.unguarded(hostEnv)) }
+                !Files.deleteIfExists(trap.marker)
+            }
+        assertEquals(emptyList(), dead.map { it.first }, "these calls do not fetch unguarded, so the test proves nothing for them")
+
+        for ((name, call) in calls) {
+            runCatching { call(workspaceGit) }
+            assertFalse(trap.marker.exists(), "$name ran the agent's program")
+        }
+        // HEAD unpeeled, merge-tree and diff of commit ids do not fetch even unguarded (the bl-246 replay), the
+        // environment test covers them.
+        runCatching { workspaceGit.head(repo) }
+        runCatching { workspaceGit.mergeTree(repo, base, LazyFetchTrap.MISSING) }
+        runCatching { workspaceGit.mergeTree(repo, base, work) }
+        runCatching { workspaceGit.diffStat(repo, base, LazyFetchTrap.MISSING) }
+        assertFalse(trap.marker.exists(), "rev-parse HEAD, merge-tree or diff ran the agent's program")
+    }
+
+    @Test
     fun `a git that does not finish in time is stopped`() {
         forked()
         val (wrapper, _) = loggingGit(sleep = 30)
