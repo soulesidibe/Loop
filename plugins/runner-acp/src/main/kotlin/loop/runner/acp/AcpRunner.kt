@@ -41,6 +41,7 @@ import loop.runner.process.resolveAddedEnv
 import java.nio.file.Path
 import java.util.UUID
 import kotlin.io.path.isDirectory
+import kotlin.time.Clock
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
@@ -70,6 +71,8 @@ class AcpRunner internal constructor(
     private val stopGrace: Duration = STOP_GRACE,
     /** Receives cleanup warnings that cannot be emitted on a turn flow (for example during `stop()`). */
     private val onWarn: (String) -> Unit = { line -> System.err.println(line) },
+    /** Gives the time a quota reset timestamp is measured from; a seam for tests. */
+    private val clock: Clock = Clock.System,
 ) : AgentRunner {
     constructor(
         settings: AcpSettings,
@@ -633,7 +636,7 @@ class AcpRunner internal constructor(
                                         }
                                         val classified =
                                             (step.failure as? AcpHandshakeFailure.ErrorAnswer)?.let { err ->
-                                                AcpErrors.classify(err.method, err.code, err.message, err.data)
+                                                AcpErrors.classify(err.method, err.code, err.message, err.data, clock.now())
                                             }
                                         return killAndEnd(
                                             process,
@@ -641,7 +644,7 @@ class AcpRunner internal constructor(
                                                 sessionId = sessionId,
                                                 turnId = turnId,
                                                 exitCode = null,
-                                                reason = step.failure.reason,
+                                                reason = reportQuotaReset(classified, step.failure.reason),
                                                 category = classified?.category ?: step.failure.category,
                                                 retryAfter = classified?.retryAfter,
                                             ),
@@ -696,10 +699,11 @@ class AcpRunner internal constructor(
                                 frame.code,
                                 frame.message,
                                 frame.data,
+                                clock.now(),
                             )
                         fail(
                             exitCode = null,
-                            reason = "turn_failed: ${frame.message} (code ${frame.code})",
+                            reason = reportQuotaReset(classified, "turn_failed: ${frame.message} (code ${frame.code})"),
                             category = classified.category,
                             retryAfter = classified.retryAfter,
                         )
@@ -707,6 +711,30 @@ class AcpRunner internal constructor(
                     }
                     else -> return false
                 }
+            }
+
+            /**
+             * With a quota reset in [classified] (bl-215), emits the `rate_limit` event of the exhausted quota and returns
+             * [reason] with its reset time. `RunnerEvent.RateLimit.Window` needs a used percent that `agy` never
+             * reports, so the event carries no window and the reset time goes in the `turn_failed` reason.
+             */
+            private suspend fun reportQuotaReset(
+                classified: AcpErrors.Classification?,
+                reason: String,
+            ): String {
+                val reset = classified?.quotaReset ?: return reason
+                out(
+                    RunnerEvent.RateLimit(
+                        sessionId = sessionId,
+                        turnId = turnId,
+                        limitId = QUOTA_LIMIT_ID,
+                        limitName = reset.model ?: settings.model,
+                        primary = null,
+                        secondary = null,
+                        reached = QUOTA_REACHED,
+                    ),
+                )
+                return "$reason; the quota resets at ${reset.resetsAt}"
             }
 
             private suspend fun start() {
@@ -793,6 +821,10 @@ class AcpRunner internal constructor(
         private const val FLAG_DISABLE_TELEMETRY = "--disable-telemetry"
         private const val FLAG_SANDBOX = "--sandbox"
         private const val FLAG_GEMINI_DIR = "--gemini-dir"
+
+        /** The `rate_limit` limit id and `reached` word of an exhausted Gemini quota (bl-215). */
+        private const val QUOTA_LIMIT_ID = "gemini"
+        private const val QUOTA_REACHED = "quota_exhausted"
 
         /** Google API env variables removed from the inherited host env by default under `preset: agy`. */
         val AGY_REMOVED_ENV_NAMES: Set<String> =
