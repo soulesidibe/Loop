@@ -46,6 +46,7 @@ import loop.core.workflow.DeliveryConfig
 import loop.core.workflow.DeliveryPolicy
 import loop.core.workflow.TokenCounters
 import loop.core.workflow.WorkflowFile
+import loop.core.workflow.WorkspaceGitMode
 import loop.core.workflow.acceptanceCommandsNeedFiles
 import java.nio.file.Path
 import kotlin.coroutines.cancellation.CancellationException
@@ -309,18 +310,19 @@ class Verification(
             val (listedCheck, holdout) = entry
             if (diffPolicyOnly && listedCheck !is CheckConfig.DiffPolicy) continue
             // bl-117: changed_line_coverage reads the same diff as diff_policy, so it takes the same pinned base.
-            val check =
+            val based =
                 when {
-                    pinned == null -> listedCheck
-                    listedCheck is CheckConfig.DiffPolicy -> listedCheck.copy(base = pinned)
-                    listedCheck is CheckConfig.ChangedLineCoverage -> listedCheck.copy(base = pinned)
-                    else -> listedCheck
+                    pinned == null -> projectPinned(listedCheck)
+                    listedCheck is CheckConfig.DiffPolicy -> Based(listedCheck.copy(base = pinned))
+                    listedCheck is CheckConfig.ChangedLineCoverage -> Based(listedCheck.copy(base = pinned))
+                    else -> Based(listedCheck)
                 }
+            val check = based.check
             ran++
-            var outcome = runCheck(index, check, fingerprint, holdout, rerun = false)
+            var outcome = runCheck(index, check, fingerprint, holdout, rerun = false, refusal = based.refusal)
             outcome.evidence?.let { references += it }
             if (outcome.result.refutes) {
-                outcome = runCheck(index, check, fingerprint, holdout, rerun = true)
+                outcome = runCheck(index, check, fingerprint, holdout, rerun = true, refusal = based.refusal)
                 outcome.evidence?.let { references += it }
             }
             val result = outcome.result
@@ -415,7 +417,59 @@ class Verification(
                 "fingerprint" to fingerprint,
             ),
         )
+        if (verdict == VERIFIED) importVerified(fingerprint)
         return verdict == VERIFIED
+    }
+
+    /** True when the workflow makes each workspace a clone of the project (bl-28). */
+    private val cloned: Boolean get() = workflow.workspaceGit == WorkspaceGitMode.Clone && !plain
+
+    /**
+     * bl-28: in a clone workspace, a `diff_policy` or `changed_line_coverage` check with no pinned base gets its `base`
+     * resolved to a commit in the project, never in the clone, whose refs the agent owns. A base the project cannot
+     * resolve records `diff_base_unpinned` and stops the check: [Based.refusal] says why it could not run, and the
+     * name is never handed to the check, which would resolve it in the clone. [check] as it is outside a clone.
+     */
+    private suspend fun projectPinned(check: CheckConfig): Based {
+        if (!cloned) return Based(check)
+        val base =
+            when (check) {
+                is CheckConfig.DiffPolicy -> check.base
+                is CheckConfig.ChangedLineCoverage -> check.base
+                else -> return Based(check)
+            }
+        val sha = host.projectCommit(workflow, base)
+        if (sha == null) {
+            val reason =
+                redactor
+                    .redact("$base is not a commit of the project repository, and a clone workspace never takes a base from its own refs")
+                    .take(REASON_MAX)
+            record(DiffBaseUnpinned, mapOf(DiffBaseUnpinned.REASON to reason))
+            log.log(LogLevel.WARN, DiffBaseUnpinned.name, LogOutcome.FAILED, logContext(), reason = reason)
+            return Based(check, reason)
+        }
+        return when (check) {
+            is CheckConfig.DiffPolicy -> Based(check.copy(base = sha))
+            is CheckConfig.ChangedLineCoverage -> Based(check.copy(base = sha))
+        }
+    }
+
+    /** bl-28: a check with its base, and why it cannot run when its base is not a commit of the project. */
+    private class Based(
+        val check: CheckConfig,
+        val refusal: String? = null,
+    )
+
+    /**
+     * bl-28: a verified clean commit of a clone workspace is imported into the project at once, with its `loop/<key>`
+     * branch, so it outlives the workspace. A failure is a warning: the pull request push and the merge check push
+     * run through the clone delivery of the orchestrator, which imports the commit again before it pushes.
+     */
+    private suspend fun importVerified(fingerprint: String) {
+        if (!cloned) return
+        val sha = WorkspaceFingerprint.committedHead(fingerprint) ?: return
+        val reason = host.importVerified(workflow, workspace, sha) ?: return
+        log.log(LogLevel.WARN, "import", LogOutcome.FAILED, logContext(), reason = redactor.redact(reason).take(REASON_MAX))
     }
 
     /**
@@ -442,6 +496,13 @@ class Verification(
         return host.fetchBase(workflow).fold(
             onSuccess = { sha ->
                 record(BaseFetched, mapOf(Delivery.SHA to sha, Delivery.BASE to base))
+                // bl-28: the clone sees the base its checks use, so the agent's `git merge refs/loop/base/<base>` works.
+                if (cloned) {
+                    host.writeCloneBase(workflow, workspace, base, sha)?.let { reason ->
+                        val text = redactor.redact(reason).take(REASON_MAX)
+                        log.log(LogLevel.WARN, "clone_base", LogOutcome.FAILED, logContext(), reason = text)
+                    }
+                }
                 sha
             },
             onFailure = { error ->
@@ -853,6 +914,7 @@ class Verification(
         fingerprint: String,
         holdout: Boolean,
         rerun: Boolean,
+        refusal: String? = null,
     ): CheckOutcome {
         val script = check.script
         val base =
@@ -868,7 +930,12 @@ class Verification(
         val started = clock.now()
         val result =
             try {
-                withContext(io) { checkRunner.run(check, workspace, env) }
+                // bl-28: a check whose base Loop could not resolve in the project never runs; it could not run.
+                if (refusal != null) {
+                    CheckResult(null, timedOut = false, durationMs = 0, startError = refusal)
+                } else {
+                    withContext(io) { checkRunner.run(check, workspace, env) }
+                }
             } catch (e: CancellationException) {
                 withContext(NonCancellable) { record(CheckFinished, base + (CheckEvent.CANCELED to "true")) }
                 throw e

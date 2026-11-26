@@ -1,7 +1,7 @@
 ---
 id: bl-28
 title: "An agent can move the operator's real branches from its workspace"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-agent]
 blocked_by: []
@@ -59,6 +59,43 @@ Performance, measured: the same as a worktree. On 40,000 files with Loop's real 
 Threat model, to state in the ADR: mistakes and casual misuse by an agent, not a hostile agent. Verification still runs the agent's build code unsandboxed as the operator, and `git push /abs/path` or any write by absolute path stays possible until the M5 sandbox.
 
 Part 2 is filed as bl-245: replay of a commit that was never imported, and the switch of the default to clone after the pilot app.
+
+2026-11-26 16:51Z loop: Loop opened pull request #98 for this issue: https://github.com/soulesidibe/Loop/pull/98
+
+2026-11-26 16:55Z loop: Loop did not merge pull request #98 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.40.
+  - alignment: aligned, The diff implements the opt-in clone workspaces, the pinned git, the import before push and the docs from the issue, and it lists protected edits under residual_human_steps rather than touching them.
+  - impact: medium (floor medium: the diff changes 631 lines outside tests and docs, over half the limit of 1000), It adds an opt-in mode that changes workspace creation, delivery, verification base resolution and the orchestrator, and the default path stays unchanged without workspace.git.
+  - verification: strong, Real git end to end tests cover the agent's ref, config and exclude writes in a clone and in a worktree, the diff_policy base, and delivery and merge check against the loopback server, with unit tests for the keep ref, the pins and fsck.
+  - rollback_cost: two_way, The mode is opt in and a revert restores the old behavior, though clones already made leave keep refs and imported loop branches in the project.
+  - error_detection: partial, Clone preparation and import before a push fail loudly with named reasons, but a failed import on a verified verdict only logs a warning and a failed base fetch falls back to diff_base_unpinned.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 11 of 17 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
+
+2026-11-26 17:03Z soulesidibe: Sent back by soulesidibe: Sent back before merge, after the merge risk reviews of pull request #98 (Sonnet, then a Fable recheck that replayed the git commands). The isolation holds: the acceptance script left the project's refs and config byte identical, alternates and agent config could not be used, and the opt in is off by default. Fix these on the same branch, then submit again:
+  - Medium: the import copies the whole project history on every import. WorkspaceClones.import fetches into a temporary bare repository that has the project as alternate but no refs, with core.alternateRefsCommand=true, so the client sends no haves and upload-pack in the clone packs everything reachable, borrowed objects included; land then copies that pack into the project's objects/pack. Reproduced: a 9.9 MB project plus one 7 byte agent commit gave an 18 object, 9.6 MB pack; with one have seeded at the keep ref commit it was 7 objects, 1 KB. Each import bloats the operator's .git by a repository size, fscks all history (one old malformed object then blocks every import), and can pass the 5 minute timeout on a big repository. Fix: seed the temporary repository the way GitPush.fetch does with seed() (the project's refs/loop/workspace/<key>, refs/heads/loop/<key> and refs/loop/base/* commits as refs, or --negotiation-tip). Add a test on a repository with history that asserts the landed pack holds only the new objects.
+  - Medium: a half made clone is reused without its invariants. cloneStep catches only IOException, withContext(IO) is not interruptible, and state() accepts any .git whose alternates name the project. A cancel after the clone, or a kill between git clone and remote remove origin, leaves a clone that the next attempt reuses as is (createdNow false, after_create not run) with origin still present (git push origin reaches the project again), possibly no loop/<key> and no keep ref; a failed cleanup delete only warns. Fix: build the clone in a temporary sibling folder and rename it into place, delete the folder and the keep ref on any Throwable under NonCancellable as the after_create path does, and make reuse verify no remote, HEAD on loop/<key> and the keep ref, repairing or failing with a named reason. Add tests for a cancel, a partial folder with origin, and reuse of a half made clone.
+  - Medium: the pull request push is not wrapped by the import. Orchestrator.pullRequestDelivery (around line 4948) builds PullRequestDelivery(deliveryFor(workflow) ...) instead of executorFor(workflow), and it serves Verification.kt:647 and the delivery retry at Orchestrator.kt:4717; only the merge check pushes in Merges.kt go through CloneDelivery. So the pull request push relies on Verification.importVerified alone, whose failure is a WARN claiming "every push imports it again first", which is false on this path (also the CloneDelivery class doc). It fails closed, but one transient import failure turns a verified result into a Rejected delivery waiting for a human, and the retry does not import either. Fix: use executorFor(workflow) there, correct the comment and doc, and add a test where the verification time import fails and the delivery still imports and pushes.
+  - Medium: no clone ref may pick a base. Verification.projectPinned keeps the base name when the project cannot resolve it (records diff_base_unpinned) and resolveAttemptBaseRef can return configuredBase as a name; both are then resolved in the clone, whose refs the agent owns, so an agent that creates that ref at HEAD can make the diff_policy diff empty. In clone mode, fail the check (couldNotRun or refuted) instead of keeping the name, with a test.
+  - Low: after an after_create failure or cancel (WorkspaceManager.kt around lines 59 to 72) the folder is deleted without dropKeep, so the keep ref leaks. Call dropKeep there too.
+  - Low: the keep ref pins only the start commit. When writeBase or a merge check gives the clone a newer base, advance the keep ref (or add one) so a rewritten base plus gc --prune=now cannot drop commits the clone borrows.
+  - Low: writeBase has one caller (prepare). Also write refs/loop/base/<base> into the clone at the verification and merge check base fetches (brief item 5).
+  - Low: with no base resolvable, create starts silently from the project's current HEAD. Fail with a named reason or log it.
+  - Low: CoreChecks.Git (around line 627) pins core.fsmonitor and commitGraph but not core.hooksPath; align it with the WorkspaceGit pins so "every host git call uses the pins" is literally true.
+  - Low: import moves refs/heads/loop/<key> with no old value check, and switching from clone back to hooks leaves keep refs behind. One line each in docs/workspaces.md (or an old value check).
+  - Make sure residual_human_steps lists all five protected edits with exact text: the WORKFLOW.md switch, the three hook scripts, the ADR and the PLAN section 19 row.
+
+2026-11-26 17:36Z loop: Loop updated pull request #98 for this issue: https://github.com/soulesidibe/Loop/pull/98
+
+2026-11-26 17:40Z loop: Loop did not merge pull request #98 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.40.
+  - alignment: aligned, The diff addresses each round 3 send-back item (seeded import, clone built aside, importing executor on the PR push, no base from a clone ref, keep ref handling, docs) and keeps protected edits under residual_human_steps.
+  - impact: medium (floor medium: the diff changes 972 lines outside tests and docs, over half the limit of 1000), 972 non-test lines change workspace creation, delivery, verification base resolution and the orchestrator, but the mode is opt-in and the default path is unchanged.
+  - verification: strong, Real git end to end tests cover the agent's ref, config and exclude writes in a clone and in a worktree, the diff_policy base, a failed import retried by the PR push, and merge check pushes, with unit tests for the clone and its reuse.
+  - rollback_cost: two_way, The mode is opt in and a revert restores the worktree behavior, though existing clones leave keep refs and imported loop branches in the project.
+  - error_detection: partial, Clone setup, reuse checks and a missing base fail with named reasons, but a failed import at verification only warns, and the pull request push repeats it.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 16 of 19 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
 
 ## Agent Brief
 

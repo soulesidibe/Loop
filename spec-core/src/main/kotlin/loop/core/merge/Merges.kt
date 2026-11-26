@@ -107,6 +107,11 @@ internal class Merges(
     private val onFindings: (String, String) -> Unit,
     /** Removes the workspace of a merged issue, its `before_remove` hook first. */
     private val removeWorkspace: suspend (Issue) -> Unit,
+    /**
+     * bl-28: writes a base just fetched (its name and commit) in the workspace when it is a clone; why it failed, null
+     * when it was written or there was nothing to write.
+     */
+    private val cloneBase: suspend (WorkflowFile, Path, String, String) -> String? = { _, _, _, _ -> null },
     /** Wakes the poll sleep once a wait ended. */
     private val wake: () -> Unit,
     /** Told once a CI wait ended in `timeout` and fell back to approval, so the orchestrator pauses the queue (bl-175). */
@@ -610,6 +615,7 @@ internal class Merges(
         val workspace =
             located.getOrElse { return mergeRefused(wait, MergeCheck.STEP_CHECK, "cannot locate the workspace: ${it.describe()}") }
                 ?: return mergeRefused(wait, MergeCheck.STEP_CHECK, "the workspace of ${wait.identifier} is gone")
+        if (resumed == null) writeCloneBase(wait, workflow, workspace, base, checkedBase)
         val head =
             WorkspaceFingerprint.committedHead(stored)
                 ?: return mergeRefused(wait, MergeCheck.STEP_CHECK, "the stored fingerprint $stored is not a clean commit")
@@ -1008,6 +1014,18 @@ internal class Merges(
         return BaseRead.Moved(next)
     }
 
+    /** bl-28: [cloneBase] for the workspace of [wait], a failure logged as a warning: the merge check goes on by commit id. */
+    private suspend fun writeCloneBase(
+        wait: Wait.Merge,
+        workflow: WorkflowFile,
+        workspace: Path,
+        base: String,
+        sha: String,
+    ) {
+        val reason = cloneBase(workflow, workspace, base, sha) ?: return
+        log.log(LogLevel.WARN, "clone_base", LogOutcome.FAILED, waitContext(wait), reason = redactor.redact(reason).take(REASON_MAX))
+    }
+
     /**
      * Whether a base that moved after the check of [wait] costs no new round (bl-176): the new tip, fetched host side as
      * the merge check fetches it, null when a round must run. Only with `recheck_skip_paths` set, and only when the base
@@ -1041,6 +1059,7 @@ internal class Merges(
         val workspace =
             locate(workflow, keyOf(wait)).getOrNull()
                 ?: return stop("cannot locate the workspace of ${wait.identifier}")
+        writeCloneBase(wait, workflow, workspace, pullRequest.base, tip)
         val moved =
             gitStep {
                 if (!git.isAncestor(workspace, checked, tip)) return@gitStep null
