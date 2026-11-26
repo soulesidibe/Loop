@@ -37,6 +37,7 @@ import loop.core.orchestrator.Orchestrator
 import loop.core.orchestrator.TickResult
 import loop.core.orchestrator.attemptFile
 import loop.core.orchestrator.highestRecordedThreshold
+import loop.core.reactions.ReactionMarks
 import loop.core.resources.ResourceGrants
 import loop.core.resources.ResourceLocks
 import loop.core.template.TemplateEngine
@@ -454,6 +455,10 @@ class RunCommand(
                     store.eventsOfKinds(projectId, setOf(ReactionTriggered.name, ReactionSkipped.name)).map { stored ->
                         stored.map { it.event }
                     }
+                },
+                // bl-224: the reactions and counter resets of every run, so a restart keeps a reaction's failure counter.
+                retryEventsBefore = {
+                    store.eventsOfKinds(projectId, ReactionMarks.KINDS).map { stored -> stored.map { it.event } }
                 },
                 // m4-37: the merge checks of every run, so approved_green under ci: none knows the head the check passed on.
                 mergeChecksBefore = {

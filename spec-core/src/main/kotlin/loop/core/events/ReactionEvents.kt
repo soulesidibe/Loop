@@ -49,6 +49,12 @@ object ReactionKeys {
 
     /** m4-37: green by the merge check passed on the head. */
     const val GREEN_MERGE_CHECK = "merge_check"
+
+    /**
+     * bl-224: the findings a reaction sent its issue back with, redacted, only when its retry was scheduled. A new process
+     * reads them back for the retry, and they mark the issue as sent back by a reaction. Never shown by `loop trace`.
+     */
+    const val FINDINGS = "findings"
 }
 
 /**
@@ -95,7 +101,8 @@ object ReactionTriggered : KeyedEvent(
  * m4-34: a reaction found what it watches for but did nothing, with [ReactionKeys.REASON]: `notify_human`, since M4 sends
  * no notice for a reaction, recorded once per wait. Since m4-35 also `retries_spent`, a `ci_failed` reaction past its
  * `retries`. Since m4-36 also `escalated`, a `changes_requested` round still standing past `escalate_after`, told to the
- * human, and `reviews_unread`, the reviews read refused for good, with [ReactionKeys.DETAIL].
+ * human, and `reviews_unread`, the reviews read refused for good, with [ReactionKeys.DETAIL]. Since bl-224 also
+ * `human_decided`, a `merge_conflict` or `changes_requested` reaction that found its wait approved or sent back.
  */
 object ReactionSkipped : KeyedEvent(
     "reaction_skipped",
@@ -121,6 +128,12 @@ object ReactionSkipped : KeyedEvent(
 
     /** m4-36: the reviews read was refused for good, a 403 or a 404 naming "Pull requests: read" among them. */
     const val REVIEWS_UNREAD = "reviews_unread"
+
+    /**
+     * bl-224: a `loop approve` or a `loop send-back` decided the wait while the reaction read GitHub, so the reaction
+     * left the wait to the human's decision and sent nothing.
+     */
+    const val HUMAN_DECIDED = "human_decided"
 
     override val sample =
         mapOf(

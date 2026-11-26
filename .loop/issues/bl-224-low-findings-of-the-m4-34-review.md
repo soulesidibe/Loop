@@ -1,7 +1,7 @@
 ---
 id: bl-224
 title: "Low findings of the m4-34 review, the merge_conflict reaction"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-agent]
 blocked_by: []
@@ -37,6 +37,18 @@ Filed from the merge risk review of m4-34. Triage decides which findings are wor
 2026-11-25 soule: m4-36 (changes_requested) repeats findings 3 and 6, from the merge risk reviews of pull request #78. Finding 3: its read is three or four GitHub calls per poll, so the window between the tick's snapshot and `endWaiting` is wider. Finding 6 loses data there: the review is stored as sent in `reaction_triggered` while its findings live in `verifyFindings` in memory, so a restart between the reaction and the retry dispatch means the review never reaches the agent and is never sent again. Fix both for all three reactions in one change.
 
 2026-11-26 soule: triaged ready-for-agent, priority raised to 2. Checked against main at 2cec711: findings 1, 3 and 6 now affect merge_conflict, ci_failed and changes_requested (finding 3: merge_conflict and changes_requested only, since ci_failed ends a merge wait). Finding 2 is partly fixed: `park()` clears the mark. bl-226 findings 1 and 5 are the same as findings 1 and 6 here; bl-228 finding 3 is not.
+
+2026-11-26 09:19Z loop: Loop opened pull request #87 for this issue: https://github.com/soulesidibe/Loop/pull/87
+
+2026-11-26 09:42Z loop: Loop did not merge pull request #87 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.40.
+  - alignment: aligned, The diff covers findings 1, 2, 3, 5 and 6 and the test gaps, and it leaves out findings 4 and 7 and any schema change, as the brief says.
+  - impact: medium, It changes the retry counter, the wait-ending path and the stored reaction events for all three reactions, but the reactions are opt-in and Loop's own WORKFLOW.md has no reactions key.
+  - verification: strong, New tests cover each acceptance criterion (the mark across a restart, every counter reset, the conditional end for approve and send-back, findings across a restart, the wording) and a store test covers the conditional end, but I could not read most of the test files because the diff was cut.
+  - rollback_cost: two_way, There is no schema change, so a revert leaves only a harmless extra findings key in stored reaction_triggered events, which older code ignores.
+  - error_detection: partial, Failed store reads and failed conditional ends are logged at warn or error and are retried on a later tick, but a failed read of the stored findings falls back to a retry with no findings, and the mark can be wrong after a handoff.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 13 of 21 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
 
 ## Agent Brief
 

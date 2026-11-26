@@ -100,6 +100,19 @@ object MergeCheck {
             "so the pull request was not merged. Run `git merge ${baseRef(base)}`, resolve the conflict keeping the intent " +
             "of both sides, commit the merge, check the work again, then move the issue again."
 
+    /**
+     * The findings the next attempt gets after the `merge_conflict` reaction (bl-224): the pull request of a result that
+     * waits for approval conflicts with the base, so unlike [conflictFindings] they never say the result was approved.
+     */
+    fun reactionConflictFindings(
+        base: String,
+        sha: String,
+        detail: String,
+    ): String =
+        "Your last result was verified and its pull request is open, but it conflicts with $base at $sha ($detail), so it " +
+            "cannot be merged. Run `git merge ${baseRef(base)}`, resolve the conflict keeping the intent of both sides, " +
+            "commit the merge, check the work again, then move the issue again."
+
     /** The findings the next attempt gets after the checks failed on the merged result: the check's own [findings] after a lead. */
     fun refutedFindings(
         base: String,

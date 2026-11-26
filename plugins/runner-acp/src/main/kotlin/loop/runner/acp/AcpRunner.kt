@@ -667,7 +667,7 @@ class AcpRunner internal constructor(
                                                 turnId = turnId,
                                                 exitCode = null,
                                                 reason = step.failure.reason,
-                                                category = classified?.category,
+                                                category = classified?.category ?: step.failure.category,
                                                 retryAfter = classified?.retryAfter,
                                             ),
                                         )
