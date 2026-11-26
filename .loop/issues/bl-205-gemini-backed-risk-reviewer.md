@@ -40,6 +40,18 @@ Filed from `.loop/specs/gemini-support.md` item 8.
 
 2026-11-26 10:03Z loop: Loop could not merge pull request #91: merging main at db0dfe54ac4cd4fcc3cb5a1f443679ce91b5e245 into loop/bl-205 conflicts (conflict in plugins/runner-acp/src/main/kotlin/loop/runner/acp/AcpPermissionPolicy.kt). The merge was aborted and the branch is unchanged. The next attempt merges refs/loop/base/main into its branch, resolves the conflict and submits the result again.
 
+2026-11-26 13:07Z loop: Loop updated pull request #91 for this issue: https://github.com/soulesidibe/Loop/pull/91
+
+2026-11-26 13:46Z loop: Loop did not merge pull request #91 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.27.
+  - alignment: aligned, The diff adds the Gemini runtime selection, a read-only ACP policy mode, the reviewer, the startup warning and the docs as the brief describes, with the small AcpSettings.commandOf helper and the AcpRunner read-only hooks both needed for it.
+  - impact: medium, It adds a new reviewer path and touches the shared AcpRunner and permission policy, but behavior changes only for gemini- reviewer models and the readOnly flag defaults to false.
+  - verification: strong, Fake ACP server tests cover the answer, timeout with process stop, failed turn, declined command and edit, holdout read refusal, no answer, input request and folder removal, and CLI tests cover model routing, command lookup and the warning.
+  - rollback_cost: two_way, It is pure code and docs with no schema, data or persisted state, and a review never keeps its isolated folder, so a revert undoes it.
+  - error_detection: loud, Timeouts, crashes and a missing agy surface as typed RiskReviewError values and a startup warning, and the merge gate falls back visibly to loop approve, though the read-only policy rests on the fail-closed tool-kind matching.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 1 of 12 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
+
 ## Agent Brief
 
 **Category:** enhancement

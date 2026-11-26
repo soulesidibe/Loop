@@ -43,6 +43,22 @@ Wontfix for now. The recorded `agy` 1.5.16 sessions carry no quota or rate limit
 
 Reopened with a narrower scope. A usage percent before the quota runs out stays out of scope: `agy` reports none. But when the quota runs out, Google's 429 does carry the reset time. `agy`'s own CLI logs hold three of them (2026-10-19, 10-24, 10-25), each `RESOURCE_EXHAUSTED` with an `ErrorInfo` of reason `QUOTA_EXHAUSTED`, `metadata.model`, `metadata.quotaResetDelay` (such as `4h23m27.716645894s`), `metadata.quotaResetTimeStamp` (RFC 3339), a `RetryInfo` detail, and the message `You have exhausted your capacity on this model. Your quota will reset after 4h23m27s.` Not checked yet: whether `agy acp` passes those details, or only the message, through its JSON-RPC error.
 
+2026-11-26 13:27Z agent 12027e80: Filed the follow up default:bl-240 in the tracker default: The acp runner echoes JSON-RPC error bodies, account fields included, as runner output
+
+2026-11-26 13:27Z agent 12027e80: Done on loop/bl-215 (commits 1985001 and ae58d9f).
+  What changed:
+  - New AcpQuotaReset in plugins/runner-acp. On a runner_unavailable with a status or a rate limit code, the wait comes from an explicit retry key first (as before), else the first valid positive value of quotaResetTimeStamp minus now, quotaResetDelay, a RetryInfo retryDelay (each at any depth of the error data, a JSON body inside a string field included), then "Your quota will reset after <duration>" in the message or a data string. A past timestamp or an unparsable value is skipped, and nothing found keeps today's behavior.
+  - A Google error object anywhere in the data, with status RESOURCE_EXHAUSTED or an ErrorInfo reason QUOTA_EXHAUSTED, now classifies as runner_unavailable. The quota message text alone stays free text and classifies nothing, so a message only error still needs a structured sign (a 429 line or RESOURCE_EXHAUSTED).
+  - RunnerHold is unchanged. A spec-core RunnerHoldTest shows that the parsed 4h23m27.716645894s becomes the hold period, not the 1 minute backoff.
+  The rate_limit event: RunnerEvent.RateLimit.Window needs a used percent, which agy never reports. So, as the brief allows, the event is still emitted, with limit_id gemini, the model as limit_name (else runners.acp.model), reached quota_exhausted and no window, and the reset instant goes in the turn_failed reason: "...; the quota resets at <instant>". No plugin-api change.
+  Redaction: only the reset time and a plain model id are read from the error. The raw JSON-RPC line is still echoed as runner output, as every protocol line is. I filed that as a follow-up.
+  Still open (the after merge criterion): at the first real quota exhaustion under Loop, check in the attempt's runner output which form agy acp sends (the full body in error.data, a body inside a string, or only the message), and whether the turn_failed carries runner_unavailable and a retryAfter. If agy sends only the message, without a 429 or RESOURCE_EXHAUSTED, the error stays an ordinary failure, and the classification needs another look.
+  Evidence: runner-acp has 140 tests, 0 failures, 15 of them in AcpQuotaResetTest. The RunnerHoldTest and ktlintCheck pass.
+
+2026-11-26 13:42Z agent 12027e80: Turn 2: Loop's build failed on cli ClaudeCodeTrackerToolsTest "m4-14 with a files and a GitHub tracker...", not on the acp change. That test passes when run alone, so it is flaky under load.
+  Cause: the test runs two attempts at once on one fake claude and one record folder. Both fakes copied the MCP config to record/mcp.json with Files.copy REPLACE_EXISTING, which deletes and then creates the target. When the copies overlap, one fails, that fake exits 1 before printing any line ("port_exit: exit code 1, no result line"), and the files issue stays in todo. A two thread repro of that copy failed 5644 times in 40000 copies.
+  Fix (commit on loop/bl-215): TranscriptReplay now writes each record file to a temporary file of its own and moves it over the target atomically. The same repro with that pattern had 0 failures. The test and its assertions are unchanged. All six cli test classes that use the fake claude pass, and ktlintCheck passes.
+
 ## Agent Brief
 
 **Category:** enhancement
