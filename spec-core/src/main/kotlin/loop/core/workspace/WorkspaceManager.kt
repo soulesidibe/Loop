@@ -93,7 +93,8 @@ class WorkspaceManager(
                 when (val state = clones.state(workspace.path)) {
                     CloneState.Absent -> clones.create(workspace.path, workspace.key, clone.base)
                     CloneState.Clone -> Unit
-                    is CloneState.Foreign -> return@withContext "the workspace ${workspace.path} is not a clone of the project, ${state.reason}"
+                    is CloneState.Foreign ->
+                        return@withContext "the workspace ${workspace.path} is not a clone of the project, ${state.reason}"
                 }
                 clone.baseRef?.let { clones.writeBase(workspace.path, it.name, it.sha) }
                 null

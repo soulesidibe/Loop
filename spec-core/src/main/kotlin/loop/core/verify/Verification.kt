@@ -46,6 +46,7 @@ import loop.core.workflow.DeliveryConfig
 import loop.core.workflow.DeliveryPolicy
 import loop.core.workflow.TokenCounters
 import loop.core.workflow.WorkflowFile
+import loop.core.workflow.WorkspaceGitMode
 import loop.core.workflow.acceptanceCommandsNeedFiles
 import java.nio.file.Path
 import kotlin.coroutines.cancellation.CancellationException
@@ -311,7 +312,7 @@ class Verification(
             // bl-117: changed_line_coverage reads the same diff as diff_policy, so it takes the same pinned base.
             val check =
                 when {
-                    pinned == null -> listedCheck
+                    pinned == null -> projectPinned(listedCheck)
                     listedCheck is CheckConfig.DiffPolicy -> listedCheck.copy(base = pinned)
                     listedCheck is CheckConfig.ChangedLineCoverage -> listedCheck.copy(base = pinned)
                     else -> listedCheck
@@ -415,7 +416,48 @@ class Verification(
                 "fingerprint" to fingerprint,
             ),
         )
+        if (verdict == VERIFIED) importVerified(fingerprint)
         return verdict == VERIFIED
+    }
+
+    /** True when the workflow makes each workspace a clone of the project (bl-28). */
+    private val cloned: Boolean get() = workflow.workspaceGit == WorkspaceGitMode.Clone && !plain
+
+    /**
+     * bl-28: in a clone workspace, a `diff_policy` or `changed_line_coverage` check with no pinned base gets its `base`
+     * resolved to a commit in the project, never in the clone, whose refs the agent owns. A base the project cannot
+     * resolve records `diff_base_unpinned` and keeps the name. [check] as it is outside a clone.
+     */
+    private suspend fun projectPinned(check: CheckConfig): CheckConfig {
+        if (!cloned) return check
+        val base =
+            when (check) {
+                is CheckConfig.DiffPolicy -> check.base
+                is CheckConfig.ChangedLineCoverage -> check.base
+                else -> return check
+            }
+        val sha = host.projectCommit(workflow, base)
+        if (sha == null) {
+            val reason = redactor.redact("$base is not a commit of the project repository").take(REASON_MAX)
+            record(DiffBaseUnpinned, mapOf(DiffBaseUnpinned.REASON to reason))
+            log.log(LogLevel.WARN, DiffBaseUnpinned.name, LogOutcome.FAILED, logContext(), reason = reason)
+            return check
+        }
+        return when (check) {
+            is CheckConfig.DiffPolicy -> check.copy(base = sha)
+            is CheckConfig.ChangedLineCoverage -> check.copy(base = sha)
+        }
+    }
+
+    /**
+     * bl-28: a verified clean commit of a clone workspace is imported into the project at once, with its `loop/<key>`
+     * branch, so it outlives the workspace. A failure is a warning: every push imports it again first.
+     */
+    private suspend fun importVerified(fingerprint: String) {
+        if (!cloned) return
+        val sha = WorkspaceFingerprint.committedHead(fingerprint) ?: return
+        val reason = host.importVerified(workflow, workspace, sha) ?: return
+        log.log(LogLevel.WARN, "import", LogOutcome.FAILED, logContext(), reason = redactor.redact(reason).take(REASON_MAX))
     }
 
     /**

@@ -124,7 +124,10 @@ class WorkspaceClones(
                 val format = if (sha.length == SHA256_LENGTH) listOf("--object-format=sha256") else emptyList()
                 val init = listOf("init", "--bare", "--quiet", "--template=") + format + repository.toString()
                 check(git.run(dir, *init.toTypedArray(), extra = NO_CONFIG_FILES), "prepare the import")
-                Files.writeString(Files.createDirectories(repository.resolve("objects").resolve("info")).resolve("alternates"), "$objects\n")
+                Files.writeString(
+                    Files.createDirectories(repository.resolve("objects").resolve("info")).resolve("alternates"),
+                    "$objects\n",
+                )
                 val gitDir = "--git-dir=$repository"
                 val fetch =
                     listOf(gitDir) + IMPORT_PINS +

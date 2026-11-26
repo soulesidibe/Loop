@@ -45,10 +45,13 @@ import loop.core.verify.CheckRunner
 import loop.core.verify.CoreCheckRunner
 import loop.core.verify.EvidenceFiles
 import loop.core.verify.Holdouts
+import loop.core.verify.WorkspaceGit
 import loop.core.workflow.Preflight
 import loop.core.workflow.PreflightResult
 import loop.core.workflow.WorkflowFile
+import loop.core.workflow.WorkspaceGitMode
 import loop.core.workspace.ShellHookRunner
+import loop.core.workspace.WorkspaceClones
 import loop.core.workspace.WorkspaceManager
 import loop.core.workspace.Workspaces
 import loop.runner.process.agentEnvironment
@@ -230,7 +233,11 @@ class RunCommand(
         dollarBudgetWarning(workflow, runnerOf(workflow).capabilities)?.let { warn(redactor.redact(it)) }
         // m4-06: the merge risk reviewer runs through the Claude Code command whatever the runner; said once at startup.
         riskReviewerWarning(workflow, host.rawEnv)?.let { warn(redactor.redact(it)) }
-        val workspacesOf = { wf: WorkflowFile -> WorkspaceManager(Workspaces(wf.workspaceRoot), wf.config.hooks, ShellHookRunner()) }
+        val workspacesOf = { wf: WorkflowFile ->
+            // bl-28: with workspace.git: clone, Loop makes each workspace a clone of the project, its git pinned.
+            val clones = if (wf.workspaceGit == WorkspaceGitMode.Clone) WorkspaceClones(wf.path.parent, WorkspaceGit(host.rawEnv)) else null
+            WorkspaceManager(Workspaces(wf.workspaceRoot), wf.config.hooks, ShellHookRunner(), clones)
+        }
         val launcher = host.launcher().getOrElse { fail(it.sentence()) }
         val store = project.store().getOrElse { fail(it.sentence()) }
         // m1-39: the human readable run log, next to this key=value log. A write that fails warns here once.

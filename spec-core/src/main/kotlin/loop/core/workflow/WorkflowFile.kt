@@ -657,10 +657,6 @@ class WorkflowLoader(
         return sections.map { it.trim() }
     }
 
-    /**
-     * m4-20: `kinds.<kind>.<key>`, null when absent; present, one of the [choices] by its [wire] name, any other value
-     * refused, so a misspelled value never falls back to the default silently.
-     */
     /** bl-28: `workspace.git`, [WorkspaceGitMode.Hooks] when absent, else `clone`, the only value written. */
     private fun parseWorkspaceGit(workspace: YamlMap?): WorkspaceGitMode {
         val written = workspace.string("workspace.git", "git") ?: return WorkspaceGitMode.Hooks
@@ -668,6 +664,10 @@ class WorkflowLoader(
         throw WorkflowError.InvalidConfig("workspace.git must be clone, got \"$written\"")
     }
 
+    /**
+     * m4-20: `kinds.<kind>.<key>`, null when absent; present, one of the [choices] by its [wire] name, any other value
+     * refused, so a misspelled value never falls back to the default silently.
+     */
     private fun <T> parseChoice(
         kindKey: String,
         kind: YamlMap?,

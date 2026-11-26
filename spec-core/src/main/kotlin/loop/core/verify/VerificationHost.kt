@@ -61,6 +61,26 @@ interface VerificationHost {
     /** The base commit of [workflow]'s pull request delivery, fetched host side now (bl-32), or why it could not be. */
     suspend fun fetchBase(workflow: WorkflowFile): Result<String>
 
+    /**
+     * bl-28: the commit [ref] resolves to in the project repository of [workflow], read host side, never in the
+     * workspace; null when it resolves to none. The default reads nothing.
+     */
+    suspend fun projectCommit(
+        workflow: WorkflowFile,
+        ref: String,
+    ): String? = null
+
+    /**
+     * bl-28: imports the verified commit [sha] of the clone [workspace] into the project of [workflow] and writes its
+     * `loop/<key>` branch there; why it failed, null when it was imported or there was nothing to import. The default
+     * imports nothing.
+     */
+    suspend fun importVerified(
+        workflow: WorkflowFile,
+        workspace: Path,
+        sha: String,
+    ): String? = null
+
     /** The pull request delivery of [workflow] (m2-25), recording through [record]. */
     fun pullRequestDelivery(
         workflow: WorkflowFile,

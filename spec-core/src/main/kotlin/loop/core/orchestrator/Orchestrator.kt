@@ -62,6 +62,7 @@ import loop.api.WaitingIssues
 import loop.core.channel.HumanNotices
 import loop.core.channel.NoticeSettings
 import loop.core.delivery.AutoMerge
+import loop.core.delivery.CloneDelivery
 import loop.core.delivery.DeliveryFacts
 import loop.core.delivery.DeliveryOutcome
 import loop.core.delivery.MergeCheck
@@ -194,15 +195,21 @@ import loop.core.workflow.TokenCounters
 import loop.core.workflow.ToolOutputTrim
 import loop.core.workflow.WorkflowDiff
 import loop.core.workflow.WorkflowFile
+import loop.core.workflow.WorkspaceGitMode
 import loop.core.workflow.promptLimitFor
+import loop.core.workspace.CloneBase
+import loop.core.workspace.CloneStart
+import loop.core.workspace.CloneState
 import loop.core.workspace.HookListener
 import loop.core.workspace.HookName
 import loop.core.workspace.HookResult
 import loop.core.workspace.Workspace
+import loop.core.workspace.WorkspaceClones
 import loop.core.workspace.WorkspaceKey
 import loop.core.workspace.WorkspaceManager
 import loop.core.workspace.hookEnv
 import java.io.File
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
@@ -733,6 +740,41 @@ class Orchestrator(
             ): Result<FrozenCommands> = this@Orchestrator.freezeAcceptanceCommands(issueId, identifier, commands, digest, record)
 
             override suspend fun fetchBase(workflow: WorkflowFile): Result<String> = deliveryStep { executorFor(workflow).fetchBase() }
+
+            override suspend fun projectCommit(
+                workflow: WorkflowFile,
+                ref: String,
+            ): String? =
+                try {
+                    withContext(io) {
+                        workspaceGit
+                            .run(workflow.path.parent, "rev-parse", "--verify", "-q", "$ref^{commit}")
+                            .takeIf { it.code == 0 }
+                            ?.stdout
+                            ?.trim()
+                            ?.takeIf { it.isNotEmpty() }
+                    }
+                } catch (e: IOException) {
+                    null
+                }
+
+            override suspend fun importVerified(
+                workflow: WorkflowFile,
+                workspace: Path,
+                sha: String,
+            ): String? {
+                val clones = workspacesFor(workflow).clones ?: return null
+                return try {
+                    withContext(io) {
+                        if (clones.state(workspace) == CloneState.Clone) {
+                            clones.import(workspace, sha, WorkspaceClones.branch(WorkspaceKey(workspace.fileName.toString())))
+                        }
+                    }
+                    null
+                } catch (e: IOException) {
+                    "cannot import the verified $sha into the project: ${e.message}"
+                }
+            }
 
             override fun pullRequestDelivery(
                 workflow: WorkflowFile,
@@ -2877,8 +2919,10 @@ class Orchestrator(
             // bl-59: every hook of the attempt, not the agent, gets the base fetched right before them.
             val fetchedBase = attemptBase()
             val hookEnv = env + fetchedBase?.let { mapOf(LOOP_BASE_REF to it) }.orEmpty()
+            val codeKind = workflow.config.kinds?.code
+            val configuredBase = codeKind?.guards?.base ?: codeKind?.delivery?.pullRequest?.base
             val workspace =
-                workspaces.prepare(key, hookEnv, hooks).getOrElse { error ->
+                workspaces.prepare(key, hookEnv, hooks, cloneStart(fetchedBase, configuredBase)).getOrElse { error ->
                     recordPhase(AttemptPhase.PreparingWorkspace, mapOf(Phase.WORKSPACE_KEY to key.value))
                     return Executed(AttemptOutcome.Failed, error.describe())
                 }
@@ -2957,8 +3001,6 @@ class Orchestrator(
                 log.log(LogLevel.WARN, "prompt_record", LogOutcome.FAILED, logContext(), reason = reason)
             }
 
-            val codeKind = workflow.config.kinds?.code
-            val configuredBase = codeKind?.guards?.base ?: codeKind?.delivery?.pullRequest?.base
             val ctx =
                 AttemptContext(
                     runId = runId,
@@ -4131,6 +4173,26 @@ class Orchestrator(
             return facts.head to facts.tree
         }
 
+        /**
+         * bl-28: what a clone workspace starts from, when the workflow clones: the fetched base, else the base
+         * [resolveAttemptBaseRef] resolves in the project, and `refs/loop/base/<base>` at the fetched base for the agent.
+         */
+        private suspend fun cloneStart(
+            fetchedBase: String?,
+            configuredBase: String?,
+        ): CloneStart {
+            if (workspaces.clones == null) return CloneStart()
+            val base = resolveAttemptBaseRef(null, fetchedBase, configuredBase)
+            val name =
+                kind
+                    ?.config
+                    ?.delivery
+                    ?.pullRequest
+                    ?.base
+            val baseRef = if (name != null && fetchedBase != null) CloneBase(name, fetchedBase) else null
+            return CloneStart(base, baseRef)
+        }
+
         /** The commit `refs/loop/base/[base]` of the project repository is at, null when it has none or git fails (bl-59). */
         private suspend fun lastFetchedBase(base: String): String? = resolveGitCommit(workflow.path.parent, MergeCheck.baseRef(base))
 
@@ -4139,7 +4201,7 @@ class Orchestrator(
          * starts, so the agent cannot move a branch ref inside the workspace to defeat pre-turn checks.
          */
         private suspend fun resolveAttemptBaseRef(
-            workspace: Path,
+            workspace: Path?,
             fetchedBase: String?,
             configuredBase: String?,
         ): String? {
@@ -4152,7 +4214,10 @@ class Orchestrator(
                 }
             for (candidate in candidates) {
                 resolveGitCommit(workflow.path.parent, candidate)?.let { return it }
-                resolveGitCommit(workspace, candidate)?.let { return it }
+                // bl-28: a clone's refs are the agent's, so in clone mode the base is resolved in the project only.
+                if (workspace != null && workflow.workspaceGit != WorkspaceGitMode.Clone) {
+                    resolveGitCommit(workspace, candidate)?.let { return it }
+                }
             }
             return configuredBase
         }
@@ -4827,7 +4892,12 @@ class Orchestrator(
     }
 
     /** The executor of [workflow]'s pull request delivery, [NoDelivery] when this host has none. */
-    private fun executorFor(workflow: WorkflowFile): DeliveryExecutor = deliveryFor(workflow) ?: NoDelivery
+    private fun executorFor(workflow: WorkflowFile): DeliveryExecutor {
+        val executor = deliveryFor(workflow) ?: NoDelivery
+        // bl-28: a clone's commit is imported into the project before every push of it.
+        val clones = workspacesFor(workflow).clones ?: return executor
+        return CloneDelivery(executor, clones) { key -> workspacesFor(workflow).locate(key) }
+    }
 
     /** The result of a delivery call on [io], an exception it throws turned into its failure. */
     private suspend fun <T> deliveryStep(block: suspend () -> Result<T>): Result<T> =
