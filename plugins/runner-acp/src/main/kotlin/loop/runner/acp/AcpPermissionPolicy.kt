@@ -11,6 +11,10 @@ import kotlinx.serialization.json.put
 import loop.runner.process.DeniedCommands
 import loop.runner.process.HoldoutFolder
 import loop.runner.process.ProtectedWorkspaceRoots
+import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
 import java.util.Locale
@@ -79,17 +83,21 @@ internal class AcpPermissionPolicy(
 
         val args = toolCall["args"] as? JsonObject
         val rawInput = toolCall["rawInput"] as? JsonObject
-        val locations = extractLocationPaths(toolCall["locations"])
-        val cwd = extractCwd(rawInput, args)
 
         val refusal =
-            when {
-                isMcpTool(name) -> if (readOnly) READ_ONLY else evaluateMcp(name!!)
-                isCommandTool(name, kind) -> evaluateCommand(rawInput, args, locations, cwd) ?: READ_ONLY.takeIf { readOnly }
-                isWriteTool(name, kind) -> evaluateFileWrite(rawInput, args, locations, cwd) ?: READ_ONLY.takeIf { readOnly }
-                isReadTool(name, kind) -> evaluateFileRead(rawInput, args, locations, cwd)
-                kind == "think" -> null
-                else -> UNSUPPORTED_TOOL
+            try {
+                val locations = extractLocationPaths(toolCall["locations"])
+                val cwd = extractCwd(rawInput, args)
+                when {
+                    isMcpTool(name) -> if (readOnly) READ_ONLY else evaluateMcp(name!!)
+                    isCommandTool(name, kind) -> evaluateCommand(rawInput, args, locations, cwd) ?: READ_ONLY.takeIf { readOnly }
+                    isWriteTool(name, kind) -> evaluateFileWrite(rawInput, args, locations, cwd) ?: READ_ONLY.takeIf { readOnly }
+                    isReadTool(name, kind) -> evaluateFileRead(rawInput, args, locations, cwd)
+                    kind == "think" -> null
+                    else -> UNSUPPORTED_TOOL
+                }
+            } catch (e: UnreadablePath) {
+                e.reason
             }
 
         return if (refusal == null) {
@@ -271,8 +279,8 @@ internal class AcpPermissionPolicy(
             .flatMap { loc ->
                 listOfNotNull(
                     loc.string("path")?.takeIf { it.isNotBlank() },
-                    loc.string("uri")?.removePrefix("file://")?.takeIf { it.isNotBlank() },
-                )
+                    loc.string("uri")?.takeIf { it.isNotBlank() },
+                ).map(::normalizePath)
             }
 
     private fun extractInputPaths(obj: JsonObject?): List<String> {
@@ -285,14 +293,14 @@ internal class AcpPermissionPolicy(
                         .takeIf { it.isString }
                         ?.contentOrNull
                         ?.takeIf { it.isNotBlank() }
-                        ?.let { paths += it }
+                        ?.let { paths += normalizePath(it) }
                 is JsonArray ->
                     value.forEach { item ->
                         (item as? JsonPrimitive)
                             ?.takeIf { it.isString }
                             ?.contentOrNull
                             ?.takeIf { it.isNotBlank() }
-                            ?.let { paths += it }
+                            ?.let { paths += normalizePath(it) }
                     }
                 else -> Unit
             }
@@ -304,10 +312,11 @@ internal class AcpPermissionPolicy(
         rawInput: JsonObject?,
         args: JsonObject?,
     ): Path {
-        val raw =
+        val given =
             CWD_KEYS.firstNotNullOfOrNull { key -> rawInput?.string(key)?.takeIf { it.isNotBlank() } }
                 ?: CWD_KEYS.firstNotNullOfOrNull { key -> args?.string(key)?.takeIf { it.isNotBlank() } }
                 ?: return workspace
+        val raw = normalizePath(given)
         return try {
             val path = Path.of(raw)
             if (path.isAbsolute) path else workspace.resolve(path)
@@ -341,6 +350,11 @@ internal class AcpPermissionPolicy(
         name: String?,
         kind: String?,
     ): Boolean = name in READ_TOOLS || kind in READ_KINDS
+
+    /** Thrown by [normalizePath] for a path value the rules cannot read; the request is declined with [reason]. */
+    private class UnreadablePath(
+        val reason: String,
+    ) : Exception(reason)
 
     private fun JsonObject.string(key: String): String? = (get(key) as? JsonPrimitive)?.takeIf { it !is JsonNull && it.isString }?.content
 
@@ -406,6 +420,74 @@ internal class AcpPermissionPolicy(
                 "root",
                 "paths",
             )
+
+        /** A URI scheme of two letters or more, so a Windows drive letter or `README.md:10` is never read as one. */
+        private val URI_SCHEME = Regex("""^([A-Za-z][A-Za-z0-9+.-]+):/""")
+        private val FILE_SCHEME = Regex("""^(file):""", RegexOption.IGNORE_CASE)
+
+        /**
+         * The path [raw] names, read the same way wherever the request carries it (`locations[].path`,
+         * `locations[].uri`, a `rawInput` or `args` path key, a working directory key). A `file:` URI (`file:///x`,
+         * `file://localhost/x`, `file:/x`, any case of the scheme) becomes its absolute path with percent encoding
+         * decoded. Any other URI scheme, a `file:` URI naming another host, no path or broken percent encoding throws
+         * [UnreadablePath], so the request is declined and never read as a workspace relative path. A plain path is
+         * returned unchanged.
+         */
+        private fun normalizePath(raw: String): String {
+            val scheme = (FILE_SCHEME.find(raw) ?: URI_SCHEME.find(raw))?.groupValues?.get(1) ?: return raw
+            if (!scheme.equals("file", ignoreCase = true)) {
+                val safe = scheme.lowercase(Locale.ROOT)
+                throw UnreadablePath("it names a path by the URI scheme $safe, which the rules do not read")
+            }
+            val rest = raw.substring(scheme.length + 1)
+            val encodedPath =
+                if (rest.startsWith("//")) {
+                    val afterSlashes = rest.substring(2)
+                    val slash = afterSlashes.indexOf('/')
+                    val host = if (slash < 0) afterSlashes else afterSlashes.substring(0, slash)
+                    if (host.isNotEmpty() && !host.equals("localhost", ignoreCase = true)) {
+                        throw UnreadablePath("it names a file URI host other than localhost, which the rules do not read")
+                    }
+                    if (slash < 0) throw UnreadablePath("it names a file URI with no path")
+                    afterSlashes.substring(slash)
+                } else {
+                    rest
+                }
+            val decoded = percentDecode(encodedPath) ?: throw UnreadablePath("it names a file URI with broken percent encoding")
+            if (!decoded.startsWith("/") || '\u0000' in decoded) throw UnreadablePath("it names a file URI with no absolute path")
+            return decoded
+        }
+
+        /** Decodes `%XX` escapes as UTF-8 bytes, or null when an escape is broken or the bytes are not UTF-8. */
+        private fun percentDecode(text: String): String? {
+            if ('%' !in text) return text
+            val bytes = ByteArrayOutputStream()
+            var i = 0
+            while (i < text.length) {
+                if (text[i] == '%') {
+                    if (i + 2 >= text.length) return null
+                    val hi = Character.digit(text[i + 1], 16)
+                    val lo = Character.digit(text[i + 2], 16)
+                    if (hi < 0 || lo < 0) return null
+                    bytes.write(hi * 16 + lo)
+                    i += 3
+                } else {
+                    val next = text.indexOf('%', i).let { if (it < 0) text.length else it }
+                    bytes.write(text.substring(i, next).toByteArray(Charsets.UTF_8))
+                    i = next
+                }
+            }
+            val decoder =
+                Charsets.UTF_8
+                    .newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+            return try {
+                decoder.decode(ByteBuffer.wrap(bytes.toByteArray())).toString()
+            } catch (e: CharacterCodingException) {
+                null
+            }
+        }
 
         const val UNREADABLE: String = "its params are not the shape the rule reads"
         const val NO_COMMAND: String = "it has no command, so the rules cannot read what would run"

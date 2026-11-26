@@ -400,4 +400,165 @@ class AcpPermissionPolicyTest {
         assertEquals("opt-reject-once", outcomeOf(cmdDeny)["optionId"]!!.jsonPrimitive.content)
         assertTrue(AcpPermissionPolicy.INTERNAL_LOOP_DIR in cmdDeny.note, cmdDeny.note)
     }
+
+    /**
+     * A `session/request_permission` frame of the shape agy 1.5.18 sends for a file tool called by URI: the recorded
+     * frame envelope, `args` and `rawInput` carrying the `Path` as given, and `locations[].path`. Each path is optional
+     * so a test can put a `file:` URI in one place only.
+     */
+    private fun agyFileFrame(
+        name: String,
+        kind: String,
+        locationPath: String? = null,
+        argsPath: String? = null,
+        rawInputPath: String? = null,
+        rawInputPaths: List<String>? = null,
+    ): AcpFrame.Request {
+        val input =
+            buildJsonObject {
+                if (argsPath != null) put("Path", argsPath)
+                put("toolSummary", "Read the file")
+            }
+        val raw =
+            buildJsonObject {
+                if (rawInputPath != null) put("Path", rawInputPath)
+                if (rawInputPaths != null) put("paths", buildJsonArray { rawInputPaths.forEach { add(JsonPrimitive(it)) } })
+                put("toolSummary", "Read the file")
+            }
+        val frame =
+            buildJsonObject {
+                put("jsonrpc", "2.0")
+                put("method", AcpHandshake.METHOD_REQUEST_PERMISSION)
+                put(
+                    "params",
+                    buildJsonObject {
+                        put("sessionId", "49b1bcf6-00cb-402b-bd98-732c89023e5e")
+                        put(
+                            "toolCall",
+                            buildJsonObject {
+                                put("sessionUpdate", "tool_call")
+                                put("toolCallId", "call_15852867417007420952")
+                                put("name", name)
+                                put("args", input)
+                                put("status", "pending")
+                                put("kind", kind)
+                                put("title", "Read the file")
+                                put("rawInput", raw)
+                                if (locationPath != null) {
+                                    put("locations", buildJsonArray { add(buildJsonObject { put("path", locationPath) }) })
+                                }
+                            },
+                        )
+                        put(
+                            "options",
+                            buildJsonArray {
+                                add(
+                                    buildJsonObject {
+                                        put("optionId", "allow")
+                                        put("name", "Allow")
+                                        put("kind", "allow_once")
+                                    },
+                                )
+                                add(
+                                    buildJsonObject {
+                                        put("optionId", "deny")
+                                        put("name", "Deny")
+                                        put("kind", "reject_once")
+                                    },
+                                )
+                            },
+                        )
+                    },
+                )
+                put("id", "1")
+            }
+        return assertIs<AcpFrame.Request>(AcpFraming.decode(frame.toString()))
+    }
+
+    private fun fileUri(path: Path): String = "file://" + path.toAbsolutePath().toString()
+
+    @Test
+    fun `file URIs in locations path, rawInput and args path keys under the holdout are declined`() {
+        val secret = holdoutDir.resolve("secret.txt").toString()
+        val spaced = holdoutDir.resolve("has space").createDirectories().resolve("secret.txt")
+        val uris =
+            mapOf(
+                "plain" to "file://$secret",
+                "localhost" to "file://localhost$secret",
+                "percent encoded" to "file://" + spaced.toString().replace(" ", "%20"),
+                "percent encoded letters" to "file://" + secret.replace("secret", "%73%65cret"),
+                "single slash" to "file:$secret",
+                "upper case scheme" to "FILE://$secret",
+            )
+        for ((label, uri) in uris) {
+            for ((name, kind) in listOf("read_file" to "read", "write_file" to "edit")) {
+                val frames =
+                    mapOf(
+                        "locations[].path" to agyFileFrame(name, kind, locationPath = uri),
+                        "args.Path" to agyFileFrame(name, kind, argsPath = uri),
+                        "rawInput.Path" to agyFileFrame(name, kind, rawInputPath = uri),
+                        "rawInput.paths" to agyFileFrame(name, kind, rawInputPaths = listOf("README.md", uri)),
+                    )
+                for ((where, frame) in frames) {
+                    val context = "$label $name $where"
+                    val write = assertIs<AcpPermissionPolicy.Answer.Write>(policy().answer(frame), context)
+                    assertEquals("deny", outcomeOf(write)["optionId"]!!.jsonPrimitive.content, context)
+                    assertTrue(AcpPermissionPolicy.HOLDOUT in write.note, "$context: ${write.note}")
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `the agy 1_5_18 frame shape with the URI only in args and rawInput is declined, and a workspace URI is allowed`() {
+        val uri = fileUri(holdoutDir.resolve("secret.txt"))
+        val outside =
+            agyFileFrame("read_file", "read", locationPath = workspace.resolve("README.md").toString(), argsPath = uri, rawInputPath = uri)
+        val deny = assertIs<AcpPermissionPolicy.Answer.Write>(policy().answer(outside))
+        assertEquals("deny", outcomeOf(deny)["optionId"]!!.jsonPrimitive.content)
+        assertTrue(AcpPermissionPolicy.HOLDOUT in deny.note, deny.note)
+
+        val inside = fileUri(workspace.resolve("README.md"))
+        val allowed =
+            agyFileFrame(
+                "read_file",
+                "read",
+                locationPath = workspace.resolve("README.md").toString(),
+                argsPath = inside,
+                rawInputPath = inside,
+            )
+        val allow = assertIs<AcpPermissionPolicy.Answer.Write>(policy().answer(allowed))
+        assertEquals("allow", outcomeOf(allow)["optionId"]!!.jsonPrimitive.content, allow.note)
+    }
+
+    @Test
+    fun `a file URI under a protected workspace root is declined for writes`() {
+        val uri = fileUri(workspace.resolve(".agents/hooks.json"))
+        val write = assertIs<AcpPermissionPolicy.Answer.Write>(policy().answer(agyFileFrame("write_file", "edit", argsPath = uri)))
+        assertEquals("deny", outcomeOf(write)["optionId"]!!.jsonPrimitive.content)
+        assertTrue(AcpPermissionPolicy.PROTECTED_ROOT in write.note, write.note)
+    }
+
+    @Test
+    fun `another URI scheme, a remote file host or broken percent encoding fails closed naming the problem`() {
+        val cases =
+            mapOf(
+                "https://example.com/README.md" to "URI scheme https",
+                "vscode-remote://ssh/x/README.md" to "URI scheme vscode-remote",
+                "file://otherhost/tmp/README.md" to "file URI host",
+                "file:///tmp/%zzREADME.md" to "percent encoding",
+                "file://" to "file URI",
+            )
+        for ((value, expected) in cases) {
+            for (frame in listOf(
+                agyFileFrame("read_file", "read", argsPath = value),
+                agyFileFrame("read_file", "read", locationPath = value),
+            )) {
+                val write = assertIs<AcpPermissionPolicy.Answer.Write>(policy().answer(frame), value)
+                assertEquals("deny", outcomeOf(write)["optionId"]!!.jsonPrimitive.content, value)
+                assertTrue(expected in write.note, "$value: ${write.note}")
+                assertTrue("example.com" !in write.note && "otherhost" !in write.note, "$value: ${write.note}")
+            }
+        }
+    }
 }

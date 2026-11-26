@@ -363,6 +363,32 @@ class SqliteEventStore private constructor(
         }
 
     /**
+     * Removes an approval wait neither approved nor sent back in one write transaction (bl-224), so a reaction and a
+     * `loop approve` or `loop send-back` at the same time never lose the human's decision. See
+     * [WaitingIssues.endUndecidedApproval].
+     */
+    override suspend fun endUndecidedApproval(
+        projectId: ProjectId,
+        issueId: String,
+    ): Result<WaitingIssue?> =
+        transaction {
+            val found =
+                connection.prepareStatement(SELECT_WAITING_ONE).use { st ->
+                    st.setString(1, projectId.value)
+                    st.setIssue(2, issueId)
+                    st.executeQuery().use { rs -> if (rs.next()) rs.toWaitingIssue(ids) else null }
+                }
+            if (found != null && found.reason == WaitReason.Approval && !found.approved && !found.sentBack) {
+                connection.prepareStatement(DELETE_WAITING).use { st ->
+                    st.setString(1, projectId.value)
+                    st.setIssue(2, issueId)
+                    st.executeUpdate()
+                }
+            }
+            found
+        }
+
+    /**
      * Marks an approval wait approved in one write transaction (m2-24), so `loop approve` and a running Loop that
      * ends the wait at the same time never leave half of each. See [WaitingIssues.approve].
      */

@@ -819,7 +819,8 @@ fun dollarBudgetWarning(
  * The startup checks of the runner named by `runner.kind` on this machine: an error that stops the run, and warnings.
  * `claude-code` checks root uid, managed settings and, since bl-210, that `<command> --version` is of the pinned major
  * version, the preflight built by [claudeCode] from `runners.claude-code.command` and [hostEnv]; `acp` with
- * `preset: agy` checks binary reachability, pinned major version `1`, and warns on login or model list issues. The
+ * `preset: agy` checks binary reachability, pinned major version `1` and at least `1.5.18` (the minimum since
+ * 2026-11-26), and warns on login or model list issues. The
  * check of a plugin's section against its profile (m3-05) is the loader's, on every load.
  */
 fun runnerPreflight(
