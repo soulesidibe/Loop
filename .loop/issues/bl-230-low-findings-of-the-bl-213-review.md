@@ -1,7 +1,7 @@
 ---
 id: bl-230
 title: "Low findings of the bl-213 review, agy session resume"
-state: todo
+state: done
 priority: 3
 labels: [ready-for-agent]
 blocked_by: []
@@ -55,6 +55,11 @@ Filed from the merge risk review of bl-213. Triage decides which findings are wo
   - error_detection: partial, A refused folder falls back to a fresh session with a loop: line and sweep failures go to warnings, but an allow list that is too strict silently costs the resume.
   - band floor medium: the reviewer's diff was cut to fit its prompt limit, 1 of 7 changed files left out in whole or in part
   Once approved, Loop runs the merge check again and merges.
+
+2026-11-26 13:12Z loop: Loop did not merge pull request #92, ci: Actions runs did not pass: build (failure). The pull request stays open and the result waits for a new approval.
+  Failed runs:
+  - build (failure): https://github.com/soulesidibe/Loop/actions/runs/45826126281
+  Rerun the runs on GitHub or fix the branch, then approve again with loop approve.
 
 ## Agent Brief
 
