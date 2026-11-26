@@ -508,7 +508,7 @@ class WorktreeHooksTest {
     }
 
     @Test
-    fun `the hooks of a clone never wait on the lock and before_remove leaves the folder to Loop`() {
+    fun `after_create and before_run of a clone never wait on the lock, before_remove prunes stale worktrees`() {
         // A lock held by a live process: a hook that took it would time out after one second.
         val lock = repo.dir.resolve(".git/loop-worktree-hooks.lock").createDirectories()
         lock.resolve("pid").writeText("${ProcessHandle.current().pid()}\n")
@@ -516,6 +516,16 @@ class WorktreeHooksTest {
 
         val workspace = runBlocking { cloneManager.prepare(key, locked) }.getOrThrow()
         val run = runBlocking { cloneManager.beforeRun(workspace, locked)!! }
+
+        assertTrue(run.ok, run.output)
+        assertEquals("${ProcessHandle.current().pid()}\n", lock.resolve("pid").readText())
+
+        // A worktree deleted without before_remove (before a switch to clones) keeps its entry and holds its branch.
+        lock.toFile().deleteRecursively()
+        val gone = root.resolve("gone")
+        repo.git("worktree", "add", "--quiet", "-b", "loop/gone", gone.toString())
+        gone.toFile().deleteRecursively()
+        assertTrue(gone.toString() in repo.worktrees(), repo.worktrees().toString())
         val events = mutableListOf<HookResult>()
         val listener =
             object : HookListener {
@@ -528,13 +538,150 @@ class WorktreeHooksTest {
             }
         val removed = runBlocking { cloneManager.remove(key, locked, listener) }.getOrThrow()
 
-        assertTrue(run.ok, run.output)
         assertTrue(removed)
         assertTrue(events.single().ok, events.single().output)
         assertFalse(workspacePath.exists())
         assertEquals("", repo.git("for-each-ref", "refs/loop/workspace/", "refs/loop/workspace-base/"))
         assertEquals(listOf(repo.dir.toString()), repo.worktrees())
-        assertEquals("${ProcessHandle.current().pid()}\n", lock.resolve("pid").readText())
+        assertFalse(repo.dir.resolve(".git/loop-worktree-hooks.lock").exists())
+    }
+
+    @Test
+    fun `a core worktree written in the clone cannot point the hooks at the project`() {
+        val workspace = prepareClone()
+        workspace.path.resolve("README.md").writeText("Agent.\n")
+        workspace.path.resolve("planted.txt").writeText("planted\n")
+        repo.git("add", "-A", cwd = workspace.path)
+        repo.commit("agent", cwd = workspace.path)
+        repo.git("checkout", "--quiet", "-b", "elsewhere", "main", cwd = workspace.path)
+        repo.git("sparse-checkout", "disable", cwd = workspace.path)
+        val config = repo.dir.resolve(".git/config").readText()
+        repo.git("config", "core.worktree", repo.dir.toString(), cwd = workspace.path)
+
+        val created = runBlocking { ShellHookRunner().run(HookName.AFTER_CREATE, hooks.afterCreate!!, workspace.path, env, 30_000) }
+        val run = runBlocking { cloneManager.beforeRun(workspace, env)!! }
+
+        assertTrue(created.ok, created.output)
+        assertTrue(run.ok, run.output)
+        assertEquals("A project.\n", repo.dir.resolve("README.md").readText())
+        assertFalse(repo.dir.resolve("planted.txt").exists())
+        assertTrue(repo.dir.resolve(".loop/issues/m1-04.md").exists())
+        assertEquals("", repo.git("status", "--porcelain", "--untracked-files=no"))
+        assertEquals("main", repo.git("symbolic-ref", "--short", "HEAD"))
+        assertEquals(config, repo.dir.resolve(".git/config").readText())
+        // The hooks worked on the clone itself.
+        assertEquals("Agent.\n", workspace.path.resolve("README.md").readText())
+        assertFalse(workspace.path.resolve(".loop/issues").exists())
+    }
+
+    @Test
+    fun `a commondir written in the clone makes the hooks refuse it, before git runs there`() {
+        val workspace = prepareClone()
+        repo.git("checkout", "--quiet", "-b", "elsewhere", cwd = workspace.path)
+        repo.git("sparse-checkout", "disable", cwd = workspace.path)
+        val config = repo.dir.resolve(".git/config").readText()
+        val refs = repo.git("for-each-ref")
+        workspace.path.resolve(".git/commondir").writeText("${repo.dir.resolve(".git")}\n")
+
+        val created = runBlocking { ShellHookRunner().run(HookName.AFTER_CREATE, hooks.afterCreate!!, workspace.path, env, 30_000) }
+        val run = runBlocking { cloneManager.beforeRun(workspace, env)!! }
+        val remove = runBlocking { ShellHookRunner().run(HookName.BEFORE_REMOVE, hooks.beforeRemove!!, workspace.path, env, 30_000) }
+
+        assertFalse(created.ok, created.output)
+        assertTrue("is neither a worktree nor a clone of" in created.output, created.output)
+        assertFalse(run.ok, run.output)
+        assertFalse(remove.ok, remove.output)
+        assertTrue("is not a clone of" in remove.output, remove.output)
+        assertEquals(config, repo.dir.resolve(".git/config").readText())
+        assertEquals(refs, repo.git("for-each-ref"))
+        assertEquals(listOf(repo.dir.toString()), repo.worktrees())
+    }
+
+    @Test
+    fun `a clone whose alternates were deleted is refused, and Loop still removes it`() {
+        val workspace = prepareClone()
+        java.nio.file.Files
+            .delete(workspace.path.resolve(".git/objects/info/alternates"))
+
+        val created = runBlocking { ShellHookRunner().run(HookName.AFTER_CREATE, hooks.afterCreate!!, workspace.path, env, 30_000) }
+        val events = mutableListOf<HookResult>()
+        val listener =
+            object : HookListener {
+                override suspend fun finished(
+                    script: String,
+                    result: HookResult,
+                ) {
+                    events += result
+                }
+            }
+        val removed = runBlocking { cloneManager.remove(key, env, listener) }.getOrThrow()
+
+        assertFalse(created.ok, created.output)
+        assertTrue(removed)
+        assertFalse(events.single().ok, events.single().output)
+        assertFalse(workspacePath.exists())
+        assertEquals(listOf(repo.dir.toString()), repo.worktrees())
+    }
+
+    @Test
+    fun `a worktree workspace from before the switch to clones is refused, then removed with its entry`() {
+        val old = prepare()
+        old.path.resolve("work.txt").writeText("agent work\n")
+        repo.git("add", "work.txt", cwd = old.path)
+        repo.commit("agent commit", cwd = old.path)
+        val tip = repo.git("rev-parse", "loop/m1-04")
+
+        val reused = runBlocking { cloneManager.prepare(key, env) }
+        val removed = runBlocking { cloneManager.remove(key, env) }.getOrThrow()
+
+        val error = reused.exceptionOrNull()
+        assertTrue(error is WorkspaceError.Clone, error.toString())
+        assertTrue("is not a clone of the project" in error.message.orEmpty(), error.message)
+        assertTrue(removed)
+        assertFalse(workspacePath.exists())
+        assertEquals(listOf(repo.dir.toString()), repo.worktrees())
+        assertEquals(tip, repo.git("rev-parse", "loop/m1-04"))
+    }
+
+    @Test
+    fun `clone and worktree hooks run on one repository at once`() {
+        fun keyEnv(key: WorkspaceKey) = repo.env + hookEnv(repo.dir.resolve("WORKFLOW.md"), "id-${key.value}", key.value, key)
+        val trees = listOf(WorkspaceKey("w-1"), WorkspaceKey("w-2"))
+        val cloned = listOf(WorkspaceKey("c-1"), WorkspaceKey("c-2"))
+        repeat(MIXED_ROUNDS) { round ->
+            val recorder = Recorder()
+            val start = CountDownLatch(1)
+            val prepared =
+                runBlocking {
+                    (trees.map { manager to it } + cloned.map { cloneManager to it })
+                        .map { (m, k) ->
+                            async(Dispatchers.IO) {
+                                start.await()
+                                m.prepare(k, keyEnv(k), recorder).map { m.beforeRun(it, keyEnv(k), recorder) }
+                            }
+                        }.also { start.countDown() }
+                        .awaitAll()
+                }
+            prepared.forEach { it.getOrElse { e -> fail("round $round: ${e.message}\n${(e as? WorkspaceError.Hook)?.result?.output}") } }
+            trees.forEach { assertTrue(repo.dir.resolve("workspaces/${it.value}").toString() in repo.worktrees(), "round $round") }
+            (trees + cloned).forEach { assertFalse(repo.dir.resolve("workspaces/${it.value}/.loop/issues").exists(), "round $round") }
+
+            val stop = CountDownLatch(1)
+            val removed =
+                runBlocking {
+                    (trees.map { manager to it } + cloned.map { cloneManager to it })
+                        .map { (m, k) ->
+                            async(Dispatchers.IO) {
+                                stop.await()
+                                m.remove(k, keyEnv(k), recorder)
+                            }
+                        }.also { stop.countDown() }
+                        .awaitAll()
+                }
+            removed.forEach { assertTrue(it.getOrThrow(), "round $round") }
+            recorder.results.forEach { assertTrue(it.ok, "round $round: ${it.hook.id} ${it.reason}\n${it.output}") }
+            assertEquals(listOf(repo.dir.toString()), repo.worktrees(), "round $round")
+        }
     }
 
     @Test

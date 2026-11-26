@@ -25,7 +25,8 @@
 #
 # A workspace that is a clone of the project (workspace.git: clone, bl-28) shares
 # nothing with the project but its objects, read only, so the hooks take no lock
-# for it: see is_clone and clone_git.
+# for it, except for the worktree prune of before_remove, which runs in the
+# project: see is_clone and clone_git.
 #
 # Every variable and function here starts with loop_lock_, except common_dir,
 # is_clone and clone_git, whose own variables start with loop_clone_.
@@ -39,35 +40,49 @@ common_dir() {
 }
 
 # True when the folder $1 is a clone Loop made of the repository $2: its .git is a
-# folder whose objects/info/alternates names the object folder of $2, the test
-# Loop itself uses. Runs git in $2 only, never in $1. The main checkout and a clone
-# of another repository are not clones of $2.
+# folder, not a symlink, with no commondir file, whose objects/info/alternates (a
+# regular file, not a symlink) names the object folder of $2 on a line, trimmed,
+# that does not start with #. That is the test of Loop's WorkspaceClones.state,
+# plus the commondir refusal: a commondir file would make git use another
+# repository's refs and config. Runs git in $2 only, never in $1. The main
+# checkout and a clone of another repository are not clones of $2.
 is_clone() {
-    [ -d "$1/.git" ] && [ -f "$1/.git/objects/info/alternates" ] || return 1
+    [ -d "$1/.git" ] && [ ! -L "$1/.git" ] || return 1
+    [ ! -e "$1/.git/commondir" ] && [ ! -L "$1/.git/commondir" ] || return 1
+    loop_clone_alternates="$1/.git/objects/info/alternates"
+    [ -f "$loop_clone_alternates" ] && [ ! -L "$loop_clone_alternates" ] || return 1
     loop_clone_objects=$(cd "$(common_dir "$2")/objects" && pwd -P) || return 1
     while IFS= read -r loop_clone_line || [ -n "$loop_clone_line" ]; do
-        [ -n "$loop_clone_line" ] || continue
+        loop_clone_line=$(printf '%s' "$loop_clone_line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+        case $loop_clone_line in
+            '' | '#'*) continue ;;
+        esac
         loop_clone_borrowed=$(cd "$1/.git/objects" && cd "$loop_clone_line" 2>/dev/null && pwd -P) || continue
         if [ "$loop_clone_borrowed" = "$loop_clone_objects" ]; then
             return 0
         fi
-    done <"$1/.git/objects/info/alternates"
+    done <"$loop_clone_alternates"
     return 1
 }
 
 # Runs git in the clone $1 with the arguments that follow. The clone's config is
-# the agent's, so git runs there with no hook, no fsmonitor and no transport but
-# file, so a lazy fetch of a missing object from an ext:: promisor cannot run a
-# program of its choice (bl-246). GIT_ALLOW_PROTOCOL=file is that guard on every
-# git version; GIT_NO_LAZY_FETCH=1 (git 2.45 and later, ignored before) also stops
-# a lazy fetch over file. Both are set on the git command itself, after anything
-# the caller passed, since GIT_NO_LAZY_FETCH=0 would turn lazy fetch back on.
-# `-c protocol.allow=never` would not do it: a protocol.<name>.allow in the clone's
-# config wins over it.
+# the agent's, so git runs there:
+# - on the clone itself: GIT_DIR, GIT_COMMON_DIR and GIT_WORK_TREE name the clone,
+#   so a core.worktree or a commondir written there cannot point git at the
+#   project's files, index or config (-c core.worktree= would not do it);
+# - with no hook and no fsmonitor;
+# - with no transport but file, so a lazy fetch of a missing object from an ext::
+#   promisor cannot run a program of its choice (bl-246). GIT_ALLOW_PROTOCOL=file
+#   is that guard on every git version; GIT_NO_LAZY_FETCH=1 (git 2.45 and later,
+#   ignored before) also stops a lazy fetch over file. `-c protocol.allow=never`
+#   would not do it: a protocol.<name>.allow in the clone's config wins over it.
+# Every variable is set on the git command itself, after anything the caller
+# passed, since for one GIT_NO_LAZY_FETCH=0 would turn lazy fetch back on.
 clone_git() {
     loop_clone_dir=$1
     shift
-    GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=file \
+    GIT_DIR="$loop_clone_dir/.git" GIT_COMMON_DIR="$loop_clone_dir/.git" GIT_WORK_TREE="$loop_clone_dir" \
+        GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=file \
         git -C "$loop_clone_dir" -c core.hooksPath=/dev/null -c core.fsmonitor=false "$@"
 }
 

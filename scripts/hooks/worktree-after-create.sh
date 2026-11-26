@@ -62,9 +62,15 @@ if is_clone "$workspace" "$repo"; then
     exit 0
 fi
 
-if [ -e "$workspace/.git" ]; then
-    top=$(git -C "$workspace" rev-parse --show-toplevel 2>/dev/null || true)
-    if [ "$top" = "$workspace" ] && [ "$(common_dir "$workspace")" = "$(common_dir "$repo")" ]; then
+# A linked worktree's .git is a file. Git runs unpinned in a worktree, so any other
+# .git (a folder that is not a clone of the project, a symlink) is refused here,
+# before git runs in it: its config could point git at the project's files.
+if [ -e "$workspace/.git" ] || [ -L "$workspace/.git" ]; then
+    top=
+    if [ -f "$workspace/.git" ] && [ ! -L "$workspace/.git" ]; then
+        top=$(git -C "$workspace" rev-parse --show-toplevel 2>/dev/null || true)
+    fi
+    if [ -n "$top" ] && [ "$top" = "$workspace" ] && [ "$(common_dir "$workspace")" = "$(common_dir "$repo")" ]; then
         # A hard kill between worktree add and read-tree leaves an empty index: finish the checkout.
         # Once extensions.worktreeConfig is on, the sparse pattern only writes this worktree's own config.
         if [ "$(git -C "$workspace" config --type=bool --get extensions.worktreeConfig 2>/dev/null || :)" = true ]; then
