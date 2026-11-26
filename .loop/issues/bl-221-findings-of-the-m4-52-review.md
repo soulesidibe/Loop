@@ -1,7 +1,7 @@
 ---
 id: bl-221
 title: "Findings of the m4-52 review, an answer can be lost before the agent reads it"
-state: todo
+state: done
 priority: 1
 labels: [ready-for-agent]
 blocked_by: []
