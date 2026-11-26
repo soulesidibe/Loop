@@ -214,7 +214,11 @@ class ResourceGrantsTest {
             assertNull(lock("iphone").prepared)
             grants.pass()
 
-            assertEquals(listOf("prepare iphone a1", "prepared iphone a1", "release iphone", "prepare iphone a2", "prepared iphone a2"), calls)
+            assertEquals(
+                listOf("prepare iphone a1", "prepared iphone a1", "release iphone", "prepare iphone a2", "prepared iphone a2"),
+                calls,
+                "a2 is prepared on the next tick, after the release",
+            )
             assertEquals(AttemptId("a2"), lock("iphone").attemptId)
             assertEquals(mapOf("udid" to "UDID-iphone"), lock("iphone").prepared)
             assertEquals(emptyList(), provider.overlaps)
