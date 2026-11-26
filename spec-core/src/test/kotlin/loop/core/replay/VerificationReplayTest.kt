@@ -15,8 +15,10 @@ import loop.core.verify.CoreCheckRunner
 import loop.core.verify.WorkspaceFingerprint
 import loop.core.workflow.AgentConfig
 import loop.core.workflow.CheckConfig
+import loop.core.workflow.DeliveryConfig
 import loop.core.workflow.KindConfig
 import loop.core.workflow.KindsConfig
+import loop.core.workflow.PullRequestConfig
 import loop.core.workflow.WorkflowConfig
 import loop.core.workflow.WorkflowFile
 import loop.core.workflow.commandRunner
@@ -114,6 +116,42 @@ class VerificationReplayTest {
             assertEquals(listOf(false, true), replayed.checks.map { it.rerun })
             assertEquals(listOf(1, 1), replayed.checks.map { it.exitCode })
             assertContains(replayed.checks.last().line(), "check 0 rerun failed with exit code 1")
+            val findings = replayed.findings ?: error("no findings")
+            assertContains(findings, "Check: test -f goodbye.txt\nExit code: 1")
+            assertFalse("Your last result" in findings, "the lead speaks to the agent: $findings")
+            assertFalse(replayed.baseUnpinned)
+        }
+
+    @Test
+    fun `a check sees the run id replay, never the one of the attempt`() =
+        runTest {
+            val fingerprint = WorkspaceFingerprint.of(workspace).getOrThrow()
+            val kind = KindConfig(listOf(CheckConfig.Command("true")))
+            val seen = mutableListOf<String?>()
+            val runner =
+                CheckRunner { _, _, env ->
+                    seen += env["LOOP_RUN_ID"]
+                    CheckResult(0, false, 1)
+                }
+
+            site(fingerprint).use { replay(runner).run(target(kind), recorded(fingerprint), it) }
+
+            assertEquals(listOf<String?>("replay"), seen)
+        }
+
+    @Test
+    fun `a diff policy with no recorded base says the base is unpinned`() =
+        runTest {
+            val fingerprint = WorkspaceFingerprint.of(workspace).getOrThrow()
+            val kind =
+                KindConfig(
+                    listOf(CheckConfig.DiffPolicy(protect = listOf("WORKFLOW.md"))),
+                    delivery = DeliveryConfig(pullRequest = PullRequestConfig()),
+                )
+
+            val replayed = site(fingerprint).use { replay().run(target(kind), recorded(fingerprint), it) }
+
+            assertTrue(replayed.baseUnpinned, replayed.toString())
         }
 
     @Test
@@ -128,6 +166,7 @@ class VerificationReplayTest {
             val hidden = replayed.checks.filter { it.holdout }
             assertEquals(listOf("hidden check 1 failed", "hidden check 1 rerun failed"), hidden.map { it.line() })
             assertFalse(replayed.checks.any { "secret" in it.line() })
+            assertNull(replayed.findings, "a hidden check shows no findings")
         }
 
     @Test

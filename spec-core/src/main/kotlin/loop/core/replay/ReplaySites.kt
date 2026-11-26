@@ -27,10 +27,14 @@ sealed interface ReplaySite : AutoCloseable {
         override fun close() = cleanup()
     }
 
-    /** A temporary git worktree of [repository] at the recorded commit [head], the workspace being gone or changed. */
+    /**
+     * A temporary git worktree of [repository] at the recorded commit [head]; [state] says why the workspace was not
+     * copied: it is gone, it changed since the verdict, or its copy failed.
+     */
     class Worktree(
         val repository: Path,
         val head: String,
+        val state: String,
         override val dir: Path,
         private val cleanup: () -> Unit,
     ) : ReplaySite {
@@ -62,11 +66,16 @@ sealed interface Placement {
  * - else nothing: the workspace is gone or changed and the recorded state cannot be rebuilt.
  *
  * A site is ready only when its own fingerprint equals the recorded one, so a verdict is never given on another state.
+ * A workspace holding a link to an absolute path inside itself is never copied: the copy would keep the link, and a
+ * check writing through it would write in the workspace.
+ *
+ * [warn] gets one sentence for each part of a site that closing it could not remove.
  */
 class ReplaySites(
     private val fingerprinter: Fingerprinter = WorkspaceFingerprint,
     private val git: WorkspaceGit = WorkspaceGit(),
     private val tempParent: () -> Path = { Files.createTempDirectory("loop-replay-") },
+    private val warn: (String) -> Unit = {},
 ) {
     /**
      * The site of the [recorded] fingerprint: from the [workspace] where the attempt ran, null when it is gone, or from
@@ -111,9 +120,11 @@ class ReplaySites(
         workspace: Path,
         tree: Boolean,
     ): Placement {
-        val (parent, source) =
+        val (source, parent) =
             try {
-                tempParent().toRealPath() to workspace.toRealPath()
+                // The workspace first, so a workspace that cannot be read leaves no empty temporary folder.
+                val source = workspace.toRealPath()
+                source to tempParent().toRealPath()
             } catch (e: Exception) {
                 return Placement.Refused("cannot copy the workspace: ${describe(e)}", recorded, UNKNOWN)
             }
@@ -130,7 +141,7 @@ class ReplaySites(
                 registered = true
                 Files.list(dir).use { entries -> entries.filter { it.name != GIT_DIR }.toList() }.forEach(::deleteAll)
             }
-            copyTree(source, dir)
+            copyTree(source, dir, workspace.toAbsolutePath().normalize())
             val copied = (if (tree) fingerprinter.tree(dir) else fingerprinter.of(dir)).getOrThrow()
             if (copied != recorded) throw IOException("the copy of the workspace is at $copied")
             Placement.Ready(ReplaySite.WorkspaceCopy(workspace, dir, cleanup))
@@ -167,7 +178,7 @@ class ReplaySites(
             registered = true
             val rebuilt = fingerprinter.of(dir).getOrThrow()
             if (rebuilt != recorded) throw IOException("the worktree at $head is at $rebuilt")
-            Placement.Ready(ReplaySite.Worktree(repository, head, dir, cleanup))
+            Placement.Ready(ReplaySite.Worktree(repository, head, state, dir, cleanup))
         } catch (e: Exception) {
             cleanup()
             refused("cannot rebuild it: ${describe(e)}")
@@ -176,15 +187,28 @@ class ReplaySites(
 
     /**
      * Removes the site in [dir], its worktree from [repository] first when it has one, then its temporary [parent]. A
-     * failure is left behind, never thrown: the verdict stands, and `git worktree prune` forgets a worktree whose folder is gone.
+     * failure is never thrown, the verdict stands: what is left behind goes to [warn], with `git worktree prune` as the
+     * remedy for a worktree still registered.
      */
     private fun removeSite(
         repository: Path?,
         parent: Path,
         dir: Path,
     ) {
-        if (repository != null) runCatching { git.run(repository, "worktree", "remove", "--force", "--force", dir.toString()) }
-        runCatching { deleteAll(parent) }
+        if (repository != null) {
+            val why =
+                runCatching { git.run(repository, "worktree", "remove", "--force", "--force", dir.toString()) }.fold(
+                    onSuccess = { removed -> if (removed.code == 0) null else removed.firstLine() },
+                    onFailure = ::describe,
+                )
+            if (why != null) {
+                warn(
+                    "cannot remove the replay worktree $dir from $repository: $why. Delete the folder, then run " +
+                        "git worktree prune in $repository",
+                )
+            }
+        }
+        runCatching { deleteAll(parent) }.onFailure { warn("cannot remove the temporary folder $parent: ${describe(it)}") }
     }
 
     /** Adds a detached worktree of the repository of [repository] at [head] in [dir]. */
@@ -197,11 +221,27 @@ class ReplaySites(
         if (added.code != 0) throw IOException("git worktree add failed: ${added.firstLine()}")
     }
 
-    /** Copies every entry under [from] into [to] but the top `.git`, links as links, with their attributes. */
+    /**
+     * Copies every entry under [from] into [to] but the top `.git`, links as links, with their attributes. Refuses a
+     * tree that holds a link to an absolute path inside [from], or inside [alias], the path [from] was reached by.
+     */
     private fun copyTree(
         from: Path,
         to: Path,
+        alias: Path = from,
     ) {
+        val inside =
+            Files.walk(from).use { stream ->
+                stream
+                    .filter { !it.startsWith(from.resolve(GIT_DIR)) && Files.isSymbolicLink(it) }
+                    .filter { link -> Files.readSymbolicLink(link).let { it.isAbsolute && (it.normalize().startsWith(from) || it.normalize().startsWith(alias)) } }
+                    .map { from.relativize(it).toString() }
+                    .toList()
+            }
+        if (inside.isNotEmpty()) {
+            val shown = inside.take(LINKS_SHOWN).joinToString(", ") + if (inside.size > LINKS_SHOWN) " and ${inside.size - LINKS_SHOWN} more" else ""
+            throw IOException("a check could write in the workspace through links to an absolute path inside the workspace: $shown")
+        }
         Files.walk(from).use { stream ->
             stream
                 .filter { it != from && !it.startsWith(from.resolve(GIT_DIR)) }
@@ -227,6 +267,7 @@ class ReplaySites(
         private const val TREE = "tree:"
         private const val GIT_DIR = ".git"
         private const val SITE = "workspace"
+        private const val LINKS_SHOWN = 5
         private val COMMIT = Regex("[0-9a-f]{40}|[0-9a-f]{64}")
 
         private fun deleteAll(path: Path) {

@@ -23,7 +23,8 @@ class ReplaySitesTest {
     private val project: Path = root.resolve("project").createDirectories()
     private val workspace: Path = root.resolve("workspaces/t-1")
     private val temp: Path = root.resolve("tmp").createDirectories()
-    private val sites = ReplaySites(tempParent = { Files.createTempDirectory(temp, "replay-") })
+    private val warnings = mutableListOf<String>()
+    private val sites = ReplaySites(tempParent = { Files.createTempDirectory(temp, "replay-") }, warn = { warnings += it })
 
     private fun git(
         dir: Path,
@@ -119,6 +120,8 @@ class ReplaySitesTest {
 
         assertFalse(site.dir.exists(), "the worktree folder is removed")
         assertEquals(listed, worktrees(), "the worktree is removed from the project repository")
+        assertEquals("the workspace is gone", site.state)
+        assertEquals(emptyList(), warnings)
     }
 
     @Test
@@ -133,6 +136,60 @@ class ReplaySitesTest {
             assertEquals("hello\n", site.dir.resolve("hello.txt").readText())
         }
         assertEquals("changed after the verdict\n", workspace.resolve("hello.txt").readText())
+        assertEquals("the workspace changed since the verdict", site.state)
+    }
+
+    @Test
+    fun `a workspace with an absolute link into itself is never copied, so a clean fingerprint is rebuilt instead`() {
+        val head = gitWorkspace()
+        val recorded = fingerprint(workspace)
+        // Untracked would change the fingerprint, so the link is committed.
+        Files.createSymbolicLink(workspace.resolve("inside"), workspace.resolve("hello.txt"))
+        Files.createSymbolicLink(workspace.resolve("relative"), Path.of("hello.txt"))
+        git(workspace, "add", ".")
+        git(workspace, "commit", "-q", "-m", "links")
+        val linked = fingerprint(workspace)
+        val newHead = git(workspace, "rev-parse", "HEAD").trim()
+
+        val site = assertIs<ReplaySite.Worktree>(assertIs<Placement.Ready>(sites.place(linked, Result.success(workspace), project)).site)
+        site.use {
+            assertEquals(newHead, site.head)
+            assertContains(site.state, "cannot copy the workspace")
+            assertContains(site.state, "links to an absolute path inside the workspace: inside")
+            assertFalse("relative" in site.state, site.state)
+        }
+        assertTrue(head != newHead && recorded != linked)
+    }
+
+    @Test
+    fun `a plain folder with an absolute link into itself is refused, never copied`() {
+        workspace.createDirectories().resolve("report.md").writeText("# Report\n")
+        Files.createSymbolicLink(workspace.resolve("inside"), workspace.resolve("report.md"))
+        val recorded = WorkspaceFingerprint.tree(workspace).getOrThrow()
+
+        val refused = assertIs<Placement.Refused>(sites.place(recorded, Result.success(workspace), project))
+
+        assertContains(refused.reason, "links to an absolute path inside the workspace: inside")
+        assertEquals(recorded, refused.current)
+        assertTrue(Files.list(temp).use { it.count() } == 0L, "nothing is left behind")
+    }
+
+    @Test
+    fun `what cannot be removed on close is reported with git worktree prune as the remedy`() {
+        gitWorkspace()
+        val recorded = fingerprint(workspace)
+        val site = assertIs<ReplaySite.WorkspaceCopy>(assertIs<Placement.Ready>(sites.place(recorded, Result.success(workspace), project)).site)
+        val locked = site.dir.resolve("locked").createDirectories()
+        locked.resolve("f.txt").writeText("kept\n")
+        locked.toFile().setWritable(false)
+        try {
+            site.close()
+
+            assertTrue(warnings.any { "git worktree prune" in it && site.dir.toString() in it }, warnings.toString())
+            assertTrue(warnings.any { "cannot remove the temporary folder ${site.dir.parent}" in it }, warnings.toString())
+        } finally {
+            locked.toFile().setWritable(true)
+        }
     }
 
     @Test

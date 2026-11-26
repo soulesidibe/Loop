@@ -15,6 +15,7 @@ import loop.api.TrackerError
 import loop.core.delivery.PullRequestDelivery
 import loop.core.events.CheckEvent
 import loop.core.events.CheckFinished
+import loop.core.events.DiffBaseUnpinned
 import loop.core.events.EventDefinition
 import loop.core.events.ReplayVerdict
 import loop.core.events.Verdict
@@ -26,6 +27,7 @@ import loop.core.verify.EvidenceWriter
 import loop.core.verify.Fingerprinter
 import loop.core.verify.Verification
 import loop.core.verify.VerificationHost
+import loop.core.verify.VerifyFindings
 import loop.core.verify.WorkspaceFingerprint
 import loop.core.waiting.Wait
 import loop.core.workflow.WorkflowFile
@@ -83,12 +85,19 @@ data class ReplayedCheck(
     }
 }
 
-/** What a replay found: the new [verdict] on the state at [fingerprint], why it is `unverified`, and each check run. */
+/**
+ * What a replay found: the new [verdict] on the state at [fingerprint], why it is `unverified`, and each check run.
+ * [findings] is what the verification found when it refuted, redacted, without the lead it gives the agent, null for
+ * a hidden check. [baseUnpinned] is true when a `diff_policy` read `guards.base` as it is now, the verdict having
+ * recorded no base.
+ */
 data class ReplayedVerdict(
     val verdict: String,
     val fingerprint: String,
     val reason: String?,
     val checks: List<ReplayedCheck>,
+    val findings: String? = null,
+    val baseUnpinned: Boolean = false,
 )
 
 /**
@@ -115,7 +124,8 @@ class VerificationReplay(
         site: ReplaySite,
     ): ReplayedVerdict {
         val recordedEvents = mutableListOf<Pair<EventDefinition, Map<String, String>>>()
-        val host = ReplayHost(recorded.runId ?: REPLAY_RUN)
+        // Never the attempt's run id, so a check can tell a replay from a run.
+        val host = ReplayHost(REPLAY_RUN)
         val verification =
             Verification(
                 issueId = target.issueId,
@@ -155,6 +165,14 @@ class VerificationReplay(
             fingerprint = verdict[Verdict.FINGERPRINT] ?: Verification.UNKNOWN_FINGERPRINT,
             reason = verdict[Verdict.REASON],
             checks = checks,
+            findings =
+                verification.findings
+                    ?.text
+                    ?.takeIf { it != VerifyFindings.HIDDEN }
+                    // The first line is the lead, which speaks to the agent.
+                    ?.substringAfter('\n', "")
+                    ?.takeIf { it.isNotBlank() },
+            baseUnpinned = recordedEvents.any { it.first == DiffBaseUnpinned },
         )
     }
 
@@ -221,7 +239,7 @@ class VerificationReplay(
     }
 
     companion object {
-        /** The run id a check of a replay sees when the recorded verdict names no run. */
+        /** The run id a check of a replay sees as `LOOP_RUN_ID`. */
         private val REPLAY_RUN = RunId("replay")
 
         private const val NO_WRITE = "a replay fetches and delivers nothing"
