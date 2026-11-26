@@ -12,8 +12,10 @@ import java.nio.file.Path
 
 /**
  * bl-28: the delivery of a workflow with `workspace.git: clone`. A clone's commits live in its own object folder, so
- * before every push of a workspace commit, the pull request push and the merge check's push of the merged head, the
- * commit is imported into the project by its id ([WorkspaceClones.import]) and `refs/heads/loop/<key>` written there.
+ * before every push of a workspace commit, the pull request push (first try and retry) and the merge check's push of
+ * the merged head, the commit is imported into the project by its id ([WorkspaceClones.import]) and
+ * `refs/heads/loop/<key>` written there. The orchestrator hands this executor to the pull request delivery and to the
+ * merge check alike, so an import that failed on the verified verdict is made again here.
  * The push of [delegate] then runs unchanged and checks that branch. Every other step is [delegate]'s.
  *
  * A branch that is not `loop/<key>`, a workspace that is gone and a workspace that is not a clone are pushed as they

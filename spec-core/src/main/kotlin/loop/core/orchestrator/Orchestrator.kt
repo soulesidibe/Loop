@@ -4943,15 +4943,13 @@ class Orchestrator(
 
     /**
      * The pull request delivery of [workflow] (m2-25), recording through [record]. A host with no executor for it
-     * gives a delivery whose every push fails for good, so the result waits for a human and nothing is lost.
+     * gives a delivery whose every push fails for good, so the result waits for a human and nothing is lost. bl-28:
+     * through [executorFor], so with clone workspaces every push, the delivery retry's too, imports its commit first.
      */
     private fun pullRequestDelivery(
         workflow: WorkflowFile,
         record: suspend (EventDefinition, Map<String, String>) -> Unit,
-    ): PullRequestDelivery {
-        val executor = deliveryFor(workflow) ?: NoDelivery
-        return PullRequestDelivery(executor, tracker, redactor, clock, io, record)
-    }
+    ): PullRequestDelivery = PullRequestDelivery(executorFor(workflow), tracker, redactor, clock, io, record)
 
     /** Records a [definition] event for the issue and attempt of [wait], outside any attempt; a sink failure is logged. */
     private suspend fun recordWaitEvent(

@@ -451,7 +451,8 @@ class Verification(
 
     /**
      * bl-28: a verified clean commit of a clone workspace is imported into the project at once, with its `loop/<key>`
-     * branch, so it outlives the workspace. A failure is a warning: every push imports it again first.
+     * branch, so it outlives the workspace. A failure is a warning: the pull request push and the merge check push
+     * run through the clone delivery of the orchestrator, which imports the commit again before it pushes.
      */
     private suspend fun importVerified(fingerprint: String) {
         if (!cloned) return

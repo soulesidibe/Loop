@@ -64,6 +64,10 @@ class PullRequestDeliveryCommandTest {
     /** The pull requests of the fake repository, by head (`acme:loop/<key>`), all open. */
     private val open: MutableMap<String, JsonObject> = Collections.synchronizedMap(mutableMapOf())
 
+    /** Run by the server before it answers a search of pull requests, the delivery's step before its push. */
+    @Volatile
+    private var beforeFind: () -> Unit = {}
+
     /** The bare repository behind `/acme/widgets.git` of the server, created by [setUp]. */
     private val bare: Path get() = root.resolve("remote.git")
 
@@ -102,6 +106,7 @@ class PullRequestDeliveryCommandTest {
         if (method != "GET") writes += "$method $path" to Json.parseToJsonElement(written).jsonObject
         return when {
             method == "GET" && path == pulls -> {
+                beforeFind()
                 val head = query.split("&").firstOrNull { it.startsWith("head=") }?.removePrefix("head=")
                 200 to JsonArray(listOfNotNull(open[head])).toString()
             }
@@ -209,6 +214,7 @@ class PullRequestDeliveryCommandTest {
         remote: Boolean = true,
         merge: Boolean = false,
         clone: Boolean = false,
+        check: String = "test -f hello.txt",
     ): TestRepo {
         fixture.issue("t-1")
         writeAgent()
@@ -228,7 +234,7 @@ class PullRequestDeliveryCommandTest {
                 |        api_url: "$apiUrl"${if (merge) MERGE_CONFIG else ""}
                 |    verify:
                 |      checks:
-                |        - { type: command, run: "test -f hello.txt" }
+                |        - { type: command, run: "$check" }
                 """.trimMargin(),
         )
         val repo =
@@ -565,6 +571,25 @@ class PullRequestDeliveryCommandTest {
         assertEquals(remoteMain, repo.git("rev-parse", "refs/loop/base/main"))
         assertEquals(0, repo.gitResult("merge-base", "--is-ancestor", "refs/loop/base/main", "HEAD", cwd = workspace).exitCode)
         assertTokenAbsent(repo)
+    }
+
+    @Test
+    fun `bl-28 an import that fails at verification is made again by the pull request push, which delivers`() {
+        // The check locks the project's loop/t-1 ref, so the import on the verified verdict fails; the server unlocks
+        // it when the delivery looks for the pull request, right before the push.
+        val lock = fixture.projectDir.resolve(".git/refs/heads/loop/t-1.lock")
+        val repo = setUp("auto", clone = true, check = "test -f hello.txt && mkdir -p ${lock.parent} && touch ${lock}")
+        beforeFind = { Files.deleteIfExists(lock) }
+
+        val run = runOnce()
+
+        val workspace = fixture.workspace("t-1")
+        val verified = repo.git("rev-parse", "HEAD", cwd = workspace)
+        assertContains(run.stdout + run.stderr + fixture.humanLog.readText(), "cannot import the verified $verified")
+        assertEquals(verified, repo.git("rev-parse", "refs/heads/loop/t-1"), "the push imported it")
+        assertEquals(verified, remoteBranch(repo))
+        assertEquals(1, posts().size)
+        assertEquals("review", fixture.stateOf("t-1"))
     }
 
     @Test
