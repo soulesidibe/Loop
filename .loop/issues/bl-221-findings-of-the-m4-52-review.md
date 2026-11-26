@@ -3,7 +3,7 @@ id: bl-221
 title: "Findings of the m4-52 review, an answer can be lost before the agent reads it"
 state: todo
 priority: 1
-labels: [ready-for-agent, needs-info]
+labels: [ready-for-agent]
 blocked_by: []
 ---
 
@@ -67,7 +67,8 @@ Filed from the merge risk review of m4-52. Triage decides which findings are wor
 - Preflight's prompt sample for `loop.answer`.
 - `docs/PLAN.md` 8.9 variable table: add a `loop.answer` row, add `answer` and `sent_back` to the `loop.retry_kind` row, and the send back to the `loop.verify_findings` row.
 
-**Acceptance criteria:**
+## Acceptance criteria
+
 - [ ] An orchestrator test: an issue answered with `loop answer` whose attempt ends at a budget breach before its first turn, then a second dispatch whose first prompt still carries the question and the answer with retry kind `answer`.
 - [ ] The same with a session that fails to open, and the same two cases after `loop send-back` (the reason and retry kind `sent_back` carried again).
 - [ ] A test that a completed first turn ends the wait, so a third dispatch carries no answer.
@@ -78,7 +79,8 @@ Filed from the merge risk review of m4-52. Triage decides which findings are wor
 - [ ] `docs/PLAN.md` 8.9 rows and `docs/spec-decisions.md` updated, including the corrected sentence that a failure only before the render keeps the wait.
 - [ ] `./gradlew build` passes.
 
-**Out of scope:**
+## Out of scope
+
 - The other reactions' wait races (bl-224) and the `WORKFLOW.md` `sent_back` block (bl-222 finding 3, a human step).
 - Persisting `verifyFindings` of refutations or reactions.
 - bl-222 findings 2 and 4 to 7.
