@@ -1,7 +1,7 @@
 ---
 id: bl-240
 title: "The acp runner echoes JSON-RPC error bodies, account fields included, as runner output"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-agent]
 blocked_by: []
