@@ -1,29 +1,104 @@
 ---
 id: bl-246
-title: "Low findings of the bl-28 review, clone workspaces"
+title: "Clone workspaces: no lazy fetch in Loop's git, and create with loop/<key> checked out in the project"
 state: todo
 priority: 2
-labels: [needs-triage]
+labels: [ready-for-agent]
 blocked_by: []
+area: [spec-core/src/main/kotlin/loop/core/verify/WorkspaceGit.kt, spec-core/src/main/kotlin/loop/core/verify/CoreChecks.kt, spec-core/src/main/kotlin/loop/core/workspace, spec-core/src/main/kotlin/loop/core/orchestrator/Orchestrator.kt, plugins/runner-acp/src/main/kotlin/loop/runner/acp/ProtectedRootsCheck.kt, plugins/tracker-github/src/main/kotlin/loop/tracker/github/GitPush.kt, plugins/tracker-github/src/test/kotlin/loop/tracker/github/GitPushTest.kt, spec-core/src/test/kotlin/loop/core/workspace, spec-core/src/test/kotlin/loop/core/verify, plugins/runner-acp/src/test/kotlin/loop/runner/acp/ProtectedRootsCheckTest.kt, cli/src/test/kotlin/loop/cli/CloneWorkspaceCommandTest.kt, docs/workspaces.md, docs/spec-decisions.md]
 ---
 
 ## Parent
 
-None. Backlog, not scheduled in a milestone. Low findings of the merge risk reviews of pull request #98 (bl-28), Sonnet 5.5 and a Fable 5.2 recheck that replayed the git commands, on 2026-11-26. Attempt 1 was sent back for four mediums (the import copied the whole history, a half made clone could be reused with `origin`, the pull request push skipped the import, a clone ref could pick the diff base); attempt 2 fixed them, confirmed by replay, and its reviews found only the lows below; approved. Priority 2 for items 1 and 2, which the recheck would do first.
+None. Backlog, not scheduled in a milestone. Low findings of the merge risk reviews of pull request #98 (bl-28), Sonnet 5.5 and a Fable 5.2 recheck that replayed the git commands, on 2026-11-26. Attempt 1 was sent back for four mediums (the import copied the whole history, a half made clone could be reused with `origin`, the pull request push skipped the import, a clone ref could pick the diff base); attempt 2 fixed them, confirmed by replay, and its reviews found only the lows below; approved. Items 1 and 2 are needed before clone mode is switched on and stay here; items 3 to 10 moved to bl-251.
 
 ## What
 
-1. **Lazy fetch can run an agent program on the host.** With `extensions.partialClone` set to an `ext::` URL, `protocol.ext.allow=always` and a branch ref at a missing object in the clone's config, the pinned `rev-parse` of reuse (and `diff`) ran the program as the operator. `git remote` lists nothing, so reuse does not remove it. Needs a hostile agent, same class as bl-55, already present with worktrees. Fix: `GIT_NO_LAZY_FETCH=1` in the `WorkspaceGit` and `CoreChecks.Git` environment, or `protocol.allow=never` in the pins, with a test.
+1. **Lazy fetch can run an agent program on the host.** With `extensions.partialClone` set to an `ext::` URL, `protocol.ext.allow=always` and a branch ref at a missing object in the clone's config, the pinned `rev-parse` of reuse (and `status`, `rev-list`, `cat-file -e`, `merge`) ran the program as the operator. `git remote` lists nothing, so reuse does not remove it. Needs a hostile agent, same class as bl-55, already present with worktrees. Fix: `GIT_NO_LAZY_FETCH=1` in the `WorkspaceGit` and `CoreChecks.Git` environment, or `protocol.allow=never` in the pins, with a test.
 2. **Create fails when the project has `loop/<key>` checked out.** The clone already makes that local branch, so `checkout -b` fails with "a branch named 'loop/<key>' already exists" on every attempt until the operator switches away; the import also moves a branch the operator has checked out, with no warning. Fix: `checkout -B`, and a warning (or refusal) when the project has `loop/<key>` checked out.
-3. **False comment on `IMPORT_PINS`.** It says the `-c` pins reach the `upload-pack` in the clone and win over its config; replayed, `GIT_CONFIG_PARAMETERS` is empty there. No effect today, but fix the comment and the doc sentence.
-4. **The session brief resolves a base name in the clone.** For a kind without pull request delivery, or when the fetch failed, `SessionBrief.workspace` resolves `guards.base` in the clone. Prompt text only, but it contradicts "never reads a ref of the clone". Pass the project resolved id.
-5. **Cleanup keyed on `createdNow`.** `prepare` cleans up on `prepared.createdNow`, not on "clone made by this call". With a folder left empty earlier, a failed `create` leaves its keep ref (a retry overwrites it, removal drops it), and a failure or cancel in `writeBase` right after a successful create leaves the clone to be reused without `after_create`. Track "made by this call".
-6. **The build folder is shared by two attempts of the same key.** `.loop-clone-<name>` is one path per key, so a second concurrent create would delete the first one's build. Orchestrator serialization makes it unlikely; add a unique suffix or a per key lock. A build folder left by a hard kill is only deleted by the next create of the same key, removal does not touch it.
-7. **Reuse does not check HEAD is on `loop/<key>`** (the brief asked for it). With the build aside it is no longer a sign of a half made clone, only of an agent switching branches; check `symbolic-ref HEAD` or document it.
-8. **One base keep ref per key, overwritten.** An earlier base commit merged into the clone is protected only once imported. Edge case.
-9. **Project commits outside the haves are copied again.** An agent commit on top of a project commit not reachable from the keep refs, `loop/<key>` or `refs/loop/base/*` re-copies those objects (about 2 MB in the replay). Bloat only.
-10. **A kill after the move but before `after_create`** leaves a clone reused without `after_create`, as with worktrees.
 
-Area: `spec-core/src/main/kotlin/loop/core/workspace/WorkspaceClones.kt`, `WorkspaceManager.kt`, `WorkspaceGit`, `CoreChecks.kt`, the session brief, `docs/workspaces.md`.
+Area: `WorkspaceGit`, `CoreChecks.Git`, `WorkspaceClones`, `WorkspaceManager`, the orchestrator's clone warning, `ProtectedRootsCheck` of the ACP runner, `GitPush` of the GitHub tracker, `docs/workspaces.md`, `docs/spec-decisions.md`.
 
 ## Comments
+
+2026-11-26 triage:
+
+> *This was generated by AI during triage.*
+
+Bug, ready-for-agent, priority 2. Re-scoped to items 1 and 2, the two the recheck would do first and that must land before Loop's own `WORKFLOW.md` gets `workspace.git: clone`. Items 3 to 10 are filed verbatim as bl-251 (needs-triage, priority 3).
+
+Both findings were checked against main at 785c1ab and replayed with real git 2.54.0 (Apple Git-157), the version installed on the maintainer's machine.
+
+Item 1, confirmed.
+- `WorkspaceGit` builds each process with `PINS` (`core.hooksPath`, `core.fsmonitor`, `commit.gpgsign`, `core.commitGraph`) and `MORE_PINS` on the command line and the minimal environment plus `GIT_TERMINAL_PROMPT=0` (`WorkspaceGit.kt:560`, `:562-572`, `:631-648`). Nothing stops a lazy fetch.
+- `CoreChecks.Git`, used by `diff_policy` and `changed_line_coverage` (`CoreChecks.kt:97`, `:198`), drops every `GIT_` variable and adds `GIT_OPTIONAL_LOCKS`, `GIT_NO_REPLACE_OBJECTS` and `GIT_GRAFT_FILE` only (`CoreChecks.kt:613-635`).
+- `ProtectedRootsCheck.runGit` of the ACP runner also runs git in the workspace after each turn, with its own `GIT_PINS` and `minimalGitEnv` (`ProtectedRootsCheck.kt:52`, `:66-71`, `:482-498`). Same gap.
+- Reuse reads the clone with `remote`, `rev-parse --verify -q refs/heads/loop/<key>^{commit}` and `rev-list --first-parent` (`WorkspaceClones.kt:108-128`). With `extensions.partialClone=ext::sh -c touch% <marker>` (a URL, not a remote name, so `git remote` prints nothing) and `protocol.ext.allow=always` in the clone's config and `refs/heads/loop/<key>` written by hand at a missing id, each of these pinned commands created the marker: `rev-parse`, `status --porcelain`, `rev-list`, `cat-file -e`, `merge`. Corrected after the Fable 5.2 review of the brief: in its replay `diff`, `merge-base` and `merge-tree` did not create the marker, even unguarded.
+- Fixes replayed on the same clone: `GIT_NO_LAZY_FETCH=1` in the environment stopped all of them, and so did `git --no-lazy-fetch` and `GIT_ALLOW_PROTOCOL=file`. `-c protocol.allow=never` alone did **not** stop it: the clone's `protocol.ext.allow=always` is more specific and wins over the command line `protocol.allow`. Only adding `-c protocol.ext.allow=never` stopped it, and every other scheme would need the same. So the pin direction of the original finding is insufficient as written.
+- The import fetch from the clone (`WorkspaceClones.kt:217-228`) did not create the marker even without the fix: git's `upload-pack` sets `GIT_NO_LAZY_FETCH=1` for itself by default (git-upload-pack(1)). `git clone --shared`, `checkout -B` and the import fetch all still work with `GIT_NO_LAZY_FETCH=1` set, so `protocol.file.allow` needs no change and the import's `IMPORT_PINS` (`WorkspaceClones.kt:394-403`) stay as they are.
+- Version: `GIT_NO_LAZY_FETCH` and `--no-lazy-fetch` are documented in git(1) of 2.54 and honoured, as replayed. They came with git 2.45.0 (as corrected by the Fable 5.2 review of the brief). An older git ignores the variable silently, so the guard would fail open; Loop already needs 2.38 for `merge-tree --write-tree`. The local version string is `git version 2.54.0 (Apple Git-157)`, so a version check parses the leading numbers only.
+- `GIT_NO_LAZY_FETCH=0` re-enables lazy fetch, which is why Loop sets it last, after any caller supplied variable.
+- `GitPush` of the GitHub tracker runs `rev-parse` and `cat-file -t` in the project with only the hooks and fsmonitor pins (`PROJECT_PINS`, `GitPush.kt:701`), the minimal environment and `GIT_TERMINAL_PROMPT=0` (`GitPush.kt:444-456`). A promisor set from a linked worktree reaches the project's config, so in the review's replay it ran from git in the project. It needs the same guard.
+
+Item 2, confirmed.
+- `create` clones with `--no-checkout` and then runs `checkout --quiet -b loop/<key> <start>` (`WorkspaceClones.kt:63-86`). `git clone` creates a local branch for the project's `HEAD`, so with the project on `loop/k` the clone already holds `loop/k` and `checkout -b` exits 128 with "a branch named 'loop/k' already exists". `checkout -B loop/k <start>` in the same clone succeeded, checked out the files and left `HEAD` on `refs/heads/loop/k`.
+- The import writes `refs/heads/loop/<key>` in the project with a plain `update-ref` (`WorkspaceClones.kt:242`). With the project's main checkout on `loop/k`, the update succeeded and `git status` in the project then showed the agent's change as a staged reverse edit (`M  f`), with no word from Loop.
+- `git for-each-ref --format='%(refname) %(worktreepath)' refs/heads/loop/<key>` in the project names the worktree that has the branch checked out (the main checkout or any linked worktree), and prints an empty path when none does.
+- A refused import reaches the operator as a `DeliveryError.Rejected` naming the reason (`CloneDelivery.kt:50-54`), so delivery fails closed.
+
+Chosen fix: `GIT_NO_LAZY_FETCH=1` set last in every environment Loop builds for git in a workspace or in the project (`GitPush` included), `checkout -B` at create, a warning at create and a refusal at import when the project has `loop/<key>` checked out.
+
+Revised after a Fable 5.2 review of the brief on 2026-11-26.
+
+## Agent Brief
+
+**Category:** bug
+**Summary:** in clone workspaces, no git command Loop runs in a workspace may lazily fetch from a promisor the agent configured, and creating a clone must work while the project has `loop/<key>` checked out, without ever moving that checked out branch under the operator.
+
+**Current behavior:**
+1. Every git command Loop runs in a workspace reads the workspace's config, which the agent owns. Loop pins hooks, fsmonitor, signing and the commit graph, but not lazy fetch. An agent that sets `extensions.partialClone` to an `ext::` URL, sets `protocol.ext.allow=always` and points a branch (or `HEAD`'s branch) at a missing object makes Loop's next `rev-parse`, `status`, `rev-list`, `cat-file -e` or `merge` in that workspace run an arbitrary program as the operator. This covers the clone reuse step, the fingerprint, the session brief, the workspace facts, replay, the merge check, the `diff_policy` and `changed_line_coverage` git of the core checks, and the protected roots check of the ACP runner. `GitPush` of the GitHub tracker runs `rev-parse` and `cat-file -t` in the project with the same gap, reached through a promisor set from a linked worktree. Reuse does not remove it, since `git remote` lists no remote for a URL valued `extensions.partialClone`. The same is true with worktree workspaces, through the shared config.
+2. Clone creation runs `git clone --shared --no-checkout`, which makes a local branch for the project's `HEAD`, then `checkout -b loop/<key>`. When the project has `loop/<key>` checked out, the clone already holds that branch and every attempt fails with "a branch named 'loop/<key>' already exists" until the operator switches away. The import then writes `refs/heads/loop/<key>` in the project even when a worktree of the project has it checked out, so the operator's index and files silently disagree with their branch.
+
+**Desired behavior:**
+1. **No lazy fetch.** Every git process Loop starts in a workspace, and in the project for the clone steps, runs with `GIT_NO_LAZY_FETCH=1` in its environment, set after any caller supplied extra variables so no caller can turn it off. This holds for the `WorkspaceGit` process environment (so the clone steps, the fingerprint, the merge check and every other `WorkspaceGit` user get it), for the environment of the core checks' own git runner, for the environment of the ACP runner's protected roots check, and for the process environment of `GitPush` in the GitHub tracker. `GIT_NO_LAZY_FETCH=0` re-enables lazy fetch, which is why the variable is set last. Git started by these processes (such as the `upload-pack` of the import fetch) inherits it. A command that needs a missing object then fails with git's error, which existing callers already treat as a failed call. The guard applies in both workspace modes; nothing else about worktree mode changes.
+2. **Git version.** In clone mode, when the installed git is older than 2.45.0 (which ignores `GIT_NO_LAZY_FETCH`), creating or reusing a clone fails with a named reason that gives the found version and the minimum. The check parses the leading numbers of `git version` only, since the string can carry a suffix (`git version 2.54.0 (Apple Git-157)`). Worktree mode keeps working on older git.
+3. **Create with `loop/<key>` checked out.** Clone creation creates or resets the clone's local `loop/<key>` at the start commit (the `checkout -B` behavior), so it succeeds whatever branch the project has checked out. The start commit rule is unchanged: the project's `refs/heads/loop/<key>`, else the base, else the project's `HEAD`.
+4. **Warning at create.** When a new clone is made and a worktree of the project (the main checkout or a linked worktree) has `loop/<key>` checked out, Loop logs a WARN event naming the branch and that worktree's path, and saying that delivery will refuse to move that branch until the operator switches away. The event sits beside the existing `clone_start` warning.
+5. **Refusal at import.** The import never writes `refs/heads/loop/<key>` in the project while a worktree of the project has it checked out. It fails with an `IOException` naming the branch and the worktree path and telling the operator to switch away, after the object check and before any ref write; no project ref changes. The pull request push and the merge check push therefore end as a rejected delivery with that reason, and the verification time import logs its existing warning with it. Once the operator switches away, the next import works as today.
+6. **Docs** (files agents may edit). `docs/workspaces.md`, in the clone section: Loop's own git runs with lazy fetch off, so a promisor an agent configures in its clone never runs, and clone mode needs git 2.45 or later; the threat model paragraph says this one hostile agent path is closed while build code and absolute path writes stay open until M5. In the usage list, `loop/<key>` is created or reset at the start commit, the create warning, and the import refusal when the project has `loop/<key>` checked out. `docs/spec-decisions.md`, section "Clone workspaces (extension, bl-28)": the same two rules in one or two sentences each.
+
+**Key interfaces:**
+- `WorkspaceGit` (its process environment, built in the private start step, and its `minimal` env), `WorkspaceGit.PINS` and `MORE_PINS` stay as they are.
+- `CoreChecks`' private `Git` runner, which builds its own environment from the check's env.
+- `ProtectedRootsCheck.runGit` and `minimalGitEnv` in the ACP runner plugin.
+- `GitPush.run` and its `minimalEnv` in the GitHub tracker plugin.
+- `WorkspaceClones.create`, `reuse`, `import`; `WorkspaceManager.prepare` and its clone step; the orchestrator's `clone_start` warning, next to which the new create warning goes.
+- `CloneDelivery`, which turns an import `IOException` into `DeliveryError.Rejected`; no change expected there.
+- Tests to extend: `WorkspaceClonesTest`, `WorkspaceManagerCloneTest`, `CloneWorkspaceCommandTest`, the core checks tests, `ProtectedRootsCheckTest`, `GitPushTest`. Grep large files, never read them whole.
+
+**Test recipe for the hostile clone** (replayed on git 2.54): in the clone, `git config extensions.partialClone "ext::sh -c touch% <marker>"` (`% ` is an escaped space in an `ext::` URL, so the marker path must hold no space), `git config protocol.ext.allow always`, then write a missing commit id (for example forty `1`s) into `.git/refs/heads/loop/<key>` by hand, since `update-ref` refuses a missing object. Each test must first prove the setup is live: a plain `git -C <clone> rev-parse --verify -q refs/heads/loop/<key>^{commit}` with Loop's pins but without the guard creates the marker. Then delete the marker and run Loop's code.
+
+## Acceptance criteria
+
+- [ ] With the hostile clone of the test recipe (setup proven live by the unguarded `rev-parse` creating the marker), `WorkspaceClones.reuse` and a `WorkspaceManager.prepare` that reuses the clone never create the marker; reuse fails or succeeds with a named reason, never by running the program.
+- [ ] With the same hostile config in a clone workspace, the fingerprint read, the `diff_policy` check and the `changed_line_coverage` check of the core checks, the session brief, the merge check's `git merge` and `merge-tree`, and the clone delivery import never create the marker. Each such test first shows the same call without the variable creates the marker, or says no command of that path fetches and relies on the environment test.
+- [ ] With the same hostile config in a workspace, `ProtectedRootsCheck.refusal` never creates the marker, under the same proof rule as above.
+- [ ] With the same hostile config set from a linked worktree of the project, the `GitPush` steps that run `rev-parse` and `cat-file -t` in the project never create the marker, under the same proof rule as above.
+- [ ] A unit test shows `GIT_NO_LAZY_FETCH=1` in the environment of every process `WorkspaceGit` starts, also when a caller passes `GIT_NO_LAZY_FETCH=0` as an extra variable, and in the environment of the core checks' git runner, of `ProtectedRootsCheck.runGit` and of `GitPush.run`.
+- [ ] In clone mode, a git older than 2.45.0 (a fake git that reports `git version 2.44.0`) makes clone creation fail with a reason that names the found version and 2.45.0; a fake git that reports `git version 2.54.0 (Apple Git-157)` passes; worktree mode does not check.
+- [ ] A real git test: the project's main checkout is on `loop/<key>`; creating the clone of `<key>` succeeds, the clone's `HEAD` is `refs/heads/loop/<key>` at the project's `refs/heads/loop/<key>` commit with its files checked out, and the WARN event names `loop/<key>` and the project's path. The same holds when a linked worktree of the project, not the main checkout, has `loop/<key>` checked out.
+- [ ] A real git test: with the project on `loop/<key>`, importing a new clone commit fails with a reason naming the branch and the worktree path, `refs/heads/loop/<key>` in the project is unchanged and `git status --porcelain` in the project is empty; after the project switches to another branch, the same import writes the branch at the commit.
+- [ ] `./gradlew :spec-core:test --tests "loop.core.workspace.*"` passes.
+- [ ] `./gradlew :cli:test --tests "loop.cli.CloneWorkspaceCommandTest" --tests "loop.cli.WorktreeHooksTest" --tests "loop.cli.PullRequestDeliveryCommandTest"` passes, every existing clone and worktree test unchanged.
+- [ ] `./gradlew :plugins:tracker-github:test --tests "loop.tracker.github.GitPushTest"` passes.
+- [ ] `./gradlew build` passes.
+- [ ] `docs/workspaces.md` and `docs/spec-decisions.md` state that Loop's git runs with lazy fetch off, that clone mode needs git 2.45 or later, that `loop/<key>` is created or reset at the start commit, and the create warning and the import refusal when the project has `loop/<key>` checked out.
+- [ ] The diff touches none of the protected paths: `scripts/`, `.github/`, `WORKFLOW.md`, `*.gradle.kts`, `gradle/`, `build-logic/src/`, `gradle.properties`, `gradlew*`, `.loop/specs/`, `docs/adr/`. A change one of them needs is listed under `residual_human_steps` with its exact proposed text.
+
+## Out of scope
+
+- Items 3 to 10 of the bl-28 review (bl-251).
+- Protocol pins (`protocol.allow=never` with per scheme allows, or `GIT_ALLOW_PROTOCOL`): the replay showed `GIT_NO_LAZY_FETCH` is enough for lazy fetch, and pins without every scheme are not.
+- Git run by hook scripts in the workspace (`after_create`, `before_run`, `before_remove`). They run unpinned, so a clone's `core.fsmonitor` or hooks path reaches them as well; that is a wider gap than lazy fetch and belongs with the hook script changes (protected, a human step) or the M5 sandbox.
+- Filters and merge drivers named by `.gitattributes` (bl-55, M5); agent build code run by verification; writes by absolute path.
+- Switching Loop's own `WORKFLOW.md` to `workspace.git: clone`, the hook scripts, the ADR (protected; human steps of bl-28).
