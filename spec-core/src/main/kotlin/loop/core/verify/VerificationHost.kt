@@ -71,6 +71,18 @@ interface VerificationHost {
     ): String? = null
 
     /**
+     * bl-28: writes `refs/loop/base/[base]` at [sha], a base Loop just fetched, in the clone [workspace] of [workflow],
+     * and keeps [sha] in the project for that clone; why it failed, null when it was written or [workspace] is no
+     * clone. The default writes nothing.
+     */
+    suspend fun writeCloneBase(
+        workflow: WorkflowFile,
+        workspace: Path,
+        base: String,
+        sha: String,
+    ): String? = null
+
+    /**
      * bl-28: imports the verified commit [sha] of the clone [workspace] into the project of [workflow] and writes its
      * `loop/<key>` branch there; why it failed, null when it was imported or there was nothing to import. The default
      * imports nothing.

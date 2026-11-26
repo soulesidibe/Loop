@@ -496,6 +496,13 @@ class Verification(
         return host.fetchBase(workflow).fold(
             onSuccess = { sha ->
                 record(BaseFetched, mapOf(Delivery.SHA to sha, Delivery.BASE to base))
+                // bl-28: the clone sees the base its checks use, so the agent's `git merge refs/loop/base/<base>` works.
+                if (cloned) {
+                    host.writeCloneBase(workflow, workspace, base, sha)?.let { reason ->
+                        val text = redactor.redact(reason).take(REASON_MAX)
+                        log.log(LogLevel.WARN, "clone_base", LogOutcome.FAILED, logContext(), reason = text)
+                    }
+                }
                 sha
             },
             onFailure = { error ->

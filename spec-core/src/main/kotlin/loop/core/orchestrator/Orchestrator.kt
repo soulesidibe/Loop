@@ -486,6 +486,7 @@ class Orchestrator(
             rejected = { rejected },
             onFindings = { issueId, text -> verifyFindings[issueId] = text },
             removeWorkspace = { removeWorkspace(it) },
+            cloneBase = ::writeCloneBase,
             wake = { attemptEnded.trySend(Unit) },
             onCiTimeout = { pauseQueue(it) },
             notices = notices,
@@ -757,6 +758,13 @@ class Orchestrator(
                 } catch (e: IOException) {
                     null
                 }
+
+            override suspend fun writeCloneBase(
+                workflow: WorkflowFile,
+                workspace: Path,
+                base: String,
+                sha: String,
+            ): String? = this@Orchestrator.writeCloneBase(workflow, workspace, base, sha)
 
             override suspend fun importVerified(
                 workflow: WorkflowFile,
@@ -4921,6 +4929,29 @@ class Orchestrator(
         val passed = if (diffPolicyOnly) verification.verify() else buildGate.withBuild(context) { verification.verify() }
         if (passed) return RecheckOutcome.Passed
         return RecheckOutcome.Failed(verification.unverified, verification.findings?.text)
+    }
+
+    /**
+     * bl-28: writes `refs/loop/base/[base]` at [sha], a base Loop fetched, in [workspace] when [workflow] clones and it
+     * is a clone of the project, with the base keep ref in the project; why it failed, null otherwise.
+     */
+    private suspend fun writeCloneBase(
+        workflow: WorkflowFile,
+        workspace: Path,
+        base: String,
+        sha: String,
+    ): String? {
+        val clones = workspacesFor(workflow).clones ?: return null
+        return try {
+            withContext(io) {
+                if (clones.state(workspace) == CloneState.Clone) {
+                    clones.writeBase(workspace, WorkspaceKey(workspace.fileName.toString()), base, sha)
+                }
+            }
+            null
+        } catch (e: IOException) {
+            "cannot write the base $base at $sha in the clone $workspace: ${e.message}"
+        }
     }
 
     /** The executor of [workflow]'s pull request delivery, [NoDelivery] when this host has none. */

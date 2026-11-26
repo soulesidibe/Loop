@@ -480,10 +480,14 @@ class PullRequestDeliveryCommandTest {
     }
 
     /** Puts a commit of someone else on `main` of the bare remote, so the remote's `main` is ahead of the project's; that commit. */
-    private fun advanceRemoteMain(repo: TestRepo): String {
+    private fun advanceRemoteMain(
+        repo: TestRepo,
+        file: String = "other.txt",
+        text: String = "someone else's work\n",
+    ): String {
         repo.git("checkout", "--quiet", "-b", "upstream")
-        repo.dir.resolve("other.txt").writeText("someone else's work\n")
-        repo.git("add", "other.txt")
+        repo.dir.resolve(file).writeText(text)
+        repo.git("add", file)
         repo.git("-c", "user.name=Other", "-c", "user.email=other@example.com", "commit", "--quiet", "-m", "other work")
         val remoteMain = repo.git("rev-parse", "HEAD")
         repo.git("checkout", "--quiet", "main")
@@ -590,6 +594,49 @@ class PullRequestDeliveryCommandTest {
         assertEquals(verified, remoteBranch(repo))
         assertEquals(1, posts().size)
         assertEquals("review", fixture.stateOf("t-1"))
+    }
+
+    @Test
+    fun `bl-28 the base fetch of a verification writes the base ref in the clone and keeps its commit in the project`() {
+        val repo = setUp("human", clone = true)
+        val started = advanceRemoteMain(repo)
+        fixture.workflow.writeText(
+            fixture.workflow.readText().replace(
+                "        - { type: command, run: \"test -f hello.txt\" }\n",
+                "        - { type: command, run: \"test -f hello.txt\" }\n        - { type: diff_policy }\n" +
+                    "      guards:\n        protect: [guarded/]\n",
+            ),
+        )
+        // During its turn the agent's upstream moves on: someone pushes to the remote main.
+        val moveUpstream =
+            "t=$(git --git-dir=$bare rev-parse main^{tree}) && c=$(git --git-dir=$bare -c user.name=Other -c " +
+                "user.email=other@example.com commit-tree \"${'$'}t\" -p main -m moved) && " +
+                "git --git-dir=$bare update-ref refs/heads/main \"${'$'}c\"\n"
+        fixture.agentScript.writeText(fixture.agentScript.readText().replace("mkdir -p .loop\n", moveUpstream + "mkdir -p .loop\n"))
+
+        runOnce()
+
+        val moved = repo.git("--git-dir", bare.toString(), "rev-parse", "main", cwd = root)
+        assertNotEquals(started, moved, "the remote main moved during the turn")
+        val workspace = fixture.workspace("t-1")
+        assertEquals(moved, repo.git("rev-parse", "refs/loop/base/main"))
+        assertEquals(moved, repo.git("rev-parse", "refs/loop/base/main", cwd = workspace), "the clone sees the base the check used")
+        assertEquals(moved, repo.git("rev-parse", "refs/loop/workspace-base/t-1"), "the project keeps the base the clone sees")
+    }
+
+    @Test
+    fun `bl-28 the base fetch of a merge check writes the base ref in the clone, so the agent can merge it after a conflict`() {
+        val repo = setUp("human", merge = true, clone = true)
+
+        runOnce()
+        val remoteMain = advanceRemoteMain(repo, file = "hello.txt", text = "upstream hello\n")
+        approve()
+        runOnce()
+
+        val workspace = fixture.workspace("t-1")
+        assertTrue(workspace.exists(), "a conflict keeps the workspace")
+        assertEquals(remoteMain, repo.git("rev-parse", "refs/loop/base/main", cwd = workspace))
+        assertEquals(remoteMain, repo.git("rev-parse", "refs/loop/workspace-base/t-1"))
     }
 
     @Test
