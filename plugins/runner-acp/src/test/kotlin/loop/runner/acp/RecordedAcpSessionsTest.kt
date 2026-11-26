@@ -26,7 +26,11 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
-/** Replays scrubbed `agy 1.5.16` ACP recordings through `FakeAcpServer` and `AcpRunner`. */
+/**
+ * Replays scrubbed `agy 1.5.16` ACP recordings through `FakeAcpServer` and `AcpRunner`. Loop now refuses an `agy` older
+ * than [AcpSettings.MIN_AGY_VERSION], so [resourceLines] rewrites the recorded `agentInfo.version` to the pinned version
+ * and the frames stay protocol fixtures. One test replays the untouched version and expects the refusal.
+ */
 class RecordedAcpSessionsTest {
     @TempDir
     lateinit var workspace: Path
@@ -235,6 +239,33 @@ class RecordedAcpSessionsTest {
         assertTrue(occupancy.occupancyTokens > 0L)
     }
 
+    @Test
+    fun `the untouched agy 1_5_16 recording is refused as older than the minimum`() {
+        val lines = resourceLines("/recorded/success_turn.jsonl", asRecorded = true)
+        assertTrue(lines.first().contains(RECORDED_VERSION), "the recording names agy 1.5.16")
+        val server = replayServer(dir.resolve("old"), lines.take(1))
+        val runner =
+            AcpRunner(
+                settings =
+                    AcpSettings(
+                        command = server.agyCommand,
+                        preset = AcpSettings.PRESET_AGY,
+                        model = "gemini-3.8-flash-low",
+                        readTimeout = FakeAcpServer.READ_TIMEOUT,
+                    ),
+                hostEnv = mapOf("PATH" to System.getenv("PATH"), "HOME" to home.toString()),
+            )
+
+        val events = runBlocking { withTimeout(20.seconds) { runner.run(context(), "Reply hi").toList() } }
+
+        val failed = assertIs<RunnerEvent.TurnFailed>(events.last())
+        assertEquals(
+            "response_error: agy 1.5.16 is older than the minimum version ${AcpSettings.MIN_AGY_VERSION} " +
+                "(pinned ${AcpSettings.PINNED_AGY_VERSION})",
+            failed.reason,
+        )
+    }
+
     private fun replayServer(
         targetDir: Path,
         lines: List<String>,
@@ -270,11 +301,25 @@ class RecordedAcpSessionsTest {
             }
         }
 
-    private fun resourceLines(path: String): List<String> =
+    private fun resourceLines(
+        path: String,
+        asRecorded: Boolean = false,
+    ): List<String> =
         checkNotNull(RecordedAcpSessionsTest::class.java.getResource(path)) { "missing test resource $path" }
             .readText()
             .lines()
             .filter { it.isNotBlank() }
+            .map { line ->
+                if (asRecorded || "\"agentInfo\"" !in line) {
+                    line
+                } else {
+                    line.replace(RECORDED_VERSION, "\"version\":\"${AcpSettings.PINNED_AGY_VERSION}\"")
+                }
+            }
+
+    private companion object {
+        const val RECORDED_VERSION = "\"version\":\"1.5.16\""
+    }
 
     private fun context(): AttemptContext =
         AttemptContext(
