@@ -1456,6 +1456,10 @@ class Orchestrator(
                 val previous = effective
                 effective = reloaded
                 recordReload(previous, reloaded)
+                // bl-221: what the reloaded workflow runs with but should fix, such as a template that never reads loop.answer.
+                result.warnings.forEach { warning ->
+                    log.log(LogLevel.WARN, WORKFLOW_RELOAD, LogOutcome.COMPLETED, pollContext, reason = redactor.redact(warning))
+                }
             }
             is PreflightResult.Failed -> {
                 val version = result.source?.hash ?: UNREADABLE
@@ -1878,6 +1882,14 @@ class Orchestrator(
 
         /** What renders the first prompt of a new session after a rotation, set once the first prompt rendered. */
         private var promptInputs: PromptInputs? = null
+
+        /**
+         * bl-221: the answered ask wait (m4-52) or the sent back approval wait (m4-32) whose answer or reason the first
+         * prompt carries, ended once a turn of this attempt completed. Until then it stays in the store, so an attempt
+         * that ends before, at a budget, a failed open, a stop, a crash or a failed first turn, leaves it for the next
+         * dispatch.
+         */
+        private var carried: List<Wait> = emptyList()
 
         /** The progress between this attempt's rotations (m3-12), from the workspace's HEAD at its first prompt. */
         private var progress = RotationProgress(startHead = null, startTree = null)
@@ -2876,10 +2888,8 @@ class Orchestrator(
                         return Executed(AttemptOutcome.Failed, "template error: ${error.describe()}")
                     }
             verifyFindings -= issue.id
-            // m4-52: the answer is in the prompt, so the wait ends; a failure before the render left it for the next dispatch.
-            answered?.let { endWaiting(it) }
-            // m4-32: the reason is in the prompt, so the sent back wait ends, likewise.
-            sentBack?.let { endWaiting(it) }
+            // bl-221: the answer or the reason is in the prompt, and its wait ends once a turn completed, see endCarried.
+            carried = listOfNotNull(answered, sentBack)
             promptInputs = PromptInputs(attempt, findings, workspaceReused, workspace.path, fetchedBase)
             // m3-12: only a session that can rotate needs the commit, and the working tree (bl-136), its progress starts from.
             if (runner.capabilities.occupancy) {
@@ -3609,6 +3619,17 @@ class Orchestrator(
             }
         }
 
+        /**
+         * bl-221: ends the [carried] wait once, after the first turn that completed and before its drain, so a wait the
+         * turn's own `ask` starts is never the one ended. Its failure is logged and the wait stays: the next dispatch
+         * carries the same answer or reason again.
+         */
+        private suspend fun endCarried() {
+            val waits = carried
+            carried = emptyList()
+            waits.forEach { endWaiting(it) }
+        }
+
         /** Collects one turn from [start] into [turn], then records `turn_completed` or `turn_failed`. */
         private suspend fun runTurn(
             turn: TurnResult,
@@ -3636,6 +3657,7 @@ class Orchestrator(
             if (failure == null) {
                 record(TurnCompleted, data = turn.data())
                 liftHold()
+                endCarried()
             } else {
                 val category =
                     mapOfNotNull(

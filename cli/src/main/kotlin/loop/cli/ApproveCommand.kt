@@ -26,7 +26,7 @@ import kotlin.time.Clock
  * delivers it on its next tick, so the approval survives a restart. Under `delivery.pull_request.merge` the messages and
  * `approval_given` name `on_delivered.move_to`, where the merged issue ends (bl-69). The project and the issue are resolved like
  * `loop resume`. It refuses to run inside an attempt, see [insideAttempt]. Exit codes: 1 startup, 2 unknown issue,
- * 3 store, 4 not waiting for approval, 5 inside an attempt.
+ * 3 store, 4 not waiting for approval or sent back (bl-221), 5 inside an attempt.
  */
 class ApproveCommand(
     private val host: Host,
@@ -172,13 +172,25 @@ class ApproveCommand(
             .firstNotNullOfOrNull { name -> host.rawEnv[name]?.takeIf { it.isNotBlank() } }
             ?: UNKNOWN_HUMAN
 
-    /** Fails unless [wait] waits for approval: a wait for its checks is not a result anyone can approve yet. */
+    /**
+     * Fails unless [wait] waits for approval: a wait for its checks is not a result anyone can approve yet, and a sent
+     * back wait (bl-221) waits for its next dispatch, which the store's approve leaves as it is.
+     */
     private fun checkApproval(
         identifier: String,
         wait: Wait,
-    ): Wait.Approval =
-        wait as? Wait.Approval
-            ?: fail("$identifier is waiting for ${wait.reason.wire}, not for approval. Nothing changed", EXIT_NOT_WAITING)
+    ): Wait.Approval {
+        val approval =
+            wait as? Wait.Approval
+                ?: fail("$identifier is waiting for ${wait.reason.wire}, not for approval. Nothing changed", EXIT_NOT_WAITING)
+        if (approval.sentBack) {
+            fail(
+                "$identifier was sent back and is not waiting for approval, Loop dispatches it again with the reason. Nothing changed",
+                EXIT_NOT_WAITING,
+            )
+        }
+        return approval
+    }
 
     private fun fail(
         message: String,

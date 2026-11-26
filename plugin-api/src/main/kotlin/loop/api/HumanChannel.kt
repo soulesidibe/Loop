@@ -38,8 +38,11 @@ public data class HumanNotice(
         require(identifier.isNotBlank()) { "A human notice needs an identifier" }
     }
 
-    /** The command the human types next, such as `loop approve m4-30`, null for an event this Loop does not know. */
-    public val nextCommand: String? get() = event.command?.let { "$it $identifier" }
+    /**
+     * The command the human types next, such as `loop approve m4-30` or `loop answer m4-30 "<text>"`, null for an event
+     * this Loop does not know.
+     */
+    public val nextCommand: String? get() = event.command?.let { listOfNotNull(it, identifier, event.argument).joinToString(" ") }
 }
 
 /** What a [HumanNotice] is about, as the wire string recorded and shown. */
@@ -60,6 +63,10 @@ public value class HumanEvent(
                 Question -> "loop answer"
                 else -> null
             }
+
+    /** What the [command] takes after the issue, as a placeholder: the text of `loop answer` (bl-221), null for the others. */
+    public val argument: String?
+        get() = if (this == Question) "\"<text>\"" else null
 
     public companion object {
         /** The issue was parked: nothing dispatches it until `loop resume` or a change in its tracker. */

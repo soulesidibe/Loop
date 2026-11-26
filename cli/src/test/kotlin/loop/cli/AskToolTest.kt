@@ -44,11 +44,15 @@ class AskToolTest {
 
     /**
      * Loop mode with a check the agents here never pass, so a verification would fail the attempt, the hook that
-     * records each notice, and [extra] lines.
+     * records each notice, [extra] lines and [prompt] as the template when set.
      */
-    private fun loopMode(extra: String = "") {
+    private fun loopMode(
+        extra: String = "",
+        prompt: String? = null,
+    ) {
         fixture.writeWorkflow(
             activeStates = listOf("todo", "in_progress"),
+            prompt = prompt ?: "Work on {{ issue.identifier }}: {{ issue.title }}\n",
             extra =
                 """
                 |kinds:
@@ -176,7 +180,7 @@ class AskToolTest {
         val notice = hookRuns().single()
         assertEquals("question", notice.text("event"))
         assertEquals("t-1", notice.text("identifier"))
-        assertEquals("loop answer t-1", notice.text("command"))
+        assertEquals("loop answer t-1 \"<text>\"", notice.text("command"))
         assertEquals(1, events("human_notified").size)
         assertEquals(1, run.stderr.lines().count { it.startsWith("loop run: t-1 needs you, question: ") }, run.toString())
 
@@ -190,6 +194,26 @@ class AskToolTest {
         val line = status.stdout.lines().singleOrNull { it.startsWith("waiting") } ?: fail("no waiting line\n$status")
         assertContains(line, "t-1")
         assertContains(line, "reason=ask")
+    }
+
+    @Test
+    fun `bl-221 loop run warns at startup when the template never reads loop answer, and not when it does`() {
+        loopMode()
+        agent("call ask '$question'\nfinish")
+
+        val ignoring = runOnce()
+
+        assertContains(
+            ignoring.stderr,
+            "loop run: warning: the WORKFLOW.md body never uses loop.answer, so an answer given with loop answer reaches " +
+                "the agent only as a comment in the issue description",
+        )
+
+        loopMode(prompt = "Work on {{ issue.identifier }}{% if loop.answer %}\n{{ loop.answer }}{% endif %}\n")
+
+        val reading = runOnce()
+
+        assertTrue("loop.answer" !in reading.stderr, reading.stderr)
     }
 
     @Test

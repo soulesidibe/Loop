@@ -332,4 +332,38 @@ class PreflightTest {
         assertEquals("SAMPLE-1 first", first)
         assertEquals("SAMPLE-1 retry 1", retry)
     }
+
+    /** Loop mode, where every attempt is offered `ask`, with one code kind and its checks. */
+    private val loopMode =
+        """
+        |kinds:
+        |  code:
+        |    verify:
+        |      checks:
+        |        - { type: command, run: "./gradlew test" }
+        """.trimMargin()
+
+    @Test
+    fun `bl-221 a workflow that offers ask with a template that never reads loop answer passes with a warning`() {
+        val result = check(workflow("Work on {{ issue.identifier }}", extra = loopMode))
+
+        val ok = assertIs<PreflightResult.Ok>(result)
+        assertEquals(
+            listOf(
+                "the WORKFLOW.md body never uses loop.answer, so an answer given with loop answer reaches the agent only " +
+                    "as a comment in the issue description, place {% if loop.answer %}{{ loop.answer }}{% endif %} " +
+                    "where the answer goes",
+            ),
+            ok.warnings,
+        )
+    }
+
+    @Test
+    fun `bl-221 a template that reads loop answer gets no warning, nor a workflow that cannot ask`() {
+        val reads = check(workflow("Work on {{ issue.identifier }}{% if loop.answer %}\n{{ loop.answer }}{% endif %}", extra = loopMode))
+        val symphony = check(workflow("Work on {{ issue.identifier }}"))
+
+        assertEquals(emptyList(), assertIs<PreflightResult.Ok>(reads).warnings)
+        assertEquals(emptyList(), assertIs<PreflightResult.Ok>(symphony).warnings)
+    }
 }

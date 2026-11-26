@@ -11,6 +11,7 @@ import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
+import kotlin.io.path.moveTo
 import kotlin.io.path.readText
 import kotlin.io.path.writeText
 import kotlin.test.Test
@@ -235,8 +236,10 @@ class AnswerCommandTest {
 
     @Test
     fun `a bare id finds the issue in the primary tracker and a namespaced id in its own tracker`() {
-        fixture.projectDir.resolve("other").createDirectories()
+        val other = fixture.projectDir.resolve("other").createDirectories()
         fixture.writeWorkflow(extra = "trackers:\n  - id: local\n    kind: files\n    provider:\n      dir: ./other\n")
+        // bl-221: x-1 is a real issue of the second tracker, so its comment lands there.
+        val extra = fixture.issue("x-1").moveTo(other.resolve("x-1.md"))
         fixture.issue("t-1")
         waitForAnswer()
         waitForAnswer(issueId = "local:x-1", identifier = "x-1")
@@ -253,6 +256,29 @@ class AnswerCommandTest {
         val answers = waits().associate { it["issue_id"] to it["data"].orEmpty() }
         assertContains(answers.getValue("default:t-1"), "\"answer\":\"Primary.\"")
         assertContains(answers.getValue("local:x-1"), "\"answer\":\"Extra.\"")
+        assertContains(comments(), "Answer from soule: Primary.")
+        assertContains(extra.readText().substringAfter("## Comments"), "Answer from soule: Extra.")
+        assertTrue("not commented" !in namespaced.stderr, namespaced.toString())
+    }
+
+    @Test
+    fun `bl-221 an answer over the size limit is refused with its own code and changes nothing`() {
+        fixture.issue("t-1")
+        waitForAnswer()
+        val before = waits()
+
+        val long = answer("t-1", "a".repeat(4_001))
+
+        assertEquals(7, long.exitCode, long.toString())
+        assertEquals("loop answer: the answer is 4001 characters, over the limit of 4000. Nothing changed.", long.stderr.trim())
+        assertEquals(before, waits())
+        assertEquals(emptyList(), events("question_answered"))
+        assertEquals(emptyList(), events("human_touch"))
+        assertTrue("Answer from" !in comments(), comments())
+        // An answer that starts with a dash is taken after `--`, as the docs say.
+        val dash = fixture.inProcess("answer", "--workflow", fixture.workflow.toString(), "t-1", "--", "-1 is the answer.", env = operator)
+        assertEquals(0, dash.exitCode, dash.toString())
+        assertContains(comments(), "Answer from soule: -1 is the answer.")
     }
 
     @Test

@@ -27,8 +27,10 @@ import kotlin.time.Instant
  * comments the answer on the issue. The running Loop, or the next one to start, dispatches the issue again in its kept
  * workspace, and that attempt's first prompt carries the question and the answer as `loop.answer` with
  * `loop.retry_kind` = `answer`. The project and the issue are resolved like `loop approve`: a bare id is the primary
- * tracker's, a namespaced one names its tracker. It refuses to run inside an attempt, see [insideAttempt]. Exit codes:
- * 1 startup, 2 unknown issue, 3 store, 4 not waiting for an answer, 5 inside an attempt, 6 empty answer.
+ * tracker's, a namespaced one names its tracker, and the answer is commented on the issue's own tracker (bl-221). It
+ * refuses to run inside an attempt, see [insideAttempt]. An answer that starts with `-` goes after `--`, or clikt reads it
+ * as an option. Exit codes: 1 startup, 2 unknown issue, 3 store, 4 not waiting for an answer, 5 inside an attempt,
+ * 6 empty answer, 7 an answer over [Answers.MAX_CHARS] characters (bl-221).
  */
 class AnswerCommand(
     private val host: Host,
@@ -45,12 +47,17 @@ class AnswerCommand(
             fail("refused inside a Loop attempt, only an operator answers a question. Nothing changed", EXIT_IN_ATTEMPT)
         }
         val answer = text.trim().ifEmpty { fail("the answer is empty. Nothing changed", EXIT_EMPTY) }
+        // bl-221: the prompt fill never cuts loop.answer, so its size is capped here.
+        if (answer.length > Answers.MAX_CHARS) {
+            fail("the answer is ${answer.length} characters, over the limit of ${Answers.MAX_CHARS}. Nothing changed", EXIT_TOO_LONG)
+        }
         val project = host.openProject(workflowPath, Access.WRITE, scope)
         val ids = project.ids
         // m4-47: a bare id is the primary tracker's, a namespaced one names a tracker of the project.
         val typed = ids.typed(issue).getOrElse { fail("${it.message}. Nothing changed", EXIT_ISSUE) }
         val workflow = project.workflow
-        val tracker = project.tracker()
+        // bl-221: every tracker of the project, so the answer is commented on the tracker the issue belongs to.
+        val tracker = project.trackerPoll()
         val lookup =
             try {
                 runBlocking { tracker.fetchIssuesByIds(listOf(typed.value)) }
@@ -190,5 +197,6 @@ class AnswerCommand(
         const val EXIT_NOT_WAITING = 4
         const val EXIT_IN_ATTEMPT = 5
         const val EXIT_EMPTY = 6
+        const val EXIT_TOO_LONG = 7
     }
 }

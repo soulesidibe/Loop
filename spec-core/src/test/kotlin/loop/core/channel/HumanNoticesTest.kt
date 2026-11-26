@@ -193,7 +193,7 @@ class HumanNoticesTest {
         val notice = shown.single()
         assertEquals(HumanEvent.Question, notice.event)
         assertEquals("the agent asks a product question", notice.reason)
-        assertEquals("loop answer m4-30", notice.nextCommand)
+        assertEquals("loop answer m4-30 \"<text>\"", notice.nextCommand)
         assertEquals("default:m4-30|ask|$since", noticed.toRecord().data[WaitKeys.HUMAN_NOTICE])
         assertEquals("question", recorded.single { it.definition == HumanNotified }.data[HumanNotified.EVENT])
     }
