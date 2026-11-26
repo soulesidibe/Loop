@@ -179,6 +179,27 @@ class RiskReviewerWarningTest {
         )
     }
 
+    @Test
+    fun `bl-205 a Gemini reviewer model whose agy cannot be found warns, naming agy and its fix`() {
+        useCodex(delivery = AUTO_MERGE.replace("claude-sonnet-5-5", "gemini-4-neon-high"))
+
+        assertEquals(
+            "kinds.code.delivery.risk.reviewer is gemini-4-neon-high, but its command agy cannot be found, so no " +
+                "merge risk reviewer can run and every result waits for loop approve. Install the Antigravity CLI so " +
+                "agy is on PATH",
+            riskReviewerWarning(workflow(), mapOf("PATH" to root.resolve("empty").toString())),
+        )
+    }
+
+    @Test
+    fun `bl-205 a Gemini reviewer model whose agy is on PATH gives no warning, even without claude`() {
+        val bin = root.resolve("bin-agy")
+        executable(bin.resolve("agy"))
+        useCodex(delivery = AUTO_MERGE.replace("claude-sonnet-5-5", "gemini-4-neon-high"))
+
+        assertNull(riskReviewerWarning(workflow(), mapOf("PATH" to "$bin")))
+    }
+
     private companion object {
         const val PULL_REQUEST =
             "      policy: POLICY\n" +
