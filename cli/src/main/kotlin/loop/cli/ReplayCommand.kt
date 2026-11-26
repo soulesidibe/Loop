@@ -7,6 +7,10 @@ import com.github.ajalt.clikt.parameters.arguments.argument
 import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.option
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.runBlocking
 import loop.api.AttemptId
 import loop.api.AttemptRecord
@@ -30,15 +34,18 @@ import loop.core.replay.UnifiedDiff
 import loop.core.replay.VerificationReplay
 import loop.core.template.TemplateEngine
 import loop.core.trackers.NamespacedId
+import loop.core.verify.CheckResult
 import loop.core.verify.CheckRunner
 import loop.core.verify.CoreCheckRunner
+import loop.core.workflow.CheckConfig
 import loop.core.workflow.PromptVariables
 import loop.core.workflow.WorkflowFile
 import loop.core.workflow.workflowHash
 import loop.core.workspace.Workspaces
 import loop.runner.process.agentEnvironment
 import loop.store.GzipAttemptRecords
-import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.time.Clock
 
 /**
@@ -53,10 +60,11 @@ import kotlin.time.Clock
  * `loop replay <attempt> --verify [--workflow WORKFLOW.md]` (m4-41, story 138): the checks of the current `WORKFLOW.md`
  * for the issue's kind run again, through the verification of `loop.core.verify` and the check runner of `loop run`, on
  * the state the attempt's last verdict recorded ([ReplaySites]): a copy of the kept workspace while it is still at that
- * fingerprint, else a temporary git worktree at its commit, else nothing. Each check prints with its result, then the
- * new verdict under the recorded one. Nothing is written to the tracker, the issue or the attempt's records; one
- * `replay_verdict` event records the replay. Exit 0 printed whatever the new verdict, 1, 2, 3 and 5 as `--prompt`, 4 no
- * recorded verdict, or a recorded state that is gone or changed and cannot be rebuilt.
+ * fingerprint, else a temporary git worktree at its commit, else nothing. Each check prints with its result, the
+ * findings under a failed one, then the new verdict under the recorded one. Nothing is written to the tracker, the
+ * issue or the attempt's records; one `replay_verdict` event records the replay. A signal stops the checks and removes
+ * the site, and records nothing. Exit 0 printed whatever the new verdict, 1, 2, 3 and 5 as `--prompt`, 4 no recorded
+ * verdict, or a recorded state that is gone or changed and cannot be rebuilt.
  */
 class ReplayCommand(
     private val host: Host,
@@ -173,34 +181,40 @@ class ReplayCommand(
         val (kind, kindNote) = kindOf(workflow, started?.data?.get(AttemptStarted.KIND), issue, "checked")
         val identifier = first.issueIdentifier ?: issue.identifier
         val located = Workspaces(workflow.workspaceRoot).locate(NamespacedId.workspaceKey(issueId, identifier, workflow.trackerId))
-        val site =
-            when (val placed = ReplaySites().place(recorded.fingerprint, located, workflow.path.parent)) {
-                is Placement.Ready -> placed.site
-                is Placement.Refused ->
-                    fail(
-                        "cannot replay the verification of attempt ${attemptId.value}: ${placed.reason}, " +
-                            "recorded fingerprint ${placed.recorded}, current fingerprint ${placed.current}",
-                        EXIT_NOT_REPLAYABLE,
-                    )
-            }
         val target = ReplayTarget(attemptId, issueId, identifier, issue.description, workflow, kind)
         val replay = VerificationReplay(projectId, host.loopHome, project.redactor, checkRunner(workflow), frozen = { frozen })
-        val replayed =
-            site.use {
-                val header =
-                    listOfNotNull(
-                        "Replay of the verification of attempt ${attemptId.value}, issue $name.",
-                        "Checks of ${kind?.let { "the kind ${it.name} in " }.orEmpty()}${workflow.path}, with the issue as the tracker " +
-                            "returns it now, its text may have changed since the attempt.",
-                        kindNote,
-                        siteLine(site, located),
-                    )
-                echo(redact(header.joinToString("\n")))
-                echo("")
-                runBlocking { replay.run(target, recorded, site) }
-            }
+        val sites = ReplaySites(warn = { echo(redact("loop replay: $it."), err = true) })
+        // The site is placed and checked under the shutdown hook, so a signal during the copy or a check still removes it.
+        val (site, replayed) =
+            untilSignal {
+                when (val placed = sites.place(recorded.fingerprint, located, workflow.path.parent)) {
+                    is Placement.Refused ->
+                        fail(
+                            "cannot replay the verification of attempt ${attemptId.value}: ${placed.reason}, " +
+                                "recorded fingerprint ${placed.recorded}, current fingerprint ${placed.current}",
+                            EXIT_NOT_REPLAYABLE,
+                        )
+                    is Placement.Ready ->
+                        placed.site.use { site ->
+                            currentCoroutineContext().ensureActive()
+                            val header =
+                                listOfNotNull(
+                                    "Replay of the verification of attempt ${attemptId.value}, issue $name.",
+                                    "Checks of ${kind?.let { "the kind ${it.name} in " }.orEmpty()}${workflow.path}, with the issue as " +
+                                        "the tracker returns it now, its text may have changed since the attempt.",
+                                    kindNote,
+                                ) + siteLines(site)
+                            echo(redact(header.joinToString("\n")))
+                            echo("")
+                            site to replay.run(target, recorded, site)
+                        }
+                }
+            } ?: throw ProgramResult(EXIT_STOPPED)
         replayed.checks.forEach { echo(redact(it.line())) }
         if (replayed.checks.isEmpty()) echo("No check ran.")
+        // Under the failed check, the last line; a hidden check has no findings.
+        replayed.findings?.let { findings -> echo(redact(findings.lines().joinToString("\n") { "  $it" })) }
+        if (replayed.baseUnpinned) echo("No base was recorded for this verification, diff_policy read guards.base as it is now.")
         echo("")
         echo(redact("Recorded verdict: ${recorded.verdict}, on ${recorded.fingerprint}."))
         echo(redact("New verdict: ${replayed.verdict}, on ${replayed.fingerprint}${replayed.reason?.let { ", $it" }.orEmpty()}."))
@@ -212,26 +226,54 @@ class ReplayCommand(
     }
 
     /** Where the checks run, as the header says it. */
-    private fun siteLine(
-        site: ReplaySite,
-        located: Result<Path?>,
-    ): String =
+    private fun siteLines(site: ReplaySite): List<String> =
         when (site) {
-            is ReplaySite.WorkspaceCopy -> "The checks run on a copy of the workspace ${site.workspace}, removed afterwards: ${site.dir}."
-            is ReplaySite.Worktree -> {
-                val why =
-                    located.fold(
-                        onSuccess = { if (it == null) "The workspace is gone" else "The workspace changed since the verdict" },
-                        onFailure = { "The workspace cannot be located" },
-                    )
-                "$why, so the checks run on a temporary git worktree at ${site.head} of ${site.repository}, removed afterwards: ${site.dir}."
-            }
+            is ReplaySite.WorkspaceCopy ->
+                listOf("The checks run on a copy of the workspace ${site.workspace}, removed afterwards: ${site.dir}.")
+            is ReplaySite.Worktree ->
+                listOf(
+                    "${site.state.replaceFirstChar { it.uppercase() }}, so the checks run on a temporary git worktree at ${site.head} " +
+                        "of ${site.repository}, removed afterwards: ${site.dir}.",
+                    "A rebuilt worktree holds the commit only: no ignored file and no workspace hook setup.",
+                )
         }
 
     /**
+     * Runs [block] under a shutdown hook, as `loop run` does: on SIGINT or SIGTERM the hook cancels it, which stops a
+     * check's process group, and waits up to [SHUTDOWN_WAIT_SECONDS] for it to unwind, so the site it placed is removed
+     * before the JVM exits. Returns null when a signal stopped it, after saying so on stderr.
+     */
+    private fun <T> untilSignal(block: suspend () -> T): T? {
+        val job = Job()
+        val stopped = CountDownLatch(1)
+        val hook =
+            Thread({
+                job.cancel()
+                stopped.await(SHUTDOWN_WAIT_SECONDS, TimeUnit.SECONDS)
+            }, "loop-replay-shutdown")
+        Runtime.getRuntime().addShutdownHook(hook)
+        try {
+            return runBlocking(job) { block() }
+        } catch (e: CancellationException) {
+            if (!job.isCancelled) throw e
+            // Before the latch: once it opens, the hook returns and the JVM exits.
+            echo("loop replay: stopped by a signal, the site is removed and the replay is not recorded.", err = true)
+            return null
+        } finally {
+            stopped.countDown()
+            try {
+                Runtime.getRuntime().removeShutdownHook(hook)
+            } catch (e: IllegalStateException) {
+                // The JVM is already shutting down, the hook is running.
+            }
+        }
+    }
+
+    /**
      * The check runner of `loop run` (m2-03): a check runs code the agent wrote, so it gets the agent env policy, never
-     * the full host env, plus the ids the verification adds. A check that declares `resource:` runs without holding a
-     * resource: a resource lock is a store write, and a replay records only its `replay_verdict`.
+     * the full host env, plus the ids the verification adds. A check that declares `resource:` does not run: a replay
+     * takes no resource lock, a store write, so the check would run with no lock and no `LOOP_RESOURCE_<KEY>` env. It
+     * could not run, and the verdict is `unverified`.
      */
     private fun checkRunner(workflow: WorkflowFile): CheckRunner {
         val removed = agentEnvRemovedNames(workflow)
@@ -241,7 +283,12 @@ class ReplayCommand(
             cwd,
             env,
             ->
-            runner.run(check, cwd, agentEnvironment(overrides = env, removed = removed, host = host.rawEnv))
+            val resource = (check as? CheckConfig.Command)?.resource
+            if (resource != null) {
+                CheckResult(null, false, 0, startError = "a replay holds no $resource resource, the check did not run")
+            } else {
+                runner.run(check, cwd, agentEnvironment(overrides = env, removed = removed, host = host.rawEnv))
+            }
         }
     }
 
@@ -343,6 +390,12 @@ class ReplayCommand(
 
         /** No verdict to replay, or a recorded state that is gone or changed and cannot be rebuilt (m4-41). */
         const val EXIT_NOT_REPLAYABLE = 4
+
+        /** Stopped by a signal; the JVM exits with the signal's own status once the shutdown hook returns. */
+        const val EXIT_STOPPED = 130
+
+        /** How long the shutdown hook waits for the checks to stop and the site to go, as `loop run` waits. */
+        const val SHUTDOWN_WAIT_SECONDS = 10L
         const val EXIT_RENDER = 5
         const val VERSION_CHARS = 12
     }

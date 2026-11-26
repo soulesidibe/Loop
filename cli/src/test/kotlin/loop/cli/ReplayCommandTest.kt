@@ -197,6 +197,8 @@ class ReplayCommandTest {
         assertContains(result.stdout, ": test -f hello.txt\n")
         assertContains(result.stdout, "check 1 failed with exit code 1")
         assertContains(result.stdout, "check 1 rerun failed with exit code 1")
+        assertContains(result.stdout, "\n  Check: echo written > written.txt && false\n  Exit code: 1\n")
+        assertFalse("Your last result" in result.stdout, result.stdout)
         assertContains(result.stdout, "Recorded verdict: verified, on $fingerprint.\nNew verdict: refuted, on $fingerprint.\n")
         assertEquals("", result.stderr)
         assertFalse(workspace.resolve("written.txt").exists(), "the checks ran on a copy")
@@ -237,6 +239,7 @@ class ReplayCommandTest {
             result.stdout,
             "The workspace is gone, so the checks run on a temporary git worktree at $head of ${fixture.projectDir.toRealPath()}, removed afterwards: ",
         )
+        assertContains(result.stdout, "\nA rebuilt worktree holds the commit only: no ignored file and no workspace hook setup.\n")
         assertContains(result.stdout, "Recorded verdict: refuted, on $fingerprint.\nNew verdict: verified, on $fingerprint.\n")
         val dir = Regex("removed afterwards: (.+)\\.\n").find(result.stdout)?.groupValues?.get(1) ?: fail(result.stdout)
         assertFalse(Path.of(dir).exists(), "the worktree folder is removed")
@@ -279,6 +282,75 @@ class ReplayCommandTest {
         assertContains(result.stderr, "recorded fingerprint $recorded, current fingerprint ${ReplaySites.GONE}")
         assertFalse("New verdict" in result.stdout, result.stdout)
         assertTrue(fixture.query("SELECT kind FROM events WHERE kind = 'replay_verdict'").isEmpty())
+    }
+
+    @Test
+    fun `a signal during a check stops it, removes the copy and its worktree, and records nothing`() {
+        val site = root.resolve("site.txt")
+        val pid = root.resolve("pid.txt")
+        fixture.writeWorkflow(
+            extra =
+                """
+                |kinds:
+                |  code:
+                |    verify:
+                |      checks:
+                |        - { type: command, run: "pwd -P > $site; echo ${'$'}${'$'} > $pid; exec sleep 60" }
+                """.trimMargin(),
+        )
+        fixture.issue("t-1")
+        val workspace = fixture.workspace("t-1").createDirectories()
+        workspace.resolve("hello.txt").writeText("hello\n")
+        git("init", "-q", "-b", "main", dir = workspace)
+        git("add", ".", dir = workspace)
+        git("commit", "-q", "-m", "agent", dir = workspace)
+        val fingerprint = WorkspaceFingerprint.of(workspace).getOrThrow()
+        seedVerdict("verified", fingerprint)
+        val worktrees = git("worktree", "list", "--porcelain", dir = workspace)
+
+        val running = fixture.start("replay", A1, "--verify")
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60)
+        while (System.nanoTime() < deadline && running.process.isAlive && pid.readOrEmpty().isBlank()) Thread.sleep(50)
+        val sleeping = pid.readOrEmpty().trim().toLongOrNull() ?: fail("the check never started: ${running.await(5)}")
+        running.process.destroy()
+        val result = running.await(30)
+
+        assertContains(result.stderr, "loop replay: stopped by a signal, the site is removed and the replay is not recorded.")
+        val dir = Path.of(site.readText().trim())
+        assertFalse(dir.exists(), "the copy is removed")
+        assertFalse(dir.parent.exists(), "its temporary folder is removed")
+        assertEquals(worktrees, git("worktree", "list", "--porcelain", dir = workspace), "its worktree is no longer registered")
+        assertFalse(ProcessHandle.of(sleeping).map { it.isAlive }.orElse(false), "the check is stopped")
+        assertTrue(fixture.query("SELECT kind FROM events WHERE kind = 'replay_verdict'").isEmpty(), "nothing is recorded")
+        assertFalse("New verdict" in result.stdout, result.stdout)
+    }
+
+    @Test
+    fun `a check that declares a resource does not run, so the new verdict is unverified`() {
+        fixture.writeWorkflow(
+            extra =
+                """
+                |resources:
+                |  - { kind: fake-device, id: res-replay }
+                |kinds:
+                |  code:
+                |    verify:
+                |      checks:
+                |        - { type: command, run: "echo ran > ran.txt", resource: fake-device }
+                """.trimMargin(),
+        )
+        fixture.issue("t-1")
+        val workspace = fixture.workspace("t-1").createDirectories()
+        workspace.resolve("hello.txt").writeText("hello\n")
+        val fingerprint = WorkspaceFingerprint.of(workspace).getOrThrow()
+        seedVerdict("verified", fingerprint)
+
+        val result = fixture.inProcess("replay", A1, "--verify")
+
+        assertEquals(0, result.exitCode, result.toString())
+        assertContains(result.stdout, "check 0 could not run: a replay holds no fake-device resource, the check did not run: echo ran > ran.txt\n")
+        assertContains(result.stdout, "New verdict: unverified, on $fingerprint, ")
+        assertFalse(workspace.resolve("ran.txt").exists())
     }
 
     @Test
@@ -331,10 +403,15 @@ class ReplayCommandTest {
         fixture.attemptFinished(A1, "t-1"),
     )
 
-    private fun git(vararg args: String): String {
+    private fun Path.readOrEmpty(): String = if (exists()) readText() else ""
+
+    private fun git(
+        vararg args: String,
+        dir: Path = fixture.projectDir,
+    ): String {
         val process =
             ProcessBuilder(listOf("git", "-c", "user.name=t", "-c", "user.email=t@example.com") + args)
-                .directory(fixture.projectDir.toFile())
+                .directory(dir.toFile())
                 .redirectErrorStream(true)
                 .start()
         val output = process.inputStream.bufferedReader().readText()
