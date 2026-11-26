@@ -14,7 +14,7 @@ Written 2026-11-24 for the spec [`.loop/specs/gemini-support.md`](../.loop/specs
 
 ## Runtime
 
-Gemini runs through the Antigravity CLI, `agy` (1.5.16 pinned in Spike 0). The older Gemini CLI, `gemini`, fails on a personal Google login with `IneligibleTierError` since 2026-11, whatever the model.
+Gemini runs through the Antigravity CLI, `agy` (pinned 1.5.18 and refused before it; Spike 0 ran on 1.5.16). The older Gemini CLI, `gemini`, fails on a personal Google login with `IneligibleTierError` since 2026-11, whatever the model.
 
 `agy models` lists the model ids, each carrying its effort level. Loop's Gemini work uses `gemini-4-neon-high` (Gemini 4 Neon, high effort), passed explicitly:
 

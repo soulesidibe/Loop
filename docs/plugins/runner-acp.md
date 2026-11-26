@@ -77,7 +77,7 @@ Loop checks `runners.acp` against the profile and `AcpRunnerProvider.validate` o
 ## Session startup and turns
 
 1. Under `preset: agy`, verify protected workspace customization roots (`.agents/`, `.agent/`, `_agents/`, `_agent/`) against the attempt base commit before spawning the session.
-2. `initialize` with `protocolVersion: 1`, `clientInfo` (`{"name": "loop", "version": "<Loop version>"}`), and `clientCapabilities` (`{"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false}`). Under `preset: agy`, `agentInfo.version` must be on major version `1` (pinned `1.5.16`).
+2. `initialize` with `protocolVersion: 1`, `clientInfo` (`{"name": "loop", "version": "<Loop version>"}`), and `clientCapabilities` (`{"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false}`). Under `preset: agy`, `agentInfo.version` must be on major version `1` and no older than `1.5.18` (pinned `1.5.18`); an older one fails the turn with `response_error: agy <version> is older than the minimum version 1.5.18 (pinned 1.5.18)`.
 3. `session/new` (for a new session) or `session/load` (for `resumeSession`, and under `preset: agy` for a respawn) with `cwd` and `mcpServers`. Under `preset: agy`, a load first needs `agentCapabilities.loadSession: true` in the `initialize` answer.
 4. Under `preset: agy`, `session/set_model` with `runners.acp.model`, verified against any `config_option_update` or response model id.
 5. `session/prompt` with the prompt text (escaping a leading `/` under `preset: agy`), preceded by the protected workspace roots check before every turn. Turn 1 emits `session_started` with the ACP `sessionId` as `runtimeSessionId`; turns 2..n reuse the same process and `sessionId` and emit `turn_started`.
@@ -112,7 +112,7 @@ Loop ships default context windows of `1048576` tokens in `ContextConfig.DEFAULT
 - **Usage:** every `session/prompt` response carrying `usage` adds its turn counts into the session's running absolute totals with `totalCostUsd = null`.
 - **Hard-limit interrupt:** `AgentSession.interrupt()` sends a `session/cancel` notification, answers any pending `session/request_permission` with `cancelled`, preserves `result.usage` on `stopReason: "cancelled"`, and ends the turn cleanly so Loop rotates onto a fresh session.
 - **Error mapping:** structured JSON-RPC errors reporting authentication or eligibility failure (401, 403, expired login, `IneligibleTierError`), rate limit or overload (429, 503, 529), model refusal (`-32602 Unknown model ID` or `modelNotFound`), or runtime-reported network transport failure with no HTTP status map to `runner_unavailable`. All other errors, exits, and malformed lines are ordinary failures.
-- **Startup preflight (`preset: agy`):** verifies the `agy` binary is reachable and on pinned major version `1` (errors stop startup), and runs `agy models` to warn on login problems, offline failures, or a configured model not listed.
+- **Startup preflight (`preset: agy`):** verifies the `agy` binary is reachable, on pinned major version `1` and no older than `1.5.18` (errors stop startup; 1.5.18 is the first version that applies permission prompts to files read or edited through `file:///` URIs, which the guards above rely on), and runs `agy models` to warn on login problems, offline failures, or a configured model not listed.
 
 ## Capabilities
 

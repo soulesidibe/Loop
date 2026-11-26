@@ -2,6 +2,8 @@
 
 Real scrubbed ACP JSON-RPC 2.0 server transcripts recorded from `agy 1.5.16` with `--disable-telemetry --sandbox --gemini-dir <relative>` and replayed by `RecordedAcpSessionsTest`. Each `.jsonl` file holds the stdout lines the server wrote, one protocol frame per line.
 
+Loop refuses an `agy` older than 1.5.18 since 2026-11-26, so the replay rewrites the recorded `agentInfo.version` to the pinned version, and one test replays the untouched 1.5.16 frame to check the refusal. Re-record on the pinned version when the protocol frames change.
+
 ## Fixtures
 
 | File | CLI | Scenario | Recorded |

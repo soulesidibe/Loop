@@ -50,7 +50,7 @@ class AgyPreflightTest {
                 resolveBinary = { _, _ -> "/usr/local/bin/agy" },
                 runProbe = { argv, _, _ ->
                     when {
-                        "--version" in argv -> AgyPreflight.ProbeOutput(0, "1.5.16\n", "")
+                        "--version" in argv -> AgyPreflight.ProbeOutput(0, "${AcpSettings.PINNED_AGY_VERSION}\n", "")
                         "models" in argv -> AgyPreflight.ProbeOutput(0, modelsStdout, "")
                         else -> null
                     }
@@ -70,7 +70,7 @@ class AgyPreflightTest {
                 resolveBinary = { _, _ -> "/usr/local/bin/agy" },
                 runProbe = { argv, _, _ ->
                     if ("--version" in argv) {
-                        AgyPreflight.ProbeOutput(0, "1.5.16\n", "")
+                        AgyPreflight.ProbeOutput(0, "${AcpSettings.PINNED_AGY_VERSION}\n", "")
                     } else {
                         AgyPreflight.ProbeOutput(1, "", "Error: not logged in")
                     }
@@ -85,7 +85,7 @@ class AgyPreflightTest {
                 model = "gemini-4-neon-high",
                 resolveBinary = { _, _ -> "/usr/local/bin/agy" },
                 runProbe = { argv, _, _ ->
-                    if ("--version" in argv) AgyPreflight.ProbeOutput(0, "1.5.16\n", "") else null
+                    if ("--version" in argv) AgyPreflight.ProbeOutput(0, "${AcpSettings.PINNED_AGY_VERSION}\n", "") else null
                 },
             ).check()
         assertNull(offlineWarn.error)
@@ -98,7 +98,7 @@ class AgyPreflightTest {
                 resolveBinary = { _, _ -> "/usr/local/bin/agy" },
                 runProbe = { argv, _, _ ->
                     if ("--version" in argv) {
-                        AgyPreflight.ProbeOutput(0, "1.5.16\n", "")
+                        AgyPreflight.ProbeOutput(0, "${AcpSettings.PINNED_AGY_VERSION}\n", "")
                     } else {
                         AgyPreflight.ProbeOutput(0, "gemini-4-neon-high  Gemini 4 Neon (High)\n", "")
                     }
@@ -106,5 +106,24 @@ class AgyPreflightTest {
             ).check()
         assertNull(missingModelWarn.error)
         assertTrue(missingModelWarn.warnings.single().contains("was not listed by agy models"), "${missingModelWarn.warnings}")
+    }
+
+    @Test
+    fun `an agy older than the minimum version fails preflight naming the reason`() {
+        val result =
+            AgyPreflight(
+                command = "agy acp",
+                model = "gemini-4-neon-high",
+                resolveBinary = { _, _ -> "/usr/local/bin/agy" },
+                runProbe = { argv, _, _ ->
+                    if ("--version" in argv) AgyPreflight.ProbeOutput(0, "1.5.16\n", "") else null
+                },
+            ).check()
+
+        assertEquals(
+            "agy 1.5.16 is older than the minimum version ${AcpSettings.MIN_AGY_VERSION} " +
+                "(pinned ${AcpSettings.PINNED_AGY_VERSION}): ${AcpSettings.MIN_AGY_REASON}; run agy update",
+            result.error,
+        )
     }
 }
