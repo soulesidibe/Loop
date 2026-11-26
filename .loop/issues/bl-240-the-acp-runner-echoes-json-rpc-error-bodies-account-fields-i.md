@@ -19,6 +19,8 @@ Follow up of bl-215 (default:bl-215), filed by Loop from attempt 12027e80-73d8-4
 
 Enhancement, ready-for-agent, priority 2. Confirmed in the code: `AcpRunner.kt` (the `ProcessEvent.Line` branch, around line 597) and `CodexAppServerRunner.kt` (around line 634) emit every stdout line as `RunnerEvent.Output` before decoding the frame. The orchestrator passes each line through `SecretRedactor`, which only knows learned env secrets and token patterns, so an email or account id inside a JSON-RPC error's `data` reaches the event store, the attempt record file, `loop show` and the run observer (and through it an OpenTelemetry exporter when one is enabled). It does not reach pull requests or tracker comments today. The repository is public, so `loop show` output pasted into an issue would leak it.
 
+2026-11-26 15:12Z loop: Loop opened pull request #94 for this issue: https://github.com/soulesidibe/Loop/pull/94
+
 ## Agent Brief
 
 **Category:** enhancement
