@@ -3,7 +3,7 @@ id: bl-215
 title: "The acp runner holds until the Gemini quota resets when agy reports it exhausted"
 state: todo
 priority: 4
-labels: [needs-triage]
+labels: [ready-for-agent]
 blocked_by: []
 area: [plugins/runner-acp]
 ---
@@ -72,3 +72,5 @@ Reopened with a narrower scope. A usage percent before the quota runs out stays 
 - A usage percent before the quota runs out.
 - Switching to another model when one model's quota is exhausted.
 - Changes to `RunnerHold` or the hold rules.
+
+2026-11-26 soule: triaged ready-for-agent.
