@@ -30,9 +30,10 @@ public interface AgentRunner {
      * attempt of the same issue reported in [RunnerEvent.SessionStarted] (m4-46), or returns null when the runner cannot
      * continue a session across attempts. Loop then opens a fresh session with [openSession], with the same prompt, so
      * the default, null, keeps the behavior of a runner that knows nothing of it. Turn 1 of a returned session starts
-     * with [RunnerEvent.SessionStarted] like any session's, under a new thread id. Only a runner that declares
-     * [RunnerCapabilities.continuation] may return a session. Loop asks for it only after a network hold, see
-     * `docs/spec-decisions.md`.
+     * with [RunnerEvent.SessionStarted] like any session's, under a new session id: a new thread id, or the resumed
+     * thread's own id with a new turn id when the runtime resumes the thread itself, as Codex does (bl-212). Only a
+     * runner that declares [RunnerCapabilities.continuation] may return a session. Loop asks for it only after a network
+     * hold, see `docs/spec-decisions.md`.
      */
     public fun resumeSession(
         ctx: AttemptContext,

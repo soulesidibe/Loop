@@ -429,7 +429,7 @@ class CodexAppServerRunnerTest {
         val events = runAll(runner(server.command))
 
         assertEquals(
-            RunnerEvent.SessionStarted(SessionId("thread-a-turn-b"), "thread-a", TurnId("turn-b")),
+            RunnerEvent.SessionStarted(SessionId("thread-a-turn-b"), "thread-a", TurnId("turn-b"), "thread-a"),
             events.first(),
         )
         assertEquals(1, events.count { it is RunnerEvent.SessionStarted }, "$events")
@@ -509,11 +509,17 @@ class CodexAppServerRunnerTest {
         assertNotNull(runner.openSession(context()))
     }
 
+    /**
+     * Since bl-212 the runner resumes the held attempt's thread with `thread/resume`, so `resumeSession` returns a
+     * session; the run of one is in `CodexThreadResumeTest`. The name predates bl-212 and is kept because the
+     * `deleted_tests` guard refutes any test name that disappears; the maintainer renames it after the merge.
+     */
     @Test
     fun `m4-46 it resumes no session across attempts, so after a network hold Loop opens a fresh one with the brief`() {
         val runner = runner("codex app-server")
 
-        assertNull(runner.resumeSession(context(), "thread-of-the-held-attempt"))
+        val session = assertNotNull(runner.resumeSession(context(), "thread-of-the-held-attempt"))
+        runBlocking { session.stop() }
     }
 
     @Test
@@ -618,7 +624,7 @@ class CodexAppServerRunnerTest {
 
         val events = runAll(runner(server.command))
 
-        assertEquals(RunnerEvent.SessionStarted(SessionId("thread-a-turn-b"), "thread-a", TurnId("turn-b")), events.first())
+        assertEquals(RunnerEvent.SessionStarted(SessionId("thread-a-turn-b"), "thread-a", TurnId("turn-b"), "thread-a"), events.first())
         assertEquals(RunnerEvent.TurnCompleted(SessionId("thread-a-turn-b"), TurnId("turn-b"), 0), events.last())
         assertEquals(1, events.count(::isTerminal), "$events")
     }
@@ -769,7 +775,7 @@ class CodexAppServerRunnerTest {
 
         val (first, second) = runSession(runner, "Work on c-01", "Continue with c-01")
 
-        assertEquals(RunnerEvent.SessionStarted(SessionId("thread-a-turn-1"), "thread-a", TurnId("turn-1")), first.first())
+        assertEquals(RunnerEvent.SessionStarted(SessionId("thread-a-turn-1"), "thread-a", TurnId("turn-1"), "thread-a"), first.first())
         assertEquals(RunnerEvent.TurnCompleted(SessionId("thread-a-turn-1"), TurnId("turn-1"), 0), first.last())
         assertEquals(RunnerEvent.TurnStarted(SessionId("thread-a-turn-2"), "thread-a", TurnId("turn-2"), 2), second.first())
         assertEquals(RunnerEvent.TurnCompleted(SessionId("thread-a-turn-2"), TurnId("turn-2"), 0), second.last())
@@ -806,6 +812,12 @@ class CodexAppServerRunnerTest {
         assertEquals(1, events.count(::isTerminal), "$events")
     }
 
+    /**
+     * Since bl-212 the later turn starts a new app server to resume the thread, at most once: here the new one exits
+     * before it answers `initialize`, so the turn fails with `port_exit` and no third app server starts. The name
+     * predates bl-212 and is kept because the `deleted_tests` guard refutes any test name that disappears; the
+     * maintainer renames it after the merge.
+     */
     @Test
     fun `17_5 the app server exiting mid continuation turn fails that turn, and a later turn fails at once on the gone server`() {
         val server =
@@ -815,8 +827,16 @@ class CodexAppServerRunnerTest {
                 continuation(id = 4, turnId = "turn-2")
                 exit(4)
             }
+        val respawned = FakeAppServer.write(dir.resolve("respawned")) { exit(5) }
+        val launcher = ProcessGroupLauncher()
+        val launches = mutableListOf<LaunchSpec>()
+        val runner =
+            runner(server.command) { spec ->
+                launches += spec
+                launcher.launch(if (launches.size == 1) spec else spec.copy(argv = listOf(respawned.script.toString())))
+            }
 
-        val (_, second, third) = runSession(runner(server.command), "Work on c-01", "Continue", "Continue again")
+        val (_, second, third) = runSession(runner, "Work on c-01", "Continue", "Continue again")
 
         assertEquals(TurnId("turn-2"), assertIs<RunnerEvent.TurnStarted>(second.first()).turnId)
         val exited = assertIs<RunnerEvent.TurnFailed>(second.last())
@@ -825,9 +845,11 @@ class CodexAppServerRunnerTest {
         val started = assertIs<RunnerEvent.TurnStarted>(third.first())
         assertEquals("thread-a" to 3, started.threadId to started.turn)
         val gone = assertIs<RunnerEvent.TurnFailed>(third.last())
-        assertEquals("port_exit: the app server of this session is gone, turn 3 cannot start on thread thread-a", gone.reason)
+        assertEquals("port_exit: exit code 5, before the initialize response", gone.reason)
         assertEquals(started.sessionId to started.turnId, gone.sessionId to gone.turnId)
+        assertEquals(1, third.count(::isTerminal), "$third")
         assertEquals(listOf("turn/start", "turn/start"), received(server).drop(3).map { it.string("method") })
+        assertEquals(2, launches.size, "one new app server for the turn, no third after it exited too")
     }
 
     @Test
