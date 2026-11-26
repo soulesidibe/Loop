@@ -8,6 +8,7 @@ import loop.api.SecretRedactor
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
 import kotlin.io.path.readText
+import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -85,6 +86,36 @@ class TraceCommandTest {
         assertEquals(2, result.exitCode, result.toString())
         assertContains(result.stderr, "loop trace: no issue \"t-99\" in the tracker at ")
         assertEquals("", result.stdout.trim())
+    }
+
+    // bl-05: the whole rendered trace goes through the startup redactor, so the tracker's title is covered.
+
+    @Test
+    fun `bl-05 a workflow secret in the issue title prints as its marker`() {
+        val secret = "Lp7secretQ93xZ0vK2mN5"
+        val text = fixture.workflow.readText()
+        fixture.workflow.writeText(text.replace("  kind: files\n", "  kind: files\n  provider:\n    token: \$LOOP_TEST_SECRET\n"))
+        fixture.issue("t-1", title = "Fix $secret now")
+        seedAttemptOf("default:t-1")
+
+        val result = fixture.inProcess("trace", "t-1", cwd = fixture.projectDir, env = mapOf("LOOP_TEST_SECRET" to secret))
+
+        assertEquals(0, result.exitCode, result.toString())
+        assertEquals("Issue t-1 \"Fix [redacted:LOOP_TEST_SECRET] now\"", result.stdout.lines().first(), result.stdout)
+        assertFalse(secret in result.stdout, result.stdout)
+    }
+
+    @Test
+    fun `bl-05 a token pattern in the issue title prints as its pattern marker`() {
+        val token = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+        fixture.issue("t-1", title = "Use $token here")
+        seedAttemptOf("default:t-1")
+
+        val result = fixture.inProcess("trace", "t-1", cwd = fixture.projectDir)
+
+        assertEquals(0, result.exitCode, result.toString())
+        assertEquals("Issue t-1 \"Use [redacted:github-token] here\"", result.stdout.lines().first(), result.stdout)
+        assertFalse(token in result.stdout, result.stdout)
     }
 
     // m4-47: a bare id is the primary tracker's, a namespaced id names its tracker.
