@@ -6,6 +6,7 @@ import loop.api.RiskReviewError
 import loop.api.RiskReviewRequest
 import loop.core.workflow.WorkflowFile
 import loop.core.workflow.WorkflowLoader
+import loop.runner.acp.GeminiRiskReviewer
 import loop.runner.claudecode.ClaudeCodeRiskReviewer
 import loop.runner.codex.CodexRiskReviewer
 import loop.tracker.github.GitHubResponse
@@ -349,6 +350,90 @@ class DeliveryExecutorsTest {
         assertNull(
             riskReviewerFor(workflow, mapOf("PATH" to root.resolve("only-claude").toString()), emptySet()),
             "codex is not on PATH, and claude does not stand in for it",
+        )
+    }
+
+    /** bl-205: a fake `agy` in [dir] that logs its arguments and directory to `agy.log`, then exits 1. */
+    private fun fakeAgy(dir: Path): Path {
+        Files.createDirectories(dir)
+        val log = dir.resolve("agy.log")
+        return dir.resolve("agy").also {
+            it.writeText("#!/bin/sh\n{ echo \"ARGS \$*\"; echo \"PWD \$(pwd)\"; } >> '$log'\nexit 1\n")
+            Files.setPosixFilePermissions(it, PosixFilePermissions.fromString("rwxr-xr-x"))
+        }
+    }
+
+    @Test
+    fun `bl-205 gemini-4-neon-high picks the Gemini reviewer, sonnet keeps Claude Code and gpt-6_1-sol keeps Codex`() {
+        val bin = root.resolve("bin-all")
+        val claude = fakeClaude(bin)
+        val codex = fakeCodex(bin)
+        val agy = fakeAgy(bin)
+        val host = mapOf("PATH" to "$bin:/usr/bin:/bin", "HOME" to root.toString())
+        val runners = "  claude-code:\n    command: claude"
+
+        assertEquals(
+            "GeminiRiskReviewer(command='$agy' acp)",
+            riskReviewerFor(autoMergeWorkflow("claude-code", runners, "gemini", "gemini-4-neon-high"), host, emptySet()).toString(),
+        )
+        assertEquals(
+            "ClaudeCodeRiskReviewer(command=$claude)",
+            riskReviewerFor(autoMergeWorkflow("claude-code", runners, "sonnet", "sonnet"), host, emptySet()).toString(),
+        )
+        assertEquals(
+            "CodexRiskReviewer(command='$codex' 'app-server')",
+            riskReviewerFor(autoMergeWorkflow("claude-code", runners, "gpt", "gpt-6.1-sol"), host, emptySet()).toString(),
+        )
+    }
+
+    @Test
+    fun `bl-205 a Gemini reviewer runs agy acp under preset agy, found on the host PATH, in the workspace`() =
+        runBlocking {
+            val bin = root.resolve("bin-agy")
+            fakeAgy(bin)
+            val workflow =
+                autoMergeWorkflow("codex-app-server", "  codex:\n    command: codex app-server", reviewer = "gemini-4-neon-high")
+            val host = mapOf("PATH" to "$bin:/usr/bin:/bin", "HOME" to root.toString())
+
+            val reviewer = assertIs<GeminiRiskReviewer>(riskReviewerFor(workflow, host, emptySet()))
+            assertEquals(
+                "GeminiRiskReviewer(command='${bin.resolve("agy")}' acp)",
+                reviewer.toString(),
+                "the default command agy acp, its program found on the host PATH",
+            )
+
+            val workspace = Files.createDirectories(root.resolve("workspaces/t-3")).toRealPath()
+            val result = reviewer.review(RiskReviewRequest(workspace, "gemini-4-neon-high", "Review this.", 10_000))
+
+            assertIs<RiskReviewError.Crashed>(result.exceptionOrNull(), "the fake exits before any answer")
+            val logged = bin.resolve("agy.log").readText()
+            assertContains(logged, "ARGS acp --disable-telemetry --sandbox --gemini-dir ")
+            assertContains(logged, "PWD $workspace")
+        }
+
+    @Test
+    fun `bl-205 under runner acp with preset agy the Gemini reviewer takes runners acp command`() {
+        val agy = fakeAgy(root.resolve("pinned agy"))
+        val workflow =
+            autoMergeWorkflow(
+                "acp",
+                "  acp:\n    command: \"'$agy' acp\"\n    preset: agy\n    model: gemini-4-neon-medium",
+                reviewer = "gemini-4-neon-high",
+            )
+
+        val reviewer = riskReviewerFor(workflow, mapOf("PATH" to "/usr/bin:/bin"), emptySet())
+
+        assertEquals("GeminiRiskReviewer(command='$agy' acp)", reviewer.toString())
+    }
+
+    @Test
+    fun `bl-205 a Gemini reviewer whose agy cannot be found gives no reviewer, so the gate falls back`() {
+        fakeClaude(root.resolve("only-claude-2"))
+        val workflow = autoMergeWorkflow("claude-code", "  claude-code:\n    command: claude", reviewer = "gemini-4-neon-high")
+
+        assertNull(
+            riskReviewerFor(workflow, mapOf("PATH" to root.resolve("only-claude-2").toString()), emptySet()),
+            "agy is not on PATH, and claude does not stand in for it",
         )
     }
 }

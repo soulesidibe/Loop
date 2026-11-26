@@ -16,6 +16,10 @@ import kotlin.time.Duration.Companion.milliseconds
  * (bare or by path, with no extra flags) and [model] is required and must start with `gemini-`.
  * Without a preset, [model] is forbidden and [strictMcp] must be false because Loop cannot isolate an
  * unknown ACP agent's MCP configuration.
+ *
+ * [readOnly], which is not a profile key, is the mode of the Gemini merge risk reviewer (bl-205): the permission policy
+ * declines every command, write, edit, delete, move and MCP tool, no Loop tool is passed and the isolated folder is
+ * never kept.
  */
 data class AcpSettings(
     val command: String,
@@ -25,6 +29,7 @@ data class AcpSettings(
     val readTimeout: Duration = DEFAULT_READ_TIMEOUT_MS.milliseconds,
     val strictMcp: Boolean = true,
     val holdoutDir: Path? = null,
+    val readOnly: Boolean = false,
 ) {
     /** [command] split into the words the runner launches; throws [RunnerConfigException]. */
     val argv: List<String> get() = CommandWords.of(command, "runners.$SECTION.command")
@@ -67,6 +72,22 @@ data class AcpSettings(
         private const val AGY_PROGRAM: String = "agy"
         private const val AGY_SUBCOMMAND: String = "acp"
         private const val GEMINI_MODEL_PREFIX: String = "gemini-"
+
+        /** The command of a Gemini merge risk reviewer whose workflow sets none (bl-205). */
+        const val DEFAULT_AGY_COMMAND: String = "$AGY_PROGRAM $AGY_SUBCOMMAND"
+
+        /**
+         * [words] joined into a command that [CommandWords] splits back into them: a word of letters, digits, `-` and `_`
+         * stays bare, any other is put in single quotes.
+         */
+        fun commandOf(words: List<String>): String =
+            words.joinToString(" ") { word ->
+                if (word.isNotEmpty() && word.all { it.isLetterOrDigit() || it in "-_" }) {
+                    word
+                } else {
+                    "'" + word.replace("'", "'\\''") + "'"
+                }
+            }
 
         /** The plugin profile of `runners.acp`. */
         val PROFILE: PluginProfile =

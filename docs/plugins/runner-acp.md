@@ -10,8 +10,10 @@ The `acp` runner drives an Agent Client Protocol (ACP) agent over JSON-RPC 2.0 o
 4. [Launch and streams](#launch-and-streams)
 5. [Session startup and turns](#session-startup-and-turns)
 6. [Isolated folder lifetime](#isolated-folder-lifetime)
-7. [Context limits and rotation](#context-limits-and-rotation)
-8. [Capabilities](#capabilities)
+7. [Guards and holdout protection](#guards-and-holdout-protection)
+8. [Merge risk reviewer](#merge-risk-reviewer)
+9. [Context limits and rotation](#context-limits-and-rotation)
+10. [Capabilities](#capabilities)
 
 ## Configuration
 
@@ -115,6 +117,20 @@ Every `session/request_permission` request is evaluated fail-closed in Kotlin us
 - **MCP tools:** allows Loop's own `mcp_loop_*` tools and declines any other MCP tool when `strict_mcp: true`.
 - **Human-input prompts:** unsupported human-input requests end the turn immediately with `turn_input_required` and stop the session; no later turn of it starts (see [Isolated folder lifetime](#isolated-folder-lifetime)).
 - **Protected workspace roots check (`preset: agy`):** before every session and before every `session/prompt`, inspects `.agents/`, `.agent/`, `_agents/`, and `_agent/` directly in directories between the workspace and the repository root (ignoring nested paths `agy` never loads). Any protected root that is a symbolic link (even if tracked) is refused on every turn. Every on-disk customization file (`hooks.json`, `mcp_config.json`, `skills.json`, `rules.json`, `plugins.json`, or any file under `plugins/`, `rules/`, or `hooks/`) is compared against the host-resolved base commit SHA (`git ls-tree` mode and `git hash-object` blob SHA, independent of the git index). When no base commit can be resolved from `AttemptContext.baseRef`, `main`, `master`, or `origin/HEAD`, the check fails closed naming `kinds.code.guards.base` and `kinds.code.delivery.pull_request.base`. Any mismatch fails the turn naming the path and ends the session: no later turn of it respawns `agy` (see [Isolated folder lifetime](#isolated-folder-lifetime)).
+
+## Merge risk reviewer
+
+The merge risk reviewer follows the model of `kinds.code.delivery.risk.reviewer`, not `runner.kind`. Since bl-205 a model whose name starts with `gemini-`, such as `gemini-4-neon-high`, runs on Gemini through this runner, so a workflow on Claude Code or Codex can use a Gemini model as its independent reviewer, and a machine without Claude Code can run `policy: auto` with merge. `GeminiRiskReviewer` runs one `agy acp` turn of `AcpRunner` under `preset: agy` in the issue workspace:
+
+- **Command:** `runners.acp.command` under `runner.kind: acp` with `preset: agy`, with its `read_timeout_ms`; under any other runner `agy acp`. The program is looked up on the host `PATH`, and under `policy: auto` with merge `loop run` warns at startup when it cannot be found.
+- **Model and time:** the reviewer's model, trimmed and in lower case as the routing reads it, is set with `session/set_model`, and the turn ends at `kinds.code.delivery.risk.timeout_ms`, which stops `agy`.
+- **Read only:** `AcpSettings.readOnly`, which is not a profile key. Every command, write, edit, delete, move and MCP tool permission request is declined (`the merge risk reviewer runs read only`); reads and searches are allowed except under the holdout folder, and, as for a worker, reads outside the workspace are allowed. No `mcpServers` are passed. Everything else of `preset: agy` holds: the version pin, the isolated `--gemini-dir`, `--sandbox`, the protected roots check and the env policy.
+- **No kept folder:** a review never resumes, and its isolated folder is removed when it ends.
+- **Protected roots:** the review keeps the protected workspace roots check, so it fails closed with `protected_workspace_root` when the pull request touches an agent customization root (`.agents`, `.agent`, `_agents`, `_agent`), or when no base commit can be resolved from `main`, `master` or `origin/HEAD`, and the gate falls back to `loop approve`.
+- **Context files:** unlike the Claude Code reviewer, the review turns off no workspace context file (`AGENTS.md`, `GEMINI.md`): `agy` loads them, and the gate's `protected_paths` condition is what keeps a pull request that edits them from merging on its own.
+- **Answer:** the text of the last agent message, as for the Codex reviewer, with the session's tokens and no cost. A message is a run of `agent_message_chunk` texts that a tool call, an update of one or a chunk with another `messageId` ends, and a message with no text is skipped, so a tool call update after the final message keeps it. A failed turn, an input request, a launch failure, no agent message or no terminal event is a crash, and the gate falls back to `loop approve`.
+
+Any other model keeps its reviewer: a Codex model (`gpt-6.1-sol`) runs on Codex (bl-214) and any other, such as `sonnet`, on Claude Code (m4-06). See [Gemini merge risk reviewer](../spec-decisions.md#gemini-merge-risk-reviewer-extension-bl-205).
 
 ## Context limits and rotation
 

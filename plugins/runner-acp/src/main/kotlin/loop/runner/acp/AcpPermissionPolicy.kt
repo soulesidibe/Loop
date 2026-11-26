@@ -25,6 +25,10 @@ import java.util.Locale
  *
  * Uses the shared matchers from `plugins/runner-process` ([DeniedCommands], [HoldoutFolder], and
  * [ProtectedWorkspaceRoots]). This is a guardrail, not an OS sandbox.
+ *
+ * With [readOnly], the mode of the Gemini merge risk reviewer (bl-205), every command, write, edit, delete, move and MCP
+ * tool is declined, with [READ_ONLY] when no other rule refuses it first; reads and searches keep their rules, so only
+ * the holdout folder is refused to them.
  */
 internal class AcpPermissionPolicy(
     private val workspace: Path,
@@ -34,6 +38,7 @@ internal class AcpPermissionPolicy(
     private val launcher: String? = null,
     /** Internal Loop directories (isolated `--gemini-dir`, attempt folder) that the agent must never modify. */
     private val protectedWriteDirs: () -> List<HoldoutFolder> = { emptyList() },
+    private val readOnly: Boolean = false,
 ) {
     sealed interface Answer {
         /** Send [line] to the agent stdin and log [note] as a `loop:` stderr line (never quoting request data). */
@@ -84,9 +89,9 @@ internal class AcpPermissionPolicy(
                 val locations = extractLocationPaths(toolCall["locations"])
                 val cwd = extractCwd(rawInput, args)
                 when {
-                    isMcpTool(name) -> evaluateMcp(name!!)
-                    isCommandTool(name, kind) -> evaluateCommand(rawInput, args, locations, cwd)
-                    isWriteTool(name, kind) -> evaluateFileWrite(rawInput, args, locations, cwd)
+                    isMcpTool(name) -> if (readOnly) READ_ONLY else evaluateMcp(name!!)
+                    isCommandTool(name, kind) -> evaluateCommand(rawInput, args, locations, cwd) ?: READ_ONLY.takeIf { readOnly }
+                    isWriteTool(name, kind) -> evaluateFileWrite(rawInput, args, locations, cwd) ?: READ_ONLY.takeIf { readOnly }
                     isReadTool(name, kind) -> evaluateFileRead(rawInput, args, locations, cwd)
                     kind == "think" -> null
                     else -> UNSUPPORTED_TOOL
@@ -494,5 +499,6 @@ internal class AcpPermissionPolicy(
         const val NON_LOOP_MCP: String = "strict_mcp declines non-Loop MCP tools"
         const val UNSUPPORTED_TOOL: String = "the tool is not allowed by Loop's fail-closed permission policy"
         const val NO_ALLOW_OPTION: String = "no allow option was offered"
+        const val READ_ONLY: String = "the merge risk reviewer runs read only"
     }
 }

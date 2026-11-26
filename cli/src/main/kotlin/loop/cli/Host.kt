@@ -22,6 +22,7 @@ import loop.core.workflow.WorkflowFile
 import loop.core.workflow.WorkflowLoader
 import loop.runner.acp.AcpSettings
 import loop.runner.acp.AgyPreflight
+import loop.runner.acp.GeminiRiskReviewer
 import loop.runner.claudecode.ClaudeCodePreflight
 import loop.runner.claudecode.ClaudeCodeRiskReviewer
 import loop.runner.claudecode.ClaudeCodeSettings
@@ -445,9 +446,10 @@ fun runnerFor(
  * The read only reviewer of the merge risk assessment (m2-28), whatever `runner.kind` is (m4-06, bl-145), since the
  * reviewer is a concern apart from the runner that did the work: the model the workflow names in `risk.reviewer` picks
  * its runtime ([RiskReviewerRuntime], bl-214). A Codex model gets Codex's reviewer, with the settings of `runners.codex`
- * ([codexReviewerSettings]); any other model Claude Code's, with the [riskReviewerCommand]. The program is resolved as
- * [resolveCommand] does, so the reviewer starts exactly the file the startup check found; null when it cannot be found,
- * or `runners.codex` cannot be read, so the auto merge gate falls back naming the reviewer setup, and the startup warns
+ * ([codexReviewerSettings]); a Gemini model Gemini's (bl-205), with [geminiReviewerSettings]; any other model Claude
+ * Code's, with the [riskReviewerCommand]. The program is resolved as [resolveCommand] does, so the reviewer starts exactly
+ * the file the startup check found; null when it cannot be found, or the runner section cannot be read, so the auto
+ * merge gate falls back naming the reviewer setup, and the startup warns
  * ([riskReviewerWarning]). Its env is the agent env policy and it refuses reads under [holdoutDir], like an agent.
  */
 fun riskReviewerFor(
@@ -467,6 +469,14 @@ fun riskReviewerFor(
             argv?.let { resolveCommand(it.first(), hostEnv) }?.let { program ->
                 val command = CodexAppServerSettings.commandOf(listOf(program) + argv.drop(1))
                 CodexRiskReviewer(settings.copy(command = command), hostEnv, removedEnvNames)
+            }
+        }
+        RiskReviewerRuntime.Gemini -> {
+            val settings = geminiReviewerSettings(workflow, holdoutDir).getOrNull()
+            val argv = settings?.argv
+            argv?.let { resolveCommand(it.first(), hostEnv) }?.let { program ->
+                val command = AcpSettings.commandOf(listOf(program) + argv.drop(1))
+                GeminiRiskReviewer(settings.copy(command = command), hostEnv, removedEnvNames)
             }
         }
     }
@@ -498,16 +508,46 @@ fun codexReviewerSettings(
     }
 
 /**
- * The program the merge risk reviewer runs (m4-06, bl-214). For a Claude Code reviewer: under `runner.kind:
+ * bl-205: the settings of the Gemini merge risk reviewer, with [holdoutDir]. Under `runner.kind: acp` with `preset: agy`
+ * they are `runners.acp` read as the ACP runner reads it, which the loader already checked: its `command`,
+ * `read_timeout_ms` and `strict_mcp` apply. Under any other runner they are the defaults with `agy acp`. The model and
+ * the time limit are always the review's.
+ */
+fun geminiReviewerSettings(
+    workflow: WorkflowFile,
+    holdoutDir: Path? = null,
+): Result<AcpSettings> =
+    runCatching {
+        val settings =
+            if (geminiReviewerOwnsCommand(workflow)) {
+                AcpSettings.of(workflow.runner.section(AcpSettings.SECTION), holdoutDir)
+            } else {
+                AcpSettings(command = AcpSettings.DEFAULT_AGY_COMMAND, preset = AcpSettings.PRESET_AGY, holdoutDir = holdoutDir)
+            }
+        settings.also { it.argv }
+    }
+
+/** bl-205: true when the Gemini reviewer's command is `runners.acp.command`, the runner being `acp` with `preset: agy`. */
+private fun geminiReviewerOwnsCommand(workflow: WorkflowFile): Boolean =
+    workflow.runner.kind == AcpSettings.KIND &&
+        (workflow.runner.sections[AcpSettings.SECTION] as? Map<*, *>)?.get("preset")?.let { it as? String }?.trim() ==
+        AcpSettings.PRESET_AGY
+
+/**
+ * The program the merge risk reviewer runs (m4-06, bl-214, bl-205). For a Claude Code reviewer: under `runner.kind:
  * claude-code` the command of its section, which the loader checked; under any other runner `runners.claude-code.command`
  * when it is set and not blank, else [DEFAULT_REVIEWER_COMMAND]. For a Codex reviewer: the first word of the command of
- * [codexReviewerSettings], or [CodexAppServerSettings.DEFAULT_COMMAND]'s when the section cannot be read.
+ * [codexReviewerSettings], or [CodexAppServerSettings.DEFAULT_COMMAND]'s when the section cannot be read. For a Gemini
+ * reviewer: the first word of the command of [geminiReviewerSettings], or `agy` when it cannot be read.
  */
 fun riskReviewerCommand(workflow: WorkflowFile): String =
     when (riskReviewerRuntime(workflow)) {
         RiskReviewerRuntime.Codex ->
             codexReviewerSettings(workflow).getOrNull()?.argv?.first()
                 ?: CodexAppServerSettings.DEFAULT_COMMAND.substringBefore(' ')
+        RiskReviewerRuntime.Gemini ->
+            geminiReviewerSettings(workflow).getOrNull()?.argv?.first()
+                ?: AcpSettings.DEFAULT_AGY_COMMAND.substringBefore(' ')
         RiskReviewerRuntime.ClaudeCode ->
             if (workflow.runner.kind == ClaudeCodeSettings.KIND) {
                 ClaudeCodeSettings.of(workflow.runner.section(ClaudeCodeSettings.KIND)).command
@@ -549,6 +589,12 @@ fun riskReviewerWarning(
         when (runtime) {
             RiskReviewerRuntime.ClaudeCode -> "Install Claude Code or set runners.claude-code.command"
             RiskReviewerRuntime.Codex -> "Install Codex or set runners.codex.command"
+            RiskReviewerRuntime.Gemini ->
+                if (geminiReviewerOwnsCommand(workflow)) {
+                    "Install the Antigravity CLI or set runners.acp.command"
+                } else {
+                    "Install the Antigravity CLI so agy is on PATH"
+                }
         }
     return "kinds.code.delivery.risk.reviewer is $model, but its command $command cannot be found, so no merge risk " +
         "reviewer can run and every result waits for loop approve. $fix"
