@@ -311,10 +311,11 @@ class AndroidResourceProvider internal constructor(
     /**
      * Stops the emulator of [record] while its process runs: with `adb -s <serial> emu kill` when its serial is
      * connected, then by killing the process when it does not end. True when it is gone, and its record with it while
-     * the record still names that emulator (bl-219), and
-     * when [deleteLog], its log too once nothing failed; false when it still runs, the record kept for the read only
-     * check and [recover]. A record whose process is dead is dropped and nothing is stopped. A failing `emu kill`
-     * throws once the process is killed.
+     * the record still names that emulator (bl-219), and when [deleteLog], its log too once nothing failed; false when
+     * it still runs, the record kept for the read only check and [recover]. A record whose process is dead is dropped
+     * and nothing is stopped. A failing `emu kill` throws once the process is killed. Never called inside
+     * [BootRecords.exclusive]: its drop takes the folder lock again, which `FileChannel.lock` refuses in the same JVM
+     * with an `OverlappingFileLockException`.
      */
     private fun stop(
         record: BootRecord,

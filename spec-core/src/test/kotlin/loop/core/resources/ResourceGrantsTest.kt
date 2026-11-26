@@ -748,6 +748,104 @@ class ResourceGrantsTest {
             assertTrue(released.count { it == "a1 check" } == 2, "$released")
         }
 
+    /**
+     * a1 holds iphone, prepared, and waits in the queue of ipad, which b1 holds unprepared, before c1. The release of
+     * iphone and the prepare of ipad for a1 block (bl-219).
+     */
+    private suspend fun grantedWhileGivingBack(provider: GatedProvider): ResourceGrants {
+        provider.gate("release iphone")
+        provider.gate("prepare ipad a1")
+        ask("a1")
+        val grants = grants(provider)
+        grants.pass()
+        ask("b1", id = "ipad")
+        ask("a1", id = "ipad")
+        ask("c1", id = "ipad")
+        return grants
+    }
+
+    /**
+     * The rest of [grantedWhileGivingBack] once [giving], the end of a1 or a check's take back, gives iphone back: b1
+     * ends, so ipad goes to a1 and a tick starts its prepare, which ends before the release of iphone when
+     * [prepareFirst]. [giving] must leave ipad to a1 until its prepare ended, release it once after, and only then free
+     * it to c1.
+     */
+    private suspend fun grantedWhileGivingBack(
+        grants: ResourceGrants,
+        provider: GatedProvider,
+        giving: Deferred<*>,
+        prepareFirst: Boolean,
+    ) {
+        val freed = freedDuringCalls(provider)
+        assertTrue(provider.entered("release iphone"), "the release of iphone started")
+        grants.endAttempt(AttemptId("b1"), "attempt_ended").getOrThrow()
+        assertEquals(AttemptId("a1"), lock("ipad").attemptId)
+        grants.tick().getOrThrow()
+        assertTrue(provider.entered("prepare ipad a1"), "the prepare of ipad for a1 started")
+
+        if (prepareFirst) {
+            provider.open("prepare ipad a1")
+            grants.idle()
+            provider.open("release iphone")
+        } else {
+            provider.open("release iphone")
+            Thread.sleep(500)
+            assertFalse(giving.isCompleted, "it did not wait for the prepare of ipad")
+            assertEquals(0, calls.count { it == "release ipad" }, "ipad was released during its prepare: $calls")
+            assertEquals(AttemptId("a1"), lock("ipad").attemptId, "ipad was freed during its prepare")
+            provider.open("prepare ipad a1")
+        }
+        giving.await()
+
+        val prepared = calls.indexOf("prepared ipad a1")
+        assertEquals(1, calls.count { it == "release ipad" }, "$calls")
+        assertTrue(prepared >= 0 && calls.indexOf("release ipad") > prepared, "$calls")
+        val check = calls.indexOfFirst { it.startsWith("prepare iphone check-") }.takeIf { it >= 0 } ?: calls.size
+        assertEquals(1, calls.take(check).count { it == "release iphone" }, "$calls")
+        assertEquals(AttemptId("c1"), lock("ipad").attemptId)
+        assertEquals(emptyList(), provider.overlaps)
+        assertEquals(emptyList(), freed)
+        assertEquals(emptyList(), warnings.filter { "unexpected state" in it })
+        assertEquals(emptyMap(), grants.kept())
+    }
+
+    @Test
+    fun `bl-219 a lock granted while the end of its attempt gives back another is released after its prepare, then freed`() =
+        runTest {
+            for (prepareFirst in listOf(false, true)) {
+                store.rows = ResourceLockRows()
+                calls.clear()
+                val provider = GatedProvider(calls)
+                val grants = grantedWhileGivingBack(provider)
+
+                val ended = async(Dispatchers.Default) { grants.endAttempt(AttemptId("a1"), "attempt_ended").getOrThrow() }
+                grantedWhileGivingBack(grants, provider, ended, prepareFirst)
+
+                assertEquals(listOf("ipad"), store.rows.locks.map { it.resourceId }, "prepare first: $prepareFirst")
+            }
+        }
+
+    @Test
+    fun `bl-219 a lock granted while a check's take back gives back another is released after its prepare, then freed`() =
+        runTest {
+            for (prepareFirst in listOf(false, true)) {
+                store.rows = ResourceLockRows()
+                calls.clear()
+                val provider = GatedProvider(calls)
+                val grants = grantedWhileGivingBack(provider)
+
+                val checked =
+                    async(Dispatchers.Default) {
+                        grants
+                            .withCheckResource("ios-simulator", "i-a1", "t-a1", AttemptId("a1"), poll = 20.milliseconds) { it }
+                            .getOrThrow()
+                    }
+                grantedWhileGivingBack(grants, provider, checked, prepareFirst)
+
+                assertEquals(listOf("ipad"), store.rows.locks.map { it.resourceId }, "prepare first: $prepareFirst")
+            }
+        }
+
     @Test
     fun `bl-219 a prepare that ends after its lock was freed never calls release, and is reported`() =
         runTest {
@@ -758,7 +856,7 @@ class ResourceGrantsTest {
             grants.tick().getOrThrow()
             assertTrue(provider.entered("prepare iphone a1"))
 
-            // Freed past the grants, as no path of theirs can while the prepare holds the guard.
+            // Freed past the grants, by a change of the rows they did not make, as the run of another project can.
             locks.freeAttempt(AttemptId("a1"), "attempt_ended").getOrThrow()
             provider.open("prepare iphone a1")
             grants.idle()

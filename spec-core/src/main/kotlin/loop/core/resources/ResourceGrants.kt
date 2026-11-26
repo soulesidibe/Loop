@@ -69,10 +69,12 @@ import kotlin.time.TimeSource
  * running on a lock is not started again. A tick waits on a provider only when it frees again an attempt whose free
  * failed, which runs that attempt's provider calls inline. The end of an attempt and a check wait only for the calls in
  * flight on their own locks, and since bl-219 hold the mutex of every lock they give back or free, one granted to the
- * attempt while they waited too. A provider error, even an [Error] such as a [LinkageError], is the failure of its
- * call, never of the run. A lock whose prepare ran is released at its end even when the outcome was never written. A
- * prepare that ends after its lock was freed, which no path of the grants does while the prepare runs, is reported as
- * an unexpected state and never released, since the resource may be another holder's by now. [close], at the end of
+ * attempt while they waited or gave the others back too: their free changes nothing while the attempt holds a lock
+ * they did not give back, and they start over with it. A provider error, even an [Error] such as a [LinkageError], is
+ * the failure of its call, never of the run. A lock whose prepare ran is released at its end even when the outcome was
+ * never written. A prepare that ends after its lock was freed, which the grants never do while it runs but a change of
+ * the rows past them can, such as the run of another project freeing this one's rows as abandoned, is reported as an
+ * unexpected state and never released, since the resource may be another holder's by now. [close], at the end of
  * `loop run`, cancels the background calls and interrupts the provider calls in flight, and a call it cancels before
  * its thread runs it never runs.
  */
@@ -170,6 +172,7 @@ class ResourceGrants(
             "givenBack" to synchronized(givenBack) { givenBack.keys.map { it.toString() } },
             "endChecked" to synchronized(endChecked) { endChecked.keys.map { it.toString() } },
             "prepareRan" to prepareRan.map { it.toString() },
+            "unfreed" to unfreed.keys.map { it.value },
         ).filterValues { it.isNotEmpty() }
 
     /** Waits until no background call of a tick runs (bl-208). */
@@ -219,8 +222,9 @@ class ResourceGrants(
 
     /**
      * The prepare of [lock] when it is still held and unprepared. Every path of the grants that frees a lock holds its
-     * mutex, so a lock freed while its prepare ran was freed past them: the provider's `release` is never called, since
-     * the resource may be another holder's by now, and the state is reported (bl-219).
+     * mutex, so a lock freed while its prepare ran was freed past them, by a change of the rows they did not make: the
+     * provider's `release` is never called, since the resource may be another holder's by now, and the state is
+     * reported (bl-219).
      */
     private suspend fun prepareInBackground(lock: ResourceLock) {
         val current = current(lock).getOrElse { return failed(lock, "cannot prepare: ${it.describe()}") } ?: return
@@ -244,15 +248,17 @@ class ResourceGrants(
 
     /**
      * Runs [block] with the rows and the locks [held] picks from them, read under the mutex of each of those locks, from
-     * [first] on (bl-219). A lock granted after [first] was read, by another holder's free, is not guarded yet: then
-     * nothing runs, the mutexes are left, and those of every lock seen so far are taken again in their order, until a
-     * read under them finds no new lock. A failed read is the failure.
+     * [first] on (bl-219). A lock granted to the attempt by another holder's free is not guarded yet, either before the
+     * read, when nothing runs, or while [block] gives the others back, when [block] passes the kind and resource id of
+     * each lock it gave back to its free, which then changes nothing and names the lock in
+     * [ResourceChange.unexpected]. Either way the mutexes are left and those of every lock seen so far taken again in
+     * their order, until a read and a free under them find no new lock. A failed read or free is the failure.
      */
-    private suspend fun <T> withHeldGuards(
+    private suspend fun withHeldGuards(
         first: List<LockKey>,
         held: (ResourceLockRows) -> List<ResourceLock>,
-        block: suspend (ResourceLockRows, List<ResourceLock>) -> Result<T>,
-    ): Result<T> {
+        block: suspend (ResourceLockRows, List<ResourceLock>) -> Result<ResourceChange>,
+    ): Result<ResourceChange> {
         var keys = first.distinct()
         while (true) {
             var missed = emptyList<LockKey>()
@@ -261,12 +267,18 @@ class ResourceGrants(
                     val rows = locks.rows().getOrElse { return@withGuards Result.failure(it) }
                     val mine = held(rows)
                     missed = mine.map { it.key }.filter { it !in keys }
-                    if (missed.isEmpty()) block(rows, mine) else null
+                    if (missed.isNotEmpty()) return@withGuards null
+                    val freed = block(rows, mine).getOrElse { return@withGuards Result.failure(it) }
+                    missed = freed.unexpected.map { it.key }
+                    if (missed.isEmpty()) Result.success(freed) else null
                 }
             if (done != null) return done
-            keys = keys + missed
+            keys = (keys + missed).distinct()
         }
     }
+
+    /** The kind and resource id of each lock of [held], what a free expects its attempt to hold (bl-219). */
+    private fun expected(held: List<ResourceLock>): Set<Pair<String, String>> = held.map { it.kind to it.resourceId }.toSet()
 
     /**
      * Frees every lock and queue row of the attempt [attemptId], each freed lock recorded with [reason], after the
@@ -351,7 +363,9 @@ class ResourceGrants(
                 return@withHeldGuards Result.success(ResourceChange(rows))
             }
             val marks = held.mapNotNull { lock -> checkAndGiveBack(lock, declaredCheck = true) }
-            locks.freeKinds(attemptId, kinds, ResourceReleased.CHECK, marks).onSuccess { forget((keys + held.map { it.key }).distinct()) }
+            locks.freeKinds(attemptId, kinds, ResourceReleased.CHECK, marks, expected(held)).onSuccess { change ->
+                if (change.unexpected.isEmpty()) forget((keys + held.map { it.key }).distinct())
+            }
         }
     }
 
@@ -479,7 +493,9 @@ class ResourceGrants(
         // Read again under the mutexes: a prepare in flight may have written its outcome since.
         return withHeldGuards(keys, { rows -> rows.locks.filter { it.attemptId == attemptId } }) { _, held ->
             val marks = held.mapNotNull { lock -> checkAndGiveBack(lock, declaredCheck) }
-            locks.freeAttempt(attemptId, reason, marks).onSuccess { forget((keys + held.map { it.key }).distinct()) }
+            locks.freeAttempt(attemptId, reason, marks, expected(held)).onSuccess { change ->
+                if (change.unexpected.isEmpty()) forget((keys + held.map { it.key }).distinct())
+            }
         }.onSuccess { unfreed -= attemptId }
             .onFailure { unfreed[attemptId] = reason }
     }
