@@ -84,8 +84,9 @@ class ResourceGrantsTest {
             }
     }
 
+    /** Records from several threads at once: the background calls of a tick free and grant locks (bl-249). */
     private class Sink : EventSink {
-        val events = mutableListOf<RecordedEvent>()
+        val events: MutableList<RecordedEvent> = CopyOnWriteArrayList()
 
         override suspend fun record(event: RecordedEvent): Result<Unit> {
             events += event
@@ -186,23 +187,37 @@ class ResourceGrantsTest {
             assertEquals(listOf("prepare iphone"), calls, "a prepared lock is never prepared again")
         }
 
+    /**
+     * The release is held in the provider, so the state after the tick is fixed: the tick promises to start it in the
+     * background, not when it ends, and once it ends the free may grant a2 before the tick reads the rows again, which
+     * then prepares a2 in the same tick (bl-249).
+     */
     @Test
     fun `a tick gives back a released lock through the provider, frees it and the next in its queue is prepared`() =
         runTest {
+            val provider = GatedProvider(calls)
+            provider.gate("release iphone")
             ask("a1")
             ask("a2")
-            val grants = grants()
+            val grants = grants(provider)
             grants.pass()
             ask("a1")
             locks.requestRelease(AttemptId("a1"), "ios-simulator", "iphone").getOrThrow()
 
-            grants.pass()
-            assertEquals(listOf("prepare iphone", "release iphone"), calls, "the release runs in the background of the tick")
+            grants.tick().getOrThrow()
+            assertTrue(provider.entered("release iphone"), "the release runs in the background of the tick")
+            assertEquals(listOf("prepare iphone a1", "prepared iphone a1", "release iphone"), calls)
+            assertEquals(AttemptId("a1"), lock("iphone").attemptId, "the lock is freed only once its release ends")
+            provider.open("release iphone")
+            grants.idle()
+            assertEquals(AttemptId("a2"), lock("iphone").attemptId, "the free grants the lock to the next in its queue")
+            assertNull(lock("iphone").prepared)
             grants.pass()
 
-            assertEquals(listOf("prepare iphone", "release iphone", "prepare iphone"), calls)
+            assertEquals(listOf("prepare iphone a1", "prepared iphone a1", "release iphone", "prepare iphone a2", "prepared iphone a2"), calls)
             assertEquals(AttemptId("a2"), lock("iphone").attemptId)
-            assertEquals(mapOf("udid" to "UDID-iphone", "can" to "ui tests"), lock("iphone").prepared)
+            assertEquals(mapOf("udid" to "UDID-iphone"), lock("iphone").prepared)
+            assertEquals(emptyList(), provider.overlaps)
             assertEquals(
                 listOf("resource_released a1 released", "resource_granted a2"),
                 sink.events
