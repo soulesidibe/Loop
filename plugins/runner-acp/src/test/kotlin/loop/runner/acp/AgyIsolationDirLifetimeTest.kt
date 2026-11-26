@@ -6,6 +6,9 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.Collections
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.concurrent.thread
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
 import kotlin.io.path.readText
@@ -131,6 +134,154 @@ class AgyIsolationDirLifetimeTest {
         assertEquals("the isolated agy folder holds antigravity-cli as a symbolic link, which Loop did not expect", dir.checkBeforeLoad())
     }
 
+    @Test
+    fun `bl-230 checkBeforeLoad accepts the entries a real agy session writes`() {
+        val dir = kept("att-1", "sess-1")
+        writeAgyLayout(dir.path)
+
+        assertNull(dir.checkBeforeLoad())
+    }
+
+    @Test
+    fun `bl-230 checkBeforeLoad refuses an unexpected file under config`() {
+        val dir = kept("att-1", "sess-1")
+        writeAgyLayout(dir.path)
+        dir.path.resolve("config/skills.json").writeText("""{"skills":["evil"]}""")
+
+        assertEquals("the isolated agy folder holds config/skills.json, which Loop did not expect", dir.checkBeforeLoad())
+    }
+
+    @Test
+    fun `bl-230 checkBeforeLoad refuses an unexpected file under antigravity-cli`() {
+        val dir = kept("att-1", "sess-1")
+        writeAgyLayout(dir.path)
+        dir.path.resolve("antigravity-cli/keybindings.json").writeText("{}")
+
+        assertEquals(
+            "the isolated agy folder holds antigravity-cli/keybindings.json, which Loop did not expect",
+            dir.checkBeforeLoad(),
+        )
+    }
+
+    @Test
+    fun `bl-230 checkBeforeLoad refuses an allowed name of the wrong type, an MCP server, another MCP cache and a nested link`() {
+        val dir = kept("att-1", "sess-1")
+        writeAgyLayout(dir.path)
+
+        dir.path
+            .resolve("config/projects")
+            .toFile()
+            .deleteRecursively()
+        dir.path.resolve("config/projects").writeText("x")
+        assertEquals("the isolated agy folder holds config/projects of another type, which Loop did not expect", dir.checkBeforeLoad())
+        Files.delete(dir.path.resolve("config/projects"))
+
+        dir.path.resolve("config/mcp_config.json").writeText("""{"mcpServers":{"evil":{"command":"sh"}}}""")
+        assertEquals(
+            "the isolated agy folder holds config/mcp_config.json naming an MCP server, which Loop did not expect",
+            dir.checkBeforeLoad(),
+        )
+        dir.path.resolve("config/mcp_config.json").writeText("""{"mcpServers":{}}""")
+        assertNull(dir.checkBeforeLoad())
+
+        dir.path
+            .resolve("antigravity-cli/mcp/evil")
+            .createDirectories()
+        assertEquals("the isolated agy folder holds antigravity-cli/mcp/evil, which Loop did not expect", dir.checkBeforeLoad())
+        Files.delete(dir.path.resolve("antigravity-cli/mcp/evil"))
+
+        val link = dir.path.resolve("antigravity-cli/brain/sess-1/scratch/link")
+        Files.createSymbolicLink(link, workspace)
+        assertEquals(
+            "the isolated agy folder holds antigravity-cli/brain/sess-1/scratch/link as a symbolic link, which Loop did not expect",
+            dir.checkBeforeLoad(),
+        )
+    }
+
+    @Test
+    fun `bl-230 removeKept spares the folder it is given, the one of the session that superseded the others`() {
+        val older = kept("att-1", "sess-old")
+        val newest = kept("att-2", "sess-new")
+
+        val errors = AgyIsolationDir.removeKept(home, loopHome, "proj-1", "issue-1", except = newest.path)
+
+        assertTrue(errors.isEmpty(), "$errors")
+        assertFalse(older.path.exists())
+        assertTrue(newest.path.exists())
+    }
+
+    @Test
+    fun `bl-230 the claim writes the pid file in one move and leaves no temporary file`() {
+        val dir = kept("att-1", "sess-1", ownerPid = DEAD_PID)
+
+        val found = assertNotNull(find("sess-1"))
+
+        assertEquals(ProcessHandle.current().pid().toString(), found.path.resolve(".loop-pid").readText())
+        val names = Files.list(found.path).use { stream -> stream.map { it.fileName.toString() }.toList() }.sorted()
+        assertEquals(listOf(".loop-pid", ".loop-session.json", "antigravity-cli"), names)
+        assertEquals(dir.path, found.path)
+    }
+
+    @Test
+    fun `bl-230 a sweep running beside the claims never sees a claimed folder without its pid file`() {
+        val dir = kept("att-1", "sess-1")
+        val stop = AtomicBoolean(false)
+        val sweepErrors = Collections.synchronizedList(mutableListOf<String>())
+        val sweeper =
+            thread {
+                while (!stop.get()) sweepErrors += AgyIsolationDir.sweepStale(home, loopHome)
+            }
+        try {
+            repeat(CLAIMS) { round ->
+                val claimed = assertNotNull(find("sess-1"), "claim $round found no folder")
+                assertTrue(claimed.keep(), "claim $round could not keep the folder")
+            }
+        } finally {
+            stop.set(true)
+            sweeper.join()
+        }
+        assertTrue(dir.path.exists())
+        assertTrue(sweepErrors.isEmpty(), "$sweepErrors")
+    }
+
+    /** The entries a real `agy` 1.5.18 session wrote in its isolated folder, plus the cache of Loop's MCP server. */
+    private fun writeAgyLayout(root: Path) {
+        val config = root.resolve("config").createDirectories()
+        config.resolve("config.json").writeText("""{"plugins":{"swarm":{"enabled":true}}}""")
+        config.resolve("mcp_config.json").writeText("")
+        config.resolve(".migrated").writeText("")
+        config.resolve("projects").createDirectories()
+        val cli = root.resolve("antigravity-cli")
+        for (name in listOf("annotations", "cache", "conversations", "crashes", "daemon", "log", "persistent_terminals")) {
+            cli.resolve(name).createDirectories()
+        }
+        cli
+            .resolve("bin")
+            .createDirectories()
+            .resolve("agentapi")
+            .writeText("#!/bin/sh\n")
+        cli
+            .resolve("builtin/skills/plugin")
+            .createDirectories()
+            .resolve("SKILL.md")
+            .writeText("skill")
+        cli.resolve("brain/sess-1/scratch").createDirectories()
+        cli
+            .resolve("brain/sess-1/.system_generated/logs")
+            .createDirectories()
+            .resolve("transcript.jsonl")
+            .writeText("{}")
+        cli.resolve("conversations/sess-1.db").writeText("db")
+        cli
+            .resolve("mcp/loop")
+            .createDirectories()
+            .resolve("submit_result.json")
+            .writeText("{}")
+        for (name in listOf("conversation_summaries.db", "installation_id", "jetbox_summaries_proto.pb", "jetski_state.pbtxt")) {
+            cli.resolve(name).writeText("x")
+        }
+    }
+
     private fun create(
         attemptId: String,
         ownerPid: Long = ProcessHandle.current().pid(),
@@ -167,5 +318,6 @@ class AgyIsolationDirLifetimeTest {
 
     companion object {
         private const val DEAD_PID = 99_999_999L
+        private const val CLAIMS = 2_000
     }
 }
