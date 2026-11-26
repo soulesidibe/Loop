@@ -1,7 +1,7 @@
 ---
 id: bl-207
 title: "Two test tasks read files Gradle does not track, so the build cache can skip them"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-human]
 blocked_by: []
@@ -63,3 +63,5 @@ Bug, ready-for-human, priority 2. Confirmed by reading. conformance/build.gradle
 - Changing the protect list in WORKFLOW.md or the CI cache setup in .github/.
 - The sharding and CDS work of pull request #40, which was checked and is clean.
 - Test inputs already on the classpath (src/test/resources read through the class loader).
+
+2026-11-26 merged: pull request #101 (commit cba1df6), done in a session on the human lane, build files only. Its merge risk review (Sonnet 5.5) found no medium or high, only lows, filed as bl-247.
