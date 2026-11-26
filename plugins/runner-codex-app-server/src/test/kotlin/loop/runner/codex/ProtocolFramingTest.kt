@@ -95,4 +95,31 @@ class ProtocolFramingTest {
         assertEquals("line longer than 10 MB", malformed.reason)
         assertEquals("line longer than 10 MB", assertIs<Frame.Malformed>(ProtocolFraming.decode(atLimit + " ")).reason)
     }
+
+    @Test
+    fun `bl-240 the echo of an error response omits its data and keeps id, code and message`() {
+        val data = """{"email":"someone@example.com","account_id":"735190462281"}"""
+        val line = """{"id":2,"error":{"code":-32603,"message":"usage limit reached","data":$data}}"""
+
+        val echo = ProtocolFraming.echo(ProtocolFraming.decode(line))
+
+        assertEquals(
+            """{"id":2,"error":{"code":-32603,"message":"usage limit reached","data":"[error data omitted, ${data.length} chars]"}}""",
+            echo,
+        )
+    }
+
+    @Test
+    fun `bl-240 every other line is echoed as read, byte for byte`() {
+        val lines =
+            listOf(
+                """{ "method": "thread/started", "params": {"thread": {"id": "t1"}} }""",
+                """{"id":1,"result":{}}""",
+                """{"id":"a", "error":{"code":-32601,"message":"no such method"}}""",
+                """not json {"error":{"data":"someone@example.com"}}""",
+                "",
+            )
+
+        lines.forEach { line -> assertEquals(line, ProtocolFraming.echo(ProtocolFraming.decode(line))) }
+    }
 }

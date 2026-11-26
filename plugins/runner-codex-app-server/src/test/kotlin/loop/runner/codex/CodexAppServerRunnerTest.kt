@@ -296,6 +296,38 @@ class CodexAppServerRunnerTest {
     }
 
     @Test
+    fun `bl-240 the echo of an error answer omits its data, other lines are echoed as read`() {
+        val notification = """{ "method": "loop/unknown", "params": {"note": "kept as read"} }"""
+        val undecodable = """not json {"error":{"data":"kept as read"}}"""
+        val errorLine =
+            """{"id":2,"error":{"code":-32603,"message":"thread/start is not available",""" +
+                """"data":{"email":"$EMAIL","account_id":"$ACCOUNT_ID"}}}"""
+        val server =
+            FakeAppServer.write(dir) {
+                awaitClient()
+                response(1, FakeAppServer.initializeResult())
+                awaitClient()
+                awaitClient()
+                raw(notification)
+                raw(undecodable)
+                raw(errorLine)
+                shell("sleep 1000")
+            }
+
+        val events = runAll(runner(server.command))
+
+        val outputs = events.filterIsInstance<RunnerEvent.Output>()
+        outputs.forEach { output -> assertFalse(EMAIL in output.line || ACCOUNT_ID in output.line, output.line) }
+        val echoed = outputs.single { it.stream == Stream.Stdout && "thread/start is not available" in it.line }
+        assertTrue("\"code\":-32603" in echoed.line, echoed.line)
+        assertTrue("[error data omitted, " in echoed.line, echoed.line)
+        assertTrue(outputs.any { it.stream == Stream.Stdout && it.line == notification })
+        assertTrue(outputs.any { it.stream == Stream.Stdout && it.line == undecodable })
+        val failed = assertIs<RunnerEvent.TurnFailed>(events.last())
+        assertEquals("response_error: thread/start failed with code -32603: thread/start is not available", failed.reason)
+    }
+
+    @Test
     fun `17_5 item 2 an answer out of order fails the start with response_error naming both requests`() {
         val server =
             FakeAppServer.write(dir) {
@@ -1074,5 +1106,7 @@ class CodexAppServerRunnerTest {
         /** The responses to `initialize`, `thread/start` and `turn/start` a handshake reads before the turn. */
         const val STARTUP_RESPONSES = 3
         const val POLL_MS = 50L
+        const val EMAIL = "someone@example.com"
+        const val ACCOUNT_ID = "735190462281"
     }
 }
