@@ -11,6 +11,7 @@ import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
+import kotlin.io.path.moveTo
 import kotlin.io.path.readText
 import kotlin.io.path.writeText
 import kotlin.test.Test
@@ -225,9 +226,11 @@ class SendBackCommandTest {
     }
 
     @Test
-    fun `a bare id finds the issue in the primary tracker and a namespaced id in its own tracker`() {
-        fixture.projectDir.resolve("other").createDirectories()
+    fun `a bare id finds the issue in the primary tracker and a namespaced id in its own tracker, where the reason is commented`() {
+        val other = fixture.projectDir.resolve("other").createDirectories()
         fixture.writeWorkflow(extra = "trackers:\n  - id: local\n    kind: files\n    provider:\n      dir: ./other\n")
+        // bl-221: x-1 is a real issue of the second tracker, so its comment lands there.
+        val extra = fixture.issue("x-1").moveTo(other.resolve("x-1.md"))
         fixture.issue("t-1")
         waitFor()
         waitFor(issueId = "local:x-1", identifier = "x-1")
@@ -244,6 +247,30 @@ class SendBackCommandTest {
         val reasons = waits().associate { it["issue_id"] to it["data"].orEmpty() }
         assertContains(reasons.getValue("default:t-1"), "\"sent_back_reason\":\"Primary.\"")
         assertContains(reasons.getValue("local:x-1"), "\"sent_back_reason\":\"Extra.\"")
+        assertContains(comments(), "Sent back by soule: Primary.")
+        assertContains(extra.readText().substringAfter("## Comments"), "Sent back by soule: Extra.")
+        assertTrue("not commented" !in namespaced.stderr, namespaced.toString())
+    }
+
+    @Test
+    fun `bl-221 loop approve after loop send-back is refused with exit 4, records nothing and changes nothing`() {
+        fixture.issue("t-1")
+        waitFor()
+        assertEquals(0, sendBack("t-1", "--reason", "Use Save.").exitCode)
+        val before = waits()
+        val touches = events("human_touch")
+
+        val approved = fixture.inProcess("approve", "t-1", "--workflow", fixture.workflow.toString(), env = operator)
+
+        assertEquals(4, approved.exitCode, approved.toString())
+        assertEquals(
+            "loop approve: t-1 was sent back and is not waiting for approval, Loop dispatches it again with the reason. Nothing changed.",
+            approved.stderr.trim(),
+        )
+        assertEquals("", approved.stdout.trim())
+        assertEquals(before, waits())
+        assertEquals(emptyList(), events("approval_given"))
+        assertEquals(touches, events("human_touch"), "only the send back's touch")
     }
 
     @Test

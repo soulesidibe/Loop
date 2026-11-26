@@ -56,7 +56,8 @@ class SendBackCommand(
         // m4-47: a bare id is the primary tracker's, a namespaced one names a tracker of the project.
         val typed = ids.typed(issue).getOrElse { fail("${it.message}. Nothing changed", EXIT_ISSUE) }
         val workflow = project.workflow
-        val tracker = project.tracker()
+        // bl-221: every tracker of the project, so the reason is commented on the tracker the issue belongs to.
+        val tracker = project.trackerPoll()
         val lookup =
             try {
                 runBlocking { tracker.fetchIssuesByIds(listOf(typed.value)) }

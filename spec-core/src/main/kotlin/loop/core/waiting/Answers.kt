@@ -31,6 +31,12 @@ object Answers {
         return "$question\n\n$answered"
     }
 
+    /**
+     * bl-221: the longest answer `loop answer` takes, in characters once trimmed. The prompt fill never cuts `loop.answer`,
+     * so a longer answer could push the prompt over its limit; a longer text belongs in the issue itself.
+     */
+    const val MAX_CHARS: Int = 4_000
+
     /** Who answered when the wait does not say. */
     private const val UNKNOWN_HUMAN = "a human"
 }
