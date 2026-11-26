@@ -52,6 +52,9 @@ import kotlin.time.TimeSource
  * Under `preset: agy`, strips Google API keys from the inherited host environment by default (an
  * operator can still opt in through `agent.env`), enforces the pinned `agy` major version `1` on
  * `initialize`, pins `runners.acp.model` with `session/set_model`, and escapes leading `/` prompts.
+ *
+ * With [AcpSettings.readOnly] (bl-205, the Gemini merge risk reviewer), the permission policy is read only, no
+ * `mcpServers` are passed, a session never resumes and its isolated folder is removed when it stops, never kept.
  */
 class AcpRunner internal constructor(
     internal val settings: AcpSettings,
@@ -112,6 +115,7 @@ class AcpRunner internal constructor(
         ctx: AttemptContext,
         runtimeSessionId: String,
     ): AgentSession? {
+        if (settings.readOnly) return null
         if (!settings.isAgyPreset) return AcpSession(ctx, resumeFrom = runtimeSessionId)
         val roots = isolationRoots(agentEnv(ctx))
         AgyIsolationDir.sweepStale(roots.home, roots.loopHome).forEach { warn(ctx, it) }
@@ -198,6 +202,7 @@ class AcpRunner internal constructor(
                 strictMcp = settings.strictMcp,
                 launcher = ctx.env["LOOP_LAUNCHER"],
                 protectedWriteDirs = ::internalProtectedDirs,
+                readOnly = settings.readOnly,
             )
         private val telemetry = AcpTelemetry(isAgyPreset = settings.isAgyPreset)
 
@@ -352,11 +357,11 @@ class AcpRunner internal constructor(
 
         /**
          * At the stop, keeps the folder of a session that reported its runtime session id, so a respawn or a later
-         * attempt can load it (bl-213), and deletes any other.
+         * attempt can load it (bl-213), and deletes any other, and every folder of a read only session.
          */
         private fun releaseIsolationDir() {
             val dir = isolationDir ?: return
-            if (dir.keep()) {
+            if (!settings.readOnly && dir.keep()) {
                 isolationDir = null
             } else {
                 deleteIsolationDir()
@@ -431,7 +436,7 @@ class AcpRunner internal constructor(
                             ProtectedRootsCheck.refusal(ctx.workspace, ctx.baseRef)?.let { return fail(null, it) }
                         }
                         val mcpEnv = ctx.env + mapOf(ENV_SESSION_ID to sessionId.value, ENV_TURN_ID to turnId.value)
-                        val mcpServers = AcpMcpConfig.mcpServers(mcpEnv)
+                        val mcpServers = if (settings.readOnly) JsonArray(emptyList()) else AcpMcpConfig.mcpServers(mcpEnv)
                         sessionMcpServers = mcpServers
                         pendingResume?.let { resumed ->
                             val refusal = isolationDir?.checkBeforeLoad()
