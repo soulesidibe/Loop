@@ -63,11 +63,16 @@ internal object ProtectedRootsCheck {
             "maintenance.auto=false",
         ).flatMap { listOf("-c", it) } + "--no-replace-objects"
 
+    /**
+     * `PATH`, `HOME` and the locale of [baseEnv], no prompt, no grafts, and lazy fetch off (bl-246): a promisor the
+     * agent sets in the workspace's config, with a ref at a missing object, would otherwise run its program here.
+     */
     internal fun minimalGitEnv(baseEnv: Map<String, String>): Map<String, String> =
         baseEnv.filterKeys { it in KEPT_ENV || it.startsWith("LC_") } +
             mapOf(
                 "GIT_TERMINAL_PROMPT" to "0",
                 "GIT_GRAFT_FILE" to "/dev/null",
+                "GIT_NO_LAZY_FETCH" to "1",
             )
 
     internal data class GitResult(
