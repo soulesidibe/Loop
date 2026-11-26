@@ -33,6 +33,7 @@ import loop.api.SecretRedactor
 import loop.api.WaitReason
 import loop.api.WaitingIssue
 import loop.core.delivery.MergeCheck
+import loop.core.events.BranchPushed
 import loop.core.events.DeliveryFailed
 import loop.core.events.HumanNotified
 import loop.core.events.IssueParked
@@ -44,6 +45,7 @@ import loop.core.log.KeyValueLog
 import loop.core.orchestrator.FIXED_NOW
 import loop.core.orchestrator.FakeHookRunner
 import loop.core.orchestrator.FakeParkedIssues
+import loop.core.orchestrator.FakeRetryStates
 import loop.core.orchestrator.FakeRunner
 import loop.core.orchestrator.FakeSink
 import loop.core.orchestrator.FakeTracker
@@ -204,8 +206,12 @@ class ChangesRequestedReactionTest {
             return reviews
         }
 
+        /** bl-224: runs during each comments read, as a `loop approve` or a `loop send-back` committed meanwhile. */
+        var duringCommentRead: suspend () -> Unit = {}
+
         override suspend fun pullRequestReviewComments(number: Long): Result<List<ReviewComment>> {
             commentReads += number
+            duringCommentRead()
             return comments
         }
 
@@ -275,6 +281,7 @@ class ChangesRequestedReactionTest {
         val waiting = FakeWaitingIssues(fallbackWait(head))
         val sink = FakeSink()
         val parked = FakeParkedIssues()
+        val retryStates = FakeRetryStates()
         val channel = FakeChannel()
         val runner =
             FakeRunner().apply {
@@ -327,6 +334,7 @@ class ChangesRequestedReactionTest {
                 deliveryFor = { remote },
                 workspaceGit = workspaceGit,
                 reactionsBefore = { Result.success(stored()) },
+                retryStates = retryStates,
                 channel = channel,
             )
         }
@@ -474,6 +482,67 @@ class ChangesRequestedReactionTest {
             assertEquals(3, setup.remote.reads.size)
             assertEquals(1, setup.all(ReactionTriggered.name).size, "the store says review 82 was sent")
             assertEquals(1, setup.runner.calls.size)
+        }
+
+    @Test
+    fun `a restart between the reaction and its retry dispatch still gives the reviews marked sent to the agent`() =
+        runTest {
+            val setup = Setup()
+            tick(with(setup) { orchestrator() })
+            val stored = assertNotNull(setup.all(ReactionTriggered.name).single()[ReactionKeys.FINDINGS])
+            assertEquals("82", setup.all(ReactionTriggered.name).single()["review"], "review 82 is stored as sent")
+
+            // A new process: nothing in memory, the store's events and waits as the first one left them.
+            val second = with(setup) { orchestrator() }
+            runRetry(setup, second)
+
+            val (_, prompt) = setup.runner.calls.single()
+            assertEquals("Work on t-1. Retry kind: reaction.\n$stored", prompt)
+            assertContains(prompt, "Review 82 by octocat, changes requested on $HEAD:\nPlease handle the empty list before this ships.")
+        }
+
+    @Test
+    fun `a loop approve committed while the reaction reads GitHub keeps the wait, schedules no retry, and is delivered`() =
+        runTest {
+            val setup = Setup()
+            setup.remote.duringCommentRead = { setup.waiting.approve(PROJECT, "id-t-1", "alice", FIXED_NOW) }
+            val orchestrator = with(setup) { orchestrator() }
+
+            tick(orchestrator)
+
+            assertTrue(setup.all(ReactionTriggered.name).isEmpty())
+            assertEquals(ReactionSkipped.HUMAN_DECIDED, setup.all(ReactionSkipped.name).single()["reason"])
+            assertTrue(setup.all(RetryScheduled.name).isEmpty(), "no retry")
+            assertTrue(assertNotNull(setup.wait, "the wait is kept").approved, "with the approval")
+            setup.remote.duringCommentRead = {}
+            tick(orchestrator, after = 1_000)
+            testScheduler.advanceUntilIdle()
+            assertTrue(setup.runner.calls.isEmpty(), "the agent is not retried")
+            assertEquals(1, setup.all(BranchPushed.name).size, "the approval is delivered: the branch is pushed for its pull request")
+            assertEquals(1, setup.remote.merges.size, "and its merge is tried")
+        }
+
+    @Test
+    fun `a loop send-back committed while the reaction reads GitHub schedules no retry and dispatches with the human's reason`() =
+        runTest {
+            val setup = Setup()
+            setup.remote.duringCommentRead = {
+                setup.waiting.sendBack(PROJECT, "id-t-1", "alice", "Rename the helper before anything else.", FIXED_NOW)
+            }
+            val orchestrator = with(setup) { orchestrator() }
+
+            tick(orchestrator)
+            testScheduler.advanceUntilIdle()
+
+            assertTrue(setup.all(ReactionTriggered.name).isEmpty())
+            assertEquals(ReactionSkipped.HUMAN_DECIDED, setup.all(ReactionSkipped.name).single()["reason"])
+            assertTrue(setup.all(RetryScheduled.name).none { it["error"] == "reaction" }, "no reaction retry")
+            tick(orchestrator, after = 1_000)
+            testScheduler.advanceUntilIdle()
+            val (_, prompt) = setup.runner.calls.single()
+            assertContains(prompt, "Retry kind: sent_back.")
+            assertContains(prompt, "Rename the helper before anything else.")
+            assertFalse("Review 82" in prompt, "the reaction's findings are not sent")
         }
 
     @Test
