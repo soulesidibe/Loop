@@ -23,6 +23,11 @@ None. Backlog, not scheduled in a milestone. Low findings of the merge risk revi
 
 Area: `CodexAppServerRunner.kt`, `Telemetry.kt`, `CodexAppServerRunnerTest.kt`, `docs/self-hosting.md`.
 
+## Acceptance criteria
+
+- [ ] `./gradlew :plugins:runner-codex-app-server:test` passes, with a test replaying an unknown turn id after a started turn and the two new respawn tests.
+- [ ] `docs/self-hosting.md` and `docs/plugins/runner-codex-app-server.md` carry the two docs changes.
+
 ## Comments
 
 2026-11-25 triage:
