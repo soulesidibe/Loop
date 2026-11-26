@@ -4,12 +4,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
+import loop.core.verify.WorkspaceGit
 import loop.core.workflow.HooksConfig
 import loop.core.workspace.HookListener
 import loop.core.workspace.HookName
 import loop.core.workspace.HookResult
 import loop.core.workspace.ShellHookRunner
 import loop.core.workspace.Workspace
+import loop.core.workspace.WorkspaceClones
 import loop.core.workspace.WorkspaceError
 import loop.core.workspace.WorkspaceKey
 import loop.core.workspace.WorkspaceManager
@@ -21,6 +23,7 @@ import kotlin.io.path.createDirectories
 import kotlin.io.path.createTempDirectory
 import kotlin.io.path.exists
 import kotlin.io.path.readText
+import kotlin.io.path.setPosixFilePermissions
 import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -54,6 +57,17 @@ class WorktreeHooksTest {
     private val env: Map<String, String> = repo.env + hookEnv(repo.dir.resolve("WORKFLOW.md"), "id-m1-04", "m1-04", key)
 
     private fun prepare(): Workspace = runBlocking { manager.prepare(key, env) }.getOrThrow()
+
+    /** bl-28: the manager of `workspace.git: clone`, which makes each workspace a clone of the project before the hooks. */
+    private val cloneManager =
+        WorkspaceManager(
+            Workspaces(repo.dir.resolve("workspaces")),
+            hooks,
+            ShellHookRunner(),
+            WorkspaceClones(repo.dir, WorkspaceGit(repo.env + ("PATH" to System.getenv("PATH").orEmpty()))),
+        )
+
+    private fun prepareClone(): Workspace = runBlocking { cloneManager.prepare(key, env) }.getOrThrow()
 
     @Test
     fun `after_create makes a worktree on the issue branch without the issues folder`() {
@@ -413,6 +427,189 @@ class WorktreeHooksTest {
         assertFalse(result.ok, result.output)
         assertEquals("A project.\n", repo.dir.resolve("README.md").readText())
         assertTrue(repo.dir.resolve(".loop/issues/m1-04.md").exists())
+    }
+
+    @Test
+    fun `in a clone after_create hides the issues folder and leaves the project as it was`() {
+        val config = repo.dir.resolve(".git/config").readText()
+        val refs = repo.git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/", "refs/tags/")
+
+        val workspace = prepareClone()
+
+        assertEquals("loop/m1-04", repo.git("symbolic-ref", "--short", "HEAD", cwd = workspace.path))
+        assertEquals("A project.\n", workspace.path.resolve("README.md").readText())
+        assertFalse(workspace.path.resolve(".loop/issues").exists())
+        assertTrue(
+            workspace.path
+                .resolve(".git")
+                .toFile()
+                .isDirectory,
+        )
+        assertEquals(listOf(repo.dir.toString()), repo.worktrees())
+        assertEquals(config, repo.dir.resolve(".git/config").readText())
+        assertEquals(refs, repo.git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/", "refs/tags/"))
+        assertFalse(repo.dir.resolve(".git/loop-worktree-hooks.lock").exists())
+    }
+
+    @Test
+    fun `in a clone before_run checks the branch out again, sets the pattern again and is idempotent`() {
+        val workspace = prepareClone()
+        workspace.path.resolve("work.txt").writeText("agent work\n")
+        repo.git("add", "work.txt", cwd = workspace.path)
+        repo.commit("agent commit", cwd = workspace.path)
+        val tip = repo.git("rev-parse", "loop/m1-04", cwd = workspace.path)
+        repo.git("checkout", "--quiet", "-b", "elsewhere", "main", cwd = workspace.path)
+        repo.git("sparse-checkout", "disable", cwd = workspace.path)
+
+        val first = runBlocking { cloneManager.beforeRun(workspace, env)!! }
+        assertTrue(first.ok, first.output)
+        val before = state(workspace)
+        val second = runBlocking { cloneManager.beforeRun(workspace, env)!! }
+
+        assertTrue(second.ok, second.output)
+        assertEquals(before, state(workspace))
+        assertEquals("loop/m1-04", repo.git("symbolic-ref", "--short", "HEAD", cwd = workspace.path))
+        assertEquals("/*\n!/.loop/issues/", repo.git("sparse-checkout", "list", cwd = workspace.path))
+        assertFalse(workspace.path.resolve(".loop/issues").exists())
+        assertEquals(tip, repo.git("rev-parse", "HEAD", cwd = workspace.path))
+        assertEquals("agent work\n", workspace.path.resolve("work.txt").readText())
+        assertEquals(listOf(repo.dir.toString()), repo.worktrees())
+    }
+
+    @Test
+    fun `in a clone before_run fails on a branch switch that would lose local changes`() {
+        val workspace = prepareClone()
+        repo.git("checkout", "--quiet", "-b", "elsewhere", cwd = workspace.path)
+        workspace.path.resolve("README.md").writeText("Elsewhere.\n")
+        repo.git("add", "README.md", cwd = workspace.path)
+        repo.commit("elsewhere", cwd = workspace.path)
+        workspace.path.resolve("README.md").writeText("Not committed.\n")
+
+        val result = runBlocking { cloneManager.beforeRun(workspace, env)!! }
+
+        assertFalse(result.ok, result.output)
+        assertEquals("elsewhere", repo.git("symbolic-ref", "--short", "HEAD", cwd = workspace.path))
+        assertEquals("Not committed.\n", workspace.path.resolve("README.md").readText())
+    }
+
+    @Test
+    fun `before_run heals a clone that never got after_create`() {
+        workspacePath.parent.createDirectories()
+        cloneManager.clones!!.create(workspacePath, key, null)
+        assertTrue(workspacePath.resolve(".loop/issues").exists())
+        val workspace = prepareClone()
+        assertFalse(workspace.createdNow)
+
+        val result = runBlocking { cloneManager.beforeRun(workspace, env)!! }
+
+        assertTrue(result.ok, result.output)
+        assertFalse(workspace.path.resolve(".loop/issues").exists())
+        assertEquals("loop/m1-04", repo.git("symbolic-ref", "--short", "HEAD", cwd = workspace.path))
+    }
+
+    @Test
+    fun `the hooks of a clone never wait on the lock and before_remove leaves the folder to Loop`() {
+        // A lock held by a live process: a hook that took it would time out after one second.
+        val lock = repo.dir.resolve(".git/loop-worktree-hooks.lock").createDirectories()
+        lock.resolve("pid").writeText("${ProcessHandle.current().pid()}\n")
+        val locked = env + ("LOOP_HOOK_LOCK_TIMEOUT" to "1")
+
+        val workspace = runBlocking { cloneManager.prepare(key, locked) }.getOrThrow()
+        val run = runBlocking { cloneManager.beforeRun(workspace, locked)!! }
+        val events = mutableListOf<HookResult>()
+        val listener =
+            object : HookListener {
+                override suspend fun finished(
+                    script: String,
+                    result: HookResult,
+                ) {
+                    events += result
+                }
+            }
+        val removed = runBlocking { cloneManager.remove(key, locked, listener) }.getOrThrow()
+
+        assertTrue(run.ok, run.output)
+        assertTrue(removed)
+        assertTrue(events.single().ok, events.single().output)
+        assertFalse(workspacePath.exists())
+        assertEquals("", repo.git("for-each-ref", "refs/loop/workspace/", "refs/loop/workspace-base/"))
+        assertEquals(listOf(repo.dir.toString()), repo.worktrees())
+        assertEquals("${ProcessHandle.current().pid()}\n", lock.resolve("pid").readText())
+    }
+
+    @Test
+    fun `the hooks run no program that the clone's config names`() {
+        val workspace = prepareClone()
+        val marker = root.resolve("marker")
+        val executable =
+            java.nio.file.attribute.PosixFilePermissions
+                .fromString("rwx------")
+        val program = root.resolve("program.sh")
+        program.writeText("#!/bin/sh\ntouch \"$marker\"\n")
+        program.setPosixFilePermissions(executable)
+        val planted = root.resolve("planted-hooks").createDirectories()
+        for (name in listOf("post-checkout", "reference-transaction")) {
+            planted.resolve(name).writeText("#!/bin/sh\ntouch \"$marker\"\n")
+            planted.resolve(name).setPosixFilePermissions(executable)
+        }
+
+        fun hooks(): List<HookResult> =
+            runBlocking {
+                listOf(
+                    ShellHookRunner().run(HookName.AFTER_CREATE, hooks.afterCreate!!, workspace.path, env, 30_000),
+                    cloneManager.beforeRun(workspace, env)!!,
+                )
+            }
+
+        // A hook and an fsmonitor: the hooks switch the branch back and set the pattern again, and run neither.
+        repo.git("checkout", "--quiet", "-b", "elsewhere", cwd = workspace.path)
+        repo.git("sparse-checkout", "disable", cwd = workspace.path)
+        repo.git("config", "core.hooksPath", planted.toString(), cwd = workspace.path)
+        repo.git("config", "core.fsmonitor", program.toString(), cwd = workspace.path)
+        val first = hooks()
+        first.forEach { assertTrue(it.ok, "${it.hook.id}: ${it.output}") }
+        assertEquals("loop/m1-04", repo.git("symbolic-ref", "--short", "HEAD", cwd = workspace.path))
+        assertFalse(workspace.path.resolve(".loop/issues").exists())
+        assertFalse(marker.exists(), first.joinToString("\n") { it.output })
+
+        // A partial clone promisor on an ext:: URL and loop/m1-04 at an object the clone lacks: the checkout of the
+        // branch would fetch it lazily and run the program. Both hooks fail on the missing object instead.
+        repo.git("config", "--unset", "core.hooksPath", cwd = workspace.path)
+        repo.git("config", "--unset", "core.fsmonitor", cwd = workspace.path)
+        repo.git("checkout", "--quiet", "elsewhere", cwd = workspace.path)
+        workspace.path.resolve(".git/refs/heads/loop/m1-04").writeText("1111111111111111111111111111111111111111\n")
+        repo.git("config", "core.repositoryFormatVersion", "1", cwd = workspace.path)
+        repo.git("config", "extensions.partialClone", "ext::sh -c touch% $marker", cwd = workspace.path)
+        repo.git("config", "protocol.ext.allow", "always", cwd = workspace.path)
+        val second = hooks()
+        assertFalse(marker.exists(), second.joinToString("\n") { it.output })
+        second.forEach { assertFalse(it.ok, "${it.hook.id}: ${it.output}") }
+    }
+
+    @Test
+    fun `after_create reads the last line of an alternates file without a newline`() {
+        val workspace = prepareClone()
+        val alternates = workspace.path.resolve(".git/objects/info/alternates")
+        alternates.writeText(alternates.readText().trimEnd('\n'))
+        repo.git("sparse-checkout", "disable", cwd = workspace.path)
+
+        val result = runBlocking { ShellHookRunner().run(HookName.AFTER_CREATE, hooks.afterCreate!!, workspace.path, env, 30_000) }
+
+        assertTrue(result.ok, result.output)
+        assertFalse(workspace.path.resolve(".loop/issues").exists())
+    }
+
+    @Test
+    fun `after_create refuses a clone of another repository`() {
+        val other = TestRepo(root.resolve("other"), root.resolve("home")).init()
+        workspacePath.parent.createDirectories()
+        repo.git("clone", "--quiet", "--shared", other.dir.toString(), workspacePath.toString())
+
+        val result = runBlocking { ShellHookRunner().run(HookName.AFTER_CREATE, hooks.afterCreate!!, workspacePath, env, 30_000) }
+
+        assertFalse(result.ok, result.output)
+        assertTrue("is neither a worktree nor a clone of" in result.output, result.output)
+        assertEquals(listOf(repo.dir.toString()), repo.worktrees())
     }
 
     /** Records every hook result, to check the output of hooks that passed. */

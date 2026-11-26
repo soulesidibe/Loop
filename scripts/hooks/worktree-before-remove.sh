@@ -8,6 +8,10 @@
 #
 # The worktree remove and prune run under the lock of worktree-lock.sh, shared
 # with the other hooks. The files of the worktree are deleted before, outside it.
+#
+# A workspace Loop made a clone of the project (workspace.git: clone) is left to
+# Loop, which deletes the folder and its keep refs: nothing is registered in the
+# repository, so the hook takes no lock and runs no git in the clone.
 set -eu
 
 : "${LOOP_WORKFLOW:?LOOP_WORKFLOW is not set}"
@@ -16,6 +20,10 @@ set -eu
 
 repo=$(cd "$(dirname "$LOOP_WORKFLOW")" && pwd -P)
 workspace=$(pwd -P)
+
+if is_clone "$workspace" "$repo"; then
+    exit 0
+fi
 
 remove=
 predelete=

@@ -10,6 +10,8 @@ polling:
   interval_ms: 30000
 workspace:
   root: ./workspaces
+  # bl-28: each workspace is a clone of the project, so an agent cannot move the operator's refs. See docs/adr/0002.
+  git: clone
 hooks:
   after_create: sh "$(dirname "$LOOP_WORKFLOW")/scripts/hooks/worktree-after-create.sh"
   before_run: sh "$(dirname "$LOOP_WORKFLOW")/scripts/hooks/worktree-before-run.sh"

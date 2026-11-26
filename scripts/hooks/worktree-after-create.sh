@@ -1,7 +1,9 @@
 #!/bin/sh
 # Loop after_create hook: makes the workspace (the current directory) a git
 # worktree of the project repository, on the branch loop/<workspace key>, without
-# the .loop/issues/ folder. See docs/workspaces.md.
+# the .loop/issues/ folder. A workspace Loop made a clone of the project
+# (workspace.git: clone) only gets the branch checked out and the folder hidden,
+# with no lock. See docs/workspaces.md.
 #
 # The repository is the folder of $LOOP_WORKFLOW. A new branch starts from
 # $LOOP_BASE_REF, else main, else origin/HEAD, else HEAD. An existing branch is
@@ -46,6 +48,20 @@ sparse_set() {
     done
 }
 
+# bl-28: with workspace.git: clone, Loop made the workspace a clone of the project
+# before this hook, its files checked out on loop/<workspace key>. The hook checks
+# the branch out again if HEAD left it and hides .loop/issues/: no worktree add, no
+# lock, since the clone shares no metadata or config with the project.
+if is_clone "$workspace" "$repo"; then
+    if [ "$(clone_git "$workspace" symbolic-ref --quiet --short HEAD || true)" != "$branch" ]; then
+        clone_git "$workspace" checkout --quiet "$branch"
+    fi
+    if ! clone_git "$workspace" sparse-checkout list 2>/dev/null | grep -qxF '!/.loop/issues/'; then
+        clone_git "$workspace" sparse-checkout set --no-cone '/*' '!/.loop/issues/'
+    fi
+    exit 0
+fi
+
 if [ -e "$workspace/.git" ]; then
     top=$(git -C "$workspace" rev-parse --show-toplevel 2>/dev/null || true)
     if [ "$top" = "$workspace" ] && [ "$(common_dir "$workspace")" = "$(common_dir "$repo")" ]; then
@@ -63,7 +79,7 @@ if [ -e "$workspace/.git" ]; then
         fi
         exit 0
     fi
-    echo "loop: $workspace has a .git entry but is not a worktree of $repo" >&2
+    echo "loop: $workspace has a .git entry but is neither a worktree nor a clone of $repo" >&2
     exit 1
 fi
 

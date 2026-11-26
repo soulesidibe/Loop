@@ -50,12 +50,13 @@ All three scripts are POSIX `sh`, live in `scripts/hooks/`, and are idempotent: 
 
 Runs once, when Loop creates the Workspace folder.
 
-1. Exits 0 if the Workspace is already a worktree of the repository.
-2. Takes the lock of the repository.
-3. Runs `git worktree prune` in the repository, which clears a stale entry left by an earlier failed Attempt.
-4. Runs `git worktree add --no-checkout`: with `-b loop/<key> <path> <base>` when the branch does not exist, else `<path> loop/<key>`.
-5. Sets a non-cone sparse checkout, `sparse-checkout set --no-cone '/*' '!/.loop/issues/'`, so the Workspace has every file except `.loop/issues/`.
-6. Releases the lock and checks the files out with `read-tree -mu HEAD`.
+1. With `workspace.git: clone`, if the Workspace is a clone of the repository (see [hooks in a clone](#hooks-in-a-clone)), checks out `loop/<key>` if `HEAD` left it, sets the sparse pattern if it is missing, and exits 0, with no lock.
+2. Exits 0 if the Workspace is already a worktree of the repository.
+3. Takes the lock of the repository.
+4. Runs `git worktree prune` in the repository, which clears a stale entry left by an earlier failed Attempt.
+5. Runs `git worktree add --no-checkout`: with `-b loop/<key> <path> <base>` when the branch does not exist, else `<path> loop/<key>`.
+6. Sets a non-cone sparse checkout, `sparse-checkout set --no-cone '/*' '!/.loop/issues/'`, so the Workspace has every file except `.loop/issues/`.
+7. Releases the lock and checks the files out with `read-tree -mu HEAD`.
 
 If the Workspace is already a worktree with an empty checkout (for example after Loop was killed mid creation), it fills the checkout again. It sets the sparse pattern under the lock only while the repository does not have `extensions.worktreeConfig` yet.
 
@@ -69,7 +70,7 @@ Both calls to `sparse-checkout set` (step 5 and the refill of an empty checkout)
 
 Runs before every Attempt.
 
-1. Calls `worktree-after-create.sh` first, so a Workspace that lost its worktree heals itself.
+1. Calls `worktree-after-create.sh` first, so a Workspace that lost its worktree heals itself. For a clone of the repository it stops there: that call already checked out `loop/<key>` and set the sparse pattern.
 2. Checks out `loop/<key>` if another branch is checked out, under the lock, and sets the sparse pattern again if it is missing. A switch that would lose local changes fails the hook, and with it the Attempt.
 
 It never resets or cleans the Workspace, so work from an earlier Attempt stays.
@@ -78,9 +79,10 @@ It never resets or cleans the Workspace, so work from an earlier Attempt stays.
 
 Runs before Loop deletes the Workspace.
 
-1. If the Workspace is a linked worktree that git will remove (not the main working tree, not locked with `git worktree lock`), deletes its files except `.git`, outside the lock, since a large tree with build output takes seconds to delete.
-2. Takes the lock and runs `git worktree remove --force <workspace>` in the repository if the Workspace is a registered worktree.
-3. Runs `git worktree prune`.
+1. Exits 0 if the Workspace is a clone of the repository: nothing is registered in the repository, and Loop deletes the folder and its keep refs.
+2. If the Workspace is a linked worktree that git will remove (not the main working tree, not locked with `git worktree lock`), deletes its files except `.git`, outside the lock, since a large tree with build output takes seconds to delete.
+3. Takes the lock and runs `git worktree remove --force <workspace>` in the repository if the Workspace is a registered worktree.
+4. Runs `git worktree prune`.
 
 It never deletes the branch `loop/<key>`, so removing a Workspace never loses committed work. Uncommitted changes in the Workspace are lost.
 
@@ -90,7 +92,7 @@ Loop runs Attempts in parallel, so the hooks of several Workspaces run at the sa
 
 So the hooks take turns through one lock, `worktree-lock.sh`:
 
-- **What it covers.** In `after_create`: `worktree prune`, `worktree add` and the first `sparse-checkout set`. In `before_run`: the branch checkout. In `before_remove`: `worktree remove` and `worktree prune`. Everything that only touches one worktree, the `read-tree` checkout of the files above all, runs outside it, so parallel checkouts still overlap. A locked span takes well under a second.
+- **What it covers.** In `after_create`: `worktree prune`, `worktree add` and the first `sparse-checkout set`. In `before_run`: the branch checkout. In `before_remove`: `worktree remove` and `worktree prune`. A clone Workspace takes no lock at all, since it shares no worktree metadata or config with the repository. Everything that only touches one worktree, the `read-tree` checkout of the files above all, runs outside it, so parallel checkouts still overlap. A locked span takes well under a second.
 - **How it works.** The lock is the folder `loop-worktree-hooks.lock` in the common git folder, made with `mkdir`, which only one process can win, with the holder's PID in a `pid` file inside. A hook waits for it up to `LOOP_HOOK_LOCK_TIMEOUT` seconds, 20 by default, under Loop's hook timeout, then fails with `could not take the lock <path> within 20 s, held by pid <n>`. It releases the lock on exit, even when a step fails, and keeps the step's exit code.
 - **A stale lock.** A hook killed with SIGKILL, as Loop does after the hook timeout, leaves the lock behind. The next hook takes it over when the PID is dead, when the `pid` file is older than 2 minutes (up to 3 with GNU `find`, which rounds down), or when the same lock folder has had no PID for 5 seconds. Takeovers go one at a time behind a second folder, `loop-worktree-hooks.lock.takeover`: under it the waiter reads the lock again and moves it aside only if it still holds the PID it judged stale, or for a lock with no PID is still the same folder. So a waiter never moves a lock another hook has just taken, whether the stale judgement came from a killed hook or from a holder that released between two reads. A hook that took the lock checks that the `pid` file reads back its own PID, and waits again otherwise. A takeover guard left by a hook killed in those few milliseconds is cleared when its PID is dead or it has had no PID for 5 seconds.
 - **Not covered.** Git commands outside the hooks are not locked: the worktrees of `loop replay --verify` (`ReplaySites.kt`) and an agent running git in its own Workspace can still read a half written `commondir` while a hook runs `worktree add`. A hook running as another user, or a holder's PID reused by an unrelated live process, is outside what the lock handles: Loop runs every hook as one user, and the 2 minute rule ends a reused PID. Never take the lock around a call of another hook: `before_run` takes it only after `worktree-after-create.sh` returns, since a child waiting on its live parent would time out.
@@ -116,9 +118,21 @@ workspace:
 
 The clone is built in the sibling folder `.loop-clone-<key>` and moved into place once every step is done, so a run killed half way leaves no half made clone in the Workspace. A failed or cancelled creation, or a failed or cancelled `after_create`, deletes the folder and the keep refs.
 
-Loop sets no sparse pattern: hiding `.loop/issues/` stays the hooks' job, and the worktree scripts must accept a clone (they make a worktree today, so a workflow that clones uses hooks that only set the sparse pattern and check out `loop/<key>`, or none).
+Loop sets no sparse pattern: hiding `.loop/issues/` stays the hooks' job. The scripts of [usage](#usage) accept a clone, see [hooks in a clone](#hooks-in-a-clone), so a workflow that clones keeps the same three hooks.
 
 A Workspace that already is a clone of the project (its `.git/objects/info/alternates` names the project's object folder) is reused as it is on a retry or a restart, never reset. Loop first removes any remote the clone has, writes back a missing keep ref, and fails the Attempt if the clone has no `loop/<key>` branch. A folder whose `.git` is anything else, a worktree's `.git` file included, fails the Attempt with `cannot prepare workspace <key>: the workspace <path> is not a clone of the project, ...`.
+
+### Hooks in a clone
+
+The three scripts tell a clone Loop made from a worktree with the same test as Loop: the Workspace's `.git` is a folder whose `objects/info/alternates` names the repository's object folder. The main checkout and a clone of another repository are not clones of the repository, so they take the worktree path as before.
+
+- `after_create` checks out `loop/<key>` only if `HEAD` is elsewhere, and sets `sparse-checkout set --no-cone '/*' '!/.loop/issues/'` only if the pattern is missing. In a clone this writes `extensions.worktreeConfig` and the pattern to the clone's own config; the repository's config is untouched.
+- `before_run` runs `after_create` and stops there, so a clone that missed `after_create` (a kill after Loop moved it into place) heals on the next Attempt. A switch back to `loop/<key>` that would lose local changes fails the hook, and with it the Attempt.
+- `before_remove` does nothing.
+
+None of them takes the lock or runs `git worktree` for a clone. The clone's config is the agent's, so every git the scripts run in it goes through `clone_git` in `worktree-lock.sh`: `-c core.hooksPath=/dev/null -c core.fsmonitor=false`, `GIT_NO_LAZY_FETCH=1` and `GIT_ALLOW_PROTOCOL=file`. A hook, an fsmonitor, or a partial clone promisor on an `ext::` URL written in the clone's config then runs nothing on the host. `-c protocol.allow=never` would not do it: a `protocol.ext.allow` in the clone's config is more specific and wins. Clean and smudge filters in the clone's config still run on a checkout, as they do in Loop's own git in the clone (`status`, `diff`), which the [threat model](#threat-model) accepts.
+
+To switch a workflow to `clone`, first reinstall a Loop build that knows `workspace.git`, and check that no worktree Workspace is left under `workspace.root`. A Workspace left as a worktree fails its Attempt in clone mode, since its `.git` is a file, not a clone.
 
 ### What stays shared
 
@@ -149,4 +163,4 @@ Switching a workflow from `clone` back to the worktree hooks leaves the keep ref
 
 ### Threat model
 
-Clones protect the operator's repository against mistakes and casual misuse by an agent, not against a hostile agent. Verification still runs the agent's build code unsandboxed as the operator, and any write by absolute path, `git push /abs/path/to/project` included, stays possible until the OS sandbox of M5.
+Clones protect the operator's repository against mistakes and casual misuse by an agent, not against a hostile agent. Verification still runs the agent's build code unsandboxed as the operator, and any write by absolute path, `git push /abs/path/to/project` included, stays possible until the OS sandbox of M5. The decision and the options set aside are in [ADR 0002](adr/0002-clone-workspaces-isolate-the-operators-refs.md).
