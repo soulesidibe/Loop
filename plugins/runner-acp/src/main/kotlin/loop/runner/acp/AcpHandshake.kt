@@ -55,6 +55,16 @@ internal sealed interface AcpHandshakeFailure {
             get() = "response_error: agy $found is not of the pinned major version ${pinned.substringBefore('.')} (pinned $pinned)"
     }
 
+    /** Under `preset: agy`, an `agy` on the pinned major but older than [AcpSettings.MIN_AGY_VERSION]. */
+    data class AgyTooOld(
+        val found: String,
+        val minimum: String,
+        val pinned: String,
+    ) : AcpHandshakeFailure {
+        override val reason: String
+            get() = "response_error: agy $found is older than the minimum version $minimum (pinned $pinned)"
+    }
+
     data class ModelMismatch(
         val expected: String,
         val actual: String,
@@ -86,6 +96,7 @@ internal class AcpHandshake(
     private val configuredModel: String?,
     private val resumeFrom: String? = null,
     private val pinnedAgyVersion: String = AcpSettings.PINNED_AGY_VERSION,
+    private val minimumAgyVersion: String = AcpSettings.MIN_AGY_VERSION,
 ) {
     sealed interface Step {
         /** Continue reading; write [lines] (if any) and log [notes] on stderr (if any). */
@@ -309,10 +320,12 @@ internal class AcpHandshake(
             if (agentVersion == null) {
                 return Step.Failed(AcpHandshakeFailure.UnknownAgyVersion)
             }
-            val pinnedMajor = pinnedAgyVersion.substringBefore('.').toInt()
-            val foundMajor = agentVersion.substringBefore('.').toIntOrNull()
-            if (foundMajor == null || foundMajor != pinnedMajor) {
-                return Step.Failed(AcpHandshakeFailure.WrongAgyMajorVersion(agentVersion, pinnedAgyVersion))
+            when (AgyVersion.check(agentVersion, pinnedAgyVersion, minimumAgyVersion)) {
+                is AgyVersion.Problem.WrongMajor ->
+                    return Step.Failed(AcpHandshakeFailure.WrongAgyMajorVersion(agentVersion, pinnedAgyVersion))
+                is AgyVersion.Problem.TooOld ->
+                    return Step.Failed(AcpHandshakeFailure.AgyTooOld(agentVersion, minimumAgyVersion, pinnedAgyVersion))
+                null -> Unit
             }
             notes += "agy ACP server version $agentVersion"
             if (resumeFrom != null && !advertisesLoadSession(result)) {

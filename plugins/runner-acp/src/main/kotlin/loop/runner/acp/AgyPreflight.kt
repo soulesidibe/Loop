@@ -19,7 +19,8 @@ data class AgyPreflightResult(
 /**
  * Startup preflight for `runner.kind: acp` with `preset: agy`:
  * 1. Verifies the `agy` binary in `runners.acp.command` is reachable and executable (error if missing).
- * 2. Runs `<agy> --version` and verifies major version `1` (error if unreadable or wrong major).
+ * 2. Runs `<agy> --version` and verifies major version `1` and at least [AcpSettings.MIN_AGY_VERSION] (error if
+ *    unreadable, of another major, or older).
  * 3. Runs `<agy> models` to warn on login issues, offline failures, or a configured model not listed
  *    (warnings only, never fails preflight).
  */
@@ -28,6 +29,7 @@ class AgyPreflight(
     private val model: String?,
     private val hostEnv: Map<String, String> = System.getenv(),
     private val pinnedVersion: String = AcpSettings.PINNED_AGY_VERSION,
+    private val minimumVersion: String = AcpSettings.MIN_AGY_VERSION,
     private val resolveBinary: (String, Map<String, String>) -> String? = ::defaultResolveBinary,
     private val runProbe: (List<String>, Map<String, String>, Long) -> ProbeOutput? = ::defaultRunProbe,
 ) {
@@ -61,12 +63,18 @@ class AgyPreflight(
             extractSemver(versionProbe.stdout)
                 ?: extractSemver(versionProbe.stderr)
                 ?: return AgyPreflightResult(error = "could not parse an agy version from $program --version")
-        val pinnedMajor = pinnedVersion.substringBefore('.').toInt()
-        val foundMajor = version.substringBefore('.').toIntOrNull()
-        if (foundMajor == null || foundMajor != pinnedMajor) {
-            return AgyPreflightResult(
-                error = "agy $version is not of the pinned major version $pinnedMajor (pinned $pinnedVersion)",
-            )
+        when (AgyVersion.check(version, pinnedVersion, minimumVersion)) {
+            is AgyVersion.Problem.WrongMajor ->
+                return AgyPreflightResult(
+                    error = "agy $version is not of the pinned major version ${pinnedVersion.substringBefore('.')} (pinned $pinnedVersion)",
+                )
+            is AgyVersion.Problem.TooOld ->
+                return AgyPreflightResult(
+                    error =
+                        "agy $version is older than the minimum version $minimumVersion (pinned $pinnedVersion): " +
+                            "${AcpSettings.MIN_AGY_REASON}; run agy update",
+                )
+            null -> Unit
         }
 
         val warnings = mutableListOf<String>()

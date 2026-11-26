@@ -3081,6 +3081,16 @@ Spike 0 of `.loop/specs/gemini-support.md`, run on 2026-11-24 against `agy 1.5.1
 - **Sandbox:** `agy acp --sandbox` uses macOS Seatbelt (`sandbox-exec`) to block shell reads (`Operation not permitted`) and writes outside the workspace, but does not restrict built-in `read_file`. `RunnerCapabilities.sandbox` therefore stays `false`.
 - **Print mode (`runner-agy` deferred):** running `agy --input-format stream-json --output-format stream-json --disable-slash-commands` (without `-p`, which takes a prompt argument) accepts `{"event":"user","message":{"content":"..."}}` lines on stdin, runs multiple turns on one process, and emits `init`, per-step `step_update` (with `usage`) and cumulative `result`. Because top-level `agy` has no `--gemini-dir` flag, print mode loads `~/.gemini/config/` and cannot enforce `strict_mcp` or interactive `session/request_permission`. `runner-agy` is not built; `runner-acp` (`preset: agy`) is the sole Gemini runner.
 
+### The agy pin and its minimum version (extension, 2026-11-26)
+
+`AcpSettings.PINNED_AGY_VERSION` moved from 1.5.16 to 1.5.18, and `AcpSettings.MIN_AGY_VERSION`, 1.5.18, is now a floor. Until then only the major was checked, so any 1.x ran. The 1.5.18 changelog fixes file permission rules and approval prompts not applying to files the agent reads or edits through `file:///` URIs. The acp runner's holdout and protected roots guards only see the paths of `session/request_permission`, so an older `agy` could read or edit such files with no request for Loop to decline.
+
+- **Where:** `AgyVersion.check`, shared by `AgyPreflight` (a startup error naming the reason and `agy update`) and the `initialize` check of `AcpHandshake` (`response_error: agy <version> is older than the minimum version 1.5.18 (pinned 1.5.18)`). Another major is still `WrongAgyMajorVersion`.
+- **Order:** major, minor and patch compare as numbers; a prerelease of a version is older than it; a missing patch reads as 0; a minor or patch that cannot be read is too old.
+- **Recordings:** the seven fixtures stay the 1.5.16 frames of Spike 0. The replay rewrites their `agentInfo.version` to the pin, and one test replays the untouched frame and expects the refusal.
+
+Tests: `plugins/runner-acp/src/test/kotlin/loop/runner/acp/AgyVersionTest.kt`, the minimum cases of `AgyPreflightTest` and `AcpRunnerTest`, and `RecordedAcpSessionsTest`.
+
 ### The agy session store outlives its session (extension, bl-213)
 
 Under `preset: agy` each session ran with a fresh isolated `--gemini-dir` folder, deleted when the session stopped, so `resumeSession` returned null and a dead `agy` process failed the turn: a network hold or a crash lost the session's context. `agy` 1.5.16 advertises `agentCapabilities.loadSession: true`, and a real run on 2026-11-25 confirmed that a session whose process was killed loads in a new `agy acp` with the same `--gemini-dir` and keeps its history, while an unknown id answers `-32002 Session not found`. The decisions:

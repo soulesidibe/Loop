@@ -169,7 +169,7 @@ class AcpRunnerTest {
     }
 
     @Test
-    fun `agy preset enforces pinned major version 1 on initialize`() {
+    fun `agy preset enforces pinned major version 1 and the minimum version on initialize`() {
         val minorBump =
             FakeAcpServer.write(dir, name = "agy") {
                 initialize(agentVersion = "1.9.0")
@@ -192,6 +192,19 @@ class AcpRunnerTest {
         )
         assertNull(wrongMajorFailed.exitCode)
         assertEquals(listOf("initialize"), received(wrongMajor).map { it.string("method") })
+
+        val tooOld =
+            FakeAcpServer.write(dir.resolve("old"), name = "agy") {
+                initialize(agentVersion = "1.5.16")
+                shell("sleep 30")
+            }
+        val tooOldFailed = assertIs<RunnerEvent.TurnFailed>(runAll(agyRunner(tooOld)).last())
+        assertEquals(
+            "response_error: agy 1.5.16 is older than the minimum version ${AcpSettings.MIN_AGY_VERSION} " +
+                "(pinned ${AcpSettings.PINNED_AGY_VERSION})",
+            tooOldFailed.reason,
+        )
+        assertEquals(listOf("initialize"), received(tooOld).map { it.string("method") })
 
         val missingVersion =
             FakeAcpServer.write(dir.resolve("missing"), name = "agy") {

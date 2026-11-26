@@ -89,7 +89,7 @@ runners:
   - Appends `--disable-telemetry`, `--sandbox` (terminal Seatbelt containment; `RunnerCapabilities.sandbox` stays `false` because `read_file` is not sandboxed), and `--gemini-dir <relative-under-HOME>` pointing to the attempt's isolated directory containing `antigravity-cli/settings.json` (`{"toolPermission": "strict", "allowNonWorkspaceAccess": false}`). `strict_mcp` must remain `true` under `preset: agy` so strict settings are never dropped. Never passes `--dangerously-skip-permissions`, `--effort`, `--remote-agent` or `--remote-control`.
   - Pins `runners.acp.model` via `session/set_model` after `session/new` (or `session/load`) and checks `config_option_update` / `models.currentModelId`; a rejection (`-32602`) or mismatch fails the turn and stops the session.
   - Escapes a leading `/` in `session/prompt` text (for example prefixing a space or newline) because Spike 0 proved `/tdd` expands skills in ACP.
-  - Verifies `agentInfo.version` from `initialize` is on the pinned major (`1`, `agy 1.5.16`) and logs the version.
+  - Verifies `agentInfo.version` from `initialize` is on the pinned major (`1`, `agy 1.5.16` at Spike 0, `1.5.18` with a minimum of `1.5.18` since 2026-11-26) and logs the version.
 - **Preset validation (`RunnerProvider.validate`):** fails preflight with `invalid_config` through `RunnerConfigException` (naming the key, never a value) when:
   - `runners.acp.preset` is set to anything other than `agy`.
   - `runners.acp.model` is set without `preset: agy`.
