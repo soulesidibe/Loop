@@ -38,10 +38,12 @@ import kotlin.time.Instant
  *   it leaves out keeps the value an earlier update of the same limit gave, as the schema asks. An update that changes
  *   nothing gives no event. `resetsAt` is read as Unix seconds.
  *
- * A resumed thread (bl-212): once [resume] names it, an update of that thread for a turn no [startTurn] named is the
- * total Codex replays from before this session, of an earlier attempt's turns. It gives no event and becomes the
- * thread's baseline, taken out of its later totals, so the session is not charged the earlier attempt's tokens again.
- * A replay for a turn of this session, after a respawn, is an ordinary update and counts once.
+ * A resumed thread (bl-212): once [resume] names it before any turn of this session started, an update of that thread
+ * for a turn no [startTurn] named is the total Codex replays from before this session, of an earlier attempt's turns.
+ * It gives no event and becomes the thread's baseline, taken out of its later totals, so the session is not charged
+ * the earlier attempt's tokens again. A resume after a started turn, a respawn, takes no baseline (bl-232): a replay
+ * there is an ordinary update and counts once, a turn of this session or one Loop never learned because the old app
+ * server died between accepting its `turn/start` and answering it, so the session's usage never drops.
  *
  * A notification of any of these kinds that does not match the pinned schema gives a `loop:` line on stderr and is skipped:
  * telemetry never ends a turn. Any other notification is no signal.
@@ -86,7 +88,8 @@ internal class Telemetry {
     private val threads = mutableMapOf<String, Tokens>()
     private var reported: Tokens? = null
 
-    // bl-212: the thread a resume goes on with, the turns this session started, and the replayed total of each thread.
+    // bl-212: the thread a resume made before any started turn goes on with, the turns this session started, and the
+    // replayed total of each thread.
     private var resumed: String? = null
     private val startedTurns = mutableSetOf<String>()
     private val baselines = mutableMapOf<String, Tokens>()
@@ -101,9 +104,12 @@ internal class Telemetry {
     private val limits = mutableMapOf<String?, Limit>()
     private var lastLimitId: String? = null
 
-    /** The session goes on with the existing thread [threadId] through `thread/resume` (bl-212). */
+    /**
+     * The session goes on with the existing thread [threadId] through `thread/resume` (bl-212). Only a resume made
+     * before any turn of this session started takes a replay as the baseline (bl-232).
+     */
     fun resume(threadId: String) {
-        resumed = threadId
+        resumed = threadId.takeIf { startedTurns.isEmpty() }
     }
 
     /**

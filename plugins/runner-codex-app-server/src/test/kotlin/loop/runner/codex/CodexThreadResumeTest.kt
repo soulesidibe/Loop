@@ -376,6 +376,100 @@ class CodexThreadResumeTest {
     }
 
     @Test
+    fun `bl-232 after a started turn, a replay of a turn Loop never learned is an update, so the session's usage never drops`() {
+        val first =
+            server("a") {
+                handshake(threadId = THREAD, turnId = "turn-1")
+                notification(tokenUsage(turnId = "turn-1", total = tokens(input = 18_000, output = 100)))
+                turnCompleted(turnId = "turn-1", threadId = THREAD)
+                // Codex persisted this turn/start and spent tokens on it, then died before it answered.
+                awaitClient()
+                exit(0)
+            }
+        val second =
+            server("b") {
+                resumeHandshake(threadId = THREAD, turnId = "turn-3")
+                notification(tokenUsage(turnId = "turn-2", total = tokens(input = 30_000, output = 120)))
+                notification(tokenUsage(turnId = "turn-3", total = tokens(input = 40_000, output = 160)))
+                turnCompleted(turnId = "turn-3", threadId = THREAD)
+            }
+
+        val (one, two) = runSession(runner(first, second), "Work on c-01", "Continue")
+
+        assertIs<RunnerEvent.TurnCompleted>(two.last(), "$two")
+        assertEquals(2, launches.size)
+        val usage = (one + two).filterIsInstance<RunnerEvent.Usage>()
+        assertEquals(listOf(18_000L to 100L, 30_000L to 120L, 40_000L to 160L), usage.map { it.inputTokens to it.outputTokens })
+    }
+
+    @Test
+    fun `bl-232 a new app server that exits after answering thread resume and before turn start fails the turn, no third one starts`() {
+        val first =
+            server("a") {
+                handshake(threadId = THREAD, turnId = "turn-1")
+                turnCompleted(turnId = "turn-1", threadId = THREAD)
+                exit(0)
+            }
+        val second =
+            server("b") {
+                awaitClient()
+                response(1, FakeAppServer.initializeResult())
+                awaitClient()
+                awaitClient()
+                response(2, FakeAppServer.threadResumeResult(THREAD))
+                awaitClient()
+                exit(6)
+            }
+
+        val (_, two) = runSession(runner(first, second), "Work on c-01", "Continue")
+
+        val started = assertIs<RunnerEvent.TurnStarted>(two.first())
+        val failed = assertIs<RunnerEvent.TurnFailed>(two.last())
+        assertEquals("port_exit: exit code 6, before the turn/start response", failed.reason)
+        assertEquals(6, failed.exitCode)
+        assertEquals(started.sessionId to started.turnId, failed.sessionId to failed.turnId)
+        assertEquals(1, two.count(::isTerminal), "$two")
+        assertEquals(listOf("initialize", "initialized", "thread/resume", "turn/start"), received(second).map { it.string("method") })
+        assertEquals(2, launches.size, "a turn starts one new app server at most")
+    }
+
+    @Test
+    fun `bl-232 after resumeSession, a later turn whose app server is gone resumes the thread again and keeps the baseline`() {
+        val first =
+            server("a") {
+                resumeHandshake(threadId = THREAD, turnId = "turn-9")
+                notification(tokenUsage(turnId = "turn-of-the-held-attempt", total = tokens(input = 18_000, output = 100)))
+                notification(tokenUsage(turnId = "turn-9", total = tokens(input = 36_000, output = 150)))
+                turnCompleted(turnId = "turn-9", threadId = THREAD)
+                exit(0)
+            }
+        val second =
+            server("b") {
+                resumeHandshake(threadId = THREAD, turnId = "turn-10")
+                notification(tokenUsage(turnId = "turn-9", total = tokens(input = 36_000, output = 150)))
+                notification(tokenUsage(turnId = "turn-10", total = tokens(input = 50_000, output = 200)))
+                turnCompleted(turnId = "turn-10", threadId = THREAD)
+            }
+
+        val session = assertNotNull(runner(first, second).resumeSession(context(), THREAD))
+        val (one, two) = runTurns(session, "Work on c-01 again", "Continue")
+
+        assertIs<RunnerEvent.TurnCompleted>(one.last(), "$one")
+        assertEquals(RunnerEvent.TurnStarted(SessionId("$THREAD-turn-10"), THREAD, TurnId("turn-10"), 2), two.first())
+        assertEquals(RunnerEvent.TurnCompleted(SessionId("$THREAD-turn-10"), TurnId("turn-10"), 0), two.last())
+        assertTrue(
+            "loop: the app server of this session is gone, turn 2 starts a new one and resumes the thread $THREAD" in loopLines(two),
+            "${loopLines(two)}",
+        )
+        assertEquals(2, launches.size)
+        val sent = received(second)
+        assertEquals(listOf("initialize", "initialized", "thread/resume", "turn/start"), sent.map { it.string("method") })
+        assertEquals(THREAD, sent[2].obj("params").string("threadId"))
+        val usage = (one + two).filterIsInstance<RunnerEvent.Usage>()
+        assertEquals(listOf(18_000L to 50L, 32_000L to 100L), usage.map { it.inputTokens to it.outputTokens })
+    }
+
+    @Test
     fun `bl-212 an exec policy rule written before a respawn fails the turn with exec_policy_rule and starts no app server`() {
         val first =
             server("a") {

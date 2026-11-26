@@ -38,6 +38,7 @@ import loop.core.events.CiFinished
 import loop.core.events.CiWaiting
 import loop.core.events.DeliveryFailed
 import loop.core.events.IssueParked
+import loop.core.events.ReactionKeys
 import loop.core.events.ReactionSkipped
 import loop.core.events.ReactionTriggered
 import loop.core.events.RetryScheduled
@@ -45,6 +46,7 @@ import loop.core.log.KeyValueLog
 import loop.core.orchestrator.FIXED_NOW
 import loop.core.orchestrator.FakeHookRunner
 import loop.core.orchestrator.FakeParkedIssues
+import loop.core.orchestrator.FakeRetryStates
 import loop.core.orchestrator.FakeRunner
 import loop.core.orchestrator.FakeSink
 import loop.core.orchestrator.FakeTracker
@@ -285,6 +287,7 @@ class CiFailedReactionTest {
         val waiting = FakeWaitingIssues(approvedWait(MergeCheck.cleanFingerprint(verified)))
         val sink = FakeSink()
         val parked = FakeParkedIssues()
+        val retryStates = FakeRetryStates()
         val runner =
             FakeRunner().apply {
                 onCall = { ctx ->
@@ -338,6 +341,7 @@ class CiFailedReactionTest {
                 deliveryFor = { remote },
                 workspaceGit = workspaceGit,
                 reactionsBefore = reactionsBefore ?: { Result.success(emptyList()) },
+                retryStates = retryStates,
             )
         }
     }
@@ -449,8 +453,9 @@ class CiFailedReactionTest {
                         "retries" to "2",
                     ),
                 ),
-                setup.all(ReactionTriggered.name),
+                setup.all(ReactionTriggered.name).map { it - ReactionKeys.FINDINGS },
             )
+            val stored = assertNotNull(setup.all(ReactionTriggered.name).single()[ReactionKeys.FINDINGS], "bl-224: the findings are stored")
             assertTrue(setup.all(DeliveryFailed.name).isEmpty(), "the reaction replaces delivery_failed")
             assertNull(setup.wait, "the reaction ended the CI wait")
             val comment = setup.comments().last()
@@ -466,7 +471,7 @@ class CiFailedReactionTest {
 
             val (context, prompt) = setup.runner.calls.single()
             assertEquals(workspace.toString(), context.workspace.toString(), "the issue's workspace resumes")
-            assertContains(prompt, "Work on t-1. Retry kind: reaction.\n")
+            assertContains(prompt, "Work on t-1. Retry kind: reaction.\n$stored")
             assertContains(prompt, "- build (failure): https://github.com/octocat/Hello-World/actions/runs/$RED_RUN")
             assertContains(prompt, "- build, job test (failure), failed step Run ./gradlew test (failure)")
             assertContains(prompt, "You cannot open the run URLs")
@@ -553,6 +558,23 @@ class CiFailedReactionTest {
             assertContains(setup.comments().last(), "The ci_failed reaction sent the issue back 1 time, its retries are spent.")
             assertFalse(assertNotNull(setup.wait).approved)
             assertEquals(1, setup.runner.calls.size)
+        }
+
+    @Test
+    fun `a restart between the reaction and its retry dispatch still renders the findings`() =
+        runTest {
+            val setup = Setup()
+            setup.answerRed()
+            deliverToVerdict(with(setup) { orchestrator() })
+            val findings = assertNotNull(setup.all(ReactionTriggered.name).single()[ReactionKeys.FINDINGS])
+
+            // A new process: nothing in memory, the store's retry states, events and waits as the first one left them.
+            val second = with(setup) { orchestrator(reactionsBefore = { Result.success(setup.sink.events.toList()) }) }
+            runRetry(setup, second)
+
+            val (_, prompt) = setup.runner.calls.single()
+            assertEquals("Work on t-1. Retry kind: reaction.\n$findings", prompt)
+            assertContains(prompt, "- build, job test (failure), failed step Run ./gradlew test (failure)")
         }
 
     @Test

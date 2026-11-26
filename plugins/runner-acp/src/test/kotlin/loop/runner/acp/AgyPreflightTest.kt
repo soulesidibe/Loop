@@ -126,4 +126,39 @@ class AgyPreflightTest {
             result.error,
         )
     }
+
+    @Test
+    fun `a banner naming a newer version before the real one never decides the version`() {
+        val outputs =
+            listOf(
+                "new version 1.6.0 available\n1.5.16\n",
+                "A new version 1.6.0 available, run agy update\n\u001B[1m1.5.16\u001B[0m\n",
+                "1.5.16\nnew version 1.6.0 available\n",
+                "new version 1.6.0 available\nagy version 1.5.16\n",
+            )
+        for (stdout in outputs) {
+            val result =
+                AgyPreflight(
+                    command = "agy acp",
+                    model = "gemini-4-neon-high",
+                    resolveBinary = { _, _ -> "/usr/local/bin/agy" },
+                    runProbe = { argv, _, _ ->
+                        if ("--version" in argv) AgyPreflight.ProbeOutput(0, stdout, "") else null
+                    },
+                ).check()
+            assertNotNull(result.error, stdout)
+            assertTrue(result.error.startsWith("agy 1.5.16 is older than the minimum version"), "$stdout: ${result.error}")
+        }
+    }
+
+    @Test
+    fun `the version is read from a line that is only a version, else the last version token`() {
+        assertEquals("1.5.18", AgyPreflight.extractSemver("1.5.18\n"))
+        assertEquals("1.5.16", AgyPreflight.extractSemver("new version 1.6.0 available\n1.5.16\n"))
+        assertEquals("1.5.16", AgyPreflight.extractSemver("1.5.16\nnew version 1.6.0 available\n"))
+        assertEquals("1.5.16", AgyPreflight.extractSemver("new version 1.6.0 available\nagy version 1.5.16"))
+        assertEquals("1.5.18", AgyPreflight.extractSemver("agy 1.5.18"))
+        assertEquals("1.5.18-rc.1", AgyPreflight.extractSemver("v1.5.18-rc.1\r\n"))
+        assertNull(AgyPreflight.extractSemver("agy: unknown flag"))
+    }
 }

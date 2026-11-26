@@ -10,6 +10,7 @@ import loop.api.ParkedIssue
 import loop.api.ParkedIssues
 import loop.api.ProjectId
 import loop.api.QueuedRetry
+import loop.api.RecordedEvent
 import loop.api.RetryState
 import loop.api.RetryStates
 import loop.api.RunId
@@ -25,6 +26,7 @@ import loop.core.log.KeyValueLog
 import loop.core.log.LogContext
 import loop.core.log.LogLevel
 import loop.core.log.LogOutcome
+import loop.core.reactions.ReactionMarks
 import loop.core.trackers.TrackerPoll
 import loop.core.trackers.TrackerRead
 import loop.core.workflow.PromptVariables
@@ -76,6 +78,11 @@ internal class RetryCoordinator(
     /** Runs when a retry is dropped because its issue is terminal (plan D8 revised). */
     private val onTerminalRetryDropped: suspend (Issue) -> Unit,
     private val retryStates: RetryStates = RetryStates.NONE,
+    /**
+     * bl-224: the stored events of [ReactionMarks.KINDS], every run, in recording order, read once by [restore] to mark
+     * the issues a reaction sent back since their last counter reset; the default has none.
+     */
+    private val retryEventsBefore: suspend () -> Result<List<RecordedEvent>> = { Result.success(emptyList()) },
     /** m4-30: runs once per park, with the park and why, to tell a human; a restart reads parks and never calls it. */
     private val onParked: suspend (ParkedIssue, String) -> Unit = { _, _ -> },
 ) {
@@ -89,7 +96,8 @@ internal class RetryCoordinator(
 
     /**
      * m4-34: the issues a reaction sent back since their counter was last reset, so the approval exit of a reaction
-     * attempt keeps the failure counter. In memory: a restart forgets it, and the next approval exit resets the counter.
+     * attempt keeps the failure counter. Every counter reset clears it ([resetCounter]). bl-224: [restore] derives it
+     * from the stored events, so a restart keeps it.
      */
     private val reacted = mutableSetOf<String>()
 
@@ -109,8 +117,10 @@ internal class RetryCoordinator(
     /**
      * Reads the retry states a previous process left (m2-02), once: each queued retry keeps its due time
      * and spec attempt, each issue its counters, and each queued retry is recorded again in this run as a
-     * `retry_scheduled` with `restored=true`. Returns false when the store cannot be read: the caller then
-     * dispatches nothing this tick, rather than dispatch with a lost due time or counter, and calls again.
+     * `retry_scheduled` with `restored=true`. Since bl-224 an issue with failures whose last reaction came after its last
+     * counter reset in the stored events is marked as sent back by a reaction. Returns false when the store cannot be
+     * read: the caller then dispatches nothing this tick, rather than dispatch with a lost due time, counter or mark,
+     * and calls again.
      */
     suspend fun restore(workflow: WorkflowFile): Boolean {
         if (restored) return true
@@ -119,6 +129,20 @@ internal class RetryCoordinator(
                 log.log(LogLevel.ERROR, RETRY_STATE, LogOutcome.FAILED, pollContext, reason = error.describe())
                 return false
             }
+        // bl-224: a lost mark would reset the counter at the next approval exit, so an unread store restores nothing.
+        val marked =
+            safely { retryEventsBefore() }
+                .getOrElse { error ->
+                    log.log(
+                        LogLevel.ERROR,
+                        RETRY_STATE,
+                        LogOutcome.FAILED,
+                        pollContext,
+                        reason = "cannot read the reactions: ${error.describe()}",
+                    )
+                    return false
+                }.let(ReactionMarks::reacted)
+        reacted += states.filter { it.failures > 0 && it.issueId in marked }.map { it.issueId }
         restored = true
         val now = clock.now()
         for (state in states.sortedBy { it.retry?.dueAt }) {
@@ -237,12 +261,14 @@ internal class RetryCoordinator(
     ): RetryFire {
         for (issueId in parked) {
             if (queue.snapshot(issueId) == null) continue
-            queue.drop(issueId, resetCounter = true)
+            resetCounter(issueId)
             unsaved += issueId
         }
         // An issue with a kept counter and no entry that is no longer fetched by the
         // active states left them: its counter resets (spec decisions answer 5).
-        unsaved += queue.forgetAbsent(candidates.map { it.id }.toSet(), polled)
+        val absent = queue.forgetAbsent(candidates.map { it.id }.toSet(), polled)
+        reacted -= absent
+        unsaved += absent
         val now = clock.now()
         val due = queue.due(now).filter { it.issueId !in busy }
         if (due.isEmpty()) {
@@ -275,12 +301,12 @@ internal class RetryCoordinator(
             }
             when (RetryTarget.of(issue, workflow)) {
                 RetryTarget.Terminal -> {
-                    queue.drop(entry.issueId, resetCounter = true)
+                    resetCounter(entry.issueId)
                     dropped(entry, ExitReason.TERMINAL)
                     onTerminalRetryDropped(issue)
                 }
                 RetryTarget.NotActive -> {
-                    queue.drop(entry.issueId, resetCounter = true)
+                    resetCounter(entry.issueId)
                     dropped(entry, ExitReason.NOT_ACTIVE)
                 }
                 RetryTarget.NotEligible -> {
@@ -421,16 +447,18 @@ internal class RetryCoordinator(
                 if (summary.exitReason == ExitReason.WAITING_APPROVAL) {
                     // m2-24: a verified result waiting for approval is progress and needs no continuation. m4-34: after a
                     // reaction it keeps the failure counter, so a base that keeps moving cannot send the issue back forever.
-                    queue.drop(issue.id, resetCounter = issue.id !in reacted)
+                    if (issue.id in reacted) queue.drop(issue.id, resetCounter = false) else resetCounter(issue.id)
                     return
                 }
                 if (summary.handedOff) {
                     // m2-23: the attempt moved its issue to a handoff state, so it waits for a human and needs no
                     // continuation, even on a label tracker where it still reads active or a stale read shows it eligible.
-                    queue.drop(issue.id, resetCounter = true)
+                    resetCounter(issue.id)
                     return
                 }
                 val maxContinuations = workflow.config.retries.maxContinuations
+                // A normal exit zeroes the failure counter, so it clears the reaction mark too (bl-224).
+                reacted -= issue.id
                 // not_found keeps the count on purpose; a reload that lowers the limit parks at the next counted exit.
                 val decision =
                     when (normalExitProgress(summary, workflow)) {
@@ -457,7 +485,7 @@ internal class RetryCoordinator(
                 if (parkReason != null) {
                     // Parked on its own reason, before the failure count: it takes no `max_attempts` slot, but
                     // the park drops the entry and zeroes the counter like any other (spec decisions answer 5).
-                    queue.drop(issue.id, resetCounter = true)
+                    resetCounter(issue.id)
                     park(issue, summary, parkReason, summary.parkData, now)
                     return
                 }
@@ -541,8 +569,7 @@ internal class RetryCoordinator(
         reason: String,
     ) {
         val reset = reason == ExitReason.TERMINAL || reason == ExitReason.NOT_ACTIVE
-        queue.drop(issueId, resetCounter = reset)
-        if (reset) reacted -= issueId
+        if (reset) resetCounter(issueId) else queue.drop(issueId, resetCounter = false)
         unsaved += issueId
         save()
     }
@@ -558,13 +585,23 @@ internal class RetryCoordinator(
         reason: ParkReason,
         data: Map<String, String>,
     ) {
-        queue.drop(issue.id, resetCounter = true)
+        resetCounter(issue.id)
         try {
             park(issue, issue, attemptId, reason, data, clock.now())
         } finally {
             unsaved += issue.id
             save()
         }
+    }
+
+    /**
+     * Drops the entry of [issueId] and zeroes its counters, and clears its reaction mark with them (bl-224), so the next
+     * approval exit resets the counter again. Every counter reset of this class goes through it, but the queue's own
+     * park decisions, which [park] follows.
+     */
+    private fun resetCounter(issueId: String) {
+        queue.drop(issueId, resetCounter = true)
+        reacted -= issueId
     }
 
     /**
