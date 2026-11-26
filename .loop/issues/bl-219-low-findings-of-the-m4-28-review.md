@@ -40,6 +40,37 @@ Filed from the merge risk reviews of m4-28. Triage decides which findings are wo
 
 2026-11-26 soule: triaged ready-for-agent. Checked against main at 2cec711: no commit touched `ResourceGrants.kt` or the device providers since m4-28, every finding still holds.
 
+2026-11-26 09:02Z loop: Loop opened pull request #85 for this issue: https://github.com/soulesidibe/Loop/pull/85
+
+2026-11-26 09:05Z loop: Loop did not merge pull request #85 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.27.
+  - alignment: aligned, The diff covers the in-scope findings (1, 2, 4, 5, 6, 8, the doc sentence for 3) and the Android waitOrStop fix, and leaves the out-of-scope findings alone; the extra LockGuards class and the injectable providerCalls executor serve the fixes and tests.
+  - impact: medium, It reworks the guard model of ResourceGrants, which every attempt end and check goes through, and changes how the Android provider stops emulators, but it adds no new API and touches no sensitive path.
+  - verification: strong, It adds tests for the late-granted lock through both free and takeBack, with overlap and free-during-call detection, plus LockGuards, Android failed-boot and canceled-call tests; I could not read the cut part of ResourceGrantsTest.kt, and the full build was not run.
+  - rollback_cost: two_way, The change is code, docs and tests only, with no schema or persisted-format change, so a revert fully undoes it.
+  - error_detection: loud, The unexpected freed-during-prepare state is reported through the failed callback as a warn line, and provider failures still go to the failure callbacks, though the unexpected-state branch is now a report where it used to be a release.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 1 of 10 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
+
+2026-11-26 09:11Z soulesidibe: Sent back by soulesidibe: Sent back before merge, after the merge risk reviews of pull request #85 (Sonnet, then a Fable recheck that confirmed the medium). Fix these on the same branch, then submit again:
+  - Medium: a lock granted to the attempt after the read under the guards is freed without its guard. In free and takeBack, while checkAndGiveBack runs on the held locks (provider calls of minutes), another holder's free can settle a queued request of this attempt and grant it Y. The tick then takes Y's guard (its key is not held by withHeldGuards, and unfreed is not set) and starts prepare(Y). The final freeAttempt or freeKinds then drops Y too (lockGoes is every lock of the attempt), with no guard, no give back, and hands it to the next request while prepare runs. prepareInBackground now only warns, so the device leaks or is shared with the next holder. Fix (recommended): make the final store change conditional. freeAttempt and freeKinds take the expected lock keys and, inside the store update, change nothing (no marks either) when the attempt holds any lock outside held (subset check, not equality). withHeldGuards then loops with the missed key, waits for Y's prepare under its guard, gives Y back once, and frees. Add a GatedProvider test through both endAttempt and withCheckResource: a1 holds iphone prepared and is queued for ipad held by b1 with c1 behind; gate release iphone and prepare ipad a1; once release iphone has entered, end b1, tick, assert prepare ipad a1 entered; open release iphone and assert the end has not completed and no release ipad yet; open prepare and await; assert exactly one release ipad for a1 after it was prepared, release iphone once, ipad then c1's, overlaps and freedDuringCalls empty, kept() empty, no unexpected state failure. Add a second variant where prepare ipad a1 ends before release iphone opens.
+  - Low: correct the class doc and the prepareInBackground KDoc sentence that says no path of the grants frees a lock while its prepare runs, and the matching test comment ("no path of theirs can") in ResourceGrantsTest.
+  - Low: kept() omits the unfreed map, so the nothing kept tests would not catch a leak there. Include it.
+  - Low: BootRecords.deleteIf takes the folder wide file lock on every drop, so a release can wait behind another AVD's boot (bounded by the adb timeout). Add a KDoc line that stop must never be called inside exclusive, since FileChannel.lock would throw OverlappingFileLockException.
+  - Low, no change needed here: waitOrStop can still miss its own emulator when startOf returns 0 after started[avd] was overwritten. That is bl-219 finding 9, out of scope; leave it.
+
+2026-11-26 09:37Z loop: Loop updated pull request #85 for this issue: https://github.com/soulesidibe/Loop/pull/85
+
+2026-11-26 10:01Z loop: Loop did not merge pull request #85 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.27.
+  - alignment: aligned, The diff covers the in-scope findings (1, 2, 4, 5, 6, 8), the Android waitOrStop fix, the sent-back conditional free, and doc fixes, leaving out-of-scope findings alone.
+  - impact: medium, It reworks the guard and free model of ResourceGrants, which every attempt end and check goes through, and changes how the Android provider stops emulators.
+  - verification: strong, It adds tests for the late-granted lock through free and takeBack, the queue change, LockGuards, Android failed boot and canceled calls, though I could not read the cut test files.
+  - rollback_cost: two_way, The change is code, docs and tests only, with no schema or persisted-format change, so a revert undoes it.
+  - error_detection: loud, The unexpected freed-during-prepare state goes through the failed callback as a warn line, and provider failures still reach the failure callbacks.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 4 of 13 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
+
 ## Agent Brief
 
 **Category:** bug
