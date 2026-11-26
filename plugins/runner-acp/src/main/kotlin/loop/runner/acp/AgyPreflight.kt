@@ -125,7 +125,7 @@ class AgyPreflight(
         /**
          * The version `agy --version` printed in [text]: the last line that is only a version (an optional `v`
          * prefix and terminal styling aside), else the last version-like token of the whole text. A banner such as
-         * `new version 1.6.0 available` printed before or after the real version never decides it.
+         * `new version 1.6.0 available` printed before the real version never decides it.
          */
         internal fun extractSemver(text: String): String? {
             val lines = text.lineSequence().map { ANSI.replace(it.substringAfterLast('\r'), "").trim() }.toList()

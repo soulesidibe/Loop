@@ -428,7 +428,7 @@ internal class AcpPermissionPolicy(
          * [UnreadablePath], so the request is declined and never read as a workspace relative path. A plain path is
          * returned unchanged.
          */
-        internal fun normalizePath(raw: String): String {
+        private fun normalizePath(raw: String): String {
             val scheme = (FILE_SCHEME.find(raw) ?: URI_SCHEME.find(raw))?.groupValues?.get(1) ?: return raw
             if (!scheme.equals("file", ignoreCase = true)) {
                 val safe = scheme.lowercase(Locale.ROOT)
