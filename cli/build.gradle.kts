@@ -227,6 +227,14 @@ val rootWorkflow = layout.projectDirectory.file("../WORKFLOW.md")
 // The GitHub API responses the github tracker tests recorded, served to `loop run` by GitHubRunCommandTest (bl-23).
 val githubRecordedDir = layout.projectDirectory.dir("../plugins/tracker-github/src/test/resources/github/recorded")
 
+// Repository files the cli tests find beside WORKFLOW.md (bl-207): the plugin profiles (PluginProfileDocsTest), the
+// research example (SourcesCheckExampleTest, ResearchKindRunTest), and the prompt copy and the root .gitignore
+// (OwnWorkflowTest). A nested .gitignore that git check-ignore would also read must be added here.
+val pluginDocsDir = layout.projectDirectory.dir("../docs/plugins")
+val researchExampleDir = layout.projectDirectory.dir("../docs/examples/research")
+val ownTemplate = layout.projectDirectory.file("../spec-core/src/test/resources/prompt/own-template.md")
+val rootGitignore = layout.projectDirectory.file("../.gitignore")
+
 tasks.test {
     // Hook tests run real git in temporary repositories: no GIT_* variable from the host.
     setEnvironment(environment.filterKeys { !it.startsWith("GIT_") })
@@ -263,6 +271,22 @@ tasks.test {
     inputs
         .dir(githubRecordedDir)
         .withPropertyName("githubRecorded")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs
+        .dir(pluginDocsDir)
+        .withPropertyName("pluginDocs")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs
+        .dir(researchExampleDir)
+        .withPropertyName("researchExample")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs
+        .file(ownTemplate)
+        .withPropertyName("ownTemplate")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs
+        .file(rootGitignore)
+        .withPropertyName("rootGitignore")
         .withPathSensitivity(PathSensitivity.RELATIVE)
     systemProperty("loop.rootWorkflow", rootWorkflow.asFile.absolutePath)
     systemProperty("loop.githubRecorded", githubRecordedDir.asFile.absolutePath)
