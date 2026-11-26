@@ -158,7 +158,8 @@ public sealed interface RunnerEvent {
      *
      * [category] is null for an ordinary failure, which counts toward `retries.max_attempts`. A runner sets
      * [Category.RunnerUnavailable] only when the runtime's own error result says the runner cannot reach its model
-     * (an authentication or access refusal, an expired login, a rate limit or an overload), never from text the agent
+     * (an authentication or access refusal, an expired login, a rate limit or an overload), or when the runtime's own
+     * startup answer names a version Loop refuses (an `agy` older than the minimum, bl-236), never from text the agent
      * printed: such a failure says nothing about the issue, takes no `max_attempts` slot and holds dispatch for the
      * whole run (bl-39). [retryAfter] is how long the runtime asked to wait, null when it gave no time; it is read
      * only with a category.
