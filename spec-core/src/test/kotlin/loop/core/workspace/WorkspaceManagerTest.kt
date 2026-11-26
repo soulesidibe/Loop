@@ -99,7 +99,9 @@ class WorkspaceManagerTest {
                 try {
                     awaitCancellation()
                 } catch (e: CancellationException) {
-                    stopped(HookResult(hook, null, timedOut = false, timeoutMs = timeoutMs, durationMs = 7, output = "half\n", stopped = true))
+                    stopped(
+                        HookResult(hook, null, timedOut = false, timeoutMs = timeoutMs, durationMs = 7, output = "half\n", stopped = true),
+                    )
                     throw e
                 }
             }

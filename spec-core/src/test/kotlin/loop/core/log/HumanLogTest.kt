@@ -781,7 +781,13 @@ class HumanLogTest {
         log.recorded(
             event(
                 "hook_finished",
-                mapOf("hook" to "before_run", "timed_out" to "false", "stopped" to "true", "duration_ms" to "830", "output" to "fetching\n"),
+                mapOf(
+                    "hook" to "before_run",
+                    "timed_out" to "false",
+                    "stopped" to "true",
+                    "duration_ms" to "830",
+                    "output" to "fetching\n",
+                ),
             ),
         )
 

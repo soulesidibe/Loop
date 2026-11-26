@@ -361,7 +361,8 @@ class TraceCommandTest {
                 *failedAttempt("a2", "13:49:01", "13:49:02").toTypedArray(),
             )
 
-        val hook = lines.indexOf("13:48:50  ${"hook_finished".padEnd(NAME_WIDTH)}hook=before_remove exit_code=128 timed_out=false duration_ms=15")
+        val expected = "13:48:50  ${"hook_finished".padEnd(NAME_WIDTH)}hook=before_remove exit_code=128 timed_out=false duration_ms=15"
+        val hook = lines.indexOf(expected)
         val first = lines.indexOfFirst { it.startsWith("Attempt 1 ") }
         val second = lines.indexOfFirst { it.startsWith("Attempt 2 ") }
         assertTrue(hook >= 0, lines.joinToString("\n"))

@@ -603,7 +603,17 @@ class FakeHookRunner : HookRunner {
         try {
             onRun(hook)
         } catch (e: CancellationException) {
-            stopped(HookResult(hook, null, timedOut = false, timeoutMs = timeoutMs, durationMs = 12, output = output[hook] ?: "", stopped = true))
+            stopped(
+                HookResult(
+                    hook,
+                    null,
+                    timedOut = false,
+                    timeoutMs = timeoutMs,
+                    durationMs = 12,
+                    output = output[hook] ?: "",
+                    stopped = true,
+                ),
+            )
             throw e
         }
         val late = hook in timedOut
