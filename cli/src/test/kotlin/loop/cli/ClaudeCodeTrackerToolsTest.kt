@@ -1,5 +1,6 @@
 package loop.cli
 
+import com.github.ajalt.clikt.testing.CliktCommandTestResult
 import com.github.ajalt.clikt.testing.test
 import loop.runner.claudecode.PreflightResult
 import org.junit.jupiter.api.io.TempDir
@@ -68,9 +69,9 @@ class ClaudeCodeTrackerToolsTest {
 
         val result = LoopCommand(host()).test(listOf("run", fixture.workflow.toString(), "--once"))
 
-        assertEquals(0, result.statusCode, result.output + result.stderr)
+        assertEquals(0, result.statusCode, diagnostics(result, "default:t-1"))
         // In Loop mode a move to needs_info is not a submitted result: it applies as asked, with no verification.
-        assertEquals("needs_info", fixture.stateOf("t-1"), result.output + result.stderr)
+        assertEquals("needs_info", fixture.stateOf("t-1"), diagnostics(result, "default:t-1"))
         assertContains(fixture.issueFile("t-1").readText(), question)
         val applied = listOf("issue_comment_requested", "issue_move_requested", "issue_commented", "issue_moved")
         val kinds =
@@ -78,7 +79,7 @@ class ClaudeCodeTrackerToolsTest {
                 .query("SELECT kind FROM events WHERE issue_id = 'default:t-1' ORDER BY seq")
                 .mapNotNull { it["kind"] }
                 .filter { it in applied + "result_submitted" }
-        assertEquals(applied, kinds)
+        assertEquals(applied, kinds, diagnostics(result, "default:t-1"))
 
         fun dataOf(kind: String) = fixture.query("SELECT data FROM events WHERE kind = '$kind'").single()["data"].orEmpty()
         // The requests of loop tool comment and loop tool move, with no source.
@@ -124,9 +125,10 @@ class ClaudeCodeTrackerToolsTest {
 
             val result = LoopCommand(host(GITHUB_TOKEN)).test(listOf("run", fixture.workflow.toString(), "--once"))
 
-            assertEquals(0, result.statusCode, result.output + result.stderr)
+            val both = { diagnostics(result, "local:l-1", "gh:26") }
+            assertEquals(0, result.statusCode, both())
             // The files issue got its own comment and move, once each, and nothing of the GitHub issue's.
-            assertEquals("needs_info", fixture.stateOf("l-1"), result.output + result.stderr)
+            assertEquals("needs_info", fixture.stateOf("l-1"), both())
             assertEquals(
                 1,
                 fixture
@@ -134,7 +136,7 @@ class ClaudeCodeTrackerToolsTest {
                     .readText()
                     .split(question)
                     .size - 1,
-                fixture.issueFile("l-1").readText(),
+                fixture.issueFile("l-1").readText() + both(),
             )
             // GitHub got the comment and the needs_info move of issue 26 only: one comment, the handoff label added,
             // the required label removed, and no write for the files issue.
@@ -145,7 +147,7 @@ class ClaudeCodeTrackerToolsTest {
                     "DELETE /api/repos/octocat/Hello-World/issues/26/labels/gh-ready",
                 ),
                 github.writePaths,
-                result.output + result.stderr,
+                both(),
             )
             assertContains(github.writes.first().body, "archived items")
             val applied = listOf("issue_comment_requested", "issue_move_requested", "issue_commented", "issue_moved")
@@ -155,11 +157,28 @@ class ClaudeCodeTrackerToolsTest {
                         .query("SELECT kind FROM events WHERE issue_id = '$issue' ORDER BY seq")
                         .mapNotNull { it["kind"] }
                         .filter { it in applied + "tool_request_failed" }
-                assertEquals(applied, kinds, issue)
+                assertEquals(applied, kinds, "$issue\n" + both())
             }
             assertTrue(result.stderr.lines().none { "No tracker" in it }, result.stderr)
         }
     }
+
+    /**
+     * What `run --once` printed, then the `runner_output` events of each of [issues], stderr included, so a fake
+     * `claude` that exits before its transcript shows why in the failure message.
+     */
+    private fun diagnostics(
+        result: CliktCommandTestResult,
+        vararg issues: String,
+    ): String =
+        result.output + result.stderr +
+            issues.joinToString("") { issue ->
+                val lines =
+                    fixture
+                        .query("SELECT data FROM events WHERE kind = 'runner_output' AND issue_id = '$issue' ORDER BY seq")
+                        .map { it["data"].orEmpty() }
+                "\n--- runner_output of $issue (${lines.size})\n" + lines.joinToString("\n")
+            }
 
     private fun host(githubToken: String? = null): Host =
         Host(

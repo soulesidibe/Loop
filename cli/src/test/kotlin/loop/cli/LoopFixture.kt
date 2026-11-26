@@ -78,6 +78,8 @@ class LoopFixture(
     /**
      * Writes `WORKFLOW.md` with [activeStates], plus [extra] front matter lines
      * (for example `retries:` with `  max_attempts: 1`), and [prompt] as its template.
+     * The file is replaced atomically (bl-186): a running `loop run` polls it, and a plain write truncates it
+     * first, so a poll in between would read a torn text and record it as an edit of its own.
      */
     fun writeWorkflow(
         activeStates: List<String> = listOf("todo"),
@@ -85,7 +87,7 @@ class LoopFixture(
         prompt: String = "Work on {{ issue.identifier }}: {{ issue.title }}\n",
     ) {
         val extraLines = if (extra.isEmpty()) "" else extra.trimEnd() + "\n"
-        workflow.writeText(
+        val text =
             "---\n" +
                 "tracker:\n" +
                 "  kind: files\n" +
@@ -102,8 +104,8 @@ class LoopFixture(
                 "  interval_ms: 1000\n" +
                 extraLines +
                 "---\n" +
-                prompt,
-        )
+                prompt
+        replaceAtomically(workflow) { it.writeText(text) }
     }
 
     /** One line per agent call, the attempt id, written outside the project by an agent that logs its calls. */
