@@ -32,6 +32,15 @@ sealed class Wait(
 
     protected val data: Map<String, String> get() = record.data
 
+    /**
+     * True when the wait stored the state its issue was in when it started, [WaitKeys.STATE], and [state] is another one,
+     * trimmed and case folded (m4-31, bl-252): a human moved the issue since. A record with no state is never moved.
+     */
+    protected fun movedFrom(state: String): Boolean {
+        val stored = data[WaitKeys.STATE] ?: return false
+        return !stored.trim().equals(state.trim(), ignoreCase = true)
+    }
+
     /** The record this wait is in the store. */
     fun toRecord(): WaitingIssue = record
 
@@ -58,13 +67,23 @@ sealed class Wait(
     /**
      * A verified result waits for `loop approve` (m2-24), or, approved, for its delivery on the next tick. With pull
      * request delivery (m2-25) it also holds the check lines and the judgment calls for the body, and the URL of the
-     * pull request once it was commented.
+     * pull request once it was commented. Since bl-252 it holds the [state] its issue was in when it started: a human
+     * move of the issue to another state rejects the result, see [humanMoved].
      */
     class Approval internal constructor(
         record: WaitingIssue,
     ) : Wait(record) {
         /** The state the delivery moves the issue to, null when the record holds none. */
         val to: String? get() = data[WaitKeys.TO]
+
+        /** The state the issue was in when the wait started (bl-252), null for a wait stored by an older build. */
+        val state: String? get() = data[WaitKeys.STATE]
+
+        /**
+         * True when the issue is now in [state], another state than the one the wait started in (bl-252), by the rule of
+         * [Ask.humanMoved]: a human rejected the result. A wait stored with no state is never moved.
+         */
+        fun humanMoved(state: String): Boolean = movedFrom(state)
 
         /** The workspace fingerprint the result was verified on. */
         val fingerprint: String? get() = data[WaitKeys.FINGERPRINT]
@@ -341,8 +360,7 @@ sealed class Wait(
             active: Boolean,
         ): Boolean {
             if (state == null || !active) return true
-            val asked = this.state ?: return false
-            return !asked.trim().equals(state.trim(), ignoreCase = true)
+            return movedFrom(state)
         }
     }
 
@@ -384,7 +402,8 @@ sealed class Wait(
          * The `Waiting(approval)` of a result verified on [fingerprint] (m2-24), delivered to [to]. With pull request
          * delivery (m2-25) [checks] is the rendered check lines and [judgmentCalls] their number; [approvedBy] and
          * [approvedAt] approve it at once, for the auto policy; [pullRequest] is the URL already commented. [kind] is
-         * the kind the issue was dispatched under (m4-18), null in Symphony mode.
+         * the kind the issue was dispatched under (m4-18), null in Symphony mode. [state] is the state the issue is in
+         * as the wait starts (bl-252), null only for a record shaped like an older build's.
          */
         fun approval(
             projectId: ProjectId,
@@ -401,6 +420,7 @@ sealed class Wait(
             approvedAt: Instant? = null,
             pullRequest: String? = null,
             kind: String? = null,
+            state: String? = null,
         ): Approval {
             val data =
                 mapOf(WaitKeys.TO to to, WaitKeys.FINGERPRINT to fingerprint) +
@@ -411,6 +431,7 @@ sealed class Wait(
                         approvedAt?.let { WaitingIssue.APPROVED_AT to it.toString() },
                         pullRequest?.let { WaitKeys.PULL_REQUEST to it },
                         kind?.let { WaitKeys.KIND to it },
+                        state?.let { WaitKeys.STATE to it },
                     )
             return Approval(WaitingIssue(projectId, issueId, identifier, WaitReason.Approval, attemptId, runId, since, data))
         }

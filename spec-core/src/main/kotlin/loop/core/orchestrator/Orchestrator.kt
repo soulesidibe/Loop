@@ -4574,7 +4574,8 @@ class Orchestrator(
      * Goes through the approval waits of this tick's read (m2-24), so a `loop approve` from another process is seen
      * like a `loop resume` (m1-07). An approved wait is delivered: its issue moves to the wait's target state, recorded
      * as `issue_moved` with `approved`, and the wait ends. A wait whose issue is gone, see [standings], ends at once,
-     * the human change wins and is a human touch. Any other keeps its issue waiting. The ids of the issues delivered,
+     * the human change wins and is a human touch, and so does one whose issue a human moved to another active state
+     * (bl-252), see [endHumanMoved], approved or not. Any other keeps its issue waiting. The ids of the issues delivered,
      * which this tick must not dispatch: [candidates] still shows them active.
      */
     private suspend fun syncApprovals(candidates: List<Issue>): Set<String> {
@@ -4602,6 +4603,11 @@ class Orchestrator(
                         continue
                     }
                 }
+            // bl-252: a sent back wait follows its own path (bl-221), and the attempt that asked may still be closing.
+            if (!wait.sentBack && wait.issueId !in running && wait.humanMoved(candidate.state)) {
+                endHumanMoved(wait, candidate.state)
+                continue
+            }
             val to = wait.to
             if (to.isNullOrBlank()) {
                 endWaiting(wait)
@@ -4619,6 +4625,51 @@ class Orchestrator(
             if (wait.approved && wait.issueId !in running && deliverApproved(wait, candidate, to)) delivered += wait.issueId
         }
         return delivered
+    }
+
+    /**
+     * Ends the approval [wait] whose issue a human moved to [state], another active state than the one the wait started
+     * in (bl-252): the human rejected the result, so an approval already given is void and nothing is delivered. The end
+     * goes through [Waits.replaceApproval], so a wait a `loop send-back` or a `loop approve` changed since the tick read
+     * it is kept and adopted, logged as such, and the next tick decides again. Otherwise a `human_touch` with `touch` =
+     * `move`, `from_state` and `to_state` is recorded, and the issue is dispatched again like any other candidate. A
+     * write that fails is logged at warn and the issue goes, as after [endWaiting].
+     */
+    private suspend fun endHumanMoved(
+        wait: Wait.Approval,
+        state: String,
+    ) {
+        val ended =
+            waits.replaceApproval(wait, null).getOrElse { error ->
+                log.log(
+                    LogLevel.WARN,
+                    WAITING,
+                    LogOutcome.FAILED,
+                    waitContext(wait),
+                    reason = redactor.redact(error.describe()).take(REASON_MAX),
+                )
+                true
+            }
+        if (!ended) {
+            logDecided(wait, "end it as a human move")
+            return
+        }
+        attemptEnded.trySend(Unit)
+        val touch =
+            mapOfNotNull(
+                HumanTouched.TOUCH to HumanTouch.MOVE,
+                HumanTouched.FROM_STATE to wait.state,
+                HumanTouched.TO_STATE to state,
+            )
+        recordWaitEvent(wait, HumanTouched, touch)
+        log.log(
+            LogLevel.INFO,
+            WAITING,
+            LogOutcome.RELEASED,
+            waitContext(wait),
+            mapOf("wait_reason" to wait.reason.wire, "from_state" to wait.state, "to_state" to state),
+            "a human moved the issue",
+        )
     }
 
     /**
