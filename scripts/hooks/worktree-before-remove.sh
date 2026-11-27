@@ -8,6 +8,16 @@
 #
 # The worktree remove and prune run under the lock of worktree-lock.sh, shared
 # with the other hooks. The files of the worktree are deleted before, outside it.
+#
+# A workspace Loop made a clone of the project (workspace.git: clone) is left to
+# Loop, which deletes the folder and its keep refs: nothing is registered in the
+# repository, so the hook runs no git in the clone, only worktree prune in the
+# repository under the lock, which clears the entries of worktrees removed without
+# this hook (from before a switch to clones) so they no longer hold their branch.
+#
+# Any other .git folder, or a .git symlink, fails the hook before git runs in it,
+# and so does the project's main checkout: Loop still deletes the workspace folder
+# after a failed before_remove.
 set -eu
 
 : "${LOOP_WORKFLOW:?LOOP_WORKFLOW is not set}"
@@ -17,11 +27,30 @@ set -eu
 repo=$(cd "$(dirname "$LOOP_WORKFLOW")" && pwd -P)
 workspace=$(pwd -P)
 
+if [ "$workspace" = "$repo" ]; then
+    echo "loop: $workspace is the project's main checkout, not a workspace" >&2
+    exit 1
+fi
+
+if is_clone "$workspace" "$repo"; then
+    loop_lock_take "$(common_dir "$repo")"
+    git -C "$repo" worktree prune
+    exit 0
+fi
+
+if [ -d "$workspace/.git" ] || [ -L "$workspace/.git" ]; then
+    echo "loop: $workspace has a .git folder that is not a clone of $repo, left to Loop" >&2
+    exit 1
+fi
+
 remove=
 predelete=
 if [ -e "$workspace/.git" ]; then
     top=$(git -C "$workspace" rev-parse --show-toplevel 2>/dev/null || true)
-    if [ "$top" = "$workspace" ] && [ "$(common_dir "$workspace")" = "$(common_dir "$repo")" ]; then
+    # A .git file naming the project's own git folder is not a linked worktree:
+    # only the prune runs for it.
+    if [ "$top" = "$workspace" ] && [ "$(common_dir "$workspace")" = "$(common_dir "$repo")" ] &&
+        has_own_git_dir "$workspace" "$(common_dir "$repo")"; then
         remove=yes
         # Deleting a large tree (build output) takes seconds: do it before taking the
         # lock, so worktree remove under it has only the .git file left to delete.

@@ -10,13 +10,22 @@
 # A branch switch lists the other worktrees, so it runs under the lock of
 # worktree-lock.sh. The lock is taken after worktree-after-create.sh returns,
 # never around it: that hook takes the same lock.
+#
+# A workspace Loop made a clone of the project (workspace.git: clone) is done once
+# worktree-after-create.sh returns: that hook checks a clone out on the branch and
+# hides .loop/issues/, with the clone's git pinned, so this hook stops there.
 set -eu
 
+: "${LOOP_WORKFLOW:?LOOP_WORKFLOW is not set}"
 : "${LOOP_WORKSPACE_KEY:?LOOP_WORKSPACE_KEY is not set}"
 
 sh "$(dirname "$0")/worktree-after-create.sh"
 
 . "$(dirname "$0")/worktree-lock.sh"
+
+if is_clone "$(pwd -P)" "$(cd "$(dirname "$LOOP_WORKFLOW")" && pwd -P)"; then
+    exit 0
+fi
 
 branch="loop/$LOOP_WORKSPACE_KEY"
 current=$(git symbolic-ref --quiet --short HEAD || true)
