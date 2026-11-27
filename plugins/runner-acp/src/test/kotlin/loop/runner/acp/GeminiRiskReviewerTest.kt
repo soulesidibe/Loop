@@ -344,7 +344,10 @@ class GeminiRiskReviewerTest {
         val guarded = reviewIn(agy, request)
         println("PROOF reviewer, review recipe, the project's base and clone mode: ${guarded.exceptionOrNull()?.message}")
         val error = assertIs<RiskReviewError.Crashed>(guarded.exceptionOrNull())
-        assertContains(error.message.orEmpty(), "protected_workspace_root: added or modified workspace customization file .agents/mcp_config.json")
+        assertContains(
+            error.message.orEmpty(),
+            "protected_workspace_root: added or modified workspace customization file .agents/mcp_config.json",
+        )
     }
 
     @Test
@@ -377,7 +380,10 @@ class GeminiRiskReviewerTest {
     private fun reviewIn(
         server: FakeAcpServer,
         request: RiskReviewRequest,
-    ): Result<RiskReview> = runBlocking { withTimeout(30.seconds) { GeminiRiskReviewer(settings(server.agyCommand), hostEnv()).review(request) } }
+    ): Result<RiskReview> =
+        runBlocking {
+            withTimeout(30.seconds) { GeminiRiskReviewer(settings(server.agyCommand), hostEnv()).review(request) }
+        }
 
     private fun settings(command: String): AcpSettings =
         AcpSettings(

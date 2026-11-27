@@ -12,6 +12,7 @@ import loop.api.Redactor
 import loop.api.RunId
 import loop.api.SecretRedactor
 import loop.core.log.KeyValueLog
+import loop.core.verify.WorkspaceGit
 import loop.core.workflow.CheckConfig
 import loop.core.workflow.DeliveryConfig
 import loop.core.workflow.HooksConfig
@@ -20,7 +21,6 @@ import loop.core.workflow.KindsConfig
 import loop.core.workflow.PullRequestConfig
 import loop.core.workflow.WorkflowConfig
 import loop.core.workflow.WorkflowFile
-import loop.core.verify.WorkspaceGit
 import loop.core.workflow.WorkspaceGitMode
 import loop.core.workflow.commandRunner
 import loop.core.workspace.HookName

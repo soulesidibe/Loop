@@ -353,7 +353,12 @@ class CoreChecksCloneTest {
         val reason = "Loop runs no git in the clone $link: the workspace $link resolves to the project folder ${fx.project}"
         val policy = CoreChecks.diffPolicy(CheckConfig.DiffPolicy(listOf("README.md"), base = fx.first), link, hostEnv, fx.clones)
         val coverage =
-            CoreChecks.changedLineCoverage(CheckConfig.ChangedLineCoverage(listOf("report.xml"), 100.0, base = fx.first), link, hostEnv, fx.clones)
+            CoreChecks.changedLineCoverage(
+                CheckConfig.ChangedLineCoverage(listOf("report.xml"), 100.0, base = fx.first),
+                link,
+                hostEnv,
+                fx.clones,
+            )
         proof("linked workspace, diff_policy", policy.toString())
         assertContains(policy.couldNotRun.orEmpty(), reason, message = policy.toString())
         assertContains(coverage.couldNotRun.orEmpty(), reason, message = coverage.toString())
