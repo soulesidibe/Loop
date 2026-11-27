@@ -133,7 +133,11 @@ class GeminiRiskReviewer(
     private fun RunnerEvent.isTerminal(): Boolean =
         this is RunnerEvent.TurnCompleted || this is RunnerEvent.TurnFailed || this is RunnerEvent.TurnInputRequired
 
-    /** The attempt the runner needs: the review's workspace, ids of its own and an empty env, so no Loop tool is passed. */
+    /**
+     * The attempt the runner needs: the review's workspace, ids of its own and an empty env, so no Loop tool is passed.
+     * bl-254: the project's base and the clone mode of the request, so the runner's protected roots check follows the
+     * clone rule in a clone workspace and compares against the project's base, never the clone's own refs.
+     */
     private fun context(request: RiskReviewRequest): AttemptContext =
         AttemptContext(
             runId = RunId(REVIEW_ID),
@@ -142,6 +146,8 @@ class GeminiRiskReviewer(
             attemptId = AttemptId(REVIEW_ID),
             workspace = request.workspace,
             env = emptyMap(),
+            baseRef = request.baseRef,
+            cloneWorkspace = request.cloneWorkspace,
         )
 
     override fun toString(): String = "GeminiRiskReviewer(command=${settings.command})"

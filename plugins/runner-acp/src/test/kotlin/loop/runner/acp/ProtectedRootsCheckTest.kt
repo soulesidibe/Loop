@@ -760,6 +760,28 @@ class ProtectedRootsCheckTest {
         assertTrue(walked != null && ".agents/hooks.json" in walked, "$walked")
     }
 
+    @Test
+    fun `bl-254 a clone with no base is refused, its own main never picks the base, and the project's base finds the hidden file`() {
+        val fx = ReviewerCloneRecipe(scratch.resolve("recipe"))
+
+        val live = ProtectedRootsCheck.refusal(fx.workspace, null)
+        proof("review recipe live, no base, hooks mode (the reviewer's call before the fix)", "$live")
+        assertNull(live, "the live setup: the base comes from the clone's own main, which has the same file")
+
+        val noBase = ProtectedRootsCheck.refusal(fx.workspace, null, clone = true)
+        proof("review recipe, no base, clone mode", "$noBase")
+        assertEquals(
+            "protected_workspace_root: no project base commit was given for the clone workspace, and a clone never " +
+                "takes its base from its own refs",
+            noBase,
+        )
+        val guarded = ProtectedRootsCheck.refusal(fx.workspace, fx.base, clone = true)
+        proof("review recipe, the project's base, clone mode", "$guarded")
+        assertEquals("protected_workspace_root: added or modified workspace customization file .agents/mcp_config.json", guarded)
+        val blank = ProtectedRootsCheck.refusal(fx.workspace, " ", clone = true)
+        assertEquals(noBase, blank)
+    }
+
     /** git in [dir] with no user or system config and no `GIT_` variable, so lazy fetch stays on. */
     private fun unguardedGit(
         dir: Path,

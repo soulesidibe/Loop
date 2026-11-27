@@ -102,7 +102,9 @@ internal object ProtectedRootsCheck {
      *
      * bl-254: with [clone], the workflow's `workspace.git: clone` for this clone [workspace], the repository is the
      * workspace itself, never a folder above it, and every git first passes [CloneLayoutCopy] and runs with
-     * [clonePins], as `WorkspaceGit` does (bl-253). A layout refusal runs no git and refuses with its reason.
+     * [clonePins], as `WorkspaceGit` does (bl-253). A layout refusal runs no git and refuses with its reason. A clone
+     * with no [baseRef] refuses too: its `main`, `master` and `origin/HEAD` are refs the agent owns, so the base must be
+     * the project's commit, which the orchestrator and the merge risk reviewer pass.
      */
     fun refusal(
         workspace: Path,
@@ -118,6 +120,7 @@ internal object ProtectedRootsCheck {
             val repoRoot =
                 if (clone) {
                     checkedClonePins(normalizedWorkspace, gitTimeoutSeconds, gitCommand, baseEnv)
+                    if (baseRef.isNullOrBlank()) return NO_CLONE_BASE
                     normalizedWorkspace
                 } else {
                     findGitRoot(normalizedWorkspace)
@@ -656,4 +659,8 @@ internal object ProtectedRootsCheck {
     }
 
     private val DEFAULT_BASE_CANDIDATES = listOf("main", "master", "origin/HEAD")
+
+    private const val NO_CLONE_BASE =
+        "protected_workspace_root: no project base commit was given for the clone workspace, and a clone never takes " +
+            "its base from its own refs"
 }
