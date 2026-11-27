@@ -38,3 +38,12 @@ Like m3-29: the M5 issues are written from the plan and from what M4 taught, aft
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
 
 2026-11-27 soule: the first M5 run must prove `ask`, `loop answer`, the per tracker limit and the resource tools on Codex, see bl-270 (from m4-44).
+
+2026-11-27 soule: M5 decisions, before the spec.
+
+- Sandbox: a sandbox plugin seam. macOS Seatbelt (`sandbox-exec`, a profile generated per attempt: the workspace writable, home secrets unreadable, a stripped environment) is built in M5; a container plugin comes later, for Linux and cloud mode.
+- Worker token: a fine-grained personal access token per project, contents and pull requests write, no admin and no workflow scope, kept in the Keychain. Merging is blocked by branch protection, not by the token alone.
+- Branch protection: in M5, on Loop's `main` and on the playground repo, with Loop's own merge path kept working; the M5 exit tests it. Private projects get it when they can.
+- Guard model: in M5, as the last slice, after the hard layers (sandbox, token, protection, audit, approvals, deny list).
+- Approvals in the middle of a run: denied after 30 minutes without an answer; the agent is told and goes on or ends with `needs_info`, and the notice stays.
+- Secrets: agents get an allow listed environment only, hooks get only the `LOOP_` variables and what the workflow names for them, and the token readers (`security`, `gh auth token`, `git credential`) are blocked by the sandbox. Answers the m4-43 security notes.
