@@ -672,6 +672,8 @@ class Verification(
                 null
             }
             is DeliveryOutcome.Failed -> requestApproval(to, pullRequest = outcome.commented)
+            // This handoff carries no check, so nothing withdraws it; a human approval would be the safe side.
+            is DeliveryOutcome.Withdrawn -> requestApproval(to, pullRequest = outcome.commented)
         }
     }
 

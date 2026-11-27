@@ -797,6 +797,8 @@ class Orchestrator(
             ) {
                 notices.waiting(wait, HumanEvent.ApprovalWaiting, reason) { noticed ->
                     waits.hold(noticed)
+                    // bl-250: a plain save. The issue waited for verify until now, which neither `loop approve` nor
+                    // `loop send-back` accepts, so no human decision on this wait can be overwritten.
                     storeWaiting(noticed) { waits.save(noticed) }
                 }
             }
@@ -4696,6 +4698,8 @@ class Orchestrator(
                 return false
             }
         }
+        // bl-250: a wait sent back since the tick read it is not delivered, nothing moves.
+        if (!stillApproved(wait, "move the issue to $to")) return false
         val failure =
             try {
                 withContext(io) { tracker.moveIssue(issue, to) }.exceptionOrNull()
@@ -4720,7 +4724,7 @@ class Orchestrator(
             )
         recordWaitEvent(wait, IssueMoved, data)
         log.log(LogLevel.INFO, DELIVERY, LogOutcome.COMPLETED, context, mapOf("to" to to))
-        endWaiting(wait)
+        endDelivered(wait, to)
         return true
     }
 
@@ -4757,22 +4761,23 @@ class Orchestrator(
                 ?.delivery
                 ?.pullRequest
                 ?.merge != null
+        // bl-250: a wait sent back since the tick read it is not delivered, nothing is pushed. Without `merge`, the
+        // handoff checks again right before its move, since one call pushes, opens, comments and moves.
+        if (!stillApproved(wait, "push its pull request")) return false
         val handoff =
             PullRequestDelivery
                 .Handoff(
                     from = issue.state,
                     to = to,
                     event = mapOfNotNull(Tracker.APPROVED to "true", Tracker.APPROVED_BY to wait.approvedBy),
+                    proceed = { waits.stillApproved(wait) },
                 ).takeUnless { merges }
         val record: suspend (EventDefinition, Map<String, String>) -> Unit = { definition, data -> recordWaitEvent(wait, definition, data) }
         val outcome = pullRequestDelivery(effective, record).deliver(facts, handoff)
-        if (outcome is DeliveryOutcome.Delivered && merges) {
-            startMergeWait(wait, outcome.pullRequest)
-            return true
-        }
+        if (outcome is DeliveryOutcome.Delivered && merges) return startMergeWait(wait, outcome.pullRequest)
         if (outcome is DeliveryOutcome.Delivered) {
             log.log(LogLevel.INFO, DELIVERY, LogOutcome.COMPLETED, context, mapOf("to" to to))
-            endWaiting(wait)
+            endDelivered(wait, to)
             return true
         }
         val kept = outcome.commented?.let { wait.commented(it) } ?: wait
@@ -4780,28 +4785,136 @@ class Orchestrator(
             is DeliveryOutcome.Retry -> {
                 val reason = redactor.redact("cannot deliver yet, ${outcome.step}: ${outcome.reason}").take(REASON_MAX)
                 log.log(LogLevel.WARN, DELIVERY, LogOutcome.FAILED, context, reason = reason)
-                if (kept != wait) storeWait(kept, context)
+                if (kept != wait) replaceWait(wait, kept, "store the pull request URL")
             }
             is DeliveryOutcome.Failed -> {
                 val reason = "cannot deliver the approved result, ${outcome.step}: ${outcome.reason}"
                 log.log(LogLevel.WARN, DELIVERY, LogOutcome.FAILED, context, reason = reason)
-                clearApproval(kept, "${outcome.step}: ${outcome.reason}")
+                clearApproval(wait, "${outcome.step}: ${outcome.reason}", kept)
             }
+            // The handoff's check already adopted the stored wait.
+            is DeliveryOutcome.Withdrawn -> logDecided(wait, "move the issue to $to")
             is DeliveryOutcome.Delivered -> Unit
         }
         return false
     }
 
     /**
+     * Reads the store again right before an external step of the delivery of [wait] (bl-250), the step being to [action].
+     * True while the wait is still approved and not sent back. A wait decided since the tick read it is adopted in memory,
+     * so a sent back issue dispatches with the reason as after any send back, and logged at info. A store that cannot be
+     * read delivers nothing this tick, logged at warn, and the next tick tries again.
+     */
+    private suspend fun stillApproved(
+        wait: Wait.Approval,
+        action: String,
+    ): Boolean {
+        val approved =
+            waits.stillApproved(wait).getOrElse { error ->
+                val reason = redactor.redact("cannot read the wait again before the delivery: ${error.describe()}").take(REASON_MAX)
+                log.log(LogLevel.WARN, DELIVERY, LogOutcome.FAILED, waitContext(wait), reason = reason)
+                return false
+            }
+        if (!approved) logDecided(wait, action)
+        return approved
+    }
+
+    /**
+     * Replaces the approval wait [read] by [replacement] (bl-250), only while the store still holds it as the tick read
+     * it, so a `loop send-back` committed since is never overwritten. False when a human decided the wait since: the
+     * stored wait is kept and adopted in memory, and Loop does not [action], logged at info. True otherwise, the write
+     * failed included: a failure is logged at warn and the replacement holds its issue in memory, as with [Waits.save].
+     */
+    private suspend fun replaceWait(
+        read: Wait.Approval,
+        replacement: Wait,
+        action: String,
+    ): Boolean {
+        val written =
+            waits.replaceApproval(read, replacement).getOrElse { error ->
+                log.log(
+                    LogLevel.WARN,
+                    WAITING,
+                    LogOutcome.FAILED,
+                    waitContext(read),
+                    reason = redactor.redact(error.describe()).take(REASON_MAX),
+                )
+                return true
+            }
+        if (!written) logDecided(read, action)
+        return written
+    }
+
+    /** Logs at info that the approval wait [wait] changed since the tick read it, so Loop does not [action] (bl-250). */
+    private fun logDecided(
+        wait: Wait.Approval,
+        action: String,
+    ) {
+        val now =
+            when {
+                waits.sentBack(wait.issueId) != null -> "was sent back"
+                waits.current().any { it.issueId == wait.issueId } -> "changed"
+                else -> "ended"
+            }
+        log.log(
+            LogLevel.INFO,
+            WAITING,
+            LogOutcome.FOUND,
+            waitContext(wait),
+            mapOf("wait_reason" to wait.reason.wire),
+            "the wait $now since Loop read it, so Loop keeps it and does not $action",
+        )
+    }
+
+    /**
+     * Ends the approval wait of [wait] once its delivery moved the issue to [to] (bl-250): only while the store still holds
+     * it as the tick read it, and otherwise anyway, the one unconditional write of an approval wait Loop keeps, since the
+     * move already happened and stands. A `loop send-back` that landed meanwhile, in the time of that one tracker call,
+     * did not apply, logged at warn. A failure is logged at warn and the issue goes, as after [endWaiting].
+     */
+    private suspend fun endDelivered(
+        wait: Wait.Approval,
+        to: String,
+    ) {
+        val ended =
+            waits.replaceApproval(wait, null).getOrElse { error ->
+                log.log(
+                    LogLevel.WARN,
+                    WAITING,
+                    LogOutcome.FAILED,
+                    waitContext(wait),
+                    reason = redactor.redact(error.describe()).take(REASON_MAX),
+                )
+                true
+            }
+        if (!ended) {
+            if (waits.sentBack(wait.issueId) != null) {
+                log.log(
+                    LogLevel.WARN,
+                    WAITING,
+                    LogOutcome.RELEASED,
+                    waitContext(wait),
+                    mapOf("wait_reason" to wait.reason.wire, "to" to to),
+                    "the issue was sent back after its delivery moved it to $to, so the send back did not apply",
+                )
+            }
+            storeWaiting(wait) { waits.end(wait) }
+        }
+        attemptEnded.trySend(Unit)
+    }
+
+    /**
      * Replaces the approved [wait] by the `Waiting(merge)` of [pullRequest] (m2-26), in memory and in the store: every
      * key of the approval wait, its approval included, plus the pull request number, phase `check` and round 1, so a
-     * restart resumes the merge without a second pull request or a lost approval. The issue is not moved.
+     * restart resumes the merge without a second pull request or a lost approval. The issue is not moved. Since bl-250
+     * only while the store still holds the wait as the tick read it: false when a `loop send-back` landed since, then no
+     * merge wait starts, the pull request stays open for the next delivery and the issue dispatches with the reason.
      */
     private suspend fun startMergeWait(
         wait: Wait.Approval,
         pullRequest: loop.api.PullRequest,
-    ) {
-        storeWait(wait.merging(pullRequest.number, pullRequest.url, clock.now()), waitContext(wait))
+    ): Boolean {
+        if (!replaceWait(wait, wait.merging(pullRequest.number, pullRequest.url, clock.now()), "start the merge wait")) return false
         log.log(
             LogLevel.INFO,
             DELIVERY,
@@ -4809,6 +4922,7 @@ class Orchestrator(
             waitContext(wait),
             mapOf("wait_reason" to WaitReason.Merge.wire, "pull_request" to pullRequest.number),
         )
+        return true
     }
 
     /**
@@ -4984,14 +5098,16 @@ class Orchestrator(
         }
 
     /**
-     * Writes [wait] back without its approval (m2-25): only a new `loop approve` delivers it now. The human is told,
-     * `delivery_failed` for [reason] (m4-30).
+     * Writes [kept], the approval wait [read] as the delivery left it, back without its approval (m2-25): only a new
+     * `loop approve` delivers it now. The human is told, `delivery_failed` for [reason] (m4-30). Since bl-250 only while
+     * the store still holds [read] as the tick read it: a wait sent back since is kept, with its reason, and nobody is told.
      */
     private suspend fun clearApproval(
-        wait: Wait.Approval,
+        read: Wait.Approval,
         reason: String,
+        kept: Wait.Approval = read,
     ) {
-        notices.waiting(wait.unapproved(), HumanEvent.DeliveryFailed, reason) { storeWait(it, waitContext(wait)) }
+        notices.waitingIfSaved(kept.unapproved(), HumanEvent.DeliveryFailed, reason) { replaceWait(read, it, "clear its approval") }
     }
 
     /**
