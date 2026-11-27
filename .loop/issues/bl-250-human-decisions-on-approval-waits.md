@@ -1,7 +1,7 @@
 ---
 id: bl-250
 title: "Loop's own writes never overwrite a human decision on an approval wait"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-agent]
 blocked_by: []

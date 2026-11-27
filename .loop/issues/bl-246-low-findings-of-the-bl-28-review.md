@@ -1,7 +1,7 @@
 ---
 id: bl-246
 title: "Clone workspaces: no lazy fetch in Loop's git, and create with loop/<key> checked out in the project"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-agent]
 blocked_by: []
