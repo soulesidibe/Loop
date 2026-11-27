@@ -2503,6 +2503,18 @@ The M3 exit for the claude-code runner, 2026-11-18, in two runs at the same limi
 - **The merge check on an up to date head.** The pilot app's base had not moved, so the merge check ended `up_to_date` and reran only `diff_policy` (step 3 of the merge check), not the unit suite. The pilot app's `WORKFLOW.md` comment saying the merge check reruns the unit suite holds only when the base moved.
 - **Delivery.** Both Loop issues waited for `loop approve`: the auto merge `ci` condition reads Actions runs even under `merge.ci: none`, and Actions refused every job for billing (bl-146). The pilot app delivers with `policy: human`, so its pull request merged after `loop approve`, as designed.
 
+### M4 exit wave (m4-43)
+
+The M4 exit wave, 2026-11-27, on Sigma rather than the pilot app (its release was in progress), recorded in m4-43. One `loop run` of build 56976ce, never restarted, delivered three GitHub code issues (Sigma pull requests 369, 370 and 371) and one research issue from a `files` tracker, two code issues at a time, at `max_turns` 10 and a hard limit of 0.21. The main sessions peaked at 0.1691 of a 1,000,000 token window; subagents run in windows Loop does not measure. What it taught:
+
+- **Generated files must not depend on the workspace path.** XcodeGen named a group after the checkout folder, so a check requiring `make ios-generate` to leave the tree clean forced each agent to commit its own folder name (`Sigma-197`) into `project.pbxproj`. A project Loop runs in worktrees needs its generated files to be the same in any folder; Sigma fixed it with a wrapper xcconfig (Sigma pull request 368), and the three issues were sent back once to merge it.
+- **Two trackers and two simulators in one run work as designed.** The `files` tracker's issue matched its own kind by `match: { tracker: local }` and rendered its own template; ids showed their tracker. Agents and checks shared `sim-a` and `sim-b` through the queue: 33 requests, 20 grants, 6 queued, never a failed check for a wait.
+- **The resource paths fail too hard.** A released simulator stayed booted (`resource_check_failed`), the next prepare timed out, and the check's issue was parked at once with no retry (bl-268). A queued request kept its place after the agent got the other simulator, so one attempt held both (bl-269).
+- **A denial is not a question.** A Bash call Claude Code denied ended a normally finished turn as `turn_input_required` and failed the attempt (bl-267).
+- **A kind matching an extra tracker** cannot move its issues to that tracker's terminal state, since `move_to` is checked against the primary's (bl-266).
+- **Secrets.** A Fable 5.2 review found the tracker token leaked to no file, argv or agent environment, but stripping only the names a workflow references let other host secrets reach the agents, hooks inherit the full environment, and an agent of the same user can read the token from the Keychain, the gh CLI or `ps`. Recorded in m4-43, not filed, by the owner's choice; the sandbox of M5 is the boundary.
+- **Review before approval caught the one real problem.** Loop's own checks passed all three branches with the folder name inside; a merge risk review of each full diff found it.
+
 ### The model in the ledger (extension, bl-147)
 
 Found in the m3-28 Codex exit run: every turn line of a `codex-app-server` attempt read `"model": null`, though the `thread/start` answer named `openai/gpt-6.1-sol`, and so did the claude-code lines of a `WORKFLOW.md` that names no model. The ledger could not say which model a turn ran on, which a runner comparison (M8), the cost per model and `loop report` (m4-38) need. The decisions:
