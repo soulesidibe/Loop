@@ -1612,6 +1612,8 @@ The summary addresses the operator and gives no `loop approve` command: it stays
 
 A store that cannot be read logs `level=warn event=waiting outcome=failed` and changes nothing for that tick.
 
+**The end of the verify wait during the approval notice (bl-257).** A verified result saves its approval wait, then tells the human (the channel, the `human_notified` write and `hooks.on_human_needed` up to its timeout), all while the verify wait that started it is still held. A `loop send-back` committed in that window, then read by a poll, lets the issue go in memory, so the end of the verify wait used to see no approval held and delete the row: the reason was lost and the issue dispatched as a fresh attempt. The end now keeps the wait when it became an approval wait, held for approval in this process or stored, as the last read and Loop's writes since show it, as the approval wait of the same attempt (`Waits.becameApproval`). So a sent back row stays for the dispatch, which carries the reason with `loop.retry_kind` = `sent_back`, and an approve in the same window stays held and is delivered. The attempt ends as `waiting_approval` in both cases. A verify row is still ended when the check fails, refutes the result, or is cancelled with `endOnCancel` true, and kept on any other cancel, as before. This sits beside the [conditional saves](#delivery-policy-and-approval-extension-m2-24) of bl-250: the first save of the approval stays a plain save, and only the verify wait's end looks at what the store holds.
+
 | Event | Data | When |
 |---|---|---|
 | `approval_requested` | `to`, `policy`, `fingerprint` | A verified result waits for approval. |
