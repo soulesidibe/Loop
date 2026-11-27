@@ -12,12 +12,21 @@ public fun interface RiskReviewer {
     public suspend fun review(request: RiskReviewRequest): Result<RiskReview>
 }
 
-/** One review: the [workspace] it may read, the [model] that judges, the [prompt] and its [timeoutMs]. */
+/**
+ * One review: the [workspace] it may read, the [model] that judges, the [prompt] and its [timeoutMs].
+ *
+ * bl-254: [baseRef] is the project's base commit the merge was checked against, and [cloneWorkspace] is true when the
+ * workflow's `workspace.git` is `clone` and [workspace] is one of its clone workspaces. A reviewer whose runner runs its
+ * own git in the workspace, such as the protected roots check of the ACP runner, passes both on, so that git follows
+ * the clone rule and never takes its base from the clone's own refs. Both default to the `hooks` mode behavior.
+ */
 public data class RiskReviewRequest(
     public val workspace: Path,
     public val model: String,
     public val prompt: String,
     public val timeoutMs: Long,
+    public val baseRef: String? = null,
+    public val cloneWorkspace: Boolean = false,
 )
 
 /** What the reviewer answered: its final [text], and the [tokens] and [costUsd] it spent, null when not reported. */

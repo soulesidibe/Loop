@@ -164,6 +164,58 @@ class WorkspaceGitTest {
     }
 
     @Test
+    fun `bl-246 every process runs with lazy fetch off, set last so a caller's extra variable cannot turn it on`() {
+        forked()
+        val seen = mutableListOf<Map<String, String>>()
+        val recording =
+            WorkspaceGit(hostEnv + ("GIT_NO_LAZY_FETCH" to "0"), startProcess = { builder ->
+                seen += builder.environment().toMap()
+                builder.start()
+            })
+
+        recording.run(repo, "status", extra = mapOf("GIT_NO_LAZY_FETCH" to "0"))
+        recording.stream(repo, listOf("log", "-1"), extra = mapOf("GIT_NO_LAZY_FETCH" to "0")) { it.readBytes() }
+        recording.head(repo)
+        WorkspaceFingerprinter(recording).of(repo).getOrThrow()
+
+        assertTrue(seen.size >= 4, "git ran ${seen.size} times")
+        seen.forEach { env -> assertEquals("1", env["GIT_NO_LAZY_FETCH"], env.toString()) }
+    }
+
+    @Test
+    fun `bl-246 a promisor the agent configures never runs from the fingerprint, the merge check or any other read`() {
+        val (work, base) = forked()
+        val trap = LazyFetchTrap(repo, folder.resolve("lazy-fetch-ran"), "refs/heads/loop/t-1").arm()
+        trap.proveLive()
+        // Each call Loop makes in a workspace, live unguarded: without the variable it runs the agent's program.
+        val calls: List<Pair<String, (WorkspaceGit) -> Unit>> =
+            listOf(
+                "fingerprint" to { git -> WorkspaceFingerprinter(git).of(repo).getOrThrow() },
+                "merge" to { git -> git.merge(repo, base, "bl-246: merge the base") },
+                "ancestor" to { git -> git.isAncestor(repo, base, "HEAD") },
+                "status" to { git -> git.run(repo, "status", "--porcelain") },
+            )
+        val dead =
+            calls.filter { (_, call) ->
+                runCatching { call(LazyFetchTrap.unguarded(hostEnv)) }
+                !Files.deleteIfExists(trap.marker)
+            }
+        assertEquals(emptyList(), dead.map { it.first }, "these calls do not fetch unguarded, so the test proves nothing for them")
+
+        for ((name, call) in calls) {
+            runCatching { call(workspaceGit) }
+            assertFalse(trap.marker.exists(), "$name ran the agent's program")
+        }
+        // HEAD unpeeled, merge-tree and diff of commit ids do not fetch even unguarded (the bl-246 replay), the
+        // environment test covers them.
+        runCatching { workspaceGit.head(repo) }
+        runCatching { workspaceGit.mergeTree(repo, base, LazyFetchTrap.MISSING) }
+        runCatching { workspaceGit.mergeTree(repo, base, work) }
+        runCatching { workspaceGit.diffStat(repo, base, LazyFetchTrap.MISSING) }
+        assertFalse(trap.marker.exists(), "rev-parse HEAD, merge-tree or diff ran the agent's program")
+    }
+
+    @Test
     fun `a git that does not finish in time is stopped`() {
         forked()
         val (wrapper, _) = loggingGit(sleep = 30)
@@ -656,6 +708,140 @@ class WorkspaceGitTest {
         assertTrue(error.message!!.contains("c.txt") || error.message!!.contains("untracked"), error.message)
         assertEquals(work, git("rev-parse", "HEAD"))
         assertEquals("an untracked file the base also adds\n", repo.resolve("c.txt").readText())
+    }
+
+    /** bl-253: the folder of the clone workspaces of a clone mode workflow whose project is [repo]. */
+    private val clonesRoot: Path = Files.createDirectories(folder.resolve("workspaces"))
+
+    /** The command and the environment of every process a recording git starts. */
+    private val started = mutableListOf<Pair<List<String>, Map<String, String>>>()
+
+    private fun recording(roots: CloneRoots): WorkspaceGit =
+        WorkspaceGit(hostEnv, clones = roots, startProcess = { builder ->
+            started += builder.command().toList() to builder.environment().toMap()
+            builder.start()
+        })
+
+    private val cloneMode = CloneRoots.of(CloneScope(clonesRoot, repo))
+
+    private val pinNames = listOf(WorkspaceGit.GIT_DIR, WorkspaceGit.GIT_COMMON_DIR, WorkspaceGit.GIT_WORK_TREE)
+
+    /** Variables a caller passes that would point git at the project. */
+    private val hostileExtra =
+        mapOf(
+            WorkspaceGit.GIT_DIR to repo.resolve(".git").toString(),
+            WorkspaceGit.GIT_COMMON_DIR to repo.resolve(".git").toString(),
+            WorkspaceGit.GIT_WORK_TREE to repo.toString(),
+            WorkspaceGit.NO_LAZY_FETCH to "0",
+        )
+
+    /** The processes started in [root], by its `-C`. */
+    private fun startedIn(root: Path) = started.filter { (command, _) -> command.windowed(2).any { it == listOf("-C", root.toString()) } }
+
+    @Test
+    fun `bl-253 in clone mode every git in a clone workspace is pinned to it through run and stream, over the caller's variables`() {
+        val clone = Files.createDirectories(clonesRoot.resolve("t-1"))
+        git("init", "-q", "--initial-branch=main", dir = clone)
+        val git = recording(cloneMode)
+
+        git.run(clone, "status", extra = hostileExtra)
+        git.stream(clone, listOf("status"), extra = hostileExtra) { it.readBytes() }
+
+        val inClone = startedIn(clone)
+        assertEquals(2, inClone.size, started.toString())
+        inClone.forEach { (_, env) ->
+            assertEquals(clone.resolve(".git").toString(), env[WorkspaceGit.GIT_DIR])
+            assertEquals(clone.resolve(".git").toString(), env[WorkspaceGit.GIT_COMMON_DIR])
+            assertEquals(clone.toString(), env[WorkspaceGit.GIT_WORK_TREE])
+            assertEquals("1", env[WorkspaceGit.NO_LAZY_FETCH])
+        }
+        // The extensions.refStorage read of each check runs outside the workspace, unpinned.
+        val reads = started - inClone.toSet()
+        assertTrue(
+            reads.isNotEmpty() &&
+                reads.all { (command, env) ->
+                    "--file" in command && pinNames.none { it in env }
+                },
+            reads.toString(),
+        )
+    }
+
+    @Test
+    fun `bl-253 git in the project and in an import repository gets none of the three variables`() {
+        forked()
+        Files.createDirectories(clonesRoot.resolve("t-1"))
+        val git = recording(cloneMode)
+        val dir = Files.createDirectories(folder.resolve("import"))
+        val repository = dir.resolve("import.git")
+
+        git.run(repo, "status", extra = mapOf("GIT_OPTIONAL_LOCKS" to "0"))
+        git.stream(repo, listOf("log", "-1")) { it.readBytes() }
+        assertEquals(0, git.run(dir, "init", "--bare", "--quiet", "--template=", repository.toString()).code)
+        assertEquals(0, git.run(dir, "--git-dir=$repository", "rev-parse", "--git-dir").code)
+
+        assertEquals(4, started.size)
+        started.forEach { (command, env) -> assertTrue(pinNames.none { it in env }, "$command got $env") }
+    }
+
+    @Test
+    fun `bl-253 in clone mode a refused layout runs no git and fails the call naming the path`() {
+        val clone = Files.createDirectories(clonesRoot.resolve("t-1"))
+        clone.resolve(".git").writeText("gitdir: ${repo.resolve(".git")}\n")
+        val git = recording(cloneMode)
+
+        val run = assertFailsWith<IOException> { git.run(clone, "status") }
+        val stream = assertFailsWith<IOException> { git.stream(clone, listOf("status")) { it.readBytes() } }
+
+        assertTrue(clone.resolve(".git").toString() in run.message!!, run.message)
+        assertTrue(clone.resolve(".git").toString() in stream.message!!, stream.message)
+        assertEquals(emptyList(), started)
+    }
+
+    @Test
+    fun `bl-254 in clone mode a workspace linked to the project, or the project under another name, runs no git`() {
+        val link = Files.createSymbolicLink(clonesRoot.resolve("t-2"), repo)
+        val git = recording(cloneMode)
+
+        assertTrue(CloneScope(clonesRoot, repo).covers(link), "a name under the workspace root is covered, never resolved")
+        val linked = assertFailsWith<IOException> { git.run(link, "status") }
+        assertEquals(
+            "Loop runs no git in the clone $link: the workspace $link resolves to the project folder ${repo.toRealPath()}",
+            linked.message,
+        )
+
+        // The workspace root is another name for the project's parent: the workspace is no link, yet it is the project.
+        val alias = Files.createSymbolicLink(folder.resolve("alias"), folder)
+        val aliased = alias.resolve(repo.fileName.toString())
+        val aliasMode = recording(CloneRoots.of(CloneScope(alias, repo)))
+        val other = assertFailsWith<IOException> { aliasMode.run(aliased, "status") }
+        assertEquals(
+            "Loop runs no git in the clone $aliased: the workspace $aliased resolves to the project folder ${repo.toRealPath()}",
+            other.message,
+        )
+        assertEquals(emptyList(), started, "no git ran in either")
+        assertTrue(!CloneScope(clonesRoot, repo).covers(repo), "the project itself is never a clone workspace")
+    }
+
+    @Test
+    fun `bl-253 in hooks mode a workspace gets neither the check nor the pins, whatever its git is`() {
+        val worktree = Files.createDirectories(clonesRoot.resolve("t-1"))
+        worktree.resolve(".git").writeText("gitdir: ${folder.resolve("nowhere")}\n")
+        val git = recording(CloneRoots.NONE)
+
+        val outcome = git.run(worktree, "status", extra = mapOf(WorkspaceGit.GIT_WORK_TREE to worktree.toString()))
+        git.stream(worktree, listOf("status")) { it.readBytes() }
+
+        assertTrue(outcome.code != 0, "git itself ran and failed on the broken gitdir: $outcome")
+        assertEquals(2, started.size, "no layout read ran")
+        started.forEach { (_, env) ->
+            assertEquals(null, env[WorkspaceGit.GIT_DIR])
+            assertEquals(null, env[WorkspaceGit.GIT_COMMON_DIR])
+        }
+        assertEquals(
+            worktree.toString(),
+            started.first().second[WorkspaceGit.GIT_WORK_TREE],
+            "a caller's variable is its own in hooks mode",
+        )
     }
 
     private companion object {

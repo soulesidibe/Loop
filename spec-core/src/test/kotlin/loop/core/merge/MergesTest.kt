@@ -73,6 +73,7 @@ import loop.core.workflow.PullRequestConfig
 import loop.core.workflow.RiskConfig
 import loop.core.workflow.WorkflowConfig
 import loop.core.workflow.WorkflowFile
+import loop.core.workflow.WorkspaceGitMode
 import loop.core.workflow.commandRunner
 import java.io.IOException
 import java.nio.file.Path
@@ -83,6 +84,7 @@ import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
@@ -765,6 +767,25 @@ class MergesTest {
             assertContains(comment, "diff_size")
             assertContains(comment, "Merge risk: band low")
             assertEquals(1, reviewer.requests.size)
+        }
+
+    @Test
+    fun `bl-254 the reviewer gets the project's base and, in clone mode, the clone flag, for its runner's own git`() =
+        runTest {
+            val hooks = FakeReviewer(answer())
+            runOnce(autoSetup(hooks))
+            val plain = hooks.requests.single()
+            assertEquals(BASE, plain.baseRef, "the base the merge was checked against")
+            assertFalse(plain.cloneWorkspace, "a hooks mode workspace is no clone workspace")
+
+            val cloned = FakeReviewer(answer())
+            val setup = autoSetup(cloned)
+            setup.workflow = setup.workflow.copy(workspaceGit = WorkspaceGitMode.Clone)
+            runOnce(setup)
+            val request = cloned.requests.single()
+            assertEquals(workspace, request.workspace)
+            assertEquals(BASE, request.baseRef)
+            assertTrue(request.cloneWorkspace, "the issue's clone workspace under workspace.git: clone")
         }
 
     @Test

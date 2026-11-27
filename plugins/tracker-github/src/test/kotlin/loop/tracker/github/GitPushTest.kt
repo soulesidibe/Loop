@@ -240,7 +240,7 @@ class GitPushTest {
                         .associate { it.substringBefore('=') to it.substringAfter('=') }
                 val unexpected =
                     seen.keys.filterNot {
-                        it in setOf("PATH", "HOME", "LANG", "GIT_TERMINAL_PROMPT", GitPush.TOKEN_VARIABLE) ||
+                        it in setOf("PATH", "HOME", "LANG", "GIT_TERMINAL_PROMPT", "GIT_NO_LAZY_FETCH", GitPush.TOKEN_VARIABLE) ||
                             it.startsWith("LC_") ||
                             it.startsWith("GIT_CONFIG_") ||
                             it in SHELL_VARIABLES
@@ -334,6 +334,51 @@ class GitPushTest {
                     assertFalse(String(file.readBytes(), Charsets.ISO_8859_1).contains(token), "the token is in $file")
                 }
             }
+        }
+
+    @Test
+    fun `bl-246 every git process of a push and a base fetch runs with lazy fetch off, set after every other variable`() =
+        runTest {
+            upstream()
+            val seen = Collections.synchronizedList(mutableListOf<Map<String, String>>())
+            val recording =
+                GitPush(workDir, url, token, env + ("GIT_NO_LAZY_FETCH" to "0"), startProcess = { builder ->
+                    seen += builder.environment().toMap()
+                    builder.start()
+                })
+
+            assertTrue(recording.push(first, "loop/k1").isSuccess)
+            assertTrue(recording.fetch("main").isSuccess)
+
+            assertTrue(seen.size > 4, "git ran ${seen.size} times")
+            seen.forEach { started -> assertEquals("1", started["GIT_NO_LAZY_FETCH"], started.keys.toString()) }
+        }
+
+    @Test
+    fun `bl-246 a promisor written from a worktree never runs from the git a push or a base fetch runs in the project`() =
+        runTest {
+            val tip = upstream()
+            git(workDir, "worktree", "add", "--quiet", "-b", "agent", "../wt")
+            val worktree = tmp.resolve("wt")
+            val marker = tmp.resolve("lazy-fetch-ran")
+            // What an agent can write from its worktree: the project repository's config and refs are shared.
+            git(worktree, "config", "extensions.partialClone", "ext::sh -c touch% $marker")
+            git(worktree, "config", "protocol.ext.allow", "always")
+            Files.createDirectories(workDir.resolve(".git/refs/loop/base"))
+            workDir.resolve(".git/refs/loop/base/main").writeText("1".repeat(40) + "\n")
+            // Live: the project side rev-parse of the fetch, with its pins but without the variable, runs the program.
+            val probe = listOf(realGit, "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "rev-parse", "--verify", "-q")
+            run(probe + "refs/loop/base/main^{commit}", workDir, env)
+            assertTrue(marker.exists(), "the trap is not live")
+            Files.delete(marker)
+
+            val fetched = pusher().fetch("main")
+            // The push reads its branch unpeeled and checks a commit it landed: neither fetches, the environment test covers them.
+            val pushed = pusher().push(first, "loop/k1")
+
+            assertFalse(marker.exists(), "git in the project ran the agent's program")
+            assertEquals(tip, fetched.getOrThrow())
+            assertTrue(pushed.isSuccess, pushed.toString())
         }
 
     @Test
@@ -654,7 +699,7 @@ class GitPushTest {
                         .associate { it.substringBefore('=') to it.substringAfter('=') }
                 val unexpected =
                     seen.keys.filterNot {
-                        it in setOf("PATH", "HOME", "LANG", "GIT_TERMINAL_PROMPT", GitPush.TOKEN_VARIABLE) ||
+                        it in setOf("PATH", "HOME", "LANG", "GIT_TERMINAL_PROMPT", "GIT_NO_LAZY_FETCH", GitPush.TOKEN_VARIABLE) ||
                             it.startsWith("LC_") ||
                             it.startsWith("GIT_CONFIG_") ||
                             it in SHELL_VARIABLES

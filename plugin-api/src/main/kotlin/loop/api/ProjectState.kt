@@ -151,6 +151,27 @@ public interface WaitingIssues {
         }
 
     /**
+     * Replaces the [WaitReason.Approval] wait Loop [read] by [replacement], or removes it when [replacement] is null, only
+     * while the store still holds that wait ([WaitingIssue.holdsApprovalAsRead]): same reason, `since` and attempt id, and
+     * the same decision (bl-250). So Loop's own writes of a wait it read earlier never overwrite a `loop approve` or a
+     * `loop send-back` committed since. A row decided or started again since is kept as it is, and a missing row writes
+     * nothing. The record as the store holds it after the call: [replacement] when it was written, null when the wait was
+     * removed or there is none, the kept row otherwise. This default reads then writes; a store that can do it in one
+     * transaction overrides it.
+     */
+    public suspend fun replaceApproval(
+        read: WaitingIssue,
+        replacement: WaitingIssue?,
+    ): Result<WaitingIssue?> =
+        waitingIssues(read.projectId).mapCatching { records ->
+            require(replacement == null || replacement.issueId == read.issueId) { "A replacement must be of the same issue" }
+            val found = records.firstOrNull { it.issueId == read.issueId } ?: return@mapCatching null
+            if (!found.holdsApprovalAsRead(read)) return@mapCatching found
+            if (replacement == null) endWaiting(read.projectId, read.issueId).getOrThrow() else startWaiting(replacement).getOrThrow()
+            replacement
+        }
+
+    /**
      * Marks the [WaitReason.Approval] wait of [issueId] approved by [by] at [at] (m2-24), in its data under
      * [WaitingIssue.APPROVED_BY] and [WaitingIssue.APPROVED_AT]. A wait already approved, a wait sent back (m4-32), or a
      * wait for another reason, is left as it is. The record as it is after the call, null when [issueId] does not wait.
@@ -258,6 +279,20 @@ public data class WaitingIssue(
 
     /** True once `loop send-back` sent this [WaitReason.Approval] wait back (m4-32). */
     public val sentBack: Boolean get() = data[SENT_BACK_AT] != null
+
+    /**
+     * True when this record, as the store holds it now, is still the [WaitReason.Approval] wait [read] was (bl-250): the
+     * same project, reason, `since` and attempt id, and the same decision, [APPROVED_AT] and [SENT_BACK_AT] unchanged. Other
+     * data, such as a pull request URL Loop wrote, does not count.
+     */
+    public fun holdsApprovalAsRead(read: WaitingIssue): Boolean =
+        reason == WaitReason.Approval &&
+            read.reason == WaitReason.Approval &&
+            projectId == read.projectId &&
+            since == read.since &&
+            attemptId == read.attemptId &&
+            data[APPROVED_AT] == read.data[APPROVED_AT] &&
+            data[SENT_BACK_AT] == read.data[SENT_BACK_AT]
 
     /** This record sent back by [by] at [at] with [reason] (m4-32): its approval dropped, the send back keys added. */
     public fun sentBack(

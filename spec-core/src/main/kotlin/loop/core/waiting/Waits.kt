@@ -62,6 +62,15 @@ class Waits(
         return read
     }
 
+    /**
+     * True when the verify wait [wait] became an approval wait (m2-24): its issue waits for approval in this process, or
+     * the store, as [current] shows it, holds the approval wait of the same attempt. A `loop send-back` read since lets the
+     * issue go in memory while that row stays the human's decision, so it is kept for the dispatch (bl-257).
+     */
+    fun becameApproval(wait: Wait.Verify): Boolean =
+        awaitsApproval(wait.issueId) ||
+            wait.attemptId?.let { attempt -> (stored[wait.issueId] as? Wait.Approval)?.attemptId == attempt } == true
+
     /** The answered ask wait of [issueId] in the last [read] (m4-52), null when it has none. */
     fun answered(issueId: String): Wait.Ask? = (stored[issueId] as? Wait.Ask)?.takeIf { it.answered }
 
@@ -132,6 +141,57 @@ class Waits(
             hold(found)
             false
         }
+
+    /**
+     * Replaces the approval wait [read] by [replacement], or ends it when [replacement] is null, only while the store
+     * still holds [read] as it was read, same decision included (bl-250), through the store's own
+     * [WaitingIssues.replaceApproval], one transaction in a store that has one. True when it was written, or, for an end,
+     * when the store holds no wait of the issue any more: memory then follows as after [save] or [end]. False when the
+     * store holds another wait, such as one a `loop send-back` or a `loop approve` decided since the read, or holds none
+     * for a replacement: the stored wait is kept and adopted, in [current] too, and holds its issue as [hold] says, and no
+     * wait lets its issue go. A failure changes nothing in the store, and memory follows the write as [save] and [end]
+     * do: the replacement holds its issue, an end lets it go.
+     */
+    suspend fun replaceApproval(
+        read: Wait.Approval,
+        replacement: Wait?,
+    ): Result<Boolean> {
+        val written = guarded { store.replaceApproval(read.toRecord(), replacement?.toRecord()) }
+        if (written.isFailure) {
+            if (replacement == null) held -= read.issueId else hold(replacement)
+            return written.map { false }
+        }
+        val found = written.getOrThrow()?.let(Wait::of)
+        adopt(read.issueId, found)
+        return Result.success(found == replacement)
+    }
+
+    /**
+     * Reads the store again for the approval wait [read] (bl-250), right before an external step of its delivery: true
+     * while the store still holds it as it was read, approved and not sent back, whatever else Loop wrote to it. False
+     * otherwise, the stored wait then adopted as [replaceApproval] does on a loss. A failed read changes nothing.
+     */
+    suspend fun stillApproved(read: Wait.Approval): Result<Boolean> =
+        guarded { store.waitingIssues(projectId) }.map { records ->
+            val record = records.firstOrNull { it.issueId == read.issueId }
+            if (record != null && record.holdsApprovalAsRead(read.toRecord()) && record.approved && !record.sentBack) return@map true
+            adopt(read.issueId, record?.let(Wait::of))
+            false
+        }
+
+    /** Takes [found], the wait the store holds for [issueId] now, null for none, into [current] and memory. */
+    private fun adopt(
+        issueId: String,
+        found: Wait?,
+    ) {
+        if (found == null) {
+            stored -= issueId
+            held -= issueId
+            return
+        }
+        stored[issueId] = found
+        hold(found)
+    }
 
     /**
      * Marks the approval wait of [issueId] approved by [by] at [at] (m2-24), through the store's own [WaitingIssues.approve],

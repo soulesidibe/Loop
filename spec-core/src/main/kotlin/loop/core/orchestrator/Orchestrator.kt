@@ -157,6 +157,8 @@ import loop.core.trackers.TrackerPoll
 import loop.core.trackers.TrackerSlots
 import loop.core.verify.AcceptanceCriteria
 import loop.core.verify.CheckRunner
+import loop.core.verify.CloneRoots
+import loop.core.verify.CloneScope
 import loop.core.verify.EvidenceWriter
 import loop.core.verify.Fingerprinter
 import loop.core.verify.PlainWorkspace
@@ -199,7 +201,6 @@ import loop.core.workflow.WorkspaceGitMode
 import loop.core.workflow.promptLimitFor
 import loop.core.workspace.CloneBase
 import loop.core.workspace.CloneStart
-import loop.core.workspace.CloneState
 import loop.core.workspace.HookListener
 import loop.core.workspace.HookName
 import loop.core.workspace.HookResult
@@ -390,8 +391,8 @@ class Orchestrator(
     private val waiting: WaitingIssues = WaitingIssues.NONE,
     /** Saves each check's output as evidence (m2-05); the cli writes the files beside the Attempt file. */
     private val evidence: EvidenceWriter = EvidenceWriter.NONE,
-    /** The workspace fingerprint taken before a verification's checks (m2-05). */
-    private val fingerprinter: Fingerprinter = WorkspaceFingerprint,
+    /** The workspace fingerprint taken before a verification's checks (m2-05), its git under the clone workspaces (bl-253). */
+    fingerprinter: Fingerprinter = WorkspaceFingerprint,
     /** The ledger line of each turn (m2-19); the cli appends it to `<LOOP_HOME>/ledger/<project_id>.jsonl`. */
     private val turnLedger: TurnLedger = TurnLedger.NONE,
     /** The ledger row of each finished attempt (m2-19), and the last row of an issue at dispatch; the cli gives the store. */
@@ -406,8 +407,11 @@ class Orchestrator(
      * in effect when it delivers; null when this host cannot deliver one, which fails such a delivery for good.
      */
     private val deliveryFor: (WorkflowFile) -> DeliveryExecutor? = { null },
-    /** The git of the merge check in an issue's workspace (m2-26): hooks off, minimal env, no token, a timeout. */
-    private val workspaceGit: WorkspaceGit = WorkspaceGit(),
+    /**
+     * The git of the merge check in an issue's workspace (m2-26): hooks off, minimal env, no token, a timeout. Run under
+     * the clone workspaces of the workflow in effect (bl-253).
+     */
+    workspaceGit: WorkspaceGit = WorkspaceGit(),
     /**
      * Every event of an attempt (m2-28), read by the auto merge gate for the verdict and `diff_base_unpinned`. The
      * default cannot read them, which fails those conditions: no auto merge without the proof.
@@ -449,22 +453,34 @@ class Orchestrator(
     /** m4-30: the channel through which a human is told that a run needs them; the cli gives the terminal channel. */
     private val channel: HumanChannel = HumanChannel.NONE,
 ) {
+    /**
+     * bl-253: the clone workspaces of the workflow in effect, read at each git call: with `workspace.git: clone`, every
+     * git Loop runs in one passes the layout check and is pinned to it, whoever runs it here.
+     */
+    private val cloneRoots = CloneRoots { CloneScope.of(effective) }
+
+    /** The git of the merge check and every other read of a workspace, under [cloneRoots] (bl-253). */
+    private val scopedGit: WorkspaceGit = workspaceGit.withClones(cloneRoots)
+
+    /** The fingerprint of a workspace, its git under [cloneRoots] (bl-253). */
+    private val scopedFingerprinter: Fingerprinter = fingerprinter.withClones(cloneRoots)
+
     /** The HEAD and working tree reads for the progress between rotations (bl-136), bounded and cancellable (bl-149). */
-    private val workspaceFacts = WorkspaceFacts(workspaceGit)
+    private val workspaceFacts = WorkspaceFacts(scopedGit)
 
     /**
      * The merge waits (m2-26, m2-28, m3-15, bl-85): the merge check, the CI wait, the merge and the auto merge gate, in
      * their own module. This class keeps the slot decision and the background launch, see [syncMerges].
      */
     private val merges: Merges by lazy {
-        val git = WorkspaceMergeGit(workspaceGit)
+        val git = WorkspaceMergeGit(scopedGit)
         Merges(
             waits = waits,
             tracker = tracker,
             executorFor = ::executorFor,
             locate = { workflow, key -> workspacesFor(workflow).locate(key) },
             git = git,
-            fingerprinter = fingerprinter,
+            fingerprinter = scopedFingerprinter,
             recheck = Recheck(::recheckMerge),
             gate =
                 AutoMergeGate(
@@ -726,7 +742,7 @@ class Orchestrator(
             override val clock get() = this@Orchestrator.clock
             override val redactor get() = this@Orchestrator.redactor
             override val io get() = this@Orchestrator.io
-            override val fingerprinter get() = this@Orchestrator.fingerprinter
+            override val fingerprinter get() = this@Orchestrator.scopedFingerprinter
             override val evidence get() = this@Orchestrator.evidence
             override val frozenCommands get() = this@Orchestrator.frozenCommands
             override val model get() = runner.model
@@ -748,7 +764,7 @@ class Orchestrator(
             ): String? =
                 try {
                     withContext(io) {
-                        workspaceGit
+                        scopedGit
                             .run(workflow.path.parent, "rev-parse", "--verify", "-q", "$ref^{commit}")
                             .takeIf { it.code == 0 }
                             ?.stdout
@@ -773,11 +789,8 @@ class Orchestrator(
             ): String? {
                 val clones = workspacesFor(workflow).clones ?: return null
                 return try {
-                    withContext(io) {
-                        if (clones.state(workspace) == CloneState.Clone) {
-                            clones.import(workspace, sha, WorkspaceClones.branch(WorkspaceKey(workspace.fileName.toString())))
-                        }
-                    }
+                    // bl-253: a workspace that is no longer a clone is refused with its reason, never skipped.
+                    withContext(io) { clones.import(workspace, sha, WorkspaceClones.branch(WorkspaceKey(workspace.fileName.toString()))) }
                     null
                 } catch (e: IOException) {
                     "cannot import the verified $sha into the project: ${e.message}"
@@ -797,6 +810,8 @@ class Orchestrator(
             ) {
                 notices.waiting(wait, HumanEvent.ApprovalWaiting, reason) { noticed ->
                     waits.hold(noticed)
+                    // bl-250: a plain save. The issue waited for verify until now, which neither `loop approve` nor
+                    // `loop send-back` accepts, so no human decision on this wait can be overwritten.
                     storeWaiting(noticed) { waits.save(noticed) }
                 }
             }
@@ -2510,7 +2525,7 @@ class Orchestrator(
                 drainFindings = verification.findings
                 unverified = verification.unverified
                 if (passed) verification.deliver(to) else null
-            }.also { if (waits.awaitsApproval(issue.id)) waitingApproval = true }
+            }.also { if (waits.becameApproval(wait)) waitingApproval = true }
         }
 
         /** How the result file taken in the last drain ends the attempt, null when it does not (m2-15); reset per drain. */
@@ -2948,6 +2963,12 @@ class Orchestrator(
                         "when it has one, else at its HEAD; set kinds.code.guards.base or the pull request base"
                 log.log(LogLevel.WARN, "clone_start", LogOutcome.COMPLETED, logContext(), reason = reason)
             }
+            if (workspace.createdNow) {
+                // bl-246: said at once, since the import of a verified commit then refuses to move that branch.
+                workspaces.clones?.let { clones -> withContext(io) { clones.checkedOutWarning(key) } }?.let { reason ->
+                    log.log(LogLevel.WARN, "clone_branch_checked_out", LogOutcome.COMPLETED, logContext(), reason = reason)
+                }
+            }
             this.workspace = workspace
             this.env = hookEnv
             val beforeRun = workspaces.beforeRun(workspace, hookEnv, hooks)
@@ -3043,6 +3064,8 @@ class Orchestrator(
                     workspace = workspace.path,
                     env = env,
                     baseRef = guardBase,
+                    // bl-254: a runner's own git in a clone workspace follows the clone rule, the mode from the workflow.
+                    cloneWorkspace = CloneScope.of(workflow)?.covers(workspace.path) == true,
                 )
             thresholds = TokenThresholds(thresholdEvery, recordedThreshold())
             // An issue or a day already past its budget parks before a turn spends more (m2-20).
@@ -3096,7 +3119,7 @@ class Orchestrator(
                     ?.config
                     ?.guards
                     ?.base ?: GuardsConfig.DEFAULT_BASE
-            val brief = SessionBrief(workspaceGit, attemptLedger, attemptEvents, SessionBrief.savedResults(loopHome, projectId), redactor)
+            val brief = SessionBrief(scopedGit, attemptLedger, attemptEvents, SessionBrief.savedResults(loopHome, projectId), redactor)
             return withContext(io) { brief.build(projectId, issue, workspace, base, findings, rotations) }
         }
 
@@ -4273,7 +4296,7 @@ class Orchestrator(
         ): String? =
             try {
                 withContext(io) {
-                    workspaceGit
+                    scopedGit
                         .run(dir, "rev-parse", "--verify", "-q", "$ref^{commit}")
                         .takeIf { it.code == 0 }
                         ?.stdout
@@ -4355,9 +4378,10 @@ class Orchestrator(
             end = endOnCancel()
             throw e
         } finally {
-            // m2-24: a verify wait that became an approval wait goes on waiting, in memory and in the store.
+            // m2-24: a verify wait that became an approval wait goes on waiting, in memory and in the store. bl-257: one a
+            // human sent back during the notice, read by a poll since, is no longer held but is still never deleted here.
             when {
-                waits.awaitsApproval(wait.issueId) -> Unit
+                waits.becameApproval(wait) -> Unit
                 end -> withContext(NonCancellable) { endWaiting(wait) }
                 else -> waits.forget(wait.issueId)
             }
@@ -4566,7 +4590,8 @@ class Orchestrator(
      * Goes through the approval waits of this tick's read (m2-24), so a `loop approve` from another process is seen
      * like a `loop resume` (m1-07). An approved wait is delivered: its issue moves to the wait's target state, recorded
      * as `issue_moved` with `approved`, and the wait ends. A wait whose issue is gone, see [standings], ends at once,
-     * the human change wins and is a human touch. Any other keeps its issue waiting. The ids of the issues delivered,
+     * the human change wins and is a human touch, and so does one whose issue a human moved to another active state
+     * (bl-252), see [endHumanMoved], approved or not. Any other keeps its issue waiting. The ids of the issues delivered,
      * which this tick must not dispatch: [candidates] still shows them active.
      */
     private suspend fun syncApprovals(candidates: List<Issue>): Set<String> {
@@ -4594,6 +4619,11 @@ class Orchestrator(
                         continue
                     }
                 }
+            // bl-252: a sent back wait follows its own path (bl-221), and the attempt that asked may still be closing.
+            if (!wait.sentBack && wait.issueId !in running && wait.humanMoved(candidate.state)) {
+                endHumanMoved(wait, candidate.state)
+                continue
+            }
             val to = wait.to
             if (to.isNullOrBlank()) {
                 endWaiting(wait)
@@ -4611,6 +4641,51 @@ class Orchestrator(
             if (wait.approved && wait.issueId !in running && deliverApproved(wait, candidate, to)) delivered += wait.issueId
         }
         return delivered
+    }
+
+    /**
+     * Ends the approval [wait] whose issue a human moved to [state], another active state than the one the wait started
+     * in (bl-252): the human rejected the result, so an approval already given is void and nothing is delivered. The end
+     * goes through [Waits.replaceApproval], so a wait a `loop send-back` or a `loop approve` changed since the tick read
+     * it is kept and adopted, logged as such, and the next tick decides again. Otherwise a `human_touch` with `touch` =
+     * `move`, `from_state` and `to_state` is recorded, and the issue is dispatched again like any other candidate. A
+     * write that fails is logged at warn and the issue goes, as after [endWaiting].
+     */
+    private suspend fun endHumanMoved(
+        wait: Wait.Approval,
+        state: String,
+    ) {
+        val ended =
+            waits.replaceApproval(wait, null).getOrElse { error ->
+                log.log(
+                    LogLevel.WARN,
+                    WAITING,
+                    LogOutcome.FAILED,
+                    waitContext(wait),
+                    reason = redactor.redact(error.describe()).take(REASON_MAX),
+                )
+                true
+            }
+        if (!ended) {
+            logDecided(wait, "end it as a human move")
+            return
+        }
+        attemptEnded.trySend(Unit)
+        val touch =
+            mapOfNotNull(
+                HumanTouched.TOUCH to HumanTouch.MOVE,
+                HumanTouched.FROM_STATE to wait.state,
+                HumanTouched.TO_STATE to state,
+            )
+        recordWaitEvent(wait, HumanTouched, touch)
+        log.log(
+            LogLevel.INFO,
+            WAITING,
+            LogOutcome.RELEASED,
+            waitContext(wait),
+            mapOf("wait_reason" to wait.reason.wire, "from_state" to wait.state, "to_state" to state),
+            "a human moved the issue",
+        )
     }
 
     /**
@@ -4681,7 +4756,8 @@ class Orchestrator(
         // m4-20: a plain workspace is delivered only while it is still at its verified fingerprint.
         if (KindWorkspaces.isPlain(kind)) {
             val key = NamespacedId.workspaceKey(wait.issueId, wait.identifier, effective.trackerId)
-            val stale = withContext(io) { PlainWorkspace.stale(fingerprinter, workspacesFor(effective).locate(key), wait.fingerprint) }
+            val stale =
+                withContext(io) { PlainWorkspace.stale(scopedFingerprinter, workspacesFor(effective).locate(key), wait.fingerprint) }
             if (stale != null) {
                 val reason = redactor.redact(stale).take(REASON_MAX)
                 recordWaitEvent(wait, DeliveryFailed, mapOf(Delivery.STEP to PlainWorkspace.STEP_FINGERPRINT, Delivery.REASON to reason))
@@ -4690,6 +4766,8 @@ class Orchestrator(
                 return false
             }
         }
+        // bl-250: a wait sent back since the tick read it is not delivered, nothing moves.
+        if (!stillApproved(wait, "move the issue to $to")) return false
         val failure =
             try {
                 withContext(io) { tracker.moveIssue(issue, to) }.exceptionOrNull()
@@ -4714,7 +4792,7 @@ class Orchestrator(
             )
         recordWaitEvent(wait, IssueMoved, data)
         log.log(LogLevel.INFO, DELIVERY, LogOutcome.COMPLETED, context, mapOf("to" to to))
-        endWaiting(wait)
+        endDelivered(wait, to)
         return true
     }
 
@@ -4751,22 +4829,23 @@ class Orchestrator(
                 ?.delivery
                 ?.pullRequest
                 ?.merge != null
+        // bl-250: a wait sent back since the tick read it is not delivered, nothing is pushed. Without `merge`, the
+        // handoff checks again right before its move, since one call pushes, opens, comments and moves.
+        if (!stillApproved(wait, "push its pull request")) return false
         val handoff =
             PullRequestDelivery
                 .Handoff(
                     from = issue.state,
                     to = to,
                     event = mapOfNotNull(Tracker.APPROVED to "true", Tracker.APPROVED_BY to wait.approvedBy),
+                    proceed = { waits.stillApproved(wait) },
                 ).takeUnless { merges }
         val record: suspend (EventDefinition, Map<String, String>) -> Unit = { definition, data -> recordWaitEvent(wait, definition, data) }
         val outcome = pullRequestDelivery(effective, record).deliver(facts, handoff)
-        if (outcome is DeliveryOutcome.Delivered && merges) {
-            startMergeWait(wait, outcome.pullRequest)
-            return true
-        }
+        if (outcome is DeliveryOutcome.Delivered && merges) return startMergeWait(wait, outcome.pullRequest)
         if (outcome is DeliveryOutcome.Delivered) {
             log.log(LogLevel.INFO, DELIVERY, LogOutcome.COMPLETED, context, mapOf("to" to to))
-            endWaiting(wait)
+            endDelivered(wait, to)
             return true
         }
         val kept = outcome.commented?.let { wait.commented(it) } ?: wait
@@ -4774,28 +4853,136 @@ class Orchestrator(
             is DeliveryOutcome.Retry -> {
                 val reason = redactor.redact("cannot deliver yet, ${outcome.step}: ${outcome.reason}").take(REASON_MAX)
                 log.log(LogLevel.WARN, DELIVERY, LogOutcome.FAILED, context, reason = reason)
-                if (kept != wait) storeWait(kept, context)
+                if (kept != wait) replaceWait(wait, kept, "store the pull request URL")
             }
             is DeliveryOutcome.Failed -> {
                 val reason = "cannot deliver the approved result, ${outcome.step}: ${outcome.reason}"
                 log.log(LogLevel.WARN, DELIVERY, LogOutcome.FAILED, context, reason = reason)
-                clearApproval(kept, "${outcome.step}: ${outcome.reason}")
+                clearApproval(wait, "${outcome.step}: ${outcome.reason}", kept)
             }
+            // The handoff's check already adopted the stored wait.
+            is DeliveryOutcome.Withdrawn -> logDecided(wait, "move the issue to $to")
             is DeliveryOutcome.Delivered -> Unit
         }
         return false
     }
 
     /**
+     * Reads the store again right before an external step of the delivery of [wait] (bl-250), the step being to [action].
+     * True while the wait is still approved and not sent back. A wait decided since the tick read it is adopted in memory,
+     * so a sent back issue dispatches with the reason as after any send back, and logged at info. A store that cannot be
+     * read delivers nothing this tick, logged at warn, and the next tick tries again.
+     */
+    private suspend fun stillApproved(
+        wait: Wait.Approval,
+        action: String,
+    ): Boolean {
+        val approved =
+            waits.stillApproved(wait).getOrElse { error ->
+                val reason = redactor.redact("cannot read the wait again before the delivery: ${error.describe()}").take(REASON_MAX)
+                log.log(LogLevel.WARN, DELIVERY, LogOutcome.FAILED, waitContext(wait), reason = reason)
+                return false
+            }
+        if (!approved) logDecided(wait, action)
+        return approved
+    }
+
+    /**
+     * Replaces the approval wait [read] by [replacement] (bl-250), only while the store still holds it as the tick read
+     * it, so a `loop send-back` committed since is never overwritten. False when a human decided the wait since: the
+     * stored wait is kept and adopted in memory, and Loop does not [action], logged at info. True otherwise, the write
+     * failed included: a failure is logged at warn and the replacement holds its issue in memory, as with [Waits.save].
+     */
+    private suspend fun replaceWait(
+        read: Wait.Approval,
+        replacement: Wait,
+        action: String,
+    ): Boolean {
+        val written =
+            waits.replaceApproval(read, replacement).getOrElse { error ->
+                log.log(
+                    LogLevel.WARN,
+                    WAITING,
+                    LogOutcome.FAILED,
+                    waitContext(read),
+                    reason = redactor.redact(error.describe()).take(REASON_MAX),
+                )
+                return true
+            }
+        if (!written) logDecided(read, action)
+        return written
+    }
+
+    /** Logs at info that the approval wait [wait] changed since the tick read it, so Loop does not [action] (bl-250). */
+    private fun logDecided(
+        wait: Wait.Approval,
+        action: String,
+    ) {
+        val now =
+            when {
+                waits.sentBack(wait.issueId) != null -> "was sent back"
+                waits.current().any { it.issueId == wait.issueId } -> "changed"
+                else -> "ended"
+            }
+        log.log(
+            LogLevel.INFO,
+            WAITING,
+            LogOutcome.FOUND,
+            waitContext(wait),
+            mapOf("wait_reason" to wait.reason.wire),
+            "the wait $now since Loop read it, so Loop keeps it and does not $action",
+        )
+    }
+
+    /**
+     * Ends the approval wait of [wait] once its delivery moved the issue to [to] (bl-250): only while the store still holds
+     * it as the tick read it, and otherwise anyway, the one unconditional write of an approval wait Loop keeps, since the
+     * move already happened and stands. A `loop send-back` that landed meanwhile, in the time of that one tracker call,
+     * did not apply, logged at warn. A failure is logged at warn and the issue goes, as after [endWaiting].
+     */
+    private suspend fun endDelivered(
+        wait: Wait.Approval,
+        to: String,
+    ) {
+        val ended =
+            waits.replaceApproval(wait, null).getOrElse { error ->
+                log.log(
+                    LogLevel.WARN,
+                    WAITING,
+                    LogOutcome.FAILED,
+                    waitContext(wait),
+                    reason = redactor.redact(error.describe()).take(REASON_MAX),
+                )
+                true
+            }
+        if (!ended) {
+            if (waits.sentBack(wait.issueId) != null) {
+                log.log(
+                    LogLevel.WARN,
+                    WAITING,
+                    LogOutcome.RELEASED,
+                    waitContext(wait),
+                    mapOf("wait_reason" to wait.reason.wire, "to" to to),
+                    "the issue was sent back after its delivery moved it to $to, so the send back did not apply",
+                )
+            }
+            storeWaiting(wait) { waits.end(wait) }
+        }
+        attemptEnded.trySend(Unit)
+    }
+
+    /**
      * Replaces the approved [wait] by the `Waiting(merge)` of [pullRequest] (m2-26), in memory and in the store: every
      * key of the approval wait, its approval included, plus the pull request number, phase `check` and round 1, so a
-     * restart resumes the merge without a second pull request or a lost approval. The issue is not moved.
+     * restart resumes the merge without a second pull request or a lost approval. The issue is not moved. Since bl-250
+     * only while the store still holds the wait as the tick read it: false when a `loop send-back` landed since, then no
+     * merge wait starts, the pull request stays open for the next delivery and the issue dispatches with the reason.
      */
     private suspend fun startMergeWait(
         wait: Wait.Approval,
         pullRequest: loop.api.PullRequest,
-    ) {
-        storeWait(wait.merging(pullRequest.number, pullRequest.url, clock.now()), waitContext(wait))
+    ): Boolean {
+        if (!replaceWait(wait, wait.merging(pullRequest.number, pullRequest.url, clock.now()), "start the merge wait")) return false
         log.log(
             LogLevel.INFO,
             DELIVERY,
@@ -4803,6 +4990,7 @@ class Orchestrator(
             waitContext(wait),
             mapOf("wait_reason" to WaitReason.Merge.wire, "pull_request" to pullRequest.number),
         )
+        return true
     }
 
     /**
@@ -4937,8 +5125,9 @@ class Orchestrator(
     }
 
     /**
-     * bl-28: writes `refs/loop/base/[base]` at [sha], a base Loop fetched, in [workspace] when [workflow] clones and it
-     * is a clone of the project, with the base keep ref in the project; why it failed, null otherwise.
+     * bl-28: writes `refs/loop/base/[base]` at [sha], a base Loop fetched, in [workspace] when [workflow] clones, with
+     * the base keep ref in the project; why it failed, null otherwise. A workspace that is no longer a clone of the
+     * project fails it (bl-253).
      */
     private suspend fun writeCloneBase(
         workflow: WorkflowFile,
@@ -4948,11 +5137,8 @@ class Orchestrator(
     ): String? {
         val clones = workspacesFor(workflow).clones ?: return null
         return try {
-            withContext(io) {
-                if (clones.state(workspace) == CloneState.Clone) {
-                    clones.writeBase(workspace, WorkspaceKey(workspace.fileName.toString()), base, sha)
-                }
-            }
+            // bl-253: a workspace that is no longer a clone is refused with its reason, never skipped.
+            withContext(io) { clones.writeBase(workspace, WorkspaceKey(workspace.fileName.toString()), base, sha) }
             null
         } catch (e: IOException) {
             "cannot write the base $base at $sha in the clone $workspace: ${e.message}"
@@ -4978,14 +5164,16 @@ class Orchestrator(
         }
 
     /**
-     * Writes [wait] back without its approval (m2-25): only a new `loop approve` delivers it now. The human is told,
-     * `delivery_failed` for [reason] (m4-30).
+     * Writes [kept], the approval wait [read] as the delivery left it, back without its approval (m2-25): only a new
+     * `loop approve` delivers it now. The human is told, `delivery_failed` for [reason] (m4-30). Since bl-250 only while
+     * the store still holds [read] as the tick read it: a wait sent back since is kept, with its reason, and nobody is told.
      */
     private suspend fun clearApproval(
-        wait: Wait.Approval,
+        read: Wait.Approval,
         reason: String,
+        kept: Wait.Approval = read,
     ) {
-        notices.waiting(wait.unapproved(), HumanEvent.DeliveryFailed, reason) { storeWait(it, waitContext(wait)) }
+        notices.waitingIfSaved(kept.unapproved(), HumanEvent.DeliveryFailed, reason) { replaceWait(read, it, "clear its approval") }
     }
 
     /**

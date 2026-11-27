@@ -63,11 +63,20 @@ internal object ProtectedRootsCheck {
             "maintenance.auto=false",
         ).flatMap { listOf("-c", it) } + "--no-replace-objects"
 
-    internal fun minimalGitEnv(baseEnv: Map<String, String>): Map<String, String> =
+    /**
+     * `PATH`, `HOME` and the locale of [baseEnv], no prompt, no grafts, and lazy fetch off (bl-246): a promisor the
+     * agent sets in the workspace's config, with a ref at a missing object, would otherwise run its program here.
+     */
+    internal fun minimalGitEnv(
+        baseEnv: Map<String, String>,
+        pins: Map<String, String> = emptyMap(),
+    ): Map<String, String> =
         baseEnv.filterKeys { it in KEPT_ENV || it.startsWith("LC_") } +
+            pins +
             mapOf(
                 "GIT_TERMINAL_PROMPT" to "0",
                 "GIT_GRAFT_FILE" to "/dev/null",
+                "GIT_NO_LAZY_FETCH" to "1",
             )
 
     internal data class GitResult(
@@ -90,14 +99,44 @@ internal object ProtectedRootsCheck {
      * Returns an ordinary failure reason naming the offending customization path when any protected
      * workspace root is a symlink or any customization file under a protected root was added,
      * modified, or type-changed relative to [baseRef], or null when clean.
+     *
+     * bl-254: with [clone], the workflow's `workspace.git: clone` for this clone [workspace], the repository is the
+     * workspace itself, never a folder above it, and every git first passes [CloneLayoutCopy] and runs with
+     * [clonePins], as `WorkspaceGit` does (bl-253). A layout refusal runs no git and refuses with its reason. A clone
+     * with no [baseRef] refuses too: its `main`, `master` and `origin/HEAD` are refs the agent owns, so the base must be
+     * the project's commit, which the orchestrator and the merge risk reviewer pass.
      */
     fun refusal(
         workspace: Path,
         baseRef: String?,
         gitTimeoutSeconds: Long = GIT_TIMEOUT_SECONDS,
+        clone: Boolean = false,
+        gitCommand: String = "git",
+        baseEnv: Map<String, String> = System.getenv(),
     ): String? {
         val normalizedWorkspace = workspace.toAbsolutePath().normalize()
-        val repoRoot = findGitRoot(normalizedWorkspace)
+        val git = GitRun(gitTimeoutSeconds, gitCommand, baseEnv, clone)
+        return try {
+            val repoRoot =
+                if (clone) {
+                    checkedClonePins(normalizedWorkspace, gitTimeoutSeconds, gitCommand, baseEnv)
+                    if (baseRef.isNullOrBlank()) return NO_CLONE_BASE
+                    normalizedWorkspace
+                } else {
+                    findGitRoot(normalizedWorkspace)
+                }
+            refusalIn(normalizedWorkspace, repoRoot, baseRef, git)
+        } catch (e: CloneRefused) {
+            "protected_workspace_root: ${e.message}"
+        }
+    }
+
+    private fun refusalIn(
+        normalizedWorkspace: Path,
+        repoRoot: Path?,
+        baseRef: String?,
+        git: GitRun,
+    ): String? {
         val scanBase = repoRoot ?: normalizedWorkspace
         val dirsToInspect = ancestorDirs(normalizedWorkspace, scanBase)
 
@@ -132,7 +171,7 @@ internal object ProtectedRootsCheck {
                 ?.let { "protected_workspace_root: added or modified workspace customization file ${it.relPath}" }
         }
 
-        val hasHead = gitOk(repoRoot, listOf("rev-parse", "--verify", "HEAD"), gitTimeoutSeconds) != null
+        val hasHead = gitOk(repoRoot, listOf("rev-parse", "--verify", "HEAD"), git) != null
         if (!hasHead) {
             // Brand-new 0-commit git repository: no base exists yet, so refuse any customization file present.
             val scanResult = scanOnDiskCustomizations(repoRoot, matchedRoots)
@@ -140,7 +179,7 @@ internal object ProtectedRootsCheck {
             if (scanResult.files.isNotEmpty()) {
                 return "protected_workspace_root: added or modified workspace customization file ${scanResult.files.first().relPath}"
             }
-            val staged = runGit(repoRoot, listOf("ls-files", "--cached", "-z"), gitTimeoutSeconds)
+            val staged = git.run(repoRoot, listOf("ls-files", "--cached", "-z"))
             if (staged == null || staged.exitCode != 0) {
                 return "protected_workspace_root: could not list staged files in protected workspace roots${stderrSuffix(staged)}"
             }
@@ -152,7 +191,7 @@ internal object ProtectedRootsCheck {
             return stagedOffending?.let { "protected_workspace_root: added or modified workspace customization file $it" }
         }
 
-        val (base, baseError) = resolveBaseCommit(repoRoot, baseRef, gitTimeoutSeconds)
+        val (base, baseError) = resolveBaseCommit(repoRoot, baseRef, git)
         if (base == null) {
             return baseError
         }
@@ -163,7 +202,7 @@ internal object ProtectedRootsCheck {
         scanResult.error?.let { return it }
         if (scanResult.files.isEmpty()) return null
 
-        val treeResult = runGit(repoRoot, listOf("ls-tree", "-r", "-z", base), gitTimeoutSeconds)
+        val treeResult = git.run(repoRoot, listOf("ls-tree", "-r", "-z", base))
         if (treeResult == null || treeResult.exitCode != 0) {
             return "protected_workspace_root: could not read base tree for protected workspace roots${stderrSuffix(treeResult)}"
         }
@@ -174,7 +213,7 @@ internal object ProtectedRootsCheck {
             if (baseEntry == null) {
                 return "protected_workspace_root: added or modified workspace customization file ${file.relPath}"
             }
-            val (onDiskMode, onDiskSha, hashError) = hashOnDisk(repoRoot, file, gitTimeoutSeconds)
+            val (onDiskMode, onDiskSha, hashError) = hashOnDisk(repoRoot, file, git)
             if (hashError != null) {
                 return hashError
             }
@@ -184,7 +223,7 @@ internal object ProtectedRootsCheck {
             if (onDiskSha != baseEntry.sha) {
                 val crlfMatch =
                     !Files.isSymbolicLink(file.path) &&
-                        matchesStrictCrlfNormalizedBlob(repoRoot, file.path, baseEntry.sha, gitTimeoutSeconds)
+                        matchesStrictCrlfNormalizedBlob(repoRoot, file.path, baseEntry.sha, git)
                 if (!crlfMatch) {
                     return "protected_workspace_root: added or modified workspace customization file ${file.relPath}"
                 }
@@ -238,7 +277,7 @@ internal object ProtectedRootsCheck {
     private fun hashOnDisk(
         repoRoot: Path,
         file: OnDiskCustomization,
-        timeoutSeconds: Long,
+        git: GitRun,
     ): DiskHash {
         if (Files.isSymbolicLink(file.path)) {
             val targetBytes =
@@ -248,10 +287,9 @@ internal object ProtectedRootsCheck {
                     return DiskHash(null, null, "protected_workspace_root: could not read symbolic link ${file.relPath}: ${e.message}")
                 }
             val result =
-                runGit(
+                git.run(
                     repoRoot,
                     listOf("hash-object", "--no-filters", "--stdin"),
-                    timeoutSeconds,
                     stdinBytes = targetBytes,
                 )
             if (result == null || result.exitCode != 0) {
@@ -266,10 +304,9 @@ internal object ProtectedRootsCheck {
 
         val mode = if (Files.isExecutable(file.path)) MODE_EXECUTABLE else MODE_REGULAR
         val result =
-            runGit(
+            git.run(
                 repoRoot,
                 listOf("hash-object", "--no-filters", "--", file.path.toAbsolutePath().toString()),
-                timeoutSeconds,
             )
         if (result == null || result.exitCode != 0) {
             return DiskHash(
@@ -293,7 +330,7 @@ internal object ProtectedRootsCheck {
         repoRoot: Path,
         filePath: Path,
         baseSha: String,
-        timeoutSeconds: Long,
+        git: GitRun,
     ): Boolean {
         val algorithm =
             when (baseSha.length) {
@@ -302,7 +339,7 @@ internal object ProtectedRootsCheck {
                 else -> return false
             }
         val baseSize =
-            gitOk(repoRoot, listOf("cat-file", "-s", baseSha), timeoutSeconds)
+            gitOk(repoRoot, listOf("cat-file", "-s", baseSha), git)
                 ?.toLongOrNull()
                 ?.takeIf { it > 0L }
                 ?: return false
@@ -431,19 +468,19 @@ internal object ProtectedRootsCheck {
     private fun resolveBaseCommit(
         repoRoot: Path,
         baseRef: String?,
-        timeoutSeconds: Long,
+        git: GitRun,
     ): Pair<String?, String?> {
         val trimmed = baseRef?.trim()?.takeIf { it.isNotEmpty() }
         if (trimmed != null) {
-            gitOk(repoRoot, listOf("merge-base", trimmed, "HEAD"), timeoutSeconds)?.let { return it to null }
-            val verify = runGit(repoRoot, listOf("rev-parse", "--verify", "$trimmed^{commit}"), timeoutSeconds)
+            gitOk(repoRoot, listOf("merge-base", trimmed, "HEAD"), git)?.let { return it to null }
+            val verify = git.run(repoRoot, listOf("rev-parse", "--verify", "$trimmed^{commit}"))
             if (verify != null && verify.exitCode == 0 && verify.stdout.trim().isNotEmpty()) {
                 return verify.stdout.trim() to null
             }
             return null to "protected_workspace_root: could not resolve base commit for $trimmed${stderrSuffix(verify)}"
         }
         for (candidate in DEFAULT_BASE_CANDIDATES) {
-            gitOk(repoRoot, listOf("merge-base", candidate, "HEAD"), timeoutSeconds)?.let { return it to null }
+            gitOk(repoRoot, listOf("merge-base", candidate, "HEAD"), git)?.let { return it to null }
         }
         return null to
             "protected_workspace_root: could not resolve base commit (checked main, master, and origin/HEAD): " +
@@ -453,9 +490,9 @@ internal object ProtectedRootsCheck {
     private fun gitOk(
         repoRoot: Path,
         args: List<String>,
-        timeoutSeconds: Long,
+        git: GitRun,
     ): String? {
-        val result = runGit(repoRoot, args, timeoutSeconds) ?: return null
+        val result = git.run(repoRoot, args) ?: return null
         if (result.exitCode != 0) return null
         return result.stdout.trim().takeIf { it.isNotEmpty() }
     }
@@ -486,15 +523,18 @@ internal object ProtectedRootsCheck {
         gitCommand: String = "git",
         stdinBytes: ByteArray? = null,
         baseEnv: Map<String, String> = System.getenv(),
-    ): GitResult? =
-        try {
+        clone: Boolean = false,
+    ): GitResult? {
+        // bl-254: before the try, so a layout refusal is never taken for a git that did not finish.
+        val pins = if (clone) checkedClonePins(repoRoot, timeoutSeconds, gitCommand, baseEnv) else emptyMap()
+        return try {
             val builder =
                 ProcessBuilder(listOf(gitCommand) + GIT_PINS + args)
                     .directory(repoRoot.toFile())
                     .redirectErrorStream(false)
             builder.environment().apply {
                 clear()
-                putAll(minimalGitEnv(baseEnv))
+                putAll(minimalGitEnv(baseEnv, pins))
             }
             val process = builder.start()
             if (stdinBytes != null) {
@@ -539,6 +579,88 @@ internal object ProtectedRootsCheck {
             Thread.currentThread().interrupt()
             null
         }
+    }
+
+    /** The settings every git of one [refusal] runs with: [runGit]'s parameters but the folder and the arguments. */
+    private class GitRun(
+        val timeoutSeconds: Long,
+        val gitCommand: String,
+        val baseEnv: Map<String, String>,
+        val clone: Boolean,
+    ) {
+        fun run(
+            repoRoot: Path,
+            args: List<String>,
+            stdinBytes: ByteArray? = null,
+        ): GitResult? = runGit(repoRoot, args, timeoutSeconds, gitCommand, stdinBytes, baseEnv, clone)
+    }
+
+    /** bl-254: the clone's `.git` is not a layout Loop runs git in; [refusal] refuses with the message. */
+    internal class CloneRefused(
+        message: String,
+    ) : RuntimeException(message)
+
+    /**
+     * bl-254: `GIT_DIR` and `GIT_COMMON_DIR` at the `.git` of the clone [realWorkspace], a real path, and `GIT_WORK_TREE`
+     * at it. They come after any variable of the base environment, so no caller moves git off the clone, and a
+     * `core.worktree` the agent sets cannot move the work tree to the project.
+     */
+    internal fun clonePins(realWorkspace: Path): Map<String, String> {
+        val dotGit = realWorkspace.resolve(".git").toString()
+        return mapOf("GIT_DIR" to dotGit, "GIT_COMMON_DIR" to dotGit, "GIT_WORK_TREE" to realWorkspace.toString())
+    }
+
+    /** [clonePins] of [workspace] once its layout passed [CloneLayoutCopy]; a refusal throws [CloneRefused] and runs no git. */
+    private fun checkedClonePins(
+        workspace: Path,
+        timeoutSeconds: Long,
+        gitCommand: String,
+        baseEnv: Map<String, String>,
+    ): Map<String, String> {
+        val reason =
+            try {
+                CloneLayoutCopy.refusal(workspace) { config -> refStorage(config, timeoutSeconds, gitCommand, baseEnv) }
+            } catch (e: IOException) {
+                "cannot read ${workspace.resolve(".git")}: ${e.message}"
+            } catch (e: UncheckedIOException) {
+                "cannot read ${workspace.resolve(".git")}: ${e.cause?.message ?: e.message}"
+            }
+        reason?.let { throw CloneRefused("Loop runs no git in the clone $workspace: $it") }
+        return try {
+            clonePins(workspace.toRealPath())
+        } catch (e: IOException) {
+            throw CloneRefused("Loop runs no git in the clone $workspace: cannot resolve it: ${e.message}")
+        }
+    }
+
+    /**
+     * Every `extensions.refStorage` value of the config file [config], read with `git config --file --no-includes`
+     * from the temporary folder, outside any workspace, with no layout check and no pin, so the config it reads never
+     * decides where this read goes. A git that fails other than with "no such key" throws [CloneRefused].
+     */
+    private fun refStorage(
+        config: Path,
+        timeoutSeconds: Long,
+        gitCommand: String,
+        baseEnv: Map<String, String>,
+    ): List<String> {
+        val outside = Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath()
+        val args = listOf("config", "--file", config.toString(), "--no-includes", "--get-all", "extensions.refstorage")
+        val result = runGit(outside, args, timeoutSeconds, gitCommand, baseEnv = baseEnv)
+        return when (result?.exitCode) {
+            0 ->
+                result.stdout
+                    .lines()
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+            1 -> emptyList()
+            else -> throw CloneRefused("cannot read extensions.refStorage of $config${stderrSuffix(result)}")
+        }
+    }
 
     private val DEFAULT_BASE_CANDIDATES = listOf("main", "master", "origin/HEAD")
+
+    private const val NO_CLONE_BASE =
+        "protected_workspace_root: no project base commit was given for the clone workspace, and a clone never takes " +
+            "its base from its own refs"
 }

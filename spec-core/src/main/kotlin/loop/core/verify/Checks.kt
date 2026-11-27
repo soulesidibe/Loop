@@ -85,10 +85,12 @@ fun interface CheckRunner {
 /**
  * Runs every core check type (m2-03, m2-12): a `command` with `sh -lc <run>` in the workspace through [ShellRun],
  * with only the env it is given, and `file_exists`, `file_matches`, `diff_policy` and `changed_line_coverage` (bl-117)
- * in process, see [CoreChecks].
+ * in process, see [CoreChecks]. [clones] are the clone workspaces of the workflow (bl-254): there the git of
+ * `diff_policy` and `changed_line_coverage` passes the clone layout check and is pinned to the clone, as [WorkspaceGit].
  */
 class CoreCheckRunner(
     private val shell: ShellRun = ShellRun(start = { command, cwd, env -> SessionProcess.start(command, cwd, env, inheritEnv = false) }),
+    private val clones: CloneRoots = CloneRoots.NONE,
 ) : CheckRunner {
     override suspend fun run(
         check: CheckConfig,
@@ -109,8 +111,8 @@ class CoreCheckRunner(
             }
             is CheckConfig.FileExists -> CoreChecks.fileExists(check, cwd)
             is CheckConfig.FileMatches -> CoreChecks.fileMatches(check, cwd)
-            is CheckConfig.DiffPolicy -> CoreChecks.diffPolicy(check, cwd, env)
-            is CheckConfig.ChangedLineCoverage -> CoreChecks.changedLineCoverage(check, cwd, env)
+            is CheckConfig.DiffPolicy -> CoreChecks.diffPolicy(check, cwd, env, clones)
+            is CheckConfig.ChangedLineCoverage -> CoreChecks.changedLineCoverage(check, cwd, env, clones)
             is CheckConfig.AcceptanceCommands -> CheckResult(null, false, 0, startError = "acceptance commands run as command checks")
         }
 }

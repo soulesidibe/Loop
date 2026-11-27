@@ -250,6 +250,24 @@ class HumanNoticesTest {
     }
 
     @Test
+    fun `bl-250 a save that loses to a human decision notifies nobody`() {
+        val notices = notices(hook = "exit 0")
+        val tried = mutableListOf<Wait.Approval>()
+
+        runBlocking {
+            notices.waitingIfSaved(approval(), HumanEvent.DeliveryFailed, "push: refused") { wait ->
+                tried += wait
+                false
+            }
+        }
+
+        assertEquals(1, tried.size)
+        assertEquals(emptyList(), shown)
+        assertEquals(emptyList(), hookRuns)
+        assertTrue(recorded.isEmpty())
+    }
+
+    @Test
     fun `the approval wait a refused merge falls back to notifies again`() {
         val notices = notices()
         val saved = save(notices, approval())

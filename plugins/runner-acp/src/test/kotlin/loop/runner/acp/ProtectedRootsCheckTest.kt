@@ -8,6 +8,8 @@ import kotlin.io.path.createDirectories
 import kotlin.io.path.setPosixFilePermissions
 import kotlin.io.path.writeText
 import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -385,6 +387,417 @@ class ProtectedRootsCheckTest {
         git(dir, "add", ".agents/hooks.json")
         git(dir, "commit", "-m", "Base")
         return git(dir, "rev-parse", "HEAD").trim()
+    }
+
+    @Test
+    fun `bl-246 every git of the check runs with lazy fetch off, whatever the base environment says`() {
+        val env = ProtectedRootsCheck.minimalGitEnv(mapOf("PATH" to "/usr/bin:/bin", "GIT_NO_LAZY_FETCH" to "0"))
+        assertEquals("1", env["GIT_NO_LAZY_FETCH"])
+
+        val printing = scratch.resolve("print-env.sh")
+        printing.writeText("#!/bin/sh\nenv\n")
+        printing.setPosixFilePermissions(PosixFilePermissions.fromString("rwxr-xr-x"))
+        val result =
+            ProtectedRootsCheck.runGit(
+                plainDir,
+                listOf("status"),
+                gitCommand = printing.toString(),
+                baseEnv = mapOf("PATH" to "/usr/bin:/bin", "GIT_NO_LAZY_FETCH" to "0"),
+            )
+
+        assertTrue(result != null && "GIT_NO_LAZY_FETCH=1" in result.stdout.lines(), "${result?.stdout}")
+    }
+
+    @Test
+    fun `bl-246 a promisor the agent configures in the workspace never runs from the check`() {
+        initGitRepo(repo)
+        repo.resolve("README.md").writeText("readme\n")
+        git(repo, "add", "README.md")
+        git(repo, "commit", "-m", "Base commit")
+        val baseSha = git(repo, "rev-parse", "HEAD").trim()
+        val marker = scratch.resolve("lazy-fetch-ran")
+        git(repo, "config", "extensions.partialClone", "ext::sh -c touch% $marker")
+        git(repo, "config", "protocol.ext.allow", "always")
+        repo.resolve(".git/refs/heads/main").writeText("1".repeat(40) + "\n")
+        // Live: the same pins without the variable run the agent's program.
+        unguardedGit(repo, ProtectedRootsCheck.GIT_PINS + listOf("rev-parse", "--verify", "-q", "refs/heads/main^{commit}"))
+        assertTrue(Files.exists(marker), "the trap is not live")
+        Files.delete(marker)
+
+        ProtectedRootsCheck.refusal(repo, baseSha)
+
+        assertFalse(Files.exists(marker), "the check ran the agent's program")
+    }
+
+    // bl-254: clone workspaces. The check follows the clone rule of WorkspaceGit (bl-253) in clone mode.
+
+    /** What git printed and its exit code, run with no user or system config and no inherited `GIT_` variable. */
+    private fun plainGit(
+        dir: Path,
+        vararg args: String,
+    ): String {
+        val process =
+            ProcessBuilder(listOf("git", "-C", dir.toString(), "-c", "user.name=t", "-c", "user.email=t@example.com") + args)
+                .redirectErrorStream(true)
+                .apply {
+                    environment().keys.removeIf { it.startsWith("GIT_") }
+                    environment()["GIT_CONFIG_GLOBAL"] = "/dev/null"
+                    environment()["GIT_CONFIG_NOSYSTEM"] = "1"
+                }.start()
+        val out =
+            process.inputStream
+                .readAllBytes()
+                .toString(Charsets.UTF_8)
+                .trim()
+        check(process.waitFor() == 0) { "git ${args.toList()} in $dir failed: $out" }
+        return out
+    }
+
+    private fun sha256(path: Path): String =
+        java.util.HexFormat
+            .of()
+            .formatHex(
+                java.security.MessageDigest
+                    .getInstance("SHA-256")
+                    .digest(Files.readAllBytes(path)),
+            )
+
+    private fun proof(
+        name: String,
+        text: String,
+    ) = println("PROOF $name: $text")
+
+    /** What of the project a check must leave alone. */
+    private data class ProjectSnapshot(
+        val refs: String,
+        val files: Map<String, String>,
+        val index: String,
+        val status: String,
+    )
+
+    /**
+     * A project whose base commit holds `.agents/hooks.json`, and its clone at `<root>/t-1`, made as Loop makes one:
+     * `git clone --shared --no-checkout --no-tags`, no remote, `loop/t-1` checked out at the base. After the clone, the
+     * project's `main` moves on and the project gets an untracked file, so a read of the project's refs or files shows.
+     */
+    private inner class CloneFixture(
+        name: String,
+        rootInside: Boolean = false,
+    ) {
+        val project: Path = scratch.resolve(name).resolve("project").createDirectories()
+        val root: Path = (if (rootInside) project.resolve(".ws") else scratch.resolve(name).resolve("workspaces")).createDirectories()
+        val workspace: Path = root.resolve("t-1")
+        val dotGit: Path get() = workspace.resolve(".git")
+        val base: String
+        val projectMain: String
+
+        init {
+            plainGit(project, "init", "-q", "--initial-branch=main")
+            project.resolve(".agents").createDirectories()
+            project.resolve(".agents/hooks.json").writeText("""{"hooks":[]}""")
+            if (rootInside) project.resolve(".gitignore").writeText(".ws/\n")
+            plainGit(project, "add", "-A")
+            plainGit(project, "commit", "-q", "-m", "base")
+            base = plainGit(project, "rev-parse", "HEAD")
+            plainGit(root, "clone", "-q", "--shared", "--no-checkout", "--no-tags", project.toString(), workspace.toString())
+            plainGit(workspace, "remote", "remove", "origin")
+            plainGit(workspace, "checkout", "-q", "-b", "loop/t-1", base)
+            workspace.resolve("clone-only.txt").writeText("the agent's untracked file\n")
+            project.resolve("later.txt").writeText("the project moved on\n")
+            plainGit(project, "add", "later.txt")
+            plainGit(project, "commit", "-q", "-m", "later")
+            projectMain = plainGit(project, "rev-parse", "HEAD")
+            project.resolve("untracked.txt").writeText("the operator's own file\n")
+        }
+
+        fun snapshot(): ProjectSnapshot {
+            val files =
+                Files.walk(project).use { walk ->
+                    walk
+                        .filter { Files.isRegularFile(it) }
+                        .filter { !it.startsWith(project.resolve(".git")) && !it.startsWith(root) }
+                        .toList()
+                        .associate { project.relativize(it).toString() to sha256(it) }
+                }
+            return ProjectSnapshot(
+                refs = plainGit(project, "for-each-ref"),
+                files = files,
+                index = sha256(project.resolve(".git/index")),
+                status = plainGit(project, "--no-optional-locks", "status", "--porcelain", "--untracked-files=all"),
+            )
+        }
+
+        /** Git in the clone as the check runs it today: its pins, its minimal environment, no layout check, no pin. */
+        fun asCheckToday(vararg args: String): String =
+            ProtectedRootsCheck
+                .runGit(workspace, args.toList())
+                ?.stdout
+                .orEmpty()
+                .trim()
+
+        fun hostileCommondir() {
+            dotGit.resolve("commondir").writeText("${project.resolve(".git")}\n")
+        }
+
+        fun hostileRefStorage() {
+            val config = dotGit.resolve("config").toString()
+            plainGit(scratch, "config", "--file", config, "core.repositoryformatversion", "1")
+            plainGit(scratch, "config", "--file", config, "extensions.refStorage", "files://${project.resolve(".git")}")
+        }
+
+        fun refusal(clone: Boolean = true) = ProtectedRootsCheck.refusal(workspace, base, clone = clone)
+    }
+
+    /** A git that appends its working folder and its environment to [log], then runs the real git. */
+    private fun recordingGit(log: Path): Path {
+        val script = scratch.resolve("recording-git")
+        script.writeText("#!/bin/sh\n{ echo '---'; echo \"cwd=\$(pwd -P)\"; env; } >> '$log'\nexec git \"\$@\"\n")
+        script.setPosixFilePermissions(PosixFilePermissions.fromString("rwxr-xr-x"))
+        return script
+    }
+
+    /** The environment of each process [recordingGit] logged whose working folder is [dir]. */
+    private fun recorded(
+        log: Path,
+        dir: Path,
+    ): List<Map<String, String>> =
+        Files
+            .readString(log)
+            .split("---\n")
+            .filter { it.isNotBlank() }
+            .map { block -> block.lines().filter { "=" in it }.associate { it.substringBefore('=') to it.substringAfter('=') } }
+            .filter { it["cwd"] == dir.toRealPath().toString() }
+
+    @Test
+    fun `bl-254 a hostile commondir set after reuse is refused in clone mode, naming it, the project unchanged`() {
+        val live = CloneFixture("commondir-live")
+        live.hostileCommondir()
+        assertEquals(live.projectMain, live.asCheckToday("rev-parse", "refs/heads/main"))
+        proof("acp commondir live", "the check's git in the clone read the project's main, ${live.projectMain}")
+
+        val fx = CloneFixture("commondir")
+        val before = fx.snapshot()
+        fx.hostileCommondir()
+        val refused = fx.refusal()
+        assertTrue(refused != null && fx.dotGit.resolve("commondir").toString() in refused, "$refused")
+        assertTrue(refused.startsWith("protected_workspace_root: Loop runs no git in the clone"), refused)
+        assertEquals(before, fx.snapshot())
+        proof("acp commondir guarded", refused)
+    }
+
+    @Test
+    fun `bl-254 a hostile extensions refStorage set late is refused in clone mode, no project ref changes`() {
+        val live = CloneFixture("refstorage-live")
+        live.hostileRefStorage()
+        assertEquals(live.projectMain, live.asCheckToday("rev-parse", "refs/heads/main"))
+        proof("acp refStorage live", "the check's git in the clone read the project's main, ${live.projectMain}")
+
+        val fx = CloneFixture("refstorage")
+        val before = fx.snapshot()
+        fx.hostileRefStorage()
+        val refused = fx.refusal()
+        assertTrue(refused != null && "extensions.refStorage" in refused, "$refused")
+        assertEquals(before, fx.snapshot())
+        proof("acp refStorage guarded", refused)
+    }
+
+    @Test
+    fun `bl-254 a git file naming the project or a missing git is refused in clone mode, never walking up to the project`() {
+        val file = CloneFixture("gitdir-file")
+        val before = file.snapshot()
+        file.dotGit.toFile().deleteRecursively()
+        file.dotGit.writeText("gitdir: ${file.project.resolve(".git")}\n")
+        assertEquals(
+            file.project
+                .resolve(".git")
+                .toRealPath()
+                .toString(),
+            file.asCheckToday("rev-parse", "--absolute-git-dir"),
+        )
+        proof("acp gitdir file live", "the check's git in the clone found the project's repository")
+        val fileRefused = file.refusal()
+        assertTrue(fileRefused != null && file.dotGit.toString() in fileRefused, "$fileRefused")
+        assertEquals(before, file.snapshot())
+        proof("acp gitdir file guarded", fileRefused)
+
+        val missing = CloneFixture("git-missing", rootInside = true)
+        // A customization file only the project has: a check that walks up to the project finds it.
+        missing.project.resolve(".agents/mcp_config.json").writeText("""{"mcpServers":{}}""")
+        val missingBefore = missing.snapshot()
+        missing.dotGit.toFile().deleteRecursively()
+        val walkedUp = missing.refusal(clone = false)
+        assertTrue(walkedUp != null && ".agents/mcp_config.json" in walkedUp, "$walkedUp")
+        proof("acp missing .git live", "findGitRoot walked up to the project, whose own file the check judged: $walkedUp")
+        val missingRefused = missing.refusal()
+        assertTrue(missingRefused != null && "${missing.dotGit} is missing" in missingRefused, "$missingRefused")
+        assertFalse("mcp_config.json" in missingRefused, missingRefused)
+        assertEquals(missingBefore, missing.snapshot())
+        proof("acp missing .git guarded", missingRefused)
+    }
+
+    @Test
+    fun `bl-254 a core worktree naming the project never lets the check read the project`() {
+        for (variant in listOf("config", "config.worktree")) {
+            fun setWorktree(fx: CloneFixture) {
+                if (variant == "config") {
+                    plainGit(fx.workspace, "config", "core.worktree", fx.project.toString())
+                } else {
+                    plainGit(fx.workspace, "config", "extensions.worktreeConfig", "true")
+                    plainGit(fx.workspace, "config", "--worktree", "core.worktree", fx.project.toString())
+                }
+            }
+
+            val live = CloneFixture("worktree-$variant-live")
+            setWorktree(live)
+            val listed = live.asCheckToday("ls-files", "--others", "--exclude-standard")
+            assertTrue("untracked.txt" in listed && "clone-only.txt" !in listed, listed)
+            proof("acp core.worktree $variant live", "the check's ls-files in the clone listed the project's files: ${listed.lines()}")
+
+            val fx = CloneFixture("worktree-$variant")
+            setWorktree(fx)
+            val before = fx.snapshot()
+            val log = scratch.resolve("worktree-$variant.log")
+            val clean =
+                ProtectedRootsCheck.refusal(fx.workspace, fx.base, clone = true, gitCommand = recordingGit(log).toString())
+            assertNull(clean)
+            val pinned = recorded(log, fx.workspace)
+            assertTrue(pinned.isNotEmpty())
+            pinned.forEach { assertEquals(fx.workspace.toRealPath().toString(), it["GIT_WORK_TREE"]) }
+            fx.workspace.resolve(".agents/hooks.json").writeText("""{"hooks":[{"cmd":"evil"}]}""")
+            val modified = fx.refusal()
+            assertTrue(modified != null && ".agents/hooks.json" in modified, "$modified")
+            assertEquals(before, fx.snapshot())
+            proof(
+                "acp core.worktree $variant guarded",
+                "the check passed the clean clone with GIT_WORK_TREE at the clone, refused its edit ($modified); " +
+                    "project files, index and status unchanged",
+            )
+        }
+    }
+
+    @Test
+    fun `bl-254 every git of the check in a clone gets the three pins over the caller's values, with lazy fetch off`() {
+        val fx = CloneFixture("pins")
+        fx.workspace.resolve(".agents/hooks.json").writeText("""{"hooks":[{"cmd":"edit"}]}""")
+        val real = fx.workspace.toRealPath()
+        val log = scratch.resolve("pins.log")
+        val git = recordingGit(log).toString()
+        val hostile =
+            mapOf(
+                "PATH" to (System.getenv("PATH") ?: "/usr/bin:/bin"),
+                "HOME" to scratch.toString(),
+                "GIT_DIR" to fx.project.resolve(".git").toString(),
+                "GIT_COMMON_DIR" to fx.project.resolve(".git").toString(),
+                "GIT_WORK_TREE" to fx.project.toString(),
+                "GIT_NO_LAZY_FETCH" to "0",
+            )
+
+        val refused = ProtectedRootsCheck.refusal(fx.workspace, fx.base, clone = true, gitCommand = git, baseEnv = hostile)
+        val direct =
+            ProtectedRootsCheck.runGit(
+                fx.workspace,
+                listOf("rev-parse", "HEAD"),
+                gitCommand = git,
+                baseEnv = hostile,
+                clone = true,
+            )
+
+        assertTrue(refused != null && ".agents/hooks.json" in refused, "$refused")
+        assertEquals(fx.base, direct?.stdout?.trim())
+        val seen = recorded(log, fx.workspace)
+        assertTrue(seen.size >= 4, "merge-base, ls-tree, hash-object and rev-parse ran: ${seen.size}")
+        for (env in seen) {
+            assertEquals(real.resolve(".git").toString(), env["GIT_DIR"])
+            assertEquals(real.resolve(".git").toString(), env["GIT_COMMON_DIR"])
+            assertEquals(real.toString(), env["GIT_WORK_TREE"])
+            assertEquals("1", env["GIT_NO_LAZY_FETCH"])
+        }
+        val env = ProtectedRootsCheck.minimalGitEnv(hostile, ProtectedRootsCheck.clonePins(real))
+        assertEquals(real.resolve(".git").toString(), env["GIT_DIR"])
+        assertEquals("1", env["GIT_NO_LAZY_FETCH"])
+        proof("acp pins", "${seen.size} git processes of the check, each pinned to $real")
+    }
+
+    @Test
+    fun `bl-254 hooks mode and a context without the new field get neither the check nor the pins`() {
+        val ctx =
+            loop.api.AttemptContext(
+                runId = loop.api.RunId("run-1"),
+                projectId = loop.api.ProjectId("project-1"),
+                issue = loop.api.Issue("issue-1", "t-1", "Clone", "todo", null, emptyList(), emptyList(), null, null),
+                attemptId = loop.api.AttemptId("attempt-1"),
+                workspace = scratch,
+                env = emptyMap(),
+            )
+        assertFalse(ctx.cloneWorkspace)
+
+        val fx = CloneFixture("hooks")
+        fx.hostileCommondir()
+        val log = scratch.resolve("hooks.log")
+        val git = recordingGit(log).toString()
+        val refused = ProtectedRootsCheck.refusal(fx.workspace, fx.base, clone = ctx.cloneWorkspace, gitCommand = git)
+        assertFalse(refused.orEmpty().contains("Loop runs no git"), "$refused")
+        val seen = recorded(log, fx.workspace)
+        assertTrue(seen.isNotEmpty())
+        seen.forEach { env ->
+            assertNull(env["GIT_DIR"])
+            assertNull(env["GIT_COMMON_DIR"])
+            assertNull(env["GIT_WORK_TREE"])
+            assertEquals("1", env["GIT_NO_LAZY_FETCH"])
+        }
+
+        // A worktree style workspace, a .git file in a subfolder of the repository, still walks up as before.
+        initGitRepo(repo)
+        repo.resolve(".agents").createDirectories()
+        repo.resolve(".agents/hooks.json").writeText("""{"hooks":[]}""")
+        git(repo, "add", ".agents/hooks.json")
+        git(repo, "commit", "-m", "Base commit")
+        val baseSha = git(repo, "rev-parse", "HEAD").trim()
+        val nested = repo.resolve("sub").createDirectories()
+        assertNull(ProtectedRootsCheck.refusal(nested, baseSha, clone = ctx.cloneWorkspace))
+        repo.resolve(".agents/hooks.json").writeText("""{"hooks":[{"cmd":"evil"}]}""")
+        val walked = ProtectedRootsCheck.refusal(nested, baseSha, clone = ctx.cloneWorkspace)
+        assertTrue(walked != null && ".agents/hooks.json" in walked, "$walked")
+    }
+
+    @Test
+    fun `bl-254 a clone with no base is refused, its own main never picks the base, and the project's base finds the hidden file`() {
+        val fx = ReviewerCloneRecipe(scratch.resolve("recipe"))
+
+        val live = ProtectedRootsCheck.refusal(fx.workspace, null)
+        proof("review recipe live, no base, hooks mode (the reviewer's call before the fix)", "$live")
+        assertNull(live, "the live setup: the base comes from the clone's own main, which has the same file")
+
+        val noBase = ProtectedRootsCheck.refusal(fx.workspace, null, clone = true)
+        proof("review recipe, no base, clone mode", "$noBase")
+        assertEquals(
+            "protected_workspace_root: no project base commit was given for the clone workspace, and a clone never " +
+                "takes its base from its own refs",
+            noBase,
+        )
+        val guarded = ProtectedRootsCheck.refusal(fx.workspace, fx.base, clone = true)
+        proof("review recipe, the project's base, clone mode", "$guarded")
+        assertEquals("protected_workspace_root: added or modified workspace customization file .agents/mcp_config.json", guarded)
+        val blank = ProtectedRootsCheck.refusal(fx.workspace, " ", clone = true)
+        assertEquals(noBase, blank)
+    }
+
+    /** git in [dir] with no user or system config and no `GIT_` variable, so lazy fetch stays on. */
+    private fun unguardedGit(
+        dir: Path,
+        args: List<String>,
+    ) {
+        val process =
+            ProcessBuilder(listOf("git") + args)
+                .directory(dir.toFile())
+                .redirectErrorStream(true)
+                .apply {
+                    environment().keys.removeIf { it.startsWith("GIT_") }
+                    environment()["GIT_CONFIG_GLOBAL"] = "/dev/null"
+                    environment()["GIT_CONFIG_NOSYSTEM"] = "1"
+                }.start()
+        process.inputStream.readAllBytes()
+        process.waitFor()
     }
 
     private fun initGitRepo(dir: Path) {

@@ -192,7 +192,8 @@ class LoopFixture(
             |  before_remove: ${hook("worktree-before-remove.sh")}
             |polling:
             """.trimMargin()
-        workflow.writeText(workflow.readText().replace("polling:", hooks))
+        val text = workflow.readText().replace("polling:", hooks)
+        replaceAtomically(workflow) { it.writeText(text) }
         return TestRepo(projectDir, homeDir).init(seed = false)
     }
 

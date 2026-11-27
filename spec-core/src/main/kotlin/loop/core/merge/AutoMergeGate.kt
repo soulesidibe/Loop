@@ -33,6 +33,7 @@ import loop.core.events.DiffBaseUnpinned
 import loop.core.events.EventDefinition
 import loop.core.events.MergeRiskAssessed
 import loop.core.events.Verdict
+import loop.core.verify.CloneScope
 import loop.core.verify.DiffEntry
 import loop.core.waiting.Wait
 import loop.core.workflow.CheckConfig
@@ -281,7 +282,16 @@ internal class AutoMergeGate(
                 }
             }
         val started = clock.now()
-        val request = RiskReviewRequest(workspace, model, fitted.prompt, risk.timeoutMs)
+        // bl-254: the reviewer's runner may run its own git in the workspace, so it gets the project's base and the mode.
+        val request =
+            RiskReviewRequest(
+                workspace,
+                model,
+                fitted.prompt,
+                risk.timeoutMs,
+                baseRef = base.takeIf { it.isNotEmpty() },
+                cloneWorkspace = CloneScope.of(workflow)?.covers(workspace) == true,
+            )
         val answer =
             try {
                 withTimeoutOrNull(risk.timeoutMs + BACKSTOP_MS) { withContext(io) { reviewer.review(request) } }
