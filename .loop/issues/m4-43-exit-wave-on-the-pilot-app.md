@@ -1,7 +1,7 @@
 ---
 id: m4-43
 title: "M4 exit: a wave on the pilot app with two code issues in parallel and a non code issue"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-human]
 blocked_by: [m4-26, m4-27, m4-49]
@@ -38,14 +38,14 @@ Out of this issue: retiring the manager skill (m4-44) and Android work.
 
 ## Acceptance criteria
 
-- [ ] The setup above is recorded in a comment here, with the install build id.
-- [ ] At least 3 code issues of the pilot app are delivered through Loop in one wave, 2 of them running in parallel, each agent on its own simulator granted by `request_resource`, with `loop trace` of each linked in a comment here. Any restart of `loop run` is recorded with its reason.
-- [ ] One `content` or `research` issue from the `files` tracker is delivered in the same wave, its delivery (attachment or posted report) linked here.
-- [ ] Both trackers were polled in the same run, at least once, shown by the namespaced ids in `loop status` or the ledger, quoted here.
-- [ ] No main session went above 25 percent of its window, read from the ledger or `loop status`, with the subagent gap stated next to the figures.
-- [ ] The human touches of each issue are counted by hand and recorded here, next to what the ledger says (bl-64 is not settled).
-- [ ] Resource grants and releases, for agents and for checks, and any `area_busy` skip, are quoted from `loop trace` (judgment).
-- [ ] What the wave taught is recorded in `docs/spec-decisions.md` and on the M4 exit line of `docs/PLAN.md`, defects filed as `bl-<nn>` issues labelled `needs-triage` (judgment).
+- [x] The setup above is recorded in a comment here, with the install build id.
+- [x] At least 3 code issues of the pilot app are delivered through Loop in one wave, 2 of them running in parallel, each agent on its own simulator granted by `request_resource`, with `loop trace` of each linked in a comment here. Any restart of `loop run` is recorded with its reason.
+- [x] One `content` or `research` issue from the `files` tracker is delivered in the same wave, its delivery (attachment or posted report) linked here.
+- [x] Both trackers were polled in the same run, at least once, shown by the namespaced ids in `loop status` or the ledger, quoted here.
+- [x] No main session went above 25 percent of its window, read from the ledger or `loop status`, with the subagent gap stated next to the figures.
+- [x] The human touches of each issue are counted by hand and recorded here, next to what the ledger says (bl-64 is not settled).
+- [x] Resource grants and releases, for agents and for checks, and any `area_busy` skip, are quoted from `loop trace` (judgment).
+- [x] What the wave taught is recorded in `docs/spec-decisions.md` and on the M4 exit line of `docs/PLAN.md`, defects filed as `bl-<nn>` issues labelled `needs-triage` (judgment).
 
 ## Comments
 
@@ -91,3 +91,5 @@ Out of this issue: retiring the manager skill (m4-44) and Android work.
 - **The token for one off commands**: `loop approve`, `send-back` and `resume` need `$LOOP_SIGMA_GITHUB_TOKEN`, passed from the Keychain for each command (bl-264 covers `stop`, `drain` and `send-back`).
 - **Security, noted here by the owner's choice, not filed** (a Fable 5.2 review of how the token is passed, 2026-11-27): the Sigma token leaked nowhere (no file, argv, agent, MCP server or check environment held it), but (1) the stored token was the gh CLI's own token with `admin:org`, `repo`, `workflow`, `gist`; (2) an agent running as the same user can still read it through `security find-generic-password`, `gh auth token`, `git credential fill` or `ps eww` on `loop run`, so the env strip is no boundary until the M5 sandbox; (3) Loop strips only the names the workflow references, so other host secrets (`LOOP_PR_TOKEN`, `LOOP_PLAYGROUND_GITHUB_TOKEN`, `GEMINI_API_KEY`, `SSH_AUTH_SOCK`) reached the agents, and Xcode wrote the two GitHub tokens into DerivedData build files in two workspaces; (4) hooks inherit the full host environment, the tracker token included. Loop fixes to consider: an agent and hook env allowlist instead of a blocklist, hooks started with the checks' env policy and `core.hooksPath=/dev/null`, and a `token_command` so the token is never in `loop run`'s own environment. Owner steps: a fine grained Sigma token, narrower gh scopes, rotating the two exposed tokens.
 - **What worked**: two trackers in one run with namespaced ids; two agents and their checks sharing two Loop owned simulators through the queue, with no wait counted as a failure; the merge check merging the moved main and rerunning every check before each merge (PRs 370 and 371); the research kind end to end, from an empty workspace to a sourced report checked for its sections and links.
+
+2026-11-27 soule: done. Every criterion holds, on Sigma instead of the pilot app as recorded above; the owner accepted the wave as the M4 exit wave. Sigma pull request 372 commits the simulator timeout the wave added live.
