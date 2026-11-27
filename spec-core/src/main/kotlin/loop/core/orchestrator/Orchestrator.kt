@@ -4826,7 +4826,13 @@ class Orchestrator(
     ): Boolean {
         val written =
             waits.replaceApproval(read, replacement).getOrElse { error ->
-                log.log(LogLevel.WARN, WAITING, LogOutcome.FAILED, waitContext(read), reason = redactor.redact(error.describe()).take(REASON_MAX))
+                log.log(
+                    LogLevel.WARN,
+                    WAITING,
+                    LogOutcome.FAILED,
+                    waitContext(read),
+                    reason = redactor.redact(error.describe()).take(REASON_MAX),
+                )
                 return true
             }
         if (!written) logDecided(read, action)
@@ -4866,7 +4872,13 @@ class Orchestrator(
     ) {
         val ended =
             waits.replaceApproval(wait, null).getOrElse { error ->
-                log.log(LogLevel.WARN, WAITING, LogOutcome.FAILED, waitContext(wait), reason = redactor.redact(error.describe()).take(REASON_MAX))
+                log.log(
+                    LogLevel.WARN,
+                    WAITING,
+                    LogOutcome.FAILED,
+                    waitContext(wait),
+                    reason = redactor.redact(error.describe()).take(REASON_MAX),
+                )
                 true
             }
         if (!ended) {

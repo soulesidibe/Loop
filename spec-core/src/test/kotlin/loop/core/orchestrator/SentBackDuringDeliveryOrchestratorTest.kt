@@ -285,7 +285,13 @@ class SentBackDuringDeliveryOrchestratorTest {
                 run.tick(this)
             }
             assertEquals(emptyList(), run.remote.merges, "nothing merges on a later tick")
-            assertEquals(PullRequestState.Open, run.remote.open.values.single().state, "the pull request stays open")
+            assertEquals(
+                PullRequestState.Open,
+                run.remote.open.values
+                    .single()
+                    .state,
+                "the pull request stays open",
+            )
         }
 
     @Test
