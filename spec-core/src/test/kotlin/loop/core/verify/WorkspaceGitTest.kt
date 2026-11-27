@@ -798,6 +798,31 @@ class WorkspaceGitTest {
     }
 
     @Test
+    fun `bl-254 in clone mode a workspace linked to the project, or the project under another name, runs no git`() {
+        val link = Files.createSymbolicLink(clonesRoot.resolve("t-2"), repo)
+        val git = recording(cloneMode)
+
+        assertTrue(CloneScope(clonesRoot, repo).covers(link), "a name under the workspace root is covered, never resolved")
+        val linked = assertFailsWith<IOException> { git.run(link, "status") }
+        assertEquals(
+            "Loop runs no git in the clone $link: the workspace $link resolves to the project folder ${repo.toRealPath()}",
+            linked.message,
+        )
+
+        // The workspace root is another name for the project's parent: the workspace is no link, yet it is the project.
+        val alias = Files.createSymbolicLink(folder.resolve("alias"), folder)
+        val aliased = alias.resolve(repo.fileName.toString())
+        val aliasMode = recording(CloneRoots.of(CloneScope(alias, repo)))
+        val other = assertFailsWith<IOException> { aliasMode.run(aliased, "status") }
+        assertEquals(
+            "Loop runs no git in the clone $aliased: the workspace $aliased resolves to the project folder ${repo.toRealPath()}",
+            other.message,
+        )
+        assertEquals(emptyList(), started, "no git ran in either")
+        assertTrue(!CloneScope(clonesRoot, repo).covers(repo), "the project itself is never a clone workspace")
+    }
+
+    @Test
     fun `bl-253 in hooks mode a workspace gets neither the check nor the pins, whatever its git is`() {
         val worktree = Files.createDirectories(clonesRoot.resolve("t-1"))
         worktree.resolve(".git").writeText("gitdir: ${folder.resolve("nowhere")}\n")

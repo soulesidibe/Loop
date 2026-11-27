@@ -223,6 +223,36 @@ class AcpGuardsRunnerTest {
     }
 
     @Test
+    fun `bl-254 the runner hands the context's clone mode to the protected roots check, the default keeps today's check`() {
+        // A workspace with no .git: in clone mode a refusal before any spawn, in hooks mode a plain folder that passes.
+        val bare = dir.resolve("bare-ws").createDirectories()
+        val cloneMarker = dir.resolve("clone-spawned.txt")
+        val cloneServer =
+            FakeAcpServer.write(dir.resolve("clone-srv")) {
+                shell("echo spawned > '$cloneMarker'")
+                agyHandshake()
+            }
+        val cloneCtx = context(ws = bare, baseRef = "0".repeat(40)).copy(cloneWorkspace = true)
+        val cloneEvents = runBlocking { withTimeout(20.seconds) { agyRunner(cloneServer).run(cloneCtx, "Work").toList() } }
+        val failed = assertIs<RunnerEvent.TurnFailed>(cloneEvents.last())
+        assertTrue(
+            failed.reason.startsWith("protected_workspace_root: Loop runs no git in the clone $bare: ") &&
+                "${bare.resolve(".git")} is missing" in failed.reason,
+            failed.reason,
+        )
+        assertFalse(cloneMarker.exists(), "a refused clone spawns no agent")
+
+        val hooksMarker = dir.resolve("hooks-spawned.txt")
+        val hooksServer =
+            FakeAcpServer.write(dir.resolve("hooks-srv")) {
+                shell("echo spawned > '$hooksMarker'")
+                agyHandshake()
+            }
+        runBlocking { withTimeout(20.seconds) { agyRunner(hooksServer).run(context(ws = bare), "Work").toList() } }
+        assertTrue(hooksMarker.exists(), "the default context passes the same folder and spawns the agent, as today")
+    }
+
+    @Test
     fun `pre-turn protected roots check before turn 2 catches hooks json written between turns and stops session`() {
         val server =
             FakeAcpServer.write(dir) {

@@ -17,14 +17,22 @@ data class CloneScope(
     val project: Path,
 ) {
     /**
-     * True when [root] is a clone workspace: a folder whose parent is [workspaceRoot], real paths compared, and not
-     * [project]. A subfolder of a workspace, such as a nested repository, is not one.
+     * True when [root] is a clone workspace: a folder whose parent is [workspaceRoot], the parents compared as real
+     * paths, and whose own path, unresolved, is not [project]. A subfolder of a workspace, such as a nested repository,
+     * is not one. bl-254: the folder itself is never resolved here, so a workspace that is a symbolic link to the
+     * project is still covered, and [refusal] and [CloneLayout] refuse it instead of letting its git run unpinned.
      */
     fun covers(root: Path): Boolean {
         val dir = root.toAbsolutePath().normalize()
         val parent = dir.parent ?: return false
         if (real(parent) != real(workspaceRoot)) return false
-        return real(dir) != real(project)
+        return dir != project.toAbsolutePath().normalize()
+    }
+
+    /** bl-254: why the covered [root] is no clone workspace, it resolves to [project], null when it does not. */
+    fun refusal(root: Path): String? {
+        val dir = root.toAbsolutePath().normalize()
+        return if (real(dir) == real(project)) "the workspace $dir resolves to the project folder ${real(project)}" else null
     }
 
     companion object {
@@ -102,6 +110,20 @@ object CloneLayout {
             }
         }
         return null
+    }
+
+    /**
+     * The variables that pin git to the clone [realWorkspace], a real path, once its layout passed: `GIT_DIR` and
+     * `GIT_COMMON_DIR` at its `.git`, `GIT_WORK_TREE` at it. [WorkspaceGit] and the core checks set them after any
+     * caller supplied variable (bl-253, bl-254).
+     */
+    fun pins(realWorkspace: Path): Map<String, String> {
+        val dotGit = realWorkspace.resolve(".git").toString()
+        return mapOf(
+            WorkspaceGit.GIT_DIR to dotGit,
+            WorkspaceGit.GIT_COMMON_DIR to dotGit,
+            WorkspaceGit.GIT_WORK_TREE to realWorkspace.toString(),
+        )
     }
 
     /** Why [entry] is refused: a symbolic link, or, with [hardLinks], a regular file with more than one link. */

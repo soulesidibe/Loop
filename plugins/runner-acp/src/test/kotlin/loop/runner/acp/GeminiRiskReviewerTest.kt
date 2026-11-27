@@ -325,6 +325,32 @@ class GeminiRiskReviewerTest {
     }
 
     @Test
+    fun `bl-254 in a clone the reviewer's protected roots check gets the project's base and the clone mode, and refuses`() {
+        val fx = ReviewerCloneRecipe(dir.resolve("recipe"))
+        val agy =
+            FakeAcpServer.write(dir) {
+                handshake()
+                awaitClient()
+                agentChunk(verdict)
+                response(4, promptResult())
+            }
+
+        val live = reviewIn(agy, RiskReviewRequest(fx.workspace, MODEL, "Review this pull request.", 15_000))
+        println("PROOF reviewer, review recipe, request without base or mode: ${live.exceptionOrNull()?.message ?: "answered"}")
+        assertTrue(live.isSuccess, "the live setup: with the default request the check reads the clone's own main and passes")
+
+        val request =
+            RiskReviewRequest(fx.workspace, MODEL, "Review this pull request.", 15_000, baseRef = fx.base, cloneWorkspace = true)
+        val guarded = reviewIn(agy, request)
+        println("PROOF reviewer, review recipe, the project's base and clone mode: ${guarded.exceptionOrNull()?.message}")
+        val error = assertIs<RiskReviewError.Crashed>(guarded.exceptionOrNull())
+        assertContains(
+            error.message.orEmpty(),
+            "protected_workspace_root: added or modified workspace customization file .agents/mcp_config.json",
+        )
+    }
+
+    @Test
     fun `bl-205 toString names the command`() {
         assertEquals("GeminiRiskReviewer(command='/opt/agy' acp)", GeminiRiskReviewer(settings(command = "'/opt/agy' acp")).toString())
     }
@@ -349,6 +375,14 @@ class GeminiRiskReviewerTest {
                 GeminiRiskReviewer(settings(server.agyCommand), hostEnv())
                     .review(RiskReviewRequest(workspace, model, "Review this pull request.", timeoutMs))
             }
+        }
+
+    private fun reviewIn(
+        server: FakeAcpServer,
+        request: RiskReviewRequest,
+    ): Result<RiskReview> =
+        runBlocking {
+            withTimeout(30.seconds) { GeminiRiskReviewer(settings(server.agyCommand), hostEnv()).review(request) }
         }
 
     private fun settings(command: String): AcpSettings =

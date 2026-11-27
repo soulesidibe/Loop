@@ -12,6 +12,7 @@ import loop.api.Redactor
 import loop.api.RunId
 import loop.api.SecretRedactor
 import loop.core.log.KeyValueLog
+import loop.core.verify.WorkspaceGit
 import loop.core.workflow.CheckConfig
 import loop.core.workflow.DeliveryConfig
 import loop.core.workflow.HooksConfig
@@ -20,13 +21,16 @@ import loop.core.workflow.KindsConfig
 import loop.core.workflow.PullRequestConfig
 import loop.core.workflow.WorkflowConfig
 import loop.core.workflow.WorkflowFile
+import loop.core.workflow.WorkspaceGitMode
 import loop.core.workflow.commandRunner
 import loop.core.workspace.HookName
+import loop.core.workspace.WorkspaceClones
 import loop.core.workspace.WorkspaceManager
 import loop.core.workspace.Workspaces
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
 import kotlin.io.path.createTempDirectory
+import kotlin.io.path.isDirectory
 import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertContains
@@ -47,6 +51,13 @@ class BaseFetchOrchestratorTest {
     private val hookRunner = FakeHookRunner()
     private val sink = FakeSink()
     private val fetchedSha = "0123456789abcdef0123456789abcdef01234567"
+    private val gitEnv =
+        mapOf(
+            "PATH" to System.getenv("PATH").orEmpty(),
+            "HOME" to root.resolve("home").toString(),
+            "GIT_CONFIG_GLOBAL" to "/dev/null",
+            "GIT_CONFIG_NOSYSTEM" to "1",
+        )
 
     private val hooks =
         HooksConfig(
@@ -117,8 +128,10 @@ class BaseFetchOrchestratorTest {
         remote: DeliveryExecutor?,
         pullRequest: PullRequestConfig? = PullRequestConfig("acme/widgets", "LOOP_PR_TOKEN"),
         runner: FakeRunner = FakeRunner(),
+        clone: Boolean = false,
     ): Orchestrator {
-        val workflow = workflow(pullRequest)
+        val workflow = workflow(pullRequest).let { if (clone) it.copy(workspaceGit = WorkspaceGitMode.Clone) else it }
+        val clones = if (clone) WorkspaceClones(root, WorkspaceGit(gitEnv)) else null
         var next = 0
         val clock = SchedulerClock(testScheduler)
         return Orchestrator(
@@ -128,7 +141,8 @@ class BaseFetchOrchestratorTest {
             sink = sink,
             log = KeyValueLog(out = { logLines += it }, clock = clock, redactor = Redactor.NONE),
             clock = clock,
-            workspaces = WorkspaceManager(Workspaces(workflow.workspaceRoot), hooks, hookRunner),
+            workspaces = WorkspaceManager(Workspaces(workflow.workspaceRoot), hooks, hookRunner, clones),
+            workspaceGit = WorkspaceGit(gitEnv),
             newId = { "a${++next}" },
             runId = RunId("r1"),
             projectId = ProjectId("p1"),
@@ -208,6 +222,21 @@ class BaseFetchOrchestratorTest {
                 runner.calls.map { it.first.baseRef },
                 "AttemptContext.baseRef carries the host-fetched base without exporting LOOP_BASE_REF",
             )
+            assertTrue(runner.calls.none { it.first.cloneWorkspace }, "bl-254: a hooks mode workspace is no clone workspace")
+        }
+
+    @Test
+    fun `bl-254 in clone mode the attempt context marks the clone workspace, so a runner's own git follows the clone rule`() =
+        runTest {
+            val first = projectRepository()
+            val runner = FakeRunner()
+
+            orchestrator(FakeBase(Result.success(first)), runner = runner, clone = true).tick()
+
+            val ctx = runner.calls.single().first
+            assertTrue(ctx.workspace.resolve(".git").isDirectory(), "the workspace is a clone with its own .git folder")
+            assertTrue(ctx.cloneWorkspace, "AttemptContext.cloneWorkspace is set for a clone workspace")
+            assertEquals(first, ctx.baseRef, "the base is the project's commit")
         }
 
     @Test
