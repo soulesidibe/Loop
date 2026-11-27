@@ -1,5 +1,6 @@
 package loop.core.workspace
 
+import loop.core.verify.CloneLayout
 import loop.core.verify.WorkspaceGit
 import java.io.IOException
 import java.nio.file.Files
@@ -147,14 +148,13 @@ class WorkspaceClones(
 
     /**
      * What the `.git` of [workspace] is: absent, a clone of the project (a `.git` folder whose alternates name the
-     * project's object folder), or anything else, with the reason.
+     * project's object folder, in the layout [CloneLayout] requires), or anything else, with the reason, which names
+     * the offending path or key (bl-253).
      */
     fun state(workspace: Path): CloneState {
         val dotGit = workspace.resolve(".git")
         if (!Files.exists(dotGit, LinkOption.NOFOLLOW_LINKS)) return CloneState.Absent
-        if (!Files.isDirectory(dotGit, LinkOption.NOFOLLOW_LINKS)) {
-            return CloneState.Foreign("$dotGit is not a folder, the workspace is a worktree or a submodule, not a clone")
-        }
+        CloneLayout.refusal(workspace, git::refStorage)?.let { return CloneState.Foreign(it) }
         val objects = projectObjects()
         val alternates = dotGit.resolve("objects").resolve("info").resolve("alternates")
         val borrowed =
@@ -173,7 +173,8 @@ class WorkspaceClones(
     /**
      * Writes `refs/loop/base/[base]` in the clone [workspace] of [key] at [sha], a commit Loop resolved in the project,
      * and the base keep ref of [key] in the project at it ([baseKeepRef]), so a rewritten base and a gc there cannot
-     * drop a base commit the clone merged and borrows. [cancellation] stops the running git.
+     * drop a base commit the clone merged and borrows. A [workspace] that is not a clone of the project ([state]) is
+     * refused with its reason, nothing written (bl-253). [cancellation] stops the running git.
      */
     fun writeBase(
         workspace: Path,
@@ -183,6 +184,7 @@ class WorkspaceClones(
         cancellation: WorkspaceGit.Cancellation? = null,
     ) {
         requireCommitId(sha)
+        requireClone(workspace)
         check(git.run(projectDir, "update-ref", baseKeepRef(key), sha, cancellation = cancellation), "write ${baseKeepRef(key)}")
         check(git.run(workspace, "update-ref", "$BASE_REFS$base", sha, cancellation = cancellation), "write $BASE_REFS$base in the clone")
     }
@@ -196,7 +198,8 @@ class WorkspaceClones(
      * project's object folder by plain file copy, and only then, in the project, git checks the commit is there and
      * writes the branch. A branch already at [sha] is left alone. A branch a worktree of the project has checked out
      * is never moved under the operator (bl-246): the import then fails naming it and that worktree, with no project
-     * ref changed. Fails with an [IOException].
+     * ref changed. A [workspace] that is not a clone of the project ([state]) is refused with its reason, even when
+     * the branch is already at [sha] (bl-253). Fails with an [IOException].
      */
     fun import(
         workspace: Path,
@@ -204,6 +207,7 @@ class WorkspaceClones(
         branch: String,
     ) {
         requireCommitId(sha)
+        requireClone(workspace)
         if (projectCommit("refs/heads/$branch").equals(sha, ignoreCase = true)) return
         val objects = projectObjects()
         synchronized(lockOf(objects)) {
@@ -423,6 +427,15 @@ class WorkspaceClones(
         what: String,
     ) {
         if (outcome.code != 0) throw IOException("cannot $what: ${outcome.firstLine()}")
+    }
+
+    /** Fails with an [IOException] naming the reason when [workspace] is not a clone of the project ([state]). */
+    private fun requireClone(workspace: Path) {
+        when (val state = state(workspace)) {
+            CloneState.Clone -> Unit
+            CloneState.Absent -> throw IOException("${workspace.resolve(".git")} is missing, the workspace is no longer a clone")
+            is CloneState.Foreign -> throw IOException("the workspace $workspace is not a clone of the project, ${state.reason}")
+        }
     }
 
     private fun requireCommitId(sha: String) {

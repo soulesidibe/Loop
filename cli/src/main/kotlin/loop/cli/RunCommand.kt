@@ -45,6 +45,8 @@ import loop.core.verify.CheckRunner
 import loop.core.verify.CoreCheckRunner
 import loop.core.verify.EvidenceFiles
 import loop.core.verify.Holdouts
+import loop.core.verify.CloneRoots
+import loop.core.verify.CloneScope
 import loop.core.verify.WorkspaceGit
 import loop.core.workflow.Preflight
 import loop.core.workflow.PreflightResult
@@ -234,8 +236,14 @@ class RunCommand(
         // m4-06: the merge risk reviewer runs through the Claude Code command whatever the runner; said once at startup.
         riskReviewerWarning(workflow, host.rawEnv)?.let { warn(redactor.redact(it)) }
         val workspacesOf = { wf: WorkflowFile ->
-            // bl-28: with workspace.git: clone, Loop makes each workspace a clone of the project, its git pinned.
-            val clones = if (wf.workspaceGit == WorkspaceGitMode.Clone) WorkspaceClones(wf.path.parent, WorkspaceGit(host.rawEnv)) else null
+            // bl-28: with workspace.git: clone, Loop makes each workspace a clone of the project, its git pinned. bl-253: the
+            // git it runs in a workspace passes the layout check and gets GIT_DIR, GIT_COMMON_DIR and GIT_WORK_TREE.
+            val clones =
+                if (wf.workspaceGit == WorkspaceGitMode.Clone) {
+                    WorkspaceClones(wf.path.parent, WorkspaceGit(host.rawEnv, clones = CloneRoots.of(CloneScope.of(wf))))
+                } else {
+                    null
+                }
             WorkspaceManager(Workspaces(wf.workspaceRoot), wf.config.hooks, ShellHookRunner(), clones)
         }
         val launcher = host.launcher().getOrElse { fail(it.sentence()) }

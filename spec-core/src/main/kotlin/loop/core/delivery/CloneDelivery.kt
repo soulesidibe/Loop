@@ -4,7 +4,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import loop.api.DeliveryError
 import loop.api.DeliveryExecutor
-import loop.core.workspace.CloneState
 import loop.core.workspace.WorkspaceClones
 import loop.core.workspace.WorkspaceKey
 import java.io.IOException
@@ -18,8 +17,9 @@ import java.nio.file.Path
  * merge check alike, so an import that failed on the verified verdict is made again here.
  * The push of [delegate] then runs unchanged and checks that branch. Every other step is [delegate]'s.
  *
- * A branch that is not `loop/<key>`, a workspace that is gone and a workspace that is not a clone are pushed as they
- * are: the push checks the project's branch as without clones.
+ * A branch that is not `loop/<key>` and a workspace that is gone are pushed as they are: the push checks the project's
+ * branch as without clones. A workspace that is no longer a clone of the project, its `.git` missing, replaced or in a
+ * layout Loop refuses, fails the push with the reason and nothing is pushed (bl-253).
  */
 class CloneDelivery(
     private val delegate: DeliveryExecutor,
@@ -47,7 +47,8 @@ class CloneDelivery(
             } ?: return null
         return try {
             withContext(Dispatchers.IO) {
-                if (clones.state(workspace) == CloneState.Clone) clones.import(workspace, sha, branch)
+                // bl-253: in clone mode a workspace whose `.git` is no longer a clone is refused, never skipped.
+                clones.import(workspace, sha, branch)
             }
             null
         } catch (e: IOException) {

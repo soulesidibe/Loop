@@ -157,6 +157,8 @@ import loop.core.trackers.TrackerPoll
 import loop.core.trackers.TrackerSlots
 import loop.core.verify.AcceptanceCriteria
 import loop.core.verify.CheckRunner
+import loop.core.verify.CloneRoots
+import loop.core.verify.CloneScope
 import loop.core.verify.EvidenceWriter
 import loop.core.verify.Fingerprinter
 import loop.core.verify.PlainWorkspace
@@ -199,7 +201,6 @@ import loop.core.workflow.WorkspaceGitMode
 import loop.core.workflow.promptLimitFor
 import loop.core.workspace.CloneBase
 import loop.core.workspace.CloneStart
-import loop.core.workspace.CloneState
 import loop.core.workspace.HookListener
 import loop.core.workspace.HookName
 import loop.core.workspace.HookResult
@@ -390,8 +391,8 @@ class Orchestrator(
     private val waiting: WaitingIssues = WaitingIssues.NONE,
     /** Saves each check's output as evidence (m2-05); the cli writes the files beside the Attempt file. */
     private val evidence: EvidenceWriter = EvidenceWriter.NONE,
-    /** The workspace fingerprint taken before a verification's checks (m2-05). */
-    private val fingerprinter: Fingerprinter = WorkspaceFingerprint,
+    /** The workspace fingerprint taken before a verification's checks (m2-05), its git under the clone workspaces (bl-253). */
+    fingerprinter: Fingerprinter = WorkspaceFingerprint,
     /** The ledger line of each turn (m2-19); the cli appends it to `<LOOP_HOME>/ledger/<project_id>.jsonl`. */
     private val turnLedger: TurnLedger = TurnLedger.NONE,
     /** The ledger row of each finished attempt (m2-19), and the last row of an issue at dispatch; the cli gives the store. */
@@ -406,8 +407,11 @@ class Orchestrator(
      * in effect when it delivers; null when this host cannot deliver one, which fails such a delivery for good.
      */
     private val deliveryFor: (WorkflowFile) -> DeliveryExecutor? = { null },
-    /** The git of the merge check in an issue's workspace (m2-26): hooks off, minimal env, no token, a timeout. */
-    private val workspaceGit: WorkspaceGit = WorkspaceGit(),
+    /**
+     * The git of the merge check in an issue's workspace (m2-26): hooks off, minimal env, no token, a timeout. Run under
+     * the clone workspaces of the workflow in effect (bl-253).
+     */
+    workspaceGit: WorkspaceGit = WorkspaceGit(),
     /**
      * Every event of an attempt (m2-28), read by the auto merge gate for the verdict and `diff_base_unpinned`. The
      * default cannot read them, which fails those conditions: no auto merge without the proof.
@@ -449,22 +453,34 @@ class Orchestrator(
     /** m4-30: the channel through which a human is told that a run needs them; the cli gives the terminal channel. */
     private val channel: HumanChannel = HumanChannel.NONE,
 ) {
+    /**
+     * bl-253: the clone workspaces of the workflow in effect, read at each git call: with `workspace.git: clone`, every
+     * git Loop runs in one passes the layout check and is pinned to it, whoever runs it here.
+     */
+    private val cloneRoots = CloneRoots { CloneScope.of(effective) }
+
+    /** The git of the merge check and every other read of a workspace, under [cloneRoots] (bl-253). */
+    private val scopedGit: WorkspaceGit = workspaceGit.withClones(cloneRoots)
+
+    /** The fingerprint of a workspace, its git under [cloneRoots] (bl-253). */
+    private val scopedFingerprinter: Fingerprinter = fingerprinter.withClones(cloneRoots)
+
     /** The HEAD and working tree reads for the progress between rotations (bl-136), bounded and cancellable (bl-149). */
-    private val workspaceFacts = WorkspaceFacts(workspaceGit)
+    private val workspaceFacts = WorkspaceFacts(scopedGit)
 
     /**
      * The merge waits (m2-26, m2-28, m3-15, bl-85): the merge check, the CI wait, the merge and the auto merge gate, in
      * their own module. This class keeps the slot decision and the background launch, see [syncMerges].
      */
     private val merges: Merges by lazy {
-        val git = WorkspaceMergeGit(workspaceGit)
+        val git = WorkspaceMergeGit(scopedGit)
         Merges(
             waits = waits,
             tracker = tracker,
             executorFor = ::executorFor,
             locate = { workflow, key -> workspacesFor(workflow).locate(key) },
             git = git,
-            fingerprinter = fingerprinter,
+            fingerprinter = scopedFingerprinter,
             recheck = Recheck(::recheckMerge),
             gate =
                 AutoMergeGate(
@@ -726,7 +742,7 @@ class Orchestrator(
             override val clock get() = this@Orchestrator.clock
             override val redactor get() = this@Orchestrator.redactor
             override val io get() = this@Orchestrator.io
-            override val fingerprinter get() = this@Orchestrator.fingerprinter
+            override val fingerprinter get() = this@Orchestrator.scopedFingerprinter
             override val evidence get() = this@Orchestrator.evidence
             override val frozenCommands get() = this@Orchestrator.frozenCommands
             override val model get() = runner.model
@@ -748,7 +764,7 @@ class Orchestrator(
             ): String? =
                 try {
                     withContext(io) {
-                        workspaceGit
+                        scopedGit
                             .run(workflow.path.parent, "rev-parse", "--verify", "-q", "$ref^{commit}")
                             .takeIf { it.code == 0 }
                             ?.stdout
@@ -773,11 +789,8 @@ class Orchestrator(
             ): String? {
                 val clones = workspacesFor(workflow).clones ?: return null
                 return try {
-                    withContext(io) {
-                        if (clones.state(workspace) == CloneState.Clone) {
-                            clones.import(workspace, sha, WorkspaceClones.branch(WorkspaceKey(workspace.fileName.toString())))
-                        }
-                    }
+                    // bl-253: a workspace that is no longer a clone is refused with its reason, never skipped.
+                    withContext(io) { clones.import(workspace, sha, WorkspaceClones.branch(WorkspaceKey(workspace.fileName.toString()))) }
                     null
                 } catch (e: IOException) {
                     "cannot import the verified $sha into the project: ${e.message}"
@@ -3104,7 +3117,7 @@ class Orchestrator(
                     ?.config
                     ?.guards
                     ?.base ?: GuardsConfig.DEFAULT_BASE
-            val brief = SessionBrief(workspaceGit, attemptLedger, attemptEvents, SessionBrief.savedResults(loopHome, projectId), redactor)
+            val brief = SessionBrief(scopedGit, attemptLedger, attemptEvents, SessionBrief.savedResults(loopHome, projectId), redactor)
             return withContext(io) { brief.build(projectId, issue, workspace, base, findings, rotations) }
         }
 
@@ -4281,7 +4294,7 @@ class Orchestrator(
         ): String? =
             try {
                 withContext(io) {
-                    workspaceGit
+                    scopedGit
                         .run(dir, "rev-parse", "--verify", "-q", "$ref^{commit}")
                         .takeIf { it.code == 0 }
                         ?.stdout
@@ -4689,7 +4702,7 @@ class Orchestrator(
         // m4-20: a plain workspace is delivered only while it is still at its verified fingerprint.
         if (KindWorkspaces.isPlain(kind)) {
             val key = NamespacedId.workspaceKey(wait.issueId, wait.identifier, effective.trackerId)
-            val stale = withContext(io) { PlainWorkspace.stale(fingerprinter, workspacesFor(effective).locate(key), wait.fingerprint) }
+            val stale = withContext(io) { PlainWorkspace.stale(scopedFingerprinter, workspacesFor(effective).locate(key), wait.fingerprint) }
             if (stale != null) {
                 val reason = redactor.redact(stale).take(REASON_MAX)
                 recordWaitEvent(wait, DeliveryFailed, mapOf(Delivery.STEP to PlainWorkspace.STEP_FINGERPRINT, Delivery.REASON to reason))
@@ -5057,8 +5070,9 @@ class Orchestrator(
     }
 
     /**
-     * bl-28: writes `refs/loop/base/[base]` at [sha], a base Loop fetched, in [workspace] when [workflow] clones and it
-     * is a clone of the project, with the base keep ref in the project; why it failed, null otherwise.
+     * bl-28: writes `refs/loop/base/[base]` at [sha], a base Loop fetched, in [workspace] when [workflow] clones, with
+     * the base keep ref in the project; why it failed, null otherwise. A workspace that is no longer a clone of the
+     * project fails it (bl-253).
      */
     private suspend fun writeCloneBase(
         workflow: WorkflowFile,
@@ -5068,11 +5082,8 @@ class Orchestrator(
     ): String? {
         val clones = workspacesFor(workflow).clones ?: return null
         return try {
-            withContext(io) {
-                if (clones.state(workspace) == CloneState.Clone) {
-                    clones.writeBase(workspace, WorkspaceKey(workspace.fileName.toString()), base, sha)
-                }
-            }
+            // bl-253: a workspace that is no longer a clone is refused with its reason, never skipped.
+            withContext(io) { clones.writeBase(workspace, WorkspaceKey(workspace.fileName.toString()), base, sha) }
             null
         } catch (e: IOException) {
             "cannot write the base $base at $sha in the clone $workspace: ${e.message}"
