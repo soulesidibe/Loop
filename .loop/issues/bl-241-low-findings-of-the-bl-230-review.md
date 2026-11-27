@@ -25,3 +25,5 @@ None. Backlog, not scheduled in a milestone. Low findings of the merge risk revi
 Area: `plugins/runner-acp` (`AgyIsolationDir.kt`, `AcpRunner.kt`), `.loop/specs/gemini-support.md`, `docs/plugins/runner-acp.md`.
 
 ## Comments
+
+2026-11-27 soule: item 1, the human step, is done: `.loop/specs/gemini-support.md` now describes the kept isolated folder (bl-213), its location, the `checkBeforeLoad` check (bl-230), and `resumeSession` loading from the kept folder, in the isolation bullet, the `resumeSession` bullet and slice 4. Items 2 to 8 stay here for triage.
