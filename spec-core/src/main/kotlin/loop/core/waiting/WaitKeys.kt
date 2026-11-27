@@ -92,8 +92,9 @@ object WaitKeys {
     const val HUMAN_NOTICE: String = "human_notice"
 
     /**
-     * The data key of the state the issue was in when its agent asked a question (m4-31): a human move of the issue to
-     * another state ends the ask wait.
+     * The data key of the state the issue was in when its agent asked a question (m4-31), or when its approval wait
+     * started (bl-252): a human move of the issue to another state ends the ask wait and rejects the approval wait. The
+     * merge wait copies it from the approval wait, unused there.
      */
     const val STATE: String = "state"
 
