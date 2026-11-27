@@ -52,3 +52,5 @@ Out of this issue: retiring the manager skill (m4-44) and Android work.
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-27 soule: the wave runs on Sigma (Soules-Studio-Ltd/Sigma, a KMP app with an iOS target and its issues on GitHub) instead of Ayyam, since an Ayyam release is in progress and must not be disturbed. Sigma's Loop setup mirrors Ayyam's (GitHub tracker, Loop's worktree hooks, `scripts/loop/check.sh` claiming a simulator), so every setup step and criterion applies with Sigma's paths. Android stays out, as above. The setup goes through a pull request on Sigma, not the main checkout.
