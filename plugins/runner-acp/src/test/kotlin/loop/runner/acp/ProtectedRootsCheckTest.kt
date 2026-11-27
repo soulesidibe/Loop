@@ -8,6 +8,8 @@ import kotlin.io.path.createDirectories
 import kotlin.io.path.setPosixFilePermissions
 import kotlin.io.path.writeText
 import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -385,6 +387,64 @@ class ProtectedRootsCheckTest {
         git(dir, "add", ".agents/hooks.json")
         git(dir, "commit", "-m", "Base")
         return git(dir, "rev-parse", "HEAD").trim()
+    }
+
+    @Test
+    fun `bl-246 every git of the check runs with lazy fetch off, whatever the base environment says`() {
+        val env = ProtectedRootsCheck.minimalGitEnv(mapOf("PATH" to "/usr/bin:/bin", "GIT_NO_LAZY_FETCH" to "0"))
+        assertEquals("1", env["GIT_NO_LAZY_FETCH"])
+
+        val printing = scratch.resolve("print-env.sh")
+        printing.writeText("#!/bin/sh\nenv\n")
+        printing.setPosixFilePermissions(PosixFilePermissions.fromString("rwxr-xr-x"))
+        val result =
+            ProtectedRootsCheck.runGit(
+                plainDir,
+                listOf("status"),
+                gitCommand = printing.toString(),
+                baseEnv = mapOf("PATH" to "/usr/bin:/bin", "GIT_NO_LAZY_FETCH" to "0"),
+            )
+
+        assertTrue(result != null && "GIT_NO_LAZY_FETCH=1" in result.stdout.lines(), "${result?.stdout}")
+    }
+
+    @Test
+    fun `bl-246 a promisor the agent configures in the workspace never runs from the check`() {
+        initGitRepo(repo)
+        repo.resolve("README.md").writeText("readme\n")
+        git(repo, "add", "README.md")
+        git(repo, "commit", "-m", "Base commit")
+        val baseSha = git(repo, "rev-parse", "HEAD").trim()
+        val marker = scratch.resolve("lazy-fetch-ran")
+        git(repo, "config", "extensions.partialClone", "ext::sh -c touch% $marker")
+        git(repo, "config", "protocol.ext.allow", "always")
+        repo.resolve(".git/refs/heads/main").writeText("1".repeat(40) + "\n")
+        // Live: the same pins without the variable run the agent's program.
+        unguardedGit(repo, ProtectedRootsCheck.GIT_PINS + listOf("rev-parse", "--verify", "-q", "refs/heads/main^{commit}"))
+        assertTrue(Files.exists(marker), "the trap is not live")
+        Files.delete(marker)
+
+        ProtectedRootsCheck.refusal(repo, baseSha)
+
+        assertFalse(Files.exists(marker), "the check ran the agent's program")
+    }
+
+    /** git in [dir] with no user or system config and no `GIT_` variable, so lazy fetch stays on. */
+    private fun unguardedGit(
+        dir: Path,
+        args: List<String>,
+    ) {
+        val process =
+            ProcessBuilder(listOf("git") + args)
+                .directory(dir.toFile())
+                .redirectErrorStream(true)
+                .apply {
+                    environment().keys.removeIf { it.startsWith("GIT_") }
+                    environment()["GIT_CONFIG_GLOBAL"] = "/dev/null"
+                    environment()["GIT_CONFIG_NOSYSTEM"] = "1"
+                }.start()
+        process.inputStream.readAllBytes()
+        process.waitFor()
     }
 
     private fun initGitRepo(dir: Path) {

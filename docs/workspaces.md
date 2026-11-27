@@ -112,7 +112,11 @@ workspace:
 1. removes the clone's `origin` remote, so `git push origin ...` from the Workspace fails instead of writing the project's refs;
 2. copies the project's repository local `user.name` and `user.email` into the clone's config, when set;
 3. writes the keep ref `refs/loop/workspace/<key>` in the project at the start commit;
-4. creates and checks out `loop/<key>`, from the project's `refs/heads/loop/<key>` when it exists, else from `LOOP_BASE_REF` (the base Loop fetched), else from the base resolved in the project, else from the project's `HEAD`, which Loop logs as a `clone_start` warning.
+4. creates or resets and checks out `loop/<key>`, from the project's `refs/heads/loop/<key>` when it exists, else from `LOOP_BASE_REF` (the base Loop fetched), else from the base resolved in the project, else from the project's `HEAD`, which Loop logs as a `clone_start` warning. Since bl-246 it is reset, so the creation works even when the project has `loop/<key>` checked out and `git clone` already made that branch.
+
+When a worktree of the project, the main checkout or a linked one, has `loop/<key>` checked out as a new clone is made, Loop logs a `clone_branch_checked_out` warning naming the branch and that worktree's path: delivery will refuse to move that branch until the operator switches that worktree to another branch, see [import](#import-before-push).
+
+Clone mode needs git 2.45 or later. Every git command Loop runs in a clone, and in the project for the clone steps, runs with lazy fetch off (`GIT_NO_LAZY_FETCH=1`), so a promisor an agent configures in its clone (`extensions.partialClone` set to an `ext::` URL, with a ref at a missing object) never runs its program as the operator. An older git ignores that variable, so creating or reusing a clone on it fails with the version found and the minimum. Worktree mode keeps working on an older git, and gets the same variable.
 
 The clone is built in the sibling folder `.loop-clone-<key>` and moved into place once every step is done, so a run killed half way leaves no half made clone in the Workspace. A failed or cancelled creation, or a failed or cancelled `after_create`, deletes the folder and the keep refs.
 
@@ -132,6 +136,8 @@ Before the hooks and the agent run, and again at each base fetch of a verificati
 
 On a verified verdict on a clean committed fingerprint, and again before every push of a Workspace commit (the pull request push, the merge check's push of the merged head), Loop imports that commit into the project by its id: a fetch from the clone with `transfer.fsckObjects` into a temporary repository with no config file, then a plain copy of the objects into the project's object folder, then `refs/heads/loop/<key>` written in the project at that commit, with no old value check, since in clone mode Loop is that ref's only writer. The fetch tells the clone which commits the project already has (the keep refs, `loop/<key>`, `refs/loop/base/*`), so only the new objects are copied. The push then runs as without clones. A commit that fails the object check is never imported or pushed.
 
+The import never moves `loop/<key>` while a worktree of the project has it checked out (bl-246): that would leave the operator's index and files disagreeing with their branch. It fails naming the branch and the worktree, and tells the operator to switch away, with no project ref changed. The pull request push and the merge check then end as a rejected delivery with that reason, and the import at verification logs its warning. Once the operator switches that worktree to another branch, the next import works.
+
 In the project Loop writes these refs and no other: `refs/heads/loop/<key>`, `refs/loop/base/*`, `refs/loop/workspace/<key>` and `refs/loop/workspace-base/<key>`.
 
 ### The keep ref
@@ -149,4 +155,4 @@ Switching a workflow from `clone` back to the worktree hooks leaves the keep ref
 
 ### Threat model
 
-Clones protect the operator's repository against mistakes and casual misuse by an agent, not against a hostile agent. Verification still runs the agent's build code unsandboxed as the operator, and any write by absolute path, `git push /abs/path/to/project` included, stays possible until the OS sandbox of M5.
+Clones protect the operator's repository against mistakes and casual misuse by an agent, not against a hostile agent. One hostile path is closed: Loop's own git runs with lazy fetch off, so a promisor the agent configures never runs from it (bl-246). Verification still runs the agent's build code unsandboxed as the operator, and any write by absolute path, `git push /abs/path/to/project` included, stays possible until the OS sandbox of M5.
