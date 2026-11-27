@@ -644,4 +644,87 @@ class WaitsTest {
             restarted.current().forEach(restarted::hold)
             assertFalse(restarted.isBusy("id-1"))
         }
+
+    /** `id-1` approved in the store and read by this process, as a tick sees it before a delivery (bl-250). */
+    private suspend fun approvedRead(): Triple<FakeWaitingIssues, Waits, Wait.Approval> {
+        val store = FakeWaitingIssues(record(WaitReason.Approval, approvalData))
+        val waits = Waits(store, project)
+        val read = waits.read().getOrThrow().single() as Wait.Approval
+        return Triple(store, waits, read)
+    }
+
+    @Test
+    fun `bl-250 an unchanged approval wait is replaced or ended through the store's own conditional write`() =
+        runTest {
+            val (store, waits, read) = approvedRead()
+            val commented = read.commented("https://github.com/acme/widgets/pull/8")
+
+            assertTrue(waits.replaceApproval(read, commented).getOrThrow())
+            assertEquals(commented.toRecord(), store.records.values.single())
+            assertEquals(listOf<Wait>(commented), waits.current())
+            assertTrue(waits.awaitsApproval("id-1"))
+
+            assertTrue(waits.replaceApproval(read, null).getOrThrow())
+            assertEquals(emptyMap(), store.records)
+            assertEquals(emptyList(), waits.current())
+            assertFalse(waits.isBusy("id-1"))
+        }
+
+    @Test
+    fun `bl-250 a send back committed since the read wins, the stored wait is kept and adopted in memory`() =
+        runTest {
+            val (store, waits, read) = approvedRead()
+            val sent = store.sendBack(project, "id-1", "soule", "Use Save.", later).getOrThrow()
+
+            assertFalse(waits.replaceApproval(read, read.unapproved()).getOrThrow())
+            assertEquals(sent, store.records.values.single())
+            assertEquals("Use Save.", waits.sentBack("id-1")?.sentBackReason)
+            assertFalse(waits.isBusy("id-1"), "a sent back wait lets its issue dispatch")
+
+            assertFalse(waits.replaceApproval(read, null).getOrThrow())
+            assertEquals(sent, store.records.values.single())
+        }
+
+    @Test
+    fun `bl-250 a wait gone since the read writes nothing and lets its issue go`() =
+        runTest {
+            val (store, waits, read) = approvedRead()
+            store.endWaiting(project, "id-1").getOrThrow()
+
+            assertFalse(waits.replaceApproval(read, read.commented("https://github.com/acme/widgets/pull/8")).getOrThrow())
+            assertEquals(emptyMap(), store.records)
+            assertFalse(waits.isBusy("id-1"))
+            assertEquals(emptyList(), waits.current())
+        }
+
+    @Test
+    fun `bl-250 a failed conditional write changes nothing in the store, memory follows the write as save and end do`() =
+        runTest {
+            val (store, waits, read) = approvedRead()
+            store.writeFailure = IllegalStateException("disk full")
+
+            assertTrue(waits.replaceApproval(read, read.unapproved()).isFailure)
+            assertTrue(waits.awaitsApproval("id-1"))
+            assertEquals(listOf<Wait>(read), waits.current())
+            assertTrue(waits.replaceApproval(read, null).isFailure)
+            assertFalse(waits.isBusy("id-1"))
+        }
+
+    @Test
+    fun `bl-250 the re-read before a delivery step is true while the wait is still approved, false once sent back`() =
+        runTest {
+            val (store, waits, read) = approvedRead()
+            assertTrue(waits.stillApproved(read).getOrThrow())
+            // Loop's own write of the commented URL is not a decision.
+            store.startWaiting(read.commented("https://github.com/acme/widgets/pull/8").toRecord()).getOrThrow()
+            assertTrue(waits.stillApproved(read).getOrThrow())
+
+            store.sendBack(project, "id-1", "soule", "Use Save.", later).getOrThrow()
+            assertFalse(waits.stillApproved(read).getOrThrow())
+            assertEquals("Use Save.", waits.sentBack("id-1")?.sentBackReason)
+            assertFalse(waits.isBusy("id-1"))
+
+            store.readFailure = IllegalStateException("locked")
+            assertTrue(waits.stillApproved(read).isFailure)
+        }
 }
