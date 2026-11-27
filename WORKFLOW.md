@@ -122,6 +122,13 @@ An earlier attempt may have left work on this issue in this workspace or on the 
 
 Loop rotated your session because its context grew past the limit. The work so far is in the workspace, in your progress file and in `git log` on the current branch. Read them first and continue from there. Do not recreate the progress file and do not redo steps already marked as passing. Do not read the project docs whole: search them (`grep -n`) for the sections the next step needs and read only those.
 {% endif %}
+{% if loop.retry_kind == "sent_back" %}
+# A human sent this back
+
+A human read your last result and sent it back with the reason below. Address every point of the reason, then submit again. Keep the work the reason does not mention.
+
+{{ loop.verify_findings }}
+{% endif %}
 {% if loop.session_brief %}
 # Session brief
 

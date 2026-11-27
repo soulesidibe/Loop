@@ -88,6 +88,10 @@ _Avoid_: Merge gate (for one condition), rule, check (a check is part of the ver
 What follows the auto merge conditions (m2-28): facts computed in code set floors, a read only reviewer session gives one verdict per dimension (alignment, impact, verification, rollback cost, error detection), and Loop computes the weighted score and its band, low, medium or high. Auto merge needs a low band and no dimension at its worst verdict; a reviewer that fails falls back. Recorded as `merge_risk_assessed`.
 _Avoid_: Risk score (the score is one part), review (for the whole assessment)
 
+**Reaction**:
+What Loop does by itself when a pull request it opened changes while the issue waits for approval: a merge conflict, failed CI, a change request by a trusted reviewer, or an approval with green checks. Each is set under `reactions:` in `WORKFLOW.md` as `send_to_agent`, which ends the wait and sends the issue back to its agent as a retry of kind `reaction` that takes a `max_attempts` slot, or `notify_human`. Without `reactions:` Loop watches nothing.
+_Avoid_: Trigger, hook (for this meaning), auto fix
+
 **Evidence summary**:
 The comment Loop posts, as `loop`, on an issue whose verified result waits for approval: the attempt, the workspace fingerprint and each check that passed with its exit code, duration and evidence file, a holdout check saying only that it passed. Built from the verification's facts, never from the agent's words.
 _Avoid_: Report, verification comment

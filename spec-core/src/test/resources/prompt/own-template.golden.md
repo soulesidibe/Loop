@@ -27,6 +27,7 @@ A description long enough to matter, with a list:
 
 
 
+
 # Your workspace
 
 - The current directory is a git worktree on the branch `loop/m1-99`, already checked out by Loop's workspace hooks. Work and commit on this branch only.
