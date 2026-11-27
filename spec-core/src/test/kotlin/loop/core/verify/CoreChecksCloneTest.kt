@@ -344,6 +344,23 @@ class CoreChecksCloneTest {
     }
 
     @Test
+    fun `bl-254 a workspace that is a symbolic link to the project is refused by both checks, never read unpinned`() {
+        val fx = Fixture("linked")
+        val link = Files.createSymbolicLink(fx.root.resolve("t-2"), fx.project)
+        fx.project.resolve("README.md").writeText("edited in the project\n")
+        val before = fx.snapshot()
+
+        val reason = "Loop runs no git in the clone $link: the workspace $link resolves to the project folder ${fx.project}"
+        val policy = CoreChecks.diffPolicy(CheckConfig.DiffPolicy(listOf("README.md"), base = fx.first), link, hostEnv, fx.clones)
+        val coverage =
+            CoreChecks.changedLineCoverage(CheckConfig.ChangedLineCoverage(listOf("report.xml"), 100.0, base = fx.first), link, hostEnv, fx.clones)
+        proof("linked workspace, diff_policy", policy.toString())
+        assertContains(policy.couldNotRun.orEmpty(), reason, message = policy.toString())
+        assertContains(coverage.couldNotRun.orEmpty(), reason, message = coverage.toString())
+        assertEquals(before, fx.snapshot())
+    }
+
+    @Test
     fun `hooks mode gets neither the check nor the pins`() {
         val fx = Fixture("hooks")
         fx.hostileCommondir()

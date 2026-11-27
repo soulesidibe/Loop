@@ -182,10 +182,10 @@ class WorkspaceGit(
         if (!scope.covers(root)) return null
         cancellation?.check()
         val workspace = root.toAbsolutePath().normalize()
-        CloneLayout.refusal(workspace, ::refStorage)?.let { throw IOException("Loop runs no git in the clone $workspace: $it") }
-        val real = workspace.toRealPath()
-        val dotGit = real.resolve(".git").toString()
-        return mapOf(GIT_DIR to dotGit, GIT_COMMON_DIR to dotGit, GIT_WORK_TREE to real.toString())
+        (scope.refusal(workspace) ?: CloneLayout.refusal(workspace, ::refStorage))?.let {
+            throw IOException("Loop runs no git in the clone $workspace: $it")
+        }
+        return CloneLayout.pins(workspace.toRealPath())
     }
 
     /** The commit `HEAD` of [root] is at; a [cancellation] stops the read. */

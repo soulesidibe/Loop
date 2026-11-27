@@ -693,12 +693,7 @@ object CoreChecks {
         /** The bl-253 pins of the clone [root], after its layout passed; a refusal is an [IOException]. */
         private fun clonePins(): Map<String, String> {
             refuseLayout(root, layoutGit)
-            val dotGit = root.resolve(".git").toString()
-            return mapOf(
-                WorkspaceGit.GIT_DIR to dotGit,
-                WorkspaceGit.GIT_COMMON_DIR to dotGit,
-                WorkspaceGit.GIT_WORK_TREE to root.toString(),
-            )
+            return CloneLayout.pins(root)
         }
 
         companion object {
@@ -713,9 +708,13 @@ object CoreChecks {
                 clones: CloneRoots,
                 startProcess: (ProcessBuilder) -> Process,
             ): Git {
-                val clone = clones.current()?.covers(workspace) == true
-                if (clone) refuseLayout(workspace.toAbsolutePath().normalize(), WorkspaceGit(env))
-                return Git(workspace.toRealPath(), env, startProcess, clone)
+                val scope = clones.current()?.takeIf { it.covers(workspace) }
+                if (scope != null) {
+                    val dir = workspace.toAbsolutePath().normalize()
+                    scope.refusal(dir)?.let { throw IOException("Loop runs no git in the clone $dir: $it") }
+                    refuseLayout(dir, WorkspaceGit(env))
+                }
+                return Git(workspace.toRealPath(), env, startProcess, scope != null)
             }
 
             private fun refuseLayout(
