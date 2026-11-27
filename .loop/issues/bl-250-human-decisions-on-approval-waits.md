@@ -79,3 +79,15 @@ Filed from bl-222 finding 2 and the medium of bl-42, re-located on main at 785c1
 - First filed as one issue with the reject rule, since both use the conditional primitive and the same interleaving test hooks. Split after review: the reject rule and the `loop approve` refusal are bl-252, blocked by this issue.
 
 Revised after a Fable 5.2 review of the brief on 2026-11-26.
+
+2026-11-27 00:32Z loop: Loop opened pull request #106 for this issue: https://github.com/soulesidibe/Loop/pull/106
+
+2026-11-27 00:39Z loop: Loop did not merge pull request #106 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.40.
+  - alignment: aligned, The diff implements the conditional replace primitive, the re-reads before each external step, the send back winning during a delivery, and the late-send-back warn path. It also touches Verification.kt, which the issue does not mention, but only to cover the new `Withdrawn` outcome.
+  - impact: medium, It changes the delivery and approval-wait write paths in the orchestrator, adds a store contract method, and adds a new `DeliveryOutcome` variant, but the change is limited to the approval-wait flow.
+  - verification: strong, Each interleaving in the acceptance criteria has a deterministic hook test, and there are separate store, Waits, HumanNotices and PullRequestDelivery tests. I could not see whether the build and gradle tests pass.
+  - rollback_cost: two_way, It adds no schema change or persisted format, so a revert restores the old behavior.
+  - error_detection: partial, Lost writes are logged at info or warn, but a failed conditional write is logged and then treated as written, and a failed re-read only skips the delivery with a warn log.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 2 of 14 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.

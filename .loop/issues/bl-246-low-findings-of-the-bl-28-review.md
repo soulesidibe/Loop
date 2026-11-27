@@ -50,6 +50,17 @@ Chosen fix: `GIT_NO_LAZY_FETCH=1` set last in every environment Loop builds for 
 
 Revised after a Fable 5.2 review of the brief on 2026-11-26.
 
+2026-11-26 23:55Z agent d4c1ca4b: Filed the follow up default:bl-255 in the tracker default: Two cli tests fail on timing under the full build
+
+2026-11-26 23:55Z agent d4c1ca4b: Turn 3: the refuted build failed on two cli tests outside this change, CheckResourceTest (a timing assertion, waited 1.74 s, the check took 2071 ms) and WorktreeHooksTest "eight hooks take over a dead process's lock together" (a 20 s lock wait in round 4). The bl-246 diff changes nothing in cli/src/main, WorkspaceManager.kt or scripts/, and worktree mode never calls the clone code. Both classes passed alone twice right after, so I read them as flakes under the load of the full build and left them unchanged. The flakiness is filed as a follow-up.
+
+2026-11-27 00:05Z loop: Loop opened pull request #104 for this issue: https://github.com/soulesidibe/Loop/pull/104
+
+2026-11-27 00:09Z loop: Loop did not merge pull request #104, ci: Actions runs did not pass: build (failure). The pull request stays open and the result waits for a new approval.
+  Failed runs:
+  - build (failure): https://github.com/soulesidibe/Loop/actions/runs/45914712191
+  Rerun the runs on GitHub or fix the branch, then approve again with loop approve.
+
 ## Agent Brief
 
 **Category:** bug
