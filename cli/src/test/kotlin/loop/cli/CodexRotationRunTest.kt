@@ -206,7 +206,12 @@ class CodexRotationRunTest {
                     read,
                     cat(turnStart(TURN_2)),
                     cat(tokenUsage(THREAD_2, TURN_2, last = 50, total = 50)),
-                    "loop tool move review > /dev/null",
+                    // bl-249: the JVM of loop tool can take longer than turn_timeout_ms to start on a loaded machine, so the
+                    // app server streams a delta each second while it runs, as Codex does while it works.
+                    "loop tool move review > /dev/null &",
+                    "mover=\$!",
+                    "while kill -0 \$mover 2>/dev/null; do ${cat(agentMessageDelta(THREAD_2, TURN_2))}; sleep 1; done",
+                    "wait \$mover",
                     cat(turnCompleted(THREAD_2, TURN_2, "completed")),
                     "fi",
                     "while IFS= read -r line; do printf '%s\\n' \"\$line\" >> '$calls/received-'\"\$n\"'.jsonl'; done",
@@ -329,6 +334,12 @@ class CodexRotationRunTest {
             return """{"method":"thread/tokenUsage/updated","params":{"threadId":"$thread","turnId":"$turn",""" +
                 """"tokenUsage":{"last":${breakdown(last, 1)},"total":${breakdown(total, outputs)},"modelContextWindow":258400}}}"""
         }
+
+        /** An `item/agentMessage/delta` notification of [turn], which the runner reads as a protocol message only. */
+        fun agentMessageDelta(
+            thread: String,
+            turn: String,
+        ): String = """{"method":"item/agentMessage/delta","params":{"threadId":"$thread","turnId":"$turn","itemId":"msg_1","delta":"."}}"""
 
         fun turnCompleted(
             thread: String,
