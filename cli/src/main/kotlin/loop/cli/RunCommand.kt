@@ -44,7 +44,6 @@ import loop.core.template.TemplateEngine
 import loop.core.verify.CheckRunner
 import loop.core.verify.CloneRoots
 import loop.core.verify.CloneScope
-import loop.core.verify.CoreCheckRunner
 import loop.core.verify.EvidenceFiles
 import loop.core.verify.Holdouts
 import loop.core.verify.WorkspaceGit
@@ -341,7 +340,7 @@ class RunCommand(
         // the orchestrator adds only the issue and attempt ids: no tool config and no launcher on PATH.
         val checksOf = { wf: WorkflowFile ->
             val removed = agentEnvRemovedNames(wf)
-            val runner = CoreCheckRunner(clones = CloneRoots.of(CloneScope.of(wf)))
+            val runner = coreCheckRunnerOf(wf)
             CheckRunner {
                 check,
                 cwd,

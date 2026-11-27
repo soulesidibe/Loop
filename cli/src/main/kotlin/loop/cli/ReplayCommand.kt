@@ -36,9 +36,6 @@ import loop.core.template.TemplateEngine
 import loop.core.trackers.NamespacedId
 import loop.core.verify.CheckResult
 import loop.core.verify.CheckRunner
-import loop.core.verify.CloneRoots
-import loop.core.verify.CloneScope
-import loop.core.verify.CoreCheckRunner
 import loop.core.workflow.CheckConfig
 import loop.core.workflow.PromptVariables
 import loop.core.workflow.WorkflowFile
@@ -279,7 +276,7 @@ class ReplayCommand(
      */
     private fun checkRunner(workflow: WorkflowFile): CheckRunner {
         val removed = agentEnvRemovedNames(workflow)
-        val runner = CoreCheckRunner(clones = CloneRoots.of(CloneScope.of(workflow)))
+        val runner = coreCheckRunnerOf(workflow)
         return CheckRunner {
             check,
             cwd,
