@@ -460,7 +460,7 @@ class AcpRunner internal constructor(
                     if (turn == 1) {
                         if (!ctx.workspace.isDirectory()) return fail(null, "invalid_workspace_cwd: ${ctx.workspace}")
                         if (settings.isAgyPreset) {
-                            ProtectedRootsCheck.refusal(ctx.workspace, ctx.baseRef)?.let { return guardFail(null, it) }
+                            ProtectedRootsCheck.refusal(ctx.workspace, ctx.baseRef, clone = ctx.cloneWorkspace)?.let { return guardFail(null, it) }
                         }
                         val mcpEnv = ctx.env + mapOf(ENV_SESSION_ID to sessionId.value, ENV_TURN_ID to turnId.value)
                         val mcpServers = if (settings.readOnly) JsonArray(emptyList()) else AcpMcpConfig.mcpServers(mcpEnv)
@@ -492,7 +492,7 @@ class AcpRunner internal constructor(
                             )
                         }
                         if (settings.isAgyPreset) {
-                            ProtectedRootsCheck.refusal(ctx.workspace, ctx.baseRef)?.let { return guardFail(process, it) }
+                            ProtectedRootsCheck.refusal(ctx.workspace, ctx.baseRef, clone = ctx.cloneWorkspace)?.let { return guardFail(process, it) }
                         }
                         process.stdin.send(handshake.continuePrompt(input))
                         allowInterrupt(process, checkNotNull(handshake.acpSessionId))
@@ -543,7 +543,7 @@ class AcpRunner internal constructor(
                 input: String,
             ) {
                 previous?.let { kill(it) }
-                ProtectedRootsCheck.refusal(ctx.workspace, ctx.baseRef)?.let { return guardFail(null, it) }
+                ProtectedRootsCheck.refusal(ctx.workspace, ctx.baseRef, clone = ctx.cloneWorkspace)?.let { return guardFail(null, it) }
                 checkNotNull(isolationDir).checkBeforeLoad()?.let { refusal ->
                     return fail(null, "port_exit: the agy process of session $established is gone and turn $turn cannot load it: $refusal")
                 }
@@ -655,7 +655,7 @@ class AcpRunner internal constructor(
                                             }
                                         }
                                         if (settings.isAgyPreset) {
-                                            ProtectedRootsCheck.refusal(ctx.workspace, ctx.baseRef)?.let {
+                                            ProtectedRootsCheck.refusal(ctx.workspace, ctx.baseRef, clone = ctx.cloneWorkspace)?.let {
                                                 return guardFail(process, it)
                                             }
                                         }

@@ -15,4 +15,11 @@ public data class AttemptContext(
     public val workspace: Path,
     public val env: Map<String, String>,
     public val baseRef: String? = null,
+    /**
+     * bl-254: true when the workflow's `workspace.git` is `clone` and [workspace] is one of its clone workspaces. The
+     * mode comes from the workflow, never from what the workspace's `.git` looks like: a runner's own git there checks
+     * the clone's `.git` layout first and pins `GIT_DIR`, `GIT_COMMON_DIR` and `GIT_WORK_TREE` to the clone. False by
+     * default, the `hooks` mode, which keeps every runner's behavior.
+     */
+    public val cloneWorkspace: Boolean = false,
 )

@@ -3064,6 +3064,8 @@ class Orchestrator(
                     workspace = workspace.path,
                     env = env,
                     baseRef = guardBase,
+                    // bl-254: a runner's own git in a clone workspace follows the clone rule, the mode from the workflow.
+                    cloneWorkspace = CloneScope.of(workflow)?.covers(workspace.path) == true,
                 )
             thresholds = TokenThresholds(thresholdEvery, recordedThreshold())
             // An issue or a day already past its budget parks before a turn spends more (m2-20).
