@@ -1,7 +1,7 @@
 ---
 id: m4-44
 title: "Retire the manager skill, with each PLAN 16 row covered or named as a gap"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-human]
 blocked_by: [m4-43, m4-33]
@@ -69,3 +69,5 @@ Rows recorded as gaps, with what replaces them until they are built:
 2026-11-27 soule: criterion 5 is not met. Sigma's Loop variant of the issue skill ends with one `submit_result` (line 48) and sends product questions through `needs_info` (lines 42 and 60), but nothing forbids `mcp__loop__move` (line 16), Sigma-199 attempt a1d53ccb moved its issue to `review` in the wave (`issue_move_requested`, 16:22:21Z), and line 47 has the agent `git mv` the issue file to `issues/done/`. The pilot app's copy has the same lines, and Sigma's base issue skill still reads its merge gates from the manager skill (line 184). The fix is bl-272.
 
 2026-11-27 soule: PLAN section 16 has a status column with three split rows and a paragraph of the skill's duties with no row, section 20 asks the two gap questions, and section 17 has the retirement bullet (42e3cb9, 6d9e894).
+
+2026-11-27 soule: closed. Criterion 5 is handed to bl-272 and stays unticked here; the owner chose to close m4-44 without waiting for it.
