@@ -2510,7 +2510,7 @@ class Orchestrator(
                 drainFindings = verification.findings
                 unverified = verification.unverified
                 if (passed) verification.deliver(to) else null
-            }.also { if (waits.awaitsApproval(issue.id)) waitingApproval = true }
+            }.also { if (waits.becameApproval(wait)) waitingApproval = true }
         }
 
         /** How the result file taken in the last drain ends the attempt, null when it does not (m2-15); reset per drain. */
@@ -4355,9 +4355,10 @@ class Orchestrator(
             end = endOnCancel()
             throw e
         } finally {
-            // m2-24: a verify wait that became an approval wait goes on waiting, in memory and in the store.
+            // m2-24: a verify wait that became an approval wait goes on waiting, in memory and in the store. bl-257: one a
+            // human sent back during the notice, read by a poll since, is no longer held but is still never deleted here.
             when {
-                waits.awaitsApproval(wait.issueId) -> Unit
+                waits.becameApproval(wait) -> Unit
                 end -> withContext(NonCancellable) { endWaiting(wait) }
                 else -> waits.forget(wait.issueId)
             }
