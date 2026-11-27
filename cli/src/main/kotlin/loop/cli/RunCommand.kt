@@ -42,11 +42,11 @@ import loop.core.resources.ResourceGrants
 import loop.core.resources.ResourceLocks
 import loop.core.template.TemplateEngine
 import loop.core.verify.CheckRunner
+import loop.core.verify.CloneRoots
+import loop.core.verify.CloneScope
 import loop.core.verify.CoreCheckRunner
 import loop.core.verify.EvidenceFiles
 import loop.core.verify.Holdouts
-import loop.core.verify.CloneRoots
-import loop.core.verify.CloneScope
 import loop.core.verify.WorkspaceGit
 import loop.core.workflow.Preflight
 import loop.core.workflow.PreflightResult

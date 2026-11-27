@@ -757,7 +757,13 @@ class WorkspaceGitTest {
         }
         // The extensions.refStorage read of each check runs outside the workspace, unpinned.
         val reads = started - inClone.toSet()
-        assertTrue(reads.isNotEmpty() && reads.all { (command, env) -> "--file" in command && pinNames.none { it in env } }, reads.toString())
+        assertTrue(
+            reads.isNotEmpty() &&
+                reads.all { (command, env) ->
+                    "--file" in command && pinNames.none { it in env }
+                },
+            reads.toString(),
+        )
     }
 
     @Test
@@ -806,7 +812,11 @@ class WorkspaceGitTest {
             assertEquals(null, env[WorkspaceGit.GIT_DIR])
             assertEquals(null, env[WorkspaceGit.GIT_COMMON_DIR])
         }
-        assertEquals(worktree.toString(), started.first().second[WorkspaceGit.GIT_WORK_TREE], "a caller's variable is its own in hooks mode")
+        assertEquals(
+            worktree.toString(),
+            started.first().second[WorkspaceGit.GIT_WORK_TREE],
+            "a caller's variable is its own in hooks mode",
+        )
     }
 
     private companion object {

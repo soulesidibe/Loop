@@ -4702,7 +4702,8 @@ class Orchestrator(
         // m4-20: a plain workspace is delivered only while it is still at its verified fingerprint.
         if (KindWorkspaces.isPlain(kind)) {
             val key = NamespacedId.workspaceKey(wait.issueId, wait.identifier, effective.trackerId)
-            val stale = withContext(io) { PlainWorkspace.stale(scopedFingerprinter, workspacesFor(effective).locate(key), wait.fingerprint) }
+            val stale =
+                withContext(io) { PlainWorkspace.stale(scopedFingerprinter, workspacesFor(effective).locate(key), wait.fingerprint) }
             if (stale != null) {
                 val reason = redactor.redact(stale).take(REASON_MAX)
                 recordWaitEvent(wait, DeliveryFailed, mapOf(Delivery.STEP to PlainWorkspace.STEP_FINGERPRINT, Delivery.REASON to reason))

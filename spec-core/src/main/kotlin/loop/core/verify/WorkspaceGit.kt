@@ -160,7 +160,11 @@ class WorkspaceGit(
         val args = listOf("config", "--file", config.toString(), "--no-includes", "--get-all", "extensions.refstorage")
         val outcome = start(ProcessBuilder(command(outside, args)), emptyMap(), null, pins = null, ::collect)
         return when (outcome.code) {
-            0 -> outcome.stdout.lines().map { it.trim() }.filter { it.isNotEmpty() }
+            0 ->
+                outcome.stdout
+                    .lines()
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
             1 -> emptyList()
             else -> throw IOException("cannot read extensions.refStorage of $config: ${outcome.firstLine()}")
         }

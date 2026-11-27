@@ -293,7 +293,10 @@ class CloneLayoutTest {
         assertEquals(0, live.unguarded("remote", "remove", "origin", pinned = false).code)
         assertEquals("", sh(live.project, "remote"))
         assertEquals("", sh(live.project, "for-each-ref", "refs/remotes"))
-        proof("commondir live", "unguarded remote printed origin, remote remove origin deleted it and refs/remotes/origin/main from the project")
+        proof(
+            "commondir live",
+            "unguarded remote printed origin, remote remove origin deleted it and refs/remotes/origin/main from the project",
+        )
 
         val fx = Fixture("commondir")
         fx.create()
@@ -361,7 +364,10 @@ class CloneLayoutTest {
         val moved = sh(live.project, "rev-parse", "main")
         assertNotEquals(main, moved)
         assertNotEquals(0, exec(listOf("git", "-C", live.project.toString(), "cat-file", "-e", "$moved^{commit}")).code)
-        proof("late commondir live", "an unguarded merge with the environment pins moved the project's main from $main to $moved, a commit it does not have")
+        proof(
+            "late commondir live",
+            "an unguarded merge with the environment pins moved the project's main from $main to $moved, a commit it does not have",
+        )
 
         val fx = Fixture("late-commondir")
         fx.create()
@@ -418,7 +424,10 @@ class CloneLayoutTest {
         Files.createLink(live.dotGit.resolve("MERGE_MSG"), liveVictim)
         assertNotEquals(0, live.unguarded("merge", "--no-ff", "--no-edit", "--no-verify", "-m", "m", liveClash).code)
         assertNotEquals("the operator's\n", liveVictim.readText())
-        proof("hard link live", "an unguarded merge rewrote the project file through .git/MERGE_MSG: ${liveVictim.readText().lines().first()}")
+        proof(
+            "hard link live",
+            "an unguarded merge rewrote the project file through .git/MERGE_MSG: ${liveVictim.readText().lines().first()}",
+        )
 
         val (fx, clash) = conflicted("hardlink")
         val victim = fx.project.resolve(".git/victim").apply { writeText("the operator's\n") }
@@ -512,7 +521,10 @@ class CloneLayoutTest {
             assertEquals(emptyMap(), facts.failures)
             fx.clones.import(fx.workspace, fx.git.head(fx.workspace), "loop/t-1")
             assertEquals(before.tree, fx.snapshot().tree)
-            proof("core.worktree $variant guarded", "reuse, fingerprint, merge, conflict abort, brief, facts and import left the project's files, index and status unchanged")
+            proof(
+                "core.worktree $variant guarded",
+                "reuse, fingerprint, merge, conflict abort, brief, facts and import left the project's files, index and status unchanged",
+            )
         }
     }
 

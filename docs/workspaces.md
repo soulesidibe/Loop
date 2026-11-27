@@ -122,7 +122,21 @@ The clone is built in the sibling folder `.loop-clone-<key>` and moved into plac
 
 Loop sets no sparse pattern: hiding `.loop/issues/` stays the hooks' job, and the worktree scripts must accept a clone (they make a worktree today, so a workflow that clones uses hooks that only set the sparse pattern and check out `loop/<key>`, or none).
 
-A Workspace that already is a clone of the project (its `.git/objects/info/alternates` names the project's object folder) is reused as it is on a retry or a restart, never reset. Loop first removes any remote the clone has, writes back a missing keep ref, and fails the Attempt if the clone has no `loop/<key>` branch. A folder whose `.git` is anything else, a worktree's `.git` file included, fails the Attempt with `cannot prepare workspace <key>: the workspace <path> is not a clone of the project, ...`.
+A Workspace that already is a clone of the project (its `.git/objects/info/alternates` names the project's object folder, in the [layout Loop requires](#the-layout-of-a-clones-git)) is reused as it is on a retry or a restart, never reset. Loop first removes any remote the clone has, writes back a missing keep ref, and fails the Attempt if the clone has no `loop/<key>` branch. A folder whose `.git` is anything else, a worktree's `.git` file included, fails the Attempt with `cannot prepare workspace <key>: the workspace <path> is not a clone of the project, ...`. Since bl-253 the reason names what Loop refused: `<path>/.git/commondir is there, ...`, `<path> is a symbolic link, ...`, `<path> is hard linked (<n> links), ...`, or `extensions.refStorage in <path>/.git/config is "<value>", ...`.
+
+### The layout of a clone's `.git`
+
+Added in bl-253. Git finds the repository, the ref store and the work tree from files inside the clone's `.git`, which the agent owns, and some of them sent Loop's own git to the operator's project: reuse removed the project's remotes, the base ref was written in the project, and the merge check's `git merge` moved the project's `main`. So Loop requires of a clone's `.git`:
+
+- it is a real folder, not a symbolic link and not a file;
+- it holds no `commondir` entry, of any type;
+- it holds no symbolic link at its top level or anywhere under `refs/` and `logs/` (links under `objects/` are allowed: they only add objects the clone sees);
+- it holds no hard linked regular file (more than one link) at its top level or under `logs/`, since git rewrites some of those in place, such as `MERGE_MSG`;
+- its `.git/config`, read with `git config --file` run outside the Workspace, has no `extensions.refStorage` value naming a path (one with `://`).
+
+Loop checks this at reuse, and again right before every git process it runs in the clone, since the agent can change its `.git` between turns: the fingerprint, the workspace facts, the session brief, the merge check, the auto merge gate, the base ref write and the import. A failed check runs no git and fails that call with the reason. In clone mode a `.git` that became a file, a link or went missing is refused the same way: the mode comes from `workspace.git`, never from what `.git` looks like.
+
+Every git process Loop runs in a clone also gets `GIT_DIR` and `GIT_COMMON_DIR` set to the clone's `.git` and `GIT_WORK_TREE` set to the clone, real paths, after any variable a caller passes, beside `GIT_NO_LAZY_FETCH=1`. `core.worktree` is config the agent can set at any time, and only `GIT_WORK_TREE` wins over it, so the merge check never writes the operator's files and `status` never reads them. The two rules work together: git's ref store reads `commondir` and `extensions.refStorage` whatever the three variables say. Git Loop runs in the project and in the import's temporary repository gets neither (`git clone` fails with `GIT_DIR` and `GIT_WORK_TREE` set), and `hooks` mode keeps its behavior.
 
 ### What stays shared
 
@@ -155,4 +169,4 @@ Switching a workflow from `clone` back to the worktree hooks leaves the keep ref
 
 ### Threat model
 
-Clones protect the operator's repository against mistakes and casual misuse by an agent, not against a hostile agent. One hostile path is closed: Loop's own git runs with lazy fetch off, so a promisor the agent configures never runs from it (bl-246). Verification still runs the agent's build code unsandboxed as the operator, and any write by absolute path, `git push /abs/path/to/project` included, stays possible until the OS sandbox of M5.
+Clones protect the operator's repository against mistakes and casual misuse by an agent, not against a hostile agent. Two hostile paths are closed: Loop's own git runs with lazy fetch off, so a promisor the agent configures never runs from it (bl-246), and Loop's own git never follows the clone's `.git` to the project, through the layout check and the three pins above (bl-253). The core checks' git and the protected roots check get the same rule in bl-254. Verification still runs the agent's build code unsandboxed as the operator, and any write by absolute path, `git push /abs/path/to/project` included, stays possible until the OS sandbox of M5.

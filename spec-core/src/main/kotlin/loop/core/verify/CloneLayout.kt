@@ -88,9 +88,11 @@ object CloneLayout {
         for (dir in listOf("refs", "logs")) {
             val folder = dotGit.resolve(dir)
             if (!Files.isDirectory(folder, LinkOption.NOFOLLOW_LINKS)) continue
-            Files.walk(folder).use { walk ->
-                walk.sorted().toList().firstNotNullOfOrNull { entry -> linked(entry, hardLinks = dir == "logs") }
-            }?.let { return it }
+            Files
+                .walk(folder)
+                .use { walk ->
+                    walk.sorted().toList().firstNotNullOfOrNull { entry -> linked(entry, hardLinks = dir == "logs") }
+                }?.let { return it }
         }
         val config = dotGit.resolve("config")
         if (Files.exists(config, LinkOption.NOFOLLOW_LINKS)) {
