@@ -604,10 +604,25 @@ object CoreChecks {
 
     private const val SHORT_SHA = 12
 
+    /** An empty grafts file that nobody can write to. */
+    private const val NO_GRAFTS = "/dev/null"
+
     /**
-     * git in [root] with exactly [env] minus every `GIT_` variable but `GIT_CONFIG_NOSYSTEM`, never taking the index
-     * lock, with [WorkspaceGit.PINS] (no hook, no fsmonitor, no signing), and with replace refs, grafts and the commit
-     * graph off: `refs/replace/`, `info/grafts` or
+     * The environment of the checks' own git: [env] minus every `GIT_` variable but `GIT_CONFIG_NOSYSTEM`, never taking
+     * the index lock, with replace refs and grafts off, and with lazy fetch off ([WorkspaceGit.NO_LAZY_FETCH], bl-246).
+     */
+    internal fun gitEnvironment(env: Map<String, String>): Map<String, String> =
+        env.filterKeys { !it.startsWith("GIT_") || it == "GIT_CONFIG_NOSYSTEM" } +
+            mapOf(
+                "GIT_OPTIONAL_LOCKS" to "0",
+                "GIT_NO_REPLACE_OBJECTS" to "1",
+                "GIT_GRAFT_FILE" to NO_GRAFTS,
+                WorkspaceGit.NO_LAZY_FETCH to "1",
+            )
+
+    /**
+     * git in [root] with the [gitEnvironment] of [env], with [WorkspaceGit.PINS] (no hook, no fsmonitor, no signing),
+     * and with replace refs, grafts, the commit graph and lazy fetch off: `refs/replace/`, `info/grafts` or
      * `objects/info/commit-graph`, written by hand too, could swap the merge base's tree or move the merge base itself.
      */
     private class Git(
@@ -629,10 +644,7 @@ object CoreChecks {
             val builder = ProcessBuilder(command)
             val processEnv = builder.environment()
             processEnv.clear()
-            env.filterKeys { !it.startsWith("GIT_") || it == "GIT_CONFIG_NOSYSTEM" }.forEach { (key, value) -> processEnv[key] = value }
-            processEnv["GIT_OPTIONAL_LOCKS"] = "0"
-            processEnv["GIT_NO_REPLACE_OBJECTS"] = "1"
-            processEnv["GIT_GRAFT_FILE"] = NO_GRAFTS
+            processEnv.putAll(gitEnvironment(env))
             val process = builder.start()
             val written =
                 CompletableFuture.runAsync {
@@ -655,11 +667,6 @@ object CoreChecks {
         }
 
         private fun readAll(input: InputStream): String = String(input.readAllBytes(), Charsets.UTF_8)
-
-        private companion object {
-            /** An empty grafts file that nobody can write to. */
-            const val NO_GRAFTS = "/dev/null"
-        }
     }
 }
 

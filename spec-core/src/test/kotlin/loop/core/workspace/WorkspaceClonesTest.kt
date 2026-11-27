@@ -1,5 +1,6 @@
 package loop.core.workspace
 
+import loop.core.verify.LazyFetchTrap
 import loop.core.verify.WorkspaceGit
 import java.io.IOException
 import java.nio.file.Files
@@ -378,6 +379,133 @@ class WorkspaceClonesTest {
         // The same command without Loop's pins runs the hook, so the test proves the pins.
         git("update-ref", "refs/loop/probe", first, dir = workspace)
         assertTrue(marker.exists(), "the hook is live without the pins")
+    }
+
+    /** A git that reports [version] for `git version` and runs the real git for everything else. */
+    private fun reporting(version: String): WorkspaceGit {
+        val real =
+            ProcessBuilder("sh", "-c", "command -v git")
+                .start()
+                .inputStream
+                .bufferedReader()
+                .readText()
+                .trim()
+        val fake = folder.resolve("git-${version.replace(Regex("[^0-9A-Za-z]"), "_")}")
+        fake.writeText(
+            "#!/bin/sh\nfor last; do :; done\nif [ \"\$last\" = version ]; then echo '$version'; exit 0; fi\nexec '$real' \"\$@\"\n",
+        )
+        Files.setPosixFilePermissions(fake, PosixFilePermissions.fromString("rwxr-xr-x"))
+        return WorkspaceGit(hostEnv, git = fake.toString())
+    }
+
+    @Test
+    fun `bl-246 a git older than the minimum fails the creation and the reuse of a clone, naming the version found and the minimum`() {
+        val old = WorkspaceClones(project, reporting("git version 2.44.0"))
+        Files.createDirectories(workspace)
+
+        val created = assertFailsWith<IOException> { old.create(workspace, key, first) }
+
+        assertContains(created.message.orEmpty(), "2.44.0")
+        assertContains(created.message.orEmpty(), "2.45.0")
+        assertIs<CloneState.Absent>(clones.state(workspace))
+        assertEquals("", git("for-each-ref", "refs/loop/"), "nothing is written in the project")
+        create(base = first)
+        val reused = assertFailsWith<IOException> { old.reuse(workspace, key) }
+        assertContains(reused.message.orEmpty(), "found git 2.44.0")
+    }
+
+    @Test
+    fun `bl-246 a newer git with a vendor suffix passes, and worktree mode never checks the version`() {
+        Files.createDirectories(workspace)
+
+        WorkspaceClones(project, reporting("git version 2.54.0 (Apple Git-157)")).create(workspace, key, first)
+
+        assertEquals("loop/t-1", git("symbolic-ref", "--short", "HEAD", dir = workspace))
+        // The fingerprint and the merge check of a worktree workspace run on an older git as before.
+        assertEquals(first, reporting("git version 2.30.0").head(project))
+    }
+
+    @Test
+    fun `bl-246 a promisor the agent configures in its clone never runs from the reuse, which fails with a named reason`() {
+        create(base = first)
+        val trap = LazyFetchTrap(workspace, folder.resolve("lazy-fetch-ran"), "refs/heads/loop/t-1").arm()
+        trap.proveLive()
+        // The same reuse without the variable runs the agent's program.
+        runCatching { WorkspaceClones(project, LazyFetchTrap.unguarded(hostEnv)).reuse(workspace, key) }
+        assertTrue(trap.marker.exists(), "the reuse does not fetch unguarded, so the test proves nothing")
+        Files.delete(trap.marker)
+
+        val error = assertFailsWith<IOException> { clones.reuse(workspace, key) }
+
+        assertFalse(trap.marker.exists(), "the reuse ran the agent's program")
+        assertContains(error.message.orEmpty(), "has no branch loop/t-1")
+    }
+
+    @Test
+    fun `bl-246 a promisor the agent configures in its clone never runs from the import`() {
+        create(base = first)
+        val work = commit("agent.txt", "agent\n", dir = workspace)
+        val trap = LazyFetchTrap(workspace, folder.resolve("lazy-fetch-ran"), "refs/heads/other").arm()
+        trap.proveLive()
+
+        clones.import(workspace, work, "loop/t-1")
+
+        // The fetch's upload-pack turns lazy fetch off for itself (git-upload-pack(1)) and the project's own git does
+        // not read the clone's config, so no command of the import fetches even unguarded; the environment test covers it.
+        assertFalse(trap.marker.exists(), "the import ran the agent's program")
+        assertEquals(work, git("rev-parse", "refs/heads/loop/t-1"))
+    }
+
+    @Test
+    fun `bl-246 a clone is made while the project's main checkout is on loop of the key, with a warning naming it`() {
+        val branched = commit("work.txt", "work\n")
+        git("checkout", "-q", "-b", "loop/t-1")
+        git("branch", "-f", "main", first)
+
+        create(base = first)
+
+        assertEquals("refs/heads/loop/t-1", git("symbolic-ref", "HEAD", dir = workspace))
+        assertEquals(branched, git("rev-parse", "HEAD", dir = workspace))
+        assertEquals("work\n", workspace.resolve("work.txt").readText())
+        assertEquals("", git("status", "--porcelain", dir = workspace))
+        val warning = clones.checkedOutWarning(key).orEmpty()
+        assertContains(warning, "loop/t-1")
+        assertContains(warning, project.toString())
+    }
+
+    @Test
+    fun `bl-246 a clone is made while a linked worktree of the project is on loop of the key, with a warning naming it`() {
+        val linked = folder.resolve("linked")
+        git("worktree", "add", "-q", "-b", "loop/t-1", linked.toString())
+        val branched = commit("work.txt", "work\n", dir = linked)
+
+        create(base = first)
+
+        assertEquals("refs/heads/loop/t-1", git("symbolic-ref", "HEAD", dir = workspace))
+        assertEquals(branched, git("rev-parse", "HEAD", dir = workspace))
+        assertTrue(workspace.resolve("work.txt").exists())
+        val warning = clones.checkedOutWarning(key).orEmpty()
+        assertContains(warning, "loop/t-1")
+        assertContains(warning, linked.toString())
+        git("worktree", "remove", "--force", linked.toString())
+        assertEquals(null, clones.checkedOutWarning(key), "no warning once no worktree has the branch")
+    }
+
+    @Test
+    fun `bl-246 an import never moves loop of the key while the project has it checked out, and works once it switched away`() {
+        git("checkout", "-q", "-b", "loop/t-1")
+        create(base = first)
+        val work = commit("agent.txt", "agent\n", dir = workspace)
+
+        val error = assertFailsWith<IOException> { clones.import(workspace, work, "loop/t-1") }
+
+        assertContains(error.message.orEmpty(), "loop/t-1")
+        assertContains(error.message.orEmpty(), project.toString())
+        assertEquals(first, git("rev-parse", "refs/heads/loop/t-1"))
+        assertEquals("", git("status", "--porcelain"))
+        git("checkout", "-q", "main")
+        clones.import(workspace, work, "loop/t-1")
+        assertEquals(work, git("rev-parse", "refs/heads/loop/t-1"))
     }
 
     private companion object {

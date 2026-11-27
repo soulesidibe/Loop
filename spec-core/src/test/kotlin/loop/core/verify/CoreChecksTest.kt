@@ -11,6 +11,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.io.path.createDirectories
 import kotlin.io.path.createTempDirectory
 import kotlin.io.path.deleteExisting
+import kotlin.io.path.exists
 import kotlin.io.path.readText
 import kotlin.io.path.writeText
 import kotlin.test.Test
@@ -312,6 +313,31 @@ class CoreChecksTest {
         val started = trace.readText().lines().filter { " start " in it && " -C " in it }
         assertTrue(started.isNotEmpty(), trace.readText())
         started.forEach { line -> assertContains(line, "-c core.commitGraph=false") }
+    }
+
+    @Test
+    fun `bl-246 the git of the core checks runs with lazy fetch off, whatever the check's environment says`() {
+        val env = CoreChecks.gitEnvironment(mapOf("PATH" to path, "GIT_NO_LAZY_FETCH" to "0", "GIT_DIR" to "/elsewhere"))
+
+        assertEquals("1", env["GIT_NO_LAZY_FETCH"])
+        assertNull(env["GIT_DIR"])
+        assertEquals(path, env["PATH"])
+    }
+
+    @Test
+    fun `bl-246 a promisor the agent configures never runs from diff_policy or changed_line_coverage`() {
+        repo()
+        write("src/app.kt", "fun main() { println() }\n")
+        commitAll("work")
+        val trap = LazyFetchTrap(workspace, workspace.resolveSibling("${workspace.fileName}-lazy-fetch-ran"), "refs/heads/loop/t-1").arm()
+        trap.proveLive()
+
+        val policy = diffPolicy()
+        val coverage = run(CheckConfig.ChangedLineCoverage(listOf("report.xml"), 80.0, "main"))
+
+        assertFalse(trap.marker.exists(), "a check ran the agent's program")
+        assertFalse(policy.passed, policy.output)
+        assertFalse(coverage.passed, coverage.output)
     }
 
     // deny guards (m2-13)

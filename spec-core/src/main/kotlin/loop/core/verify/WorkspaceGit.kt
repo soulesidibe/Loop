@@ -25,7 +25,7 @@ import kotlin.time.Duration.Companion.minutes
  * so each command gets Loop's [PINS] and [MORE_PINS] on its command line (no hooks, no fsmonitor, no signing, no
  * signature check, no gpg program, no automatic gc or maintenance, no replace refs), only `PATH`,
  * `HOME` and the locale of [env] ([minimal]: no token, no Anthropic key, no `GIT_` variable that could point git at
- * another repository) plus `GIT_TERMINAL_PROMPT=0`, and is stopped with what it started after [timeout]. Filters and
+ * another repository) plus `GIT_TERMINAL_PROMPT=0` and, last, [NO_LAZY_FETCH] (bl-246), and is stopped with what it started after [timeout]. Filters and
  * merge drivers a `.gitattributes` names can still run as Loop's user: bl-55 and M5 own that cure.
  */
 class WorkspaceGit(
@@ -570,6 +570,8 @@ class WorkspaceGit(
         builder.environment().putAll(env)
         builder.environment()["GIT_TERMINAL_PROMPT"] = "0"
         builder.environment().putAll(extra)
+        // bl-246: last, so no extra turns it back on. A promisor the agent configures never runs as the operator.
+        builder.environment()[NO_LAZY_FETCH] = "1"
         val process = startProcess(builder)
         cancellation?.started(process)
         val timedOut = AtomicBoolean(false)
@@ -647,6 +649,14 @@ class WorkspaceGit(
                 "gc.auto=0",
                 "maintenance.auto=false",
             ).flatMap { listOf("-c", it) } + "--no-replace-objects"
+
+        /**
+         * bl-246: the variable that turns lazy fetch off (git 2.45 and later), set to `1` last in every git process Loop
+         * starts in a workspace or the project. An agent that sets `extensions.partialClone` to an `ext::` URL in the
+         * config and points a ref at a missing object would otherwise have Loop's next `rev-parse` or `status` run its
+         * program. `0` turns lazy fetch back on, which is why no caller's variable may follow it.
+         */
+        const val NO_LAZY_FETCH: String = "GIT_NO_LAZY_FETCH"
 
         /** The author and committer of a merge commit Loop makes. */
         val LOOP_IDENTITY: Map<String, String> =

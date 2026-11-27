@@ -33,7 +33,8 @@ import kotlin.time.Duration.Companion.minutes
  * no `url.*.insteadOf` can redirect it.
  *
  * Every git process gets a minimal environment ([minimalEnv]: `PATH`, `HOME` and the locale) plus
- * `GIT_TERMINAL_PROMPT=0`, so git never waits for a password; each one is stopped after [timeout]. The push alone,
+ * `GIT_TERMINAL_PROMPT=0`, so git never waits for a password, and, last, `GIT_NO_LAZY_FETCH=1`, so a promisor in the
+ * project's config never runs (bl-246); each one is stopped after [timeout]. The push alone,
  * and the helpers git starts for it, also get [token] in [TOKEN_VARIABLE], read by a credential helper that answers
  * only for the host of [url], over its scheme. The token is never in an argument, a URL or a git config file.
  *
@@ -438,7 +439,7 @@ class GitPush(
     private fun pins(): List<String> = pins(url.scheme)
 
     /**
-     * Runs git with [args] in [cwd] with [minimalEnv] and no prompt. [isolated] adds no user or system config, for
+     * Runs git with [args] in [cwd] with [minimalEnv], no prompt and no lazy fetch. [isolated] adds no user or system config, for
      * the push repository; the token variable is in the environment only when [withToken].
      */
     private suspend fun run(
@@ -454,6 +455,8 @@ class GitPush(
             builder.environment()["GIT_TERMINAL_PROMPT"] = "0"
             if (isolated) builder.environment().putAll(NO_CONFIG_FILES)
             if (withToken) builder.environment()[TOKEN_VARIABLE] = token
+            // bl-246: last. A promisor an agent writes in the project's config from its worktree never runs as the operator.
+            builder.environment()["GIT_NO_LAZY_FETCH"] = "1"
             val process =
                 try {
                     startProcess(builder)

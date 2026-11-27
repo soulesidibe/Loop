@@ -12,11 +12,14 @@ import loop.api.ProjectId
 import loop.api.RecordedEvent
 import loop.api.Redactor
 import loop.core.template.TemplateEngine
+import loop.core.verify.LazyFetchTrap
 import loop.core.verify.WorkspaceGit
 import java.io.IOException
+import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.createDirectories
 import kotlin.io.path.createTempDirectory
+import kotlin.io.path.exists
 import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -264,6 +267,23 @@ class SessionBriefTest {
             assertTrue(text.contains("Workspace state: not available, the base nope is not a commit of this workspace."), text)
             assertTrue(text.contains("Checks: not available, no earlier attempt has a verdict."), text)
             assertTrue(text.contains("### Counters"), text)
+        }
+
+    @Test
+    fun `bl-246 a promisor the agent configures never runs from the git reads of the brief`() =
+        runTest {
+            val base = gitWorkspace()
+            val trap = LazyFetchTrap(workspace, root.resolve("lazy-fetch-ran"), "refs/heads/main").arm()
+            trap.proveLive()
+            val env = mapOf("PATH" to System.getenv("PATH").orEmpty(), "HOME" to root.toString())
+            // The same brief without the variable runs the agent's program.
+            brief(git = LazyFetchTrap.unguarded(env)).build(project, issue, workspace, base, findings = null)
+            assertTrue(trap.marker.exists(), "the brief does not fetch unguarded, so the test proves nothing")
+            Files.delete(trap.marker)
+
+            brief(git = WorkspaceGit(env)).build(project, issue, workspace, base, findings = null)
+
+            assertFalse(trap.marker.exists(), "the brief ran the agent's program")
         }
 
     @Test
