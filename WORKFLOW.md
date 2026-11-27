@@ -21,6 +21,8 @@ hooks:
   timeout_ms: 60000
 agent:
   max_concurrent_agents: 2
+  # bl-188: one verification or merge check build at a time; two agents still work in parallel.
+  max_concurrent_verifications: 1
   max_turns: 10
   env:
     # bl-01: each attempt gets its own Gradle daemon pool, see docs/self-hosting.md.
