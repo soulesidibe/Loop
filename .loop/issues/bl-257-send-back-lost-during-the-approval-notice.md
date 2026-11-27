@@ -1,7 +1,7 @@
 ---
 id: bl-257
 title: "A send back that lands while Loop sends the approval notice is deleted"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-agent]
 blocked_by: []
@@ -68,3 +68,9 @@ Filed from the Fable 5.2 recheck of pull request #106. The recheck reproduced it
   `AssertionFailedError: the sent back approval row is still in the store ==> expected: not <null>`
   The fix: the end of the verify wait in `waitingFor` now keeps the wait when it became an approval wait, held for approval or stored as the approval wait of the same attempt (`Waits.becameApproval`). The same check sets `waitingApproval`, so the attempt still ends as `waiting_approval`. bl-250's `replaceApproval` is not on main yet, so it could not be used. This check covers a send back and an approve without a new store write.
   Green: the sent back row stays with its reason, and the next dispatch renders `kind=[sent_back]` with `Findings: Sent back by soule: Use Save.`. The approve in the same shape keeps the approved row, and the next tick delivers it (move to review, wait ended). This case already passed on main, since an approved row keeps the approval hold, so it is a guard test. Controls pass: no human action keeps the undecided approval wait; `LoopModeWaitingTest` "reconciliation during the check ends the wait" (cancel with endOnCancel true) and "a failed check ends the wait" are unchanged. `:spec-core:test --tests "loop.core.orchestrator.*"` and ktlintCheck pass, after a clean merge of the moved base (bl-246). Docs: a bl-257 paragraph in the m2-24 section of spec-decisions, next to where bl-250's conditional saves land.
+
+2026-11-27 01:30Z loop: Loop opened pull request #107 for this issue: https://github.com/soulesidibe/Loop/pull/107
+
+2026-11-27 01:30Z loop: Loop could not merge pull request #107: merging main at b6da7329da6c99f0bfce00c28374ea4c9dfefd59 into loop/bl-257 conflicts (conflict in docs/spec-decisions.md, spec-core/src/test/kotlin/loop/core/waiting/WaitsTest.kt). The merge was aborted and the branch is unchanged. The next attempt merges refs/loop/base/main into its branch, resolves the conflict and submits the result again.
+
+2026-11-27 02:35Z loop: Loop updated pull request #107 for this issue: https://github.com/soulesidibe/Loop/pull/107

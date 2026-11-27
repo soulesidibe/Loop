@@ -1,7 +1,7 @@
 ---
 id: bl-253
 title: "Clone workspaces: Loop's own git must never be redirected to the project by the clone's .git"
-state: todo
+state: done
 priority: 2
 labels: [ready-for-agent]
 blocked_by: [bl-246]
@@ -124,3 +124,34 @@ Revised and split after a Fable 5.2 review of the brief on 2026-11-26.
 - The mode now comes from `workflow.workspaceGit`, never from the shape of `.git`: a clone whose `.git` became a `gitdir:` file or went missing would otherwise fall back to unpinned git, and `ProtectedRootsCheck.findGitRoot` walks up to the project when `.git` is missing.
 - In the Fable `commondir` replay of pull request #103, the project config change came from the agent's own unpinned git, which the threat model already accepts as a write by absolute path. This issue covers Loop's own git only.
 - Split: the core checks' runner, `ProtectedRootsCheck` and the `AttemptContext` field moved to bl-254 (reads only, a verification bypass, no project write). bl-253 alone gates pull request #103.
+
+2026-11-27 02:17Z agent 179e4822: bl-253 proofs, from the real git tests in `spec-core/src/test/kotlin/loop/core/workspace/CloneLayoutTest.kt` (git 2.54, run 2026-11-27). Each hostile setup is first shown to work with an unguarded command, then guarded. `<ws>` is the clone workspace, `<project>` the project.
+  Live setups (unguarded command and what it changed in the project):
+  - Hostile commondir at reuse: `git remote` in the clone printed `origin`, and `remote remove origin` deleted it and `refs/remotes/origin/main` from the project.
+  - Commondir set late, HEAD at refs/heads/main: an unguarded merge with the environment pins moved the project's main from bf885472 to 6f5fa066, a commit the project does not have.
+  - Links: unguarded git through `.git/config`, `.git/refs` and `.git/packed-refs` each changed the project.
+  - extensions.refStorage=files://<project>/.git: with the three pins, `update-ref refs/loop/base/main` in the clone wrote the project.
+  - MERGE_MSG hard linked to a project file: an unguarded merge rewrote the project file in place.
+  - core.worktree, in config and in config.worktree: unguarded `ls-files --others --exclude-standard` listed the project's untracked.txt, and an unguarded merge wrote h.txt into the project.
+  - `.git` replaced by a `gitdir:` file: unguarded git found the project's repository. `.git` removed: unguarded git walked up to the project.
+  Guarded runs:
+  - Commondir: `state` is Foreign with "<ws>/.git/commondir is there, which points git at another repository's refs and config", and prepare fails with "cannot prepare workspace t-1: the workspace <ws> is not a clone of the project, <ws>/.git/commondir is there, ...". The project's config, packed-refs and for-each-ref output are byte for byte unchanged.
+  - Links: `state` and reuse both refuse with "<ws>/.git/config (refs, packed-refs) is a symbolic link, which git writes through". The project is unchanged.
+  - Commondir set late: the merge, fingerprint, session brief, workspace facts, writeBase, import and clone delivery all refuse with "Loop runs no git in the clone <ws>: <ws>/.git/commondir is there, ...", and no project ref changes.
+  - refStorage: at reuse, `state` is Foreign with "extensions.refStorage in <ws>/.git/config is \"files://<project>/.git\", which sends the clone's refs to another path". When set late, the same seven operations refuse naming the key, and no project ref changes.
+  - Hard link: `state` is Foreign with "<ws>/.git/MERGE_MSG is hard linked (2 links), which git can rewrite in place", the merge refuses at use, and the project file is unchanged.
+  - `gitdir:` file and missing `.git`: the seven operations refuse with "<ws>/.git is not a folder, ..." and "<ws>/.git is missing, the clone has no repository of its own". The project's refs and index are unchanged.
+  - core.worktree, both variants: reuse, the fingerprint, the merge (it landed in the clone), the conflict and its abort, the brief, the facts and the import left the project's file hashes, `.git/index` hash and `git status --porcelain` unchanged.
+  Unit tests in `WorkspaceGitTest`: `GIT_DIR`, `GIT_COMMON_DIR` and `GIT_WORK_TREE` are pinned through both run and stream, over a caller's values, with `GIT_NO_LAZY_FETCH=1` kept. They are absent in the project and in the import repository. In hooks mode there is no check and no pin. `create` still makes a working clone.
+
+2026-11-27 02:22Z loop: Loop opened pull request #109 for this issue: https://github.com/soulesidibe/Loop/pull/109
+
+2026-11-27 02:30Z loop: Loop did not merge pull request #109 on its own: the delivery policy is auto, but the auto merge needs every condition and a low merge risk band, so it waits for an operator's approval.
+  Merge risk: band medium, score 1.27.
+  - alignment: aligned, The diff adds the layout check, the three environment pins, clone mode wired from the workflow, and the docs the issue asks for. It touches no protected path, and the cli and orchestrator edits are the required wiring.
+  - impact: medium, Every git process Loop starts in a clone workspace now passes the check and gets pinned variables. Writes and import also refuse a workspace that is no longer a clone, which changes behavior that used to skip it, but only in clone mode.
+  - verification: strong, A 557-line real-git test proves each hostile setup live and then guarded, covering commondir, links, refStorage, hard links, core.worktree, a replaced .git and a missing .git. WorkspaceGitTest adds unit tests for the pins in both run and stream, none in the project, and hooks mode.
+  - rollback_cost: two_way, The change is code and docs only, with no data migration or persisted state, so a revert restores the old behavior.
+  - error_detection: loud, A failed layout check runs no git and fails the call with a reason that names the path or key. The changes to writeBase, import and delivery now refuse instead of silently skipping.
+  - band floor medium: the reviewer's diff was cut to fit its prompt limit, 6 of 11 changed files left out in whole or in part
+  Once approved, Loop runs the merge check again and merges.
