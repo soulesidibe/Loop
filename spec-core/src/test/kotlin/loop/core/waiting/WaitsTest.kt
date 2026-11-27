@@ -518,6 +518,24 @@ class WaitsTest {
     }
 
     @Test
+    fun `bl-252 an approval wait stores the state its issue was in and is moved by another state, as an ask wait`() {
+        fun approval(state: String?): Wait.Approval =
+            Wait.approval(project, "id-1", "t-1", AttemptId("a1"), RunId("r1"), since, to = "review", fingerprint = "fp", state = state)
+
+        val approval = approval(state = "todo")
+
+        assertEquals("todo", approval.state)
+        assertEquals("todo", approval.toRecord().data[WaitKeys.STATE])
+        assertFalse(approval.humanMoved("todo"))
+        assertFalse(approval.humanMoved(" Todo "), "the same state, written another way")
+        assertTrue(approval.humanMoved("in_progress"))
+        val older = approval(state = null)
+        assertNull(older.state)
+        assertFalse(older.toRecord().data.containsKey(WaitKeys.STATE), "no state, the record of an older build")
+        assertFalse(older.humanMoved("in_progress"), "a wait with no state is never moved")
+    }
+
+    @Test
     fun `m4-31 one read holds the stored ask waits, so a restart keeps their issues waiting`() =
         runTest {
             val store = FakeWaitingIssues()

@@ -620,7 +620,7 @@ class Verification(
             if (!ownMove(from)) record(HumanTouched, mapOf(HumanTouched.TOUCH to HumanTouch.MOVE, HumanTouched.TO_STATE to from))
             return "the issue is no longer active, it is in $from"
         }
-        startApprovalWait(to, approvedBy = AutoMerge.AUTO)
+        startApprovalWait(to, from, approvedBy = AutoMerge.AUTO)
         log.log(
             LogLevel.INFO,
             DELIVERY,
@@ -668,7 +668,7 @@ class Verification(
             is DeliveryOutcome.Retry -> {
                 val reason = redactor.redact("cannot deliver yet, ${outcome.step}: ${outcome.reason}").take(REASON_MAX)
                 log.log(LogLevel.WARN, DELIVERY, LogOutcome.FAILED, logContext(), reason = reason)
-                startApprovalWait(to, approvedBy = DeliveryPolicy.Auto.wire, pullRequest = outcome.commented)
+                startApprovalWait(to, from, approvedBy = DeliveryPolicy.Auto.wire, pullRequest = outcome.commented)
                 null
             }
             is DeliveryOutcome.Failed -> requestApproval(to, pullRequest = outcome.commented)
@@ -718,7 +718,7 @@ class Verification(
             }
         val policy = if (deliverable != null) DeliveryPolicy.Auto.wire else DeliveryPolicy.Human.wire
         postSummary(current, to, notes, policy)
-        startApprovalWait(to, approvedBy = null, pullRequest = pullRequest)
+        startApprovalWait(to, from, approvedBy = null, pullRequest = pullRequest)
         postedDeliverables -= deliverableKey()
         record(
             ApprovalRequested,
@@ -804,9 +804,11 @@ class Verification(
      * the fingerprint (m2-24). With `delivery.pull_request` (m2-25) it also holds the rendered check lines and the
      * number of judgment calls, so a delivery after a restart builds the full body, and, when [approvedBy] is set,
      * the approval of the `auto` policy, so the next tick delivers it, with the [pullRequest] URL already commented.
+     * It stores [from], the state the issue was just read in, so a human move to another state rejects it (bl-252).
      */
     private suspend fun startApprovalWait(
         to: String,
+        from: String,
         approvedBy: String?,
         pullRequest: String? = null,
     ) {
@@ -833,6 +835,7 @@ class Verification(
                 approvedAt = approvedBy?.let { clock.now() },
                 pullRequest = pullRequest,
                 kind = kind?.name,
+                state = from,
             )
         // m4-30: an unapproved wait tells the human once, its notice key saved with it.
         host.startApprovalWait(wait, "a verified result waits for approval to move to $to")
