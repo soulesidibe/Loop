@@ -2948,6 +2948,12 @@ class Orchestrator(
                         "when it has one, else at its HEAD; set kinds.code.guards.base or the pull request base"
                 log.log(LogLevel.WARN, "clone_start", LogOutcome.COMPLETED, logContext(), reason = reason)
             }
+            if (workspace.createdNow) {
+                // bl-246: said at once, since the import of a verified commit then refuses to move that branch.
+                workspaces.clones?.let { clones -> withContext(io) { clones.checkedOutWarning(key) } }?.let { reason ->
+                    log.log(LogLevel.WARN, "clone_branch_checked_out", LogOutcome.COMPLETED, logContext(), reason = reason)
+                }
+            }
             this.workspace = workspace
             this.env = hookEnv
             val beforeRun = workspaces.beforeRun(workspace, hookEnv, hooks)

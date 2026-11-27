@@ -114,6 +114,43 @@ class CloneWorkspaceCommandTest {
     }
 
     @Test
+    fun `bl-246 a clone is made while the operator has loop of the key checked out, said in a warning, and that branch never moves`() {
+        fixture.issue("t-1")
+        fixture.agentScript.writeText(
+            """
+            |#!/bin/sh
+            |set -e
+            |echo "hello from ${'$'}LOOP_ISSUE_IDENTIFIER" > hello.txt
+            |git add hello.txt
+            |git -c user.name="Loop agent" -c user.email=agent@example.com commit -q -m "work on ${'$'}LOOP_ISSUE_IDENTIFIER"
+            |git rev-parse HEAD > "$seen/head.txt"
+            |loop tool move review
+            |
+            """.trimMargin(),
+        )
+        Files.setPosixFilePermissions(fixture.agentScript, PosixFilePermissions.fromString("rwxr-xr-x"))
+        fixture.writeWorkflow(extra = verify)
+        fixture.workflow.writeText(fixture.workflow.readText().replace("  root: ./workspaces\n", "  root: ./workspaces\n  git: clone\n"))
+        val repo = TestRepo(fixture.projectDir, fixture.homeDir).init(seed = false)
+        repo.git("checkout", "-q", "-b", "loop/t-1")
+        val operator = repo.git("rev-parse", "HEAD")
+
+        val result = fixture.loop("run", "--once")
+
+        assertEquals(0, result.exitCode, result.toString())
+        val workspace = fixture.workspace("t-1")
+        val head = seen.resolve("head.txt").readText().trim()
+        assertEquals(head, repo.git("rev-parse", "HEAD", cwd = workspace), "the clone was made and the agent worked in it")
+        val log = result.stdout + result.stderr + fixture.humanLog.readText()
+        assertContains(log, "clone_branch_checked_out")
+        assertContains(log, "the project has loop/t-1 checked out in ${fixture.projectDir.toRealPath()}")
+        assertEquals(operator, repo.git("rev-parse", "refs/heads/loop/t-1"), "the operator's checked out branch did not move")
+        // A moved branch would show the agent's change as a staged reverse edit; the tracker's own edit of the issue
+        // file is unstaged.
+        assertEquals("", repo.git("diff", "--cached", "--name-only"), "the operator's index agrees with their branch")
+    }
+
+    @Test
     fun `the same agent in a worktree workspace moves the project's main, so the clone is what protects it`() {
         fixture.issue("t-1")
         writeAgent()
