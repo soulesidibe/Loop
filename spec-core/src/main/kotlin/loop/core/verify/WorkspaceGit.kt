@@ -27,6 +27,11 @@ import kotlin.time.Duration.Companion.minutes
  * `HOME` and the locale of [env] ([minimal]: no token, no Anthropic key, no `GIT_` variable that could point git at
  * another repository) plus `GIT_TERMINAL_PROMPT=0` and, last, [NO_LAZY_FETCH] (bl-246), and is stopped with what it started after [timeout]. Filters and
  * merge drivers a `.gitattributes` names can still run as Loop's user: bl-55 and M5 own that cure.
+ *
+ * bl-253: in a clone workspace, a root [clones] covers in `workspace.git: clone`, every git process first passes
+ * [CloneLayout] (a refusal runs no git and fails the call with an [IOException] naming the path or the key), then
+ * runs with `GIT_DIR` and `GIT_COMMON_DIR` at the clone's `.git` and `GIT_WORK_TREE` at the clone, real paths, set after
+ * the caller's variables. Git in the project and in a temporary repository gets neither.
  */
 class WorkspaceGit(
     env: Map<String, String> = System.getenv(),
@@ -34,7 +39,12 @@ class WorkspaceGit(
     private val timeout: Duration = DEFAULT_TIMEOUT,
     private val startProcess: (ProcessBuilder) -> Process = { it.start() },
     private val workTreeLimits: WorkTreeLimits = WorkTreeLimits(),
+    /** bl-253: the clone workspaces of the workflow in effect, none by default (`hooks` mode). */
+    private val clones: CloneRoots = CloneRoots.NONE,
 ) {
+    /** This git with [roots] as its clone workspaces, every other setting kept (bl-253). */
+    fun withClones(roots: CloneRoots): WorkspaceGit = WorkspaceGit(env, git, timeout, startProcess, workTreeLimits, roots)
+
     /**
      * A switch that stops the git commands and the hashing of one read, such as [workTree], from another thread (bl-149):
      * [cancel] stops the git it started, if one runs, and every later step fails with an [IOException].
@@ -101,7 +111,7 @@ class WorkspaceGit(
         read: (InputStream) -> Unit,
     ): Int {
         val builder = ProcessBuilder(command(root, args)).redirectError(ProcessBuilder.Redirect.DISCARD)
-        return start(builder, extra, cancellation) { process ->
+        return start(builder, extra, cancellation, pinsFor(root, cancellation)) { process ->
             process.inputStream.use(read)
             process.waitFor()
         }
@@ -118,20 +128,64 @@ class WorkspaceGit(
         cancellation: Cancellation? = null,
     ): Outcome {
         val builder = ProcessBuilder(command(root, args.toList()))
-        return start(builder, extra, cancellation) { process ->
-            val err = ByteArrayOutputStream()
-            var errorRead: Result<Long>? = null
-            val errors =
-                Thread {
-                    errorRead = runCatching { process.errorStream.use { it.copyTo(err) } }
-                }.apply { isDaemon = true }
-            errors.start()
-            val out = runCatching { process.inputStream.use { it.readBytes() } }
-            val code = process.waitFor()
-            errors.join()
-            errorRead!!.getOrThrow()
-            Outcome(code, String(out.getOrThrow(), Charsets.UTF_8), err.toString(Charsets.UTF_8))
+        return start(builder, extra, cancellation, pinsFor(root, cancellation)) { process ->
+            collect(process)
         }
+    }
+
+    /** What [process] printed and how it exited, stderr read on a thread of its own. */
+    private fun collect(process: Process): Outcome {
+        val err = ByteArrayOutputStream()
+        var errorRead: Result<Long>? = null
+        val errors =
+            Thread {
+                errorRead = runCatching { process.errorStream.use { it.copyTo(err) } }
+            }.apply { isDaemon = true }
+        errors.start()
+        val out = runCatching { process.inputStream.use { it.readBytes() } }
+        val code = process.waitFor()
+        errors.join()
+        errorRead!!.getOrThrow()
+        return Outcome(code, String(out.getOrThrow(), Charsets.UTF_8), err.toString(Charsets.UTF_8))
+    }
+
+    /**
+     * bl-253: every `extensions.refStorage` value of the config file [config], read with `git config --file` from the
+     * temporary folder, outside any workspace, with no include followed (git reads the extensions of a repository the
+     * same way), so the config it reads never decides where this read goes. No layout check and no pin. A git failure
+     * other than "no such key" is an [IOException].
+     */
+    fun refStorage(config: Path): List<String> {
+        val outside = Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath()
+        val args = listOf("config", "--file", config.toString(), "--no-includes", "--get-all", "extensions.refstorage")
+        val outcome = start(ProcessBuilder(command(outside, args)), emptyMap(), null, pins = null, ::collect)
+        return when (outcome.code) {
+            0 ->
+                outcome.stdout
+                    .lines()
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+            1 -> emptyList()
+            else -> throw IOException("cannot read extensions.refStorage of $config: ${outcome.firstLine()}")
+        }
+    }
+
+    /**
+     * bl-253: the variables that pin git to the clone workspace [root], after [CloneLayout] passed, or null when [root]
+     * is not a clone workspace in effect. A refusal is an [IOException] naming its reason, and no git runs.
+     */
+    private fun pinsFor(
+        root: Path,
+        cancellation: Cancellation?,
+    ): Map<String, String>? {
+        val scope = clones.current() ?: return null
+        if (!scope.covers(root)) return null
+        cancellation?.check()
+        val workspace = root.toAbsolutePath().normalize()
+        CloneLayout.refusal(workspace, ::refStorage)?.let { throw IOException("Loop runs no git in the clone $workspace: $it") }
+        val real = workspace.toRealPath()
+        val dotGit = real.resolve(".git").toString()
+        return mapOf(GIT_DIR to dotGit, GIT_COMMON_DIR to dotGit, GIT_WORK_TREE to real.toString())
     }
 
     /** The commit `HEAD` of [root] is at; a [cancellation] stops the read. */
@@ -563,6 +617,7 @@ class WorkspaceGit(
         builder: ProcessBuilder,
         extra: Map<String, String>,
         cancellation: Cancellation?,
+        pins: Map<String, String>?,
         body: (Process) -> T,
     ): T {
         cancellation?.check()
@@ -570,6 +625,8 @@ class WorkspaceGit(
         builder.environment().putAll(env)
         builder.environment()["GIT_TERMINAL_PROMPT"] = "0"
         builder.environment().putAll(extra)
+        // bl-253: after the extras, so no caller moves git off the clone it checked.
+        pins?.let { builder.environment().putAll(it) }
         // bl-246: last, so no extra turns it back on. A promisor the agent configures never runs as the operator.
         builder.environment()[NO_LAZY_FETCH] = "1"
         val process = startProcess(builder)
@@ -657,6 +714,11 @@ class WorkspaceGit(
          * program. `0` turns lazy fetch back on, which is why no caller's variable may follow it.
          */
         const val NO_LAZY_FETCH: String = "GIT_NO_LAZY_FETCH"
+
+        /** bl-253: the repository, the common folder and the work tree of every git Loop runs in a clone workspace. */
+        const val GIT_DIR: String = "GIT_DIR"
+        const val GIT_COMMON_DIR: String = "GIT_COMMON_DIR"
+        const val GIT_WORK_TREE: String = "GIT_WORK_TREE"
 
         /** The author and committer of a merge commit Loop makes. */
         val LOOP_IDENTITY: Map<String, String> =

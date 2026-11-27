@@ -28,6 +28,12 @@ fun interface Fingerprinter {
     fun uncommitted(workspace: Path): Result<UncommittedFiles> = Result.success(UncommittedFiles(emptyList(), emptyList()))
 
     /**
+     * This fingerprinter with its git run under [roots], the clone workspaces of the workflow in effect (bl-253): the
+     * layout check and the pins of [WorkspaceGit]. Itself by default, for a fingerprinter that runs no git of its own.
+     */
+    fun withClones(roots: CloneRoots): Fingerprinter = this
+
+    /**
      * Puts the work tree of [workspace] back to its commit (m2-25): the tracked files a check rewrote, and the untracked
      * files a check created, so a later verification does not refute the agent for them. Ignored files and the result
      * file stay. Nothing by default, for a fingerprinter that cannot tell.
@@ -65,6 +71,8 @@ data class UncommittedFiles(
 open class WorkspaceFingerprinter(
     private val workspaceGit: WorkspaceGit = WorkspaceGit(),
 ) : Fingerprinter {
+    override fun withClones(roots: CloneRoots): Fingerprinter = WorkspaceFingerprinter(workspaceGit.withClones(roots))
+
     override fun of(workspace: Path): Result<String> =
         try {
             val root = workspace.toRealPath()
