@@ -843,19 +843,23 @@ The `loop-ext/` module does not exist. Since M4 its parts are packages under `lo
 
 ## 16. What ports from the manager skill
 
-| Today (skill) | In Loop |
-|---|---|
-| Preflight in one Bash call | Spec preflight + `loop doctor` (gap at M4) |
-| `claude --bg` per issue | `claude-code` runner plugin |
-| `SendMessage` conventions in the brief | Loop tools for agents |
-| "device request" chat protocol | `request_resource` / `release_resource` |
-| Expert agents via the Agent tool | Koog expert agents (gap at M4, M6) |
-| Triage in a subagent | Koog triage agent (gap at M4, M6) |
-| `merge-check.md` | Delivery check for pull requests |
-| `gate.sh` + evidence in the issue skill | Verify contracts with evidence and fingerprints |
-| Waves and module conflicts | Spec scheduling + the area lock (m4-17); triage scope estimates are a gap at M4 (M6) |
-| Brief extras in the config | Template + lessons (lessons a gap at M4, M6) |
-| The usage script | Spec token accounting + ledger, and `loop show --cost` per attempt (no cost for Codex) |
+Status as of m4-44 (2026-11-27). A covered row names the issues that built it and was used in the M4 exit wave (m4-43) or an M4 run, with the trace linked in m4-44. A gap names what replaces it until it is built. Three rows split into two halves.
+
+| Today (skill) | In Loop | Status at M4 |
+|---|---|---|
+| Preflight in one Bash call | Spec preflight of `loop run` and `loop status`, then `loop doctor` | Split. The spec preflight half is covered (M1 to M3). The `loop doctor` half is a gap, not built; the spec preflight replaces it |
+| `claude --bg` per issue | `claude-code` runner plugin | Covered (M1 to M3) |
+| `SendMessage` conventions in the brief | Loop tools for agents: `submit_result`, `move`, `comment`, `ask` and `loop answer`, `file_followup`, `request_resource` and `release_resource` | Covered (m4-31, m4-52, m4-33, m4-25, m4-51). `ask`, `loop answer` and the resource tools on Codex are proven by tests only, to prove in M5 (bl-270) |
+| "device request" chat protocol | `request_resource` and `release_resource` with the iOS simulator provider, and the `resource:` key of checks | Covered (m4-25, m4-26, m4-27) |
+| Expert agents via the Agent tool | Koog expert agents | Gap, M6. Until then the issue skill's own subagents play the expert role |
+| Triage in a subagent | Koog triage agent | Gap, M6. Until then the triage skill, run by hand |
+| `merge-check.md` | Delivery check for pull requests | Covered (M2) |
+| `gate.sh` + evidence in the issue skill | Verify contracts with evidence and fingerprints | Covered (M2) |
+| Waves and module conflicts | `blocked_by`, the per tracker limit and the area lock, then triage scope estimates | Split. The scheduling half is covered (m4-15, m4-17); the per tracker limit is proven by tests only (bl-270). The scope estimate half is a gap, M6; until then the area field and `blocked_by` are set by hand in triage |
+| Brief extras in the config | The prompt template and its variables, then lessons | Split. The template half is covered (M1 to M3, a kind's own template in m4-19). The lessons half is a gap, M6; until then the template and the session brief |
+| The usage script | Spec token accounting and the ledger, `loop show --cost` per attempt, and `loop report` (m4-38) | Covered (M1 to M3). The script summed one session with its subagents; Loop gives it per attempt. Codex reports no cost, so a Codex attempt shows none |
+
+Duties of the skill with no row, not ported in M4: effort per issue and the MCP flags of a session (no stand-in, the runner config applies to every issue), an explicit list of issues (the tracker's active states and required labels pick them), updates after each event (the `on_human_needed` hook and `loop status`), the final list of residual human steps (not in `loop report`), the attribution check (a line of the prompt template only) and worktree cleanup (the workspace hooks).
 
 The issue skill stays your template of choice for code issues on your projects. It needs one change: end with `submit_result` instead of messaging the manager, and never move the issue itself.
 
@@ -1015,3 +1019,5 @@ Shared physical devices across parallel issues, and a ledger comparing runners, 
 | How are human touches counted (bl-64)? | Open. Until it is answered, `loop report` prints human touches as not reliable (m4-38) |
 | Should the last session carry into the next one, by a resume after a stop or a transcript digest in the brief (bl-151)? | Deferred. In M4 only a Claude Code session below the soft limit resumes (m4-46); otherwise the next attempt starts fresh with the session brief |
 | Should a kind set its own runner? | Open, a gap after M4: every kind runs on the project's runner (section 6.2, m4-45) |
+| When is `loop doctor` built? | Not in M4, a gap recorded in m4-44. The spec preflight of `loop run` and `loop status` replaces it |
+| When do expert agents, triage, scope estimates and lessons move into Loop? | M6, gaps recorded in m4-44. Until then the issue skill's own subagents play the expert role, the triage skill runs by hand, the area field and `blocked_by` are set by hand in triage, and the prompt template and the session brief carry what lessons would |
