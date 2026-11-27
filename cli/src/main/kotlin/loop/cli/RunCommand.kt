@@ -341,7 +341,7 @@ class RunCommand(
         // the orchestrator adds only the issue and attempt ids: no tool config and no launcher on PATH.
         val checksOf = { wf: WorkflowFile ->
             val removed = agentEnvRemovedNames(wf)
-            val runner = CoreCheckRunner()
+            val runner = CoreCheckRunner(clones = CloneRoots.of(CloneScope.of(wf)))
             CheckRunner {
                 check,
                 cwd,

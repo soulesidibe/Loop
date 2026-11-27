@@ -92,9 +92,11 @@ object CoreChecks {
         check: CheckConfig.DiffPolicy,
         workspace: Path,
         env: Map<String, String>,
+        clones: CloneRoots = CloneRoots.NONE,
+        startProcess: (ProcessBuilder) -> Process = { it.start() },
     ): CheckResult =
         timed {
-            val git = Git(workspace.toRealPath(), env)
+            val git = Git.open(workspace, env, clones, startProcess)
             val mergeBase = git.mergeBase(check.base).getOrElse { return@timed couldNotRun(it.message!!) }
             val flags = git.run("ls-files", "-v", "-z")
             if (flags.code != 0) return@timed couldNotRun("git ls-files exited with code ${flags.code}")
@@ -193,9 +195,11 @@ object CoreChecks {
         check: CheckConfig.ChangedLineCoverage,
         workspace: Path,
         env: Map<String, String>,
+        clones: CloneRoots = CloneRoots.NONE,
+        startProcess: (ProcessBuilder) -> Process = { it.start() },
     ): CheckResult =
         timed {
-            val git = Git(workspace.toRealPath(), env)
+            val git = Git.open(workspace, env, clones, startProcess)
             val mergeBase = git.mergeBase(check.base).getOrElse { return@timed couldNotRun(it.message!!) }
             val found = ChangedLineCoverage.find(git.root, check.reports)
             found.missing?.let { return@timed couldNotRun("no coverage report matches $it") }
@@ -241,9 +245,12 @@ object CoreChecks {
      * finds no merge base.
      */
     private fun Git.mergeBase(base: String): Result<String> {
-        val top = run("rev-parse", "--show-toplevel")
-        val isTop = top.code == 0 && runCatching { Path.of(top.out.trim()).toRealPath() == root }.getOrDefault(false)
-        if (!isTop) return Result.failure(IOException("the workspace is not the top of a git work tree"))
+        // bl-254: in a clone workspace GIT_WORK_TREE pins the top to the workspace, so the guard only counts in hooks mode.
+        if (!clone) {
+            val top = run("rev-parse", "--show-toplevel")
+            val isTop = top.code == 0 && runCatching { Path.of(top.out.trim()).toRealPath() == root }.getOrDefault(false)
+            if (!isTop) return Result.failure(IOException("the workspace is not the top of a git work tree"))
+        }
         val found = run("merge-base", base, "HEAD")
         if (found.code != 0) {
             val why =
@@ -610,9 +617,14 @@ object CoreChecks {
     /**
      * The environment of the checks' own git: [env] minus every `GIT_` variable but `GIT_CONFIG_NOSYSTEM`, never taking
      * the index lock, with replace refs and grafts off, and with lazy fetch off ([WorkspaceGit.NO_LAZY_FETCH], bl-246).
+     * [pins], the clone pins of bl-254, come after [env], so no caller's variable moves git off the clone.
      */
-    internal fun gitEnvironment(env: Map<String, String>): Map<String, String> =
+    internal fun gitEnvironment(
+        env: Map<String, String>,
+        pins: Map<String, String> = emptyMap(),
+    ): Map<String, String> =
         env.filterKeys { !it.startsWith("GIT_") || it == "GIT_CONFIG_NOSYSTEM" } +
+            pins +
             mapOf(
                 "GIT_OPTIONAL_LOCKS" to "0",
                 "GIT_NO_REPLACE_OBJECTS" to "1",
@@ -624,11 +636,20 @@ object CoreChecks {
      * git in [root] with the [gitEnvironment] of [env], with [WorkspaceGit.PINS] (no hook, no fsmonitor, no signing),
      * and with replace refs, grafts, the commit graph and lazy fetch off: `refs/replace/`, `info/grafts` or
      * `objects/info/commit-graph`, written by hand too, could swap the merge base's tree or move the merge base itself.
+     *
+     * bl-254: in a [clone] workspace, the rule of [WorkspaceGit] (bl-253): every git first passes [CloneLayout], a
+     * refusal running no git and throwing an [IOException] that names the path or the key, so the check could not run,
+     * then gets `GIT_DIR` and `GIT_COMMON_DIR` at the clone's `.git` and `GIT_WORK_TREE` at the clone, real paths.
      */
     private class Git(
         val root: Path,
         private val env: Map<String, String>,
+        private val startProcess: (ProcessBuilder) -> Process,
+        val clone: Boolean = false,
     ) {
+        /** Reads `extensions.refStorage` of the clone's config outside the workspace, for [CloneLayout]. */
+        private val layoutGit by lazy { WorkspaceGit(env) }
+
         class Run(
             val code: Int,
             val out: String,
@@ -641,11 +662,12 @@ object CoreChecks {
         ): Run {
             // bl-28: the same pins as every other git Loop runs in a workspace, whose config the agent may write.
             val command = listOf("git") + WorkspaceGit.PINS + listOf("-C", root.toString(), "--no-replace-objects") + args
+            val pins = if (clone) clonePins() else emptyMap()
             val builder = ProcessBuilder(command)
             val processEnv = builder.environment()
             processEnv.clear()
-            processEnv.putAll(gitEnvironment(env))
-            val process = builder.start()
+            processEnv.putAll(gitEnvironment(env, pins))
+            val process = startProcess(builder)
             val written =
                 CompletableFuture.runAsync {
                     process.outputStream.use { stdin -> input?.let { stdin.write(it.toByteArray(Charsets.UTF_8)) } }
@@ -667,6 +689,38 @@ object CoreChecks {
         }
 
         private fun readAll(input: InputStream): String = String(input.readAllBytes(), Charsets.UTF_8)
+
+        /** The bl-253 pins of the clone [root], after its layout passed; a refusal is an [IOException]. */
+        private fun clonePins(): Map<String, String> {
+            refuseLayout(root, layoutGit)
+            val dotGit = root.resolve(".git").toString()
+            return mapOf(WorkspaceGit.GIT_DIR to dotGit, WorkspaceGit.GIT_COMMON_DIR to dotGit, WorkspaceGit.GIT_WORK_TREE to root.toString())
+        }
+
+        companion object {
+            /**
+             * The git of a check in [workspace]: a clone workspace when [clones] covers it, the mode coming from the
+             * workflow, never from what its `.git` looks like. A clone's layout is checked on the path as given, before
+             * it is resolved, so a workspace that is a symbolic link is refused.
+             */
+            fun open(
+                workspace: Path,
+                env: Map<String, String>,
+                clones: CloneRoots,
+                startProcess: (ProcessBuilder) -> Process,
+            ): Git {
+                val clone = clones.current()?.covers(workspace) == true
+                if (clone) refuseLayout(workspace.toAbsolutePath().normalize(), WorkspaceGit(env))
+                return Git(workspace.toRealPath(), env, startProcess, clone)
+            }
+
+            private fun refuseLayout(
+                workspace: Path,
+                git: WorkspaceGit,
+            ) {
+                CloneLayout.refusal(workspace, git::refStorage)?.let { throw IOException("Loop runs no git in the clone $workspace: $it") }
+            }
+        }
     }
 }
 
