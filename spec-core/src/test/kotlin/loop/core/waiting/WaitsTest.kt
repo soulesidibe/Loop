@@ -663,6 +663,29 @@ class WaitsTest {
             assertFalse(restarted.isBusy("id-1"))
         }
 
+    @Test
+    fun `bl-257 a verify wait became an approval while held for approval or while the store holds the same attempt's approval`() =
+        runTest {
+            val store = FakeWaitingIssues()
+            val waits = Waits(store, project)
+            val verify = assertIs<Wait.Verify>(Wait.of(record(WaitReason.Verify, mapOf("to" to "review"))))
+            waits.save(verify)
+            assertFalse(waits.becameApproval(verify), "a verify row is not an approval")
+
+            waits.save(Wait.of(record(WaitReason.Approval, approvalData - "approved_by" - "approved_at")))
+            assertTrue(waits.becameApproval(verify))
+
+            // `loop send-back` and a read let the issue go in memory; the stored row is still this attempt's approval.
+            store.sendBack(project, "id-1", "soule", "Use Save.", later).getOrThrow()
+            waits.read()
+            assertFalse(waits.awaitsApproval("id-1"))
+            assertTrue(waits.becameApproval(verify))
+
+            // The sent back approval of another attempt is not this verify wait's.
+            val other = assertIs<Wait.Verify>(Wait.of(record(WaitReason.Verify, mapOf("to" to "review")).copy(attemptId = AttemptId("a2"))))
+            assertFalse(waits.becameApproval(other))
+        }
+
     /** `id-1` approved in the store and read by this process, as a tick sees it before a delivery (bl-250). */
     private suspend fun approvedRead(): Triple<FakeWaitingIssues, Waits, Wait.Approval> {
         val store = FakeWaitingIssues(record(WaitReason.Approval, approvalData))

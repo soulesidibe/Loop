@@ -62,6 +62,15 @@ class Waits(
         return read
     }
 
+    /**
+     * True when the verify wait [wait] became an approval wait (m2-24): its issue waits for approval in this process, or
+     * the store, as [current] shows it, holds the approval wait of the same attempt. A `loop send-back` read since lets the
+     * issue go in memory while that row stays the human's decision, so it is kept for the dispatch (bl-257).
+     */
+    fun becameApproval(wait: Wait.Verify): Boolean =
+        awaitsApproval(wait.issueId) ||
+            wait.attemptId?.let { attempt -> (stored[wait.issueId] as? Wait.Approval)?.attemptId == attempt } == true
+
     /** The answered ask wait of [issueId] in the last [read] (m4-52), null when it has none. */
     fun answered(issueId: String): Wait.Ask? = (stored[issueId] as? Wait.Ask)?.takeIf { it.answered }
 
