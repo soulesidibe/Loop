@@ -47,7 +47,10 @@ remove=
 predelete=
 if [ -e "$workspace/.git" ]; then
     top=$(git -C "$workspace" rev-parse --show-toplevel 2>/dev/null || true)
-    if [ "$top" = "$workspace" ] && [ "$(common_dir "$workspace")" = "$(common_dir "$repo")" ]; then
+    # A .git file naming the project's own git folder is not a linked worktree:
+    # only the prune runs for it.
+    if [ "$top" = "$workspace" ] && [ "$(common_dir "$workspace")" = "$(common_dir "$repo")" ] &&
+        has_own_git_dir "$workspace" "$(common_dir "$repo")"; then
         remove=yes
         # Deleting a large tree (build output) takes seconds: do it before taking the
         # lock, so worktree remove under it has only the .git file left to delete.

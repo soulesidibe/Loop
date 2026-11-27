@@ -581,6 +581,7 @@ class WorktreeHooksTest {
         repo.git("sparse-checkout", "disable", cwd = workspace.path)
         val config = repo.dir.resolve(".git/config").readText()
         val refs = repo.git("for-each-ref")
+        val main = repo.git("rev-parse", "main")
         workspace.path.resolve(".git/commondir").writeText("${repo.dir.resolve(".git")}\n")
 
         val created = runBlocking { ShellHookRunner().run(HookName.AFTER_CREATE, hooks.afterCreate!!, workspace.path, env, 30_000) }
@@ -594,6 +595,121 @@ class WorktreeHooksTest {
         assertTrue("is not a clone of" in remove.output, remove.output)
         assertEquals(config, repo.dir.resolve(".git/config").readText())
         assertEquals(refs, repo.git("for-each-ref"))
+        assertEquals(main, repo.git("rev-parse", "main"))
+        assertEquals(listOf(repo.dir.toString()), repo.worktrees())
+    }
+
+    @Test
+    fun `a symlink, a hard linked reflog or a ref storage in the clone's git folder makes the hooks refuse it`() {
+        val cases =
+            listOf<(Workspace) -> Unit>(
+                { ws ->
+                    val refs = ws.path.resolve(".git/refs")
+                    refs.toFile().deleteRecursively()
+                    java.nio.file.Files
+                        .createSymbolicLink(refs, repo.dir.resolve(".git/refs"))
+                },
+                { ws ->
+                    val sparse = ws.path.resolve(".git/info/sparse-checkout")
+                    java.nio.file.Files
+                        .delete(sparse)
+                    java.nio.file.Files
+                        .createSymbolicLink(sparse, repo.dir.resolve(".git/info/sparse-checkout"))
+                },
+                { ws ->
+                    val head = ws.path.resolve(".git/logs/HEAD")
+                    java.nio.file.Files
+                        .delete(head)
+                    java.nio.file.Files
+                        .createSymbolicLink(head, repo.dir.resolve(".git/logs/HEAD"))
+                },
+                { ws ->
+                    val head = ws.path.resolve(".git/logs/HEAD")
+                    java.nio.file.Files
+                        .delete(head)
+                    java.nio.file.Files
+                        .createLink(head, repo.dir.resolve(".git/logs/HEAD"))
+                },
+                { ws ->
+                    val config = ws.path.resolve(".git/config").toString()
+                    repo.git("config", "--file", config, "core.repositoryformatversion", "1")
+                    repo.git("config", "--file", config, "extensions.refStorage", "files://${repo.dir.resolve(".git")}")
+                },
+            )
+        cases.forEachIndexed { i, plant ->
+            val workspace = prepareClone()
+            repo.git("checkout", "--quiet", "-b", "elsewhere", cwd = workspace.path)
+            val config = repo.dir.resolve(".git/config").readText()
+            val refs = repo.git("for-each-ref")
+            val main = repo.git("rev-parse", "main")
+            val reflog = repo.dir.resolve(".git/logs/HEAD").readText()
+            plant(workspace)
+
+            val created = runBlocking { ShellHookRunner().run(HookName.AFTER_CREATE, hooks.afterCreate!!, workspace.path, env, 30_000) }
+            val run = runBlocking { cloneManager.beforeRun(workspace, env)!! }
+            val remove = runBlocking { ShellHookRunner().run(HookName.BEFORE_REMOVE, hooks.beforeRemove!!, workspace.path, env, 30_000) }
+
+            assertFalse(created.ok, "case $i: ${created.output}")
+            assertTrue("is neither a worktree nor a clone of" in created.output, "case $i: ${created.output}")
+            assertFalse(run.ok, "case $i: ${run.output}")
+            assertFalse(remove.ok, "case $i: ${remove.output}")
+            assertEquals(config, repo.dir.resolve(".git/config").readText(), "case $i")
+            assertEquals(refs, repo.git("for-each-ref"), "case $i")
+            assertEquals(main, repo.git("rev-parse", "main"), "case $i")
+            assertEquals(reflog, repo.dir.resolve(".git/logs/HEAD").readText(), "case $i")
+            assertFalse(repo.dir.resolve(".git/info/sparse-checkout").exists(), "case $i")
+            assertEquals(listOf(repo.dir.toString()), repo.worktrees(), "case $i")
+            runBlocking { cloneManager.remove(key, env) }.getOrThrow()
+        }
+    }
+
+    @Test
+    fun `a git file naming the project's git folder is refused, and before_remove only prunes`() {
+        workspacePath.createDirectories()
+        workspacePath.resolve(".git").writeText("gitdir: ${repo.dir.resolve(".git")}\n")
+        workspacePath.resolve("agent.txt").writeText("agent work\n")
+        val config = repo.dir.resolve(".git/config").readText()
+        val refs = repo.git("for-each-ref")
+        val index =
+            repo.dir
+                .resolve(".git/index")
+                .toFile()
+                .readBytes()
+        val status = repo.git("status", "--porcelain")
+        val files =
+            repo.dir
+                .toFile()
+                .list()!!
+                .sorted()
+
+        val created = runBlocking { ShellHookRunner().run(HookName.AFTER_CREATE, hooks.afterCreate!!, workspacePath, env, 30_000) }
+        val run = runBlocking { ShellHookRunner().run(HookName.BEFORE_RUN, hooks.beforeRun!!, workspacePath, env, 30_000) }
+        val remove = runBlocking { ShellHookRunner().run(HookName.BEFORE_REMOVE, hooks.beforeRemove!!, workspacePath, env, 30_000) }
+
+        assertFalse(created.ok, created.output)
+        assertTrue("is neither a worktree nor a clone of" in created.output, created.output)
+        assertFalse(run.ok, run.output)
+        assertTrue(remove.ok, remove.output)
+        assertEquals(config, repo.dir.resolve(".git/config").readText())
+        assertEquals(refs, repo.git("for-each-ref"))
+        assertTrue(
+            index.contentEquals(
+                repo.dir
+                    .resolve(".git/index")
+                    .toFile()
+                    .readBytes(),
+            ),
+        )
+        assertEquals(status, repo.git("status", "--porcelain"))
+        assertEquals(
+            files,
+            repo.dir
+                .toFile()
+                .list()!!
+                .sorted(),
+        )
+        assertFalse(repo.dir.resolve(".git/info/sparse-checkout").exists())
+        assertTrue(workspacePath.resolve("agent.txt").exists())
         assertEquals(listOf(repo.dir.toString()), repo.worktrees())
     }
 

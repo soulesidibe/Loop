@@ -64,13 +64,17 @@ fi
 
 # A linked worktree's .git is a file. Git runs unpinned in a worktree, so any other
 # .git (a folder that is not a clone of the project, a symlink) is refused here,
-# before git runs in it: its config could point git at the project's files.
+# before git runs in it: its config could point git at the project's files. So is
+# a .git file naming the project's own git folder (gitdir: <project>/.git), whose
+# git dir is the common dir: the sparse pattern and read-tree would land in the
+# project's config, info and index.
 if [ -e "$workspace/.git" ] || [ -L "$workspace/.git" ]; then
     top=
     if [ -f "$workspace/.git" ] && [ ! -L "$workspace/.git" ]; then
         top=$(git -C "$workspace" rev-parse --show-toplevel 2>/dev/null || true)
     fi
-    if [ -n "$top" ] && [ "$top" = "$workspace" ] && [ "$(common_dir "$workspace")" = "$(common_dir "$repo")" ]; then
+    if [ -n "$top" ] && [ "$top" = "$workspace" ] && [ "$(common_dir "$workspace")" = "$(common_dir "$repo")" ] &&
+        has_own_git_dir "$workspace" "$(common_dir "$repo")"; then
         # A hard kill between worktree add and read-tree leaves an empty index: finish the checkout.
         # Once extensions.worktreeConfig is on, the sparse pattern only writes this worktree's own config.
         if [ "$(git -C "$workspace" config --type=bool --get extensions.worktreeConfig 2>/dev/null || :)" = true ]; then

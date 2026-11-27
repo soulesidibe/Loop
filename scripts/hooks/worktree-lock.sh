@@ -29,7 +29,7 @@
 # project: see is_clone and clone_git.
 #
 # Every variable and function here starts with loop_lock_, except common_dir,
-# is_clone and clone_git, whose own variables start with loop_clone_.
+# has_own_git_dir, is_clone and clone_git, whose own variables start with loop_clone_.
 
 loop_lock=
 loop_lock_guard=
@@ -39,16 +39,62 @@ common_dir() {
     (cd "$1" && cd "$(git rev-parse --git-common-dir)" && pwd -P)
 }
 
+# True when the worktree $1 has a git folder of its own, other than the common git
+# folder $2, as a linked worktree has. A .git file naming the project's own git
+# folder (gitdir: <project>/.git) does not.
+has_own_git_dir() {
+    loop_clone_gitdir=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null) || return 1
+    loop_clone_gitdir=$(cd "$loop_clone_gitdir" 2>/dev/null && pwd -P) || return 1
+    [ -n "$loop_clone_gitdir" ] && [ "$loop_clone_gitdir" != "$2" ]
+}
+
 # True when the folder $1 is a clone Loop made of the repository $2: its .git is a
-# folder, not a symlink, with no commondir file, whose objects/info/alternates (a
-# regular file, not a symlink) names the object folder of $2 on a line, trimmed,
-# that does not start with #. That is the test of Loop's WorkspaceClones.state,
-# plus the commondir refusal: a commondir file would make git use another
-# repository's refs and config. Runs git in $2 only, never in $1. The main
-# checkout and a clone of another repository are not clones of $2.
+# folder, not a symlink, whose objects/info/alternates (a regular file, not a
+# symlink) names the object folder of $2 on a line, trimmed, that does not start
+# with #. That is the test of Loop's WorkspaceClones.state. Two refusals come on
+# top, since git follows them to another repository even with GIT_DIR and
+# GIT_COMMON_DIR set, and would write its refs or config (bl-253):
+# - a commondir file, which git's ref store reads itself;
+# - a symlink at the top of .git (config, refs, packed-refs, HEAD, index, ...) or
+#   anywhere under refs/, logs/ or info/ (sparse-checkout set writes
+#   info/sparse-checkout);
+# - an extensions.refStorage other than files or reftable: a value such as
+#   files://<project>/.git puts the ref store in the project. It is read from the
+#   clone's config file only, without includes, as git reads extensions;
+# - a regular file with more than one link at the top of .git or under logs/: git
+#   appends to a reflog in place, so a hard link into the project's logs would
+#   take the hooks' reflog lines.
+# Runs git in $2 only, never in $1. The main checkout and a clone of another
+# repository are not clones of $2.
 is_clone() {
     [ -d "$1/.git" ] && [ ! -L "$1/.git" ] || return 1
     [ ! -e "$1/.git/commondir" ] && [ ! -L "$1/.git/commondir" ] || return 1
+    loop_clone_links=$(find "$1/.git" -maxdepth 1 -type l -print) || return 1
+    [ -z "$loop_clone_links" ] || return 1
+    for loop_clone_sub in refs logs info; do
+        [ -d "$1/.git/$loop_clone_sub" ] || continue
+        loop_clone_links=$(find "$1/.git/$loop_clone_sub" -type l -print) || return 1
+        [ -z "$loop_clone_links" ] || return 1
+    done
+    loop_clone_links=$(find "$1/.git" -maxdepth 1 -type f -links +1 -print) || return 1
+    [ -z "$loop_clone_links" ] || return 1
+    if [ -d "$1/.git/logs" ]; then
+        loop_clone_links=$(find "$1/.git/logs" -type f -links +1 -print) || return 1
+        [ -z "$loop_clone_links" ] || return 1
+    fi
+    loop_clone_status=0
+    loop_clone_storage=$(git config --file "$1/.git/config" --get-all extensions.refStorage) || loop_clone_status=$?
+    case $loop_clone_status in
+        0) ;;
+        1) loop_clone_storage= ;;
+        *) return 1 ;;
+    esac
+    for loop_clone_value in $loop_clone_storage; do
+        case $loop_clone_value in
+            files | reftable) ;;
+            *) return 1 ;;
+        esac
+    done
     loop_clone_alternates="$1/.git/objects/info/alternates"
     [ -f "$loop_clone_alternates" ] && [ ! -L "$loop_clone_alternates" ] || return 1
     loop_clone_objects=$(cd "$(common_dir "$2")/objects" && pwd -P) || return 1
@@ -68,8 +114,9 @@ is_clone() {
 # Runs git in the clone $1 with the arguments that follow. The clone's config is
 # the agent's, so git runs there:
 # - on the clone itself: GIT_DIR, GIT_COMMON_DIR and GIT_WORK_TREE name the clone,
-#   so a core.worktree or a commondir written there cannot point git at the
-#   project's files, index or config (-c core.worktree= would not do it);
+#   so a core.worktree written there cannot point git at the project's files,
+#   index or config (-c core.worktree= would not do it). They do not stop a
+#   commondir file or a symlink in .git: is_clone refuses those first;
 # - with no hook and no fsmonitor;
 # - with no transport but file, so a lazy fetch of a missing object from an ext::
 #   promisor cannot run a program of its choice (bl-246). GIT_ALLOW_PROTOCOL=file

@@ -51,7 +51,7 @@ All three scripts are POSIX `sh`, live in `scripts/hooks/`, and are idempotent: 
 Runs once, when Loop creates the Workspace folder.
 
 1. With `workspace.git: clone`, if the Workspace is a clone of the repository (see [hooks in a clone](#hooks-in-a-clone)), checks out `loop/<key>` if `HEAD` left it, sets the sparse pattern if it is missing, and exits 0, with no lock.
-2. Exits 0 if the Workspace is already a worktree of the repository (its `.git` is a file); fails on any other `.git`, before git runs in it.
+2. Exits 0 if the Workspace is already a worktree of the repository (its `.git` is a file naming a git folder of its own); fails on any other `.git`, a `gitdir: <repository>/.git` file included, before git writes in it.
 3. Takes the lock of the repository.
 4. Runs `git worktree prune` in the repository, which clears a stale entry left by an earlier failed Attempt.
 5. Runs `git worktree add --no-checkout`: with `-b loop/<key> <path> <base>` when the branch does not exist, else `<path> loop/<key>`.
@@ -81,7 +81,7 @@ Runs before Loop deletes the Workspace.
 
 1. Fails if it runs in the main checkout, or if the Workspace's `.git` is a folder or a symlink that is not a clone of the repository, before git runs in it (see [hooks in a clone](#hooks-in-a-clone)).
 2. If the Workspace is a clone of the repository, takes the lock, runs `git worktree prune` in the repository and exits 0: nothing is registered for the clone, and Loop deletes the folder and its keep refs.
-3. If the Workspace is a linked worktree that git will remove (not the main working tree, not locked with `git worktree lock`), deletes its files except `.git`, outside the lock, since a large tree with build output takes seconds to delete.
+3. If the Workspace is a linked worktree that git will remove (with a git folder of its own, not the main working tree, not locked with `git worktree lock`), deletes its files except `.git`, outside the lock, since a large tree with build output takes seconds to delete.
 4. Takes the lock and runs `git worktree remove --force <workspace>` in the repository if the Workspace is a registered worktree.
 5. Runs `git worktree prune`.
 
@@ -125,17 +125,17 @@ A Workspace that already is a clone of the project (its `.git/objects/info/alter
 
 ### Hooks in a clone
 
-The three scripts tell a clone Loop made from a worktree with Loop's own test plus one refusal: the Workspace's `.git` is a folder, not a symlink, with no `commondir` file, and its `objects/info/alternates`, a regular file, names the repository's object folder on a line that is not a `#` comment, spaces trimmed. A `commondir` file would make git use another repository's refs and config, so the scripts refuse it; Loop's own check of a reused clone does not refuse it yet, see [what this does not cover](#what-the-hooks-do-not-cover). The main checkout and a clone of another repository are not clones of the repository.
+The three scripts tell a clone Loop made from a worktree with Loop's own test plus four refusals. Loop's test: the Workspace's `.git` is a folder, not a symlink, and its `objects/info/alternates`, a regular file, names the repository's object folder on a line that is not a `#` comment, spaces trimmed. The refusals: a `commondir` file in `.git`; a symlink at the top of `.git` (`config`, `refs`, `packed-refs`, `HEAD`, `index` and the rest) or anywhere under `refs/`, `logs/` or `info/`; an `extensions.refStorage` other than `files` or `reftable` in `.git/config`, read with `git config --file` and no includes, as git reads extensions, since a value such as `files://<repository>/.git` puts the ref store in the repository; and a regular file with more than one link at the top of `.git` or under `logs/`, since git appends to a reflog in place. Git follows all of them to another repository and writes its refs, config or reflogs there, even with the pins below, so a clone with any of them fails all three scripts before git runs in it. Loop's own check of a reused clone does not refuse them yet, see [what the hooks do not cover](#what-the-hooks-do-not-cover). The main checkout and a clone of another repository are not clones of the repository.
 
 - `after_create` checks out `loop/<key>` only if `HEAD` is elsewhere, and sets `sparse-checkout set --no-cone '/*' '!/.loop/issues/'` only if the pattern is missing. In a clone this writes `extensions.worktreeConfig` and the pattern to the clone's own config; the repository's config is untouched.
 - `before_run` runs `after_create` and stops there, so a clone that missed `after_create` (a kill after Loop moved it into place) heals on the next Attempt. A switch back to `loop/<key>` that would lose local changes fails the hook, and with it the Attempt.
 - `before_remove` runs no git in the clone. It runs `git worktree prune` in the repository under the lock, which clears the entry of a worktree removed without its hook, such as one from before the switch to clones, so that entry no longer holds its branch. Loop then deletes the folder and the keep refs.
 
-The worktree path runs git unpinned, so it takes only a Workspace whose `.git` is a file, as a linked worktree's is. Any other `.git`, a folder that is not a clone of the repository or a symlink, fails `after_create` and `before_run` with `has a .git entry but is neither a worktree nor a clone of <repository>`, and `before_remove` with `has a .git folder that is not a clone of <repository>`, before git runs in it. `before_remove` run in the main checkout fails too. Loop still deletes the Workspace folder after a failed `before_remove`.
+The worktree path runs git unpinned, so it takes only a Workspace whose `.git` is a file naming a git folder of its own, as a linked worktree's is. A `.git` file naming the repository's own git folder (`gitdir: <repository>/.git`) fails `after_create` and `before_run`, which would otherwise write the sparse pattern and the index of the repository itself, and `before_remove` only prunes for it. Any other `.git`, a folder that is not a clone of the repository (a refused clone included) or a symlink, fails `after_create` and `before_run` with `has a .git entry but is neither a worktree nor a clone of <repository>`, and `before_remove` with `has a .git folder that is not a clone of <repository>`, before git runs in it. `before_remove` run in the main checkout fails too. Loop still deletes the Workspace folder after a failed `before_remove`.
 
 The clone's config is the agent's, so every git the scripts run in it goes through `clone_git` in `worktree-lock.sh`:
 
-- `GIT_DIR`, `GIT_COMMON_DIR` and `GIT_WORK_TREE` name the clone, so a `core.worktree` or a `commondir` written in the clone cannot point git at the repository's files, index or config. `-c core.worktree=` would not do it: git reads that key from the repository's file only.
+- `GIT_DIR`, `GIT_COMMON_DIR` and `GIT_WORK_TREE` name the clone, so a `core.worktree` written in the clone cannot point git at the repository's files, index or config. `-c core.worktree=` would not do it: git reads that key from the repository's file only. These do not stop a `commondir` file or a symlink in `.git`, which the refusals above handle.
 - `-c core.hooksPath=/dev/null -c core.fsmonitor=false`: no hook, no fsmonitor.
 - `GIT_ALLOW_PROTOCOL=file`, so a lazy fetch of a missing object from a partial clone promisor on an `ext::` URL runs nothing on the host, on every git version, and `GIT_NO_LAZY_FETCH=1`, which also stops a lazy fetch over `file` on git 2.45 and later. `-c protocol.allow=never` would not do it: a `protocol.ext.allow` in the clone's config is more specific and wins.
 
@@ -144,7 +144,7 @@ All of them are set on the git command itself, after anything the caller passed.
 #### What the hooks do not cover
 
 - Clean and smudge filters in the clone's config still run on the hooks' checkout, as they do in Loop's own git in the clone (`status`, `diff`), which the [threat model](#threat-model) accepts.
-- The agent's own git in its clone follows a `commondir` or a `core.worktree` it wrote there, so it can reach the project's refs and config, like any write by absolute path. Loop's own git in the clone has the same gap until its git is pinned to the clone and its check of a reused clone refuses a `commondir`; clone mode is not switched on for Loop's own workflow before that.
+- The agent's own git in its clone follows a `commondir`, a symlink or hard link in `.git`, an `extensions.refStorage` or a `core.worktree` it wrote there, so it can reach the project's refs and config, like any write by absolute path. Loop's own git in the clone has the same gap until bl-253 pins it to the clone and makes its check of a reused clone refuse those shapes; clone mode is not switched on for Loop's own workflow before that.
 
 To switch a workflow to `clone`, first reinstall a Loop build that knows `workspace.git`, and check that no worktree Workspace is left under `workspace.root`: `git worktree list` shows nothing under it. A Workspace left as a worktree fails its Attempt in clone mode with `is not a clone of the project`, and an import would move its branch while the worktree has it checked out. Removing it in clone mode still runs the worktree path of `before_remove`, which unregisters it and keeps its branch.
 
