@@ -26,7 +26,7 @@ import kotlin.time.Clock
  * delivers it on its next tick, so the approval survives a restart. Under `delivery.pull_request.merge` the messages and
  * `approval_given` name `on_delivered.move_to`, where the merged issue ends (bl-69). The project and the issue are resolved like
  * `loop resume`. It refuses to run inside an attempt, see [insideAttempt]. Exit codes: 1 startup, 2 unknown issue,
- * 3 store, 4 not waiting for approval or sent back (bl-221), 5 inside an attempt.
+ * 3 store, 4 not waiting for approval, sent back (bl-221) or moved by a human since it waited (bl-252), 5 inside an attempt.
  */
 class ApproveCommand(
     private val host: Host,
@@ -83,7 +83,7 @@ class ApproveCommand(
                 }
             val identifier = found?.let { ids.name(it.id, it.identifier) } ?: issue
             val waiting = record ?: fail("$identifier is not waiting for approval. Nothing changed", EXIT_NOT_WAITING)
-            val current = checkApproval(identifier, waiting)
+            val current = checkApproval(identifier, waiting, found)
             // bl-69: under `merge` the issue never stops at the wait's handoff state, it ends in `on_delivered.move_to`.
             val mergeTo = mergeMoveTo(workflow, waiting.kind, found)
             if (current.approved) {
@@ -96,7 +96,7 @@ class ApproveCommand(
             val approved =
                 runBlocking { waits.approve(current.issueId, by, now) }
                     .getOrElse { fail("cannot write the store at $storeFile: ${it.sentence()}", EXIT_STORE) }
-                    ?.let { checkApproval(identifier, it) }
+                    ?.let { checkApproval(identifier, it, found) }
                     ?: fail("$identifier is not waiting for approval. Nothing changed", EXIT_NOT_WAITING)
             val to = mergeTo ?: approved.to.orEmpty()
             val event =
@@ -174,11 +174,14 @@ class ApproveCommand(
 
     /**
      * Fails unless [wait] waits for approval: a wait for its checks is not a result anyone can approve yet, and a sent
-     * back wait (bl-221) waits for its next dispatch, which the store's approve leaves as it is.
+     * back wait (bl-221) waits for its next dispatch, which the store's approve leaves as it is. Nor does a wait whose
+     * [issue], as the tracker shows it, is in another state than the one the wait started in (bl-252): a human moved it
+     * to reject the result, and the next tick ends the wait.
      */
     private fun checkApproval(
         identifier: String,
         wait: Wait,
+        issue: Issue?,
     ): Wait.Approval {
         val approval =
             wait as? Wait.Approval
@@ -186,6 +189,14 @@ class ApproveCommand(
         if (approval.sentBack) {
             fail(
                 "$identifier was sent back and is not waiting for approval, Loop dispatches it again with the reason. Nothing changed",
+                EXIT_NOT_WAITING,
+            )
+        }
+        // bl-252: a human who moved the issue since it waited rejected the result, so no approval delivers it.
+        if (issue != null && approval.humanMoved(issue.state)) {
+            fail(
+                "$identifier was moved by a human from ${approval.state} to ${issue.state} since it waited for approval, " +
+                    "Loop dispatches it again. Nothing changed",
                 EXIT_NOT_WAITING,
             )
         }

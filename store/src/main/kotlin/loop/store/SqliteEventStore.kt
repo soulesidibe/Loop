@@ -341,14 +341,20 @@ class SqliteEventStore private constructor(
         select(SELECT_RETRY_STATES, projectId) { it.toRetryState(ids) }
 
     override suspend fun startWaiting(issue: WaitingIssue): Result<Unit> =
-        upsert(UPSERT_WAITING, WAITING_TABLE, issue.projectId, issue.issueId) { st ->
-            st.setString(3, redactor.redact(issue.identifier))
-            st.setString(4, issue.reason.wire)
-            st.setNullable(5, issue.attemptId?.value)
-            st.setNullable(6, issue.runId?.value)
-            st.setString(7, issue.since.toString())
-            st.setNullable(8, encodeData(issue.data.mapValues { redactor.redact(it.value) }))
-        }
+        upsert(UPSERT_WAITING, WAITING_TABLE, issue.projectId, issue.issueId) { st -> bindWaiting(st, issue) }
+
+    /** Binds the columns of [issue] after its project and issue id, from the third parameter on, redacted. */
+    private fun bindWaiting(
+        st: PreparedStatement,
+        issue: WaitingIssue,
+    ) {
+        st.setString(3, redactor.redact(issue.identifier))
+        st.setString(4, issue.reason.wire)
+        st.setNullable(5, issue.attemptId?.value)
+        st.setNullable(6, issue.runId?.value)
+        st.setString(7, issue.since.toString())
+        st.setNullable(8, encodeData(issue.data.mapValues { redactor.redact(it.value) }))
+    }
 
     override suspend fun waitingIssues(projectId: ProjectId): Result<List<WaitingIssue>> =
         select(SELECT_WAITING, projectId) { it.toWaitingIssue(ids) }
@@ -386,6 +392,46 @@ class SqliteEventStore private constructor(
                 }
             }
             found
+        }
+
+    /**
+     * Replaces or removes the approval wait Loop read in one write transaction (bl-250), only while the row is still that
+     * wait, so Loop's own write and a `loop approve` or `loop send-back` at the same time never lose the human's decision.
+     * The replacement is redacted like [startWaiting]. See [WaitingIssues.replaceApproval].
+     */
+    override suspend fun replaceApproval(
+        read: WaitingIssue,
+        replacement: WaitingIssue?,
+    ): Result<WaitingIssue?> =
+        transaction {
+            require(replacement == null || replacement.issueId == read.issueId) { "A replacement must be of the same issue" }
+            val found =
+                connection.prepareStatement(SELECT_WAITING_ONE).use { st ->
+                    st.setString(1, read.projectId.value)
+                    st.setIssue(2, read.issueId)
+                    st.executeQuery().use { rs -> if (rs.next()) rs.toWaitingIssue(ids) else null }
+                }
+            when {
+                found == null -> null
+                !found.holdsApprovalAsRead(read) -> found
+                replacement == null -> {
+                    connection.prepareStatement(DELETE_WAITING).use { st ->
+                        st.setString(1, read.projectId.value)
+                        st.setIssue(2, read.issueId)
+                        st.executeUpdate()
+                    }
+                    null
+                }
+                else -> {
+                    connection.prepareStatement(UPSERT_WAITING).use { st ->
+                        st.setString(1, replacement.projectId.value)
+                        st.setString(2, storedId(WAITING_TABLE, replacement.projectId, replacement.issueId))
+                        bindWaiting(st, replacement)
+                        st.executeUpdate()
+                    }
+                    replacement
+                }
+            }
         }
 
     /**

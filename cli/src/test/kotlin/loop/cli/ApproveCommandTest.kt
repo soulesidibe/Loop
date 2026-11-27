@@ -605,6 +605,30 @@ class ApproveCommandTest {
     }
 
     @Test
+    fun `bl-252 loop approve refuses an issue a human moved to another active state, records nothing and changes nothing`() {
+        val file = fixture.issue("t-1")
+        loopMode()
+        runOnce()
+        val row = waits().single()
+        assertEquals("approval", row["reason"])
+        assertContains(row["data"].orEmpty(), "\"state\":\"todo\"")
+
+        // No Loop runs: the tick that would end the wait has not seen the move yet.
+        file.writeText(file.readText().replace("state: todo", "state: in_progress"))
+        val moved = approve()
+
+        assertEquals(4, moved.exitCode, moved.toString())
+        assertEquals(
+            "loop approve: t-1 was moved by a human from todo to in_progress since it waited for approval, " +
+                "Loop dispatches it again. Nothing changed.",
+            moved.stderr.trim(),
+        )
+        assertEquals(emptyList(), events("approval_given"))
+        assertEquals(emptyList(), events("human_touch"))
+        assertEquals(listOf(row), waits())
+    }
+
+    @Test
     fun `a malformed issue file ends no approval wait, approved or not, and the issue is delivered once it parses again`() {
         val file = fixture.issue("t-1")
         loopMode()

@@ -72,6 +72,16 @@ sealed interface DeliveryOutcome {
         override val commented: String? = null,
     ) : DeliveryOutcome
 
+    /**
+     * The check of the [PullRequestDelivery.Handoff] found, right before the move, that the delivery is no longer wanted,
+     * for example a `loop send-back` committed since it started (bl-250): the [pullRequest] is open and commented, the
+     * issue is not moved, and nothing is recorded for the move.
+     */
+    data class Withdrawn(
+        val pullRequest: PullRequest,
+        override val commented: String?,
+    ) : DeliveryOutcome
+
     /** The [step] was refused for good and `delivery_failed` is recorded: only a new approval tries again. */
     data class Failed(
         val step: String,
@@ -85,8 +95,8 @@ sealed interface DeliveryOutcome {
  * separate, in order: the fingerprint must name a commit with nothing uncommitted, since a push carries only commits;
  * the title and body are built from [DeliveryFacts] and redacted; the pull request of the branch is looked up in every
  * state; the commit is pushed to `loop/<workspace key>`; the open pull request is updated, or a new one opened; its URL
- * is commented on the issue, unless an earlier try already did; last, only when a [Handoff] is given, the issue moves
- * to its handoff state. A pull request already merged at the verified commit counts as delivered: nothing is pushed,
+ * is commented on the issue, unless an earlier try already did; last, only when a [Handoff] is given and its check still
+ * lets it, the issue moves to its handoff state. A pull request already merged at the verified commit counts as delivered: nothing is pushed,
  * opened or updated, and the comment and the move still run. Every step is idempotent, so a replay after a crash opens
  * no second pull request. Records `pull_request_found` for a merged one, `branch_pushed`, `pull_request_opened` or
  * `pull_request_updated`, `issue_commented`, `issue_moved`, and `delivery_failed` for a permanent failure. Never
@@ -102,12 +112,14 @@ class PullRequestDelivery(
 ) {
     /**
      * The optional last step: the move of the issue [from] its state [to] its handoff state, recorded as `issue_moved`
-     * with [event] added to its data.
+     * with [event] added to its data. [proceed] runs right before the move (bl-250): false gives
+     * [DeliveryOutcome.Withdrawn] and nothing moves, a failure is a failure of step `move`.
      */
     data class Handoff(
         val from: String,
         val to: String,
         val event: Map<String, String> = emptyMap(),
+        val proceed: suspend () -> Result<Boolean> = { Result.success(true) },
     )
 
     /** Runs the steps in order and stops at the first that does not succeed; without [handoff], after the comment. */
@@ -148,6 +160,8 @@ class PullRequestDelivery(
             }
         val commented = comment(facts, pullRequest).getOrElse { return it.outcome(facts.commented) }
         if (handoff == null) return DeliveryOutcome.Delivered(pullRequest, moved = false, commented = commented)
+        val proceed = step(STEP_MOVE) { handoff.proceed() }.getOrElse { return it.outcome(commented) }
+        if (!proceed) return DeliveryOutcome.Withdrawn(pullRequest, commented)
         move(facts, handoff)?.let { return it.outcome(commented) }
         return DeliveryOutcome.Delivered(pullRequest, moved = true, commented = commented)
     }
