@@ -645,7 +645,11 @@ internal object ProtectedRootsCheck {
         val args = listOf("config", "--file", config.toString(), "--no-includes", "--get-all", "extensions.refstorage")
         val result = runGit(outside, args, timeoutSeconds, gitCommand, baseEnv = baseEnv)
         return when (result?.exitCode) {
-            0 -> result.stdout.lines().map { it.trim() }.filter { it.isNotEmpty() }
+            0 ->
+                result.stdout
+                    .lines()
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
             1 -> emptyList()
             else -> throw CloneRefused("cannot read extensions.refStorage of $config${stderrSuffix(result)}")
         }

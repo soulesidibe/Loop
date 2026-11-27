@@ -444,7 +444,11 @@ class ProtectedRootsCheckTest {
                     environment()["GIT_CONFIG_GLOBAL"] = "/dev/null"
                     environment()["GIT_CONFIG_NOSYSTEM"] = "1"
                 }.start()
-        val out = process.inputStream.readAllBytes().toString(Charsets.UTF_8).trim()
+        val out =
+            process.inputStream
+                .readAllBytes()
+                .toString(Charsets.UTF_8)
+                .trim()
         check(process.waitFor() == 0) { "git ${args.toList()} in $dir failed: $out" }
         return out
     }
@@ -452,7 +456,11 @@ class ProtectedRootsCheckTest {
     private fun sha256(path: Path): String =
         java.util.HexFormat
             .of()
-            .formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path)))
+            .formatHex(
+                java.security.MessageDigest
+                    .getInstance("SHA-256")
+                    .digest(Files.readAllBytes(path)),
+            )
 
     private fun proof(
         name: String,
@@ -599,7 +607,13 @@ class ProtectedRootsCheckTest {
         val before = file.snapshot()
         file.dotGit.toFile().deleteRecursively()
         file.dotGit.writeText("gitdir: ${file.project.resolve(".git")}\n")
-        assertEquals(file.project.resolve(".git").toRealPath().toString(), file.asCheckToday("rev-parse", "--absolute-git-dir"))
+        assertEquals(
+            file.project
+                .resolve(".git")
+                .toRealPath()
+                .toString(),
+            file.asCheckToday("rev-parse", "--absolute-git-dir"),
+        )
         proof("acp gitdir file live", "the check's git in the clone found the project's repository")
         val fileRefused = file.refusal()
         assertTrue(fileRefused != null && file.dotGit.toString() in fileRefused, "$fileRefused")
@@ -679,7 +693,14 @@ class ProtectedRootsCheckTest {
             )
 
         val refused = ProtectedRootsCheck.refusal(fx.workspace, fx.base, clone = true, gitCommand = git, baseEnv = hostile)
-        val direct = ProtectedRootsCheck.runGit(fx.workspace, listOf("rev-parse", "HEAD"), gitCommand = git, baseEnv = hostile, clone = true)
+        val direct =
+            ProtectedRootsCheck.runGit(
+                fx.workspace,
+                listOf("rev-parse", "HEAD"),
+                gitCommand = git,
+                baseEnv = hostile,
+                clone = true,
+            )
 
         assertTrue(refused != null && ".agents/hooks.json" in refused, "$refused")
         assertEquals(fx.base, direct?.stdout?.trim())

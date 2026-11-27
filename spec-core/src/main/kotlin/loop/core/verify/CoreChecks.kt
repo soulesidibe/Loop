@@ -694,7 +694,11 @@ object CoreChecks {
         private fun clonePins(): Map<String, String> {
             refuseLayout(root, layoutGit)
             val dotGit = root.resolve(".git").toString()
-            return mapOf(WorkspaceGit.GIT_DIR to dotGit, WorkspaceGit.GIT_COMMON_DIR to dotGit, WorkspaceGit.GIT_WORK_TREE to root.toString())
+            return mapOf(
+                WorkspaceGit.GIT_DIR to dotGit,
+                WorkspaceGit.GIT_COMMON_DIR to dotGit,
+                WorkspaceGit.GIT_WORK_TREE to root.toString(),
+            )
         }
 
         companion object {
