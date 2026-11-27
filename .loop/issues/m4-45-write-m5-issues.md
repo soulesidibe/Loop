@@ -36,3 +36,5 @@ Like m3-29: the M5 issues are written from the plan and from what M4 taught, aft
 2026-11-18 soule: written in m3-29.
 
 2026-11-18 soule: revised after the Fable 5.2 review of the M4 issues (m3-29).
+
+2026-11-27 soule: the first M5 run must prove `ask`, `loop answer`, the per tracker limit and the resource tools on Codex, see bl-270 (from m4-44).
