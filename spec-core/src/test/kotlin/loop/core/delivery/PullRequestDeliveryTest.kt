@@ -174,6 +174,40 @@ class PullRequestDeliveryTest {
         }
 
     @Test
+    fun `bl-250 the handoff check runs right before the move, a delivery no longer wanted moves nothing`() =
+        runTest {
+            var checks = 0
+            val withdrawn =
+                handoff.copy(
+                    proceed = {
+                        checks++
+                        assertEquals(listOf("branch_pushed", "pull_request_opened", "issue_commented"), kinds())
+                        Result.success(false)
+                    },
+                )
+
+            val outcome = assertIs<DeliveryOutcome.Withdrawn>(delivery().deliver(facts(), withdrawn))
+
+            assertEquals(1, checks)
+            assertEquals(7, outcome.pullRequest.number)
+            assertEquals(url7, outcome.commented)
+            assertEquals(emptyList(), tracker.moves)
+            assertEquals(listOf("branch_pushed", "pull_request_opened", "issue_commented"), kinds())
+        }
+
+    @Test
+    fun `bl-250 a handoff check that fails is a failure of step move, tried again, and moves nothing`() =
+        runTest {
+            val failing = handoff.copy(proceed = { Result.failure(IllegalStateException("the store is locked")) })
+
+            val retry = assertIs<DeliveryOutcome.Retry>(delivery().deliver(facts(), failing))
+
+            assertEquals("move", retry.step)
+            assertEquals(url7, retry.commented)
+            assertEquals(emptyList(), tracker.moves)
+        }
+
+    @Test
     fun `a failed move keeps what was done, retried on a server error, permanent on a refusal, and never opens a second pull request`() =
         runTest {
             tracker.moveFailure = TrackerError.Status(503, "unavailable")

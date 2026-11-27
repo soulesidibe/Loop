@@ -59,13 +59,24 @@ class HumanNotices(
         event: HumanEvent,
         reason: String,
         save: suspend (Wait.Approval) -> Unit,
+    ) = waitingIfSaved(wait, event, reason) { save(it).let { true } }
+
+    /**
+     * [waiting] for a save that can lose (bl-250): [save] returns false when it did not write the wait because a human
+     * decided it since Loop read it, such as a `loop send-back`. Then nobody is told: the human just decided.
+     */
+    suspend fun waitingIfSaved(
+        wait: Wait.Approval,
+        event: HumanEvent,
+        reason: String,
+        save: suspend (Wait.Approval) -> Boolean,
     ) {
         val key = key(wait.issueId, wait.reason.wire, wait.since)
         if (wait.approvedBy != null || wait.humanNotice == key) {
             save(wait)
             return
         }
-        save(wait.noticed(key))
+        if (!save(wait.noticed(key))) return
         tell(wait.issueId, wait.identifier, event, reason, wait.pullRequest, wait.since)
     }
 

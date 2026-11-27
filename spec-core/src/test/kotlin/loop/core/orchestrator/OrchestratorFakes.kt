@@ -169,10 +169,18 @@ class FakeWaitingIssues(
         return Result.success(Unit)
     }
 
+    /**
+     * Runs after each read has taken its copy, with the number of that read, so a test commits a `loop send-back` or a
+     * `loop approve` after Loop read the waits and before its next step (bl-250).
+     */
+    var afterRead: suspend (read: Int) -> Unit = {}
+
     override suspend fun waitingIssues(projectId: ProjectId): Result<List<WaitingIssue>> {
         reads++
         readFailure?.let { return Result.failure(it) }
-        return Result.success(records.values.filter { it.projectId == projectId })
+        val read = records.values.filter { it.projectId == projectId }
+        afterRead(reads)
+        return Result.success(read)
     }
 
     override suspend fun endWaiting(
@@ -258,15 +266,25 @@ class FakeTracker(
     /** When set, [moveIssue] records nothing and returns it as a failure. */
     var moveFailure: TrackerError? = null
 
+    /**
+     * Runs inside each [moveIssue], after the move applied or right before a [moveFailure] is returned, so a test commits
+     * a `loop send-back` during the move (bl-250).
+     */
+    var duringMove: suspend () -> Unit = {}
+
     override suspend fun moveIssue(
         issueId: String,
         toState: String,
     ): Result<Unit> {
-        moveFailure?.let { return Result.failure(it) }
+        moveFailure?.let {
+            duringMove()
+            return Result.failure(it)
+        }
         moves += issueId to toState
         val index = issues.indexOfFirst { it.id == issueId }
         if (index < 0) return Result.failure(TrackerError.NotFound(issueId))
         issues[index] = onMove(issues[index], toState)
+        duringMove()
         return Result.success(Unit)
     }
 
