@@ -23,7 +23,7 @@ M5 enforces the permissions in four layers, as PLAN 11.2 says, and adds approval
 
 - **The ground first:** a policy denial never fails an attempt (bl-267), one deny list that every runner's generated policy states, an allow listed environment for agents, checks and hooks, and secrets read by reference from the Keychain, never kept in `loop run`'s environment.
 - **The sandbox (layer 2):** a sandbox plugin seam, with macOS Seatbelt built in. Every worker runs inside a profile generated per attempt: the workspace writable, home secrets unreadable, the token readers blocked, a stripped environment. The agent, its checks, the holdouts and the hooks each get their profile. A container plugin comes later, for Linux and cloud mode.
-- **Server side limits (layer 3):** a fine grained token per project with contents and pull requests write, no admin and no workflow scope, kept in the Keychain; branch protection on Loop's `main` and on the playground repository, with Loop's own merge path kept working.
+- **Server side limits (layer 3):** a fine grained token per project with contents, pull requests and issues write, no admin and no workflow scope, kept in the Keychain; branch protection on Loop's `main` and on the playground repository, with Loop's own merge path kept working.
 - **The audit (layer 4):** after every attempt, as part of verification. A violation refutes the attempt and alerts me.
 - **Approvals in the middle of a run:** a risky action requested by an agent waits for me through the human channel, and is denied after 30 minutes without an answer.
 - **The guard model,** last, for gray areas the deny list does not cover.
@@ -57,12 +57,12 @@ M5 enforces the permissions in four layers, as PLAN 11.2 says, and adds approval
 
 ### Token and branch protection
 
-157. As a Loop user, I want each project to use a fine grained token with contents and pull requests write and no admin or workflow scope, and preflight to refuse a classic or gh CLI token for it, so that a leaked token cannot lift a protection or edit CI.
+157. As a Loop user, I want each project to use a fine grained token with contents, pull requests and issues write and no admin or workflow scope, and preflight to refuse a classic or gh CLI token for it, so that a leaked token cannot lift a protection or edit CI.
 158. As a Loop user, I want branch protection on Loop's `main` and on the playground repository (no direct push, no force push, no deletion, a pull request required), with Loop's merge check and merge still merging, so that a push to the base or a merge outside Loop's path fails on GitHub.
 
 ### The audit
 
-159. As a Loop user, I want an audit after every attempt, as part of verification, that checks no ref but the attempt's branch moved, nothing of the attempt reached the base or a `release/*` branch outside Loop's merge, no protected file was touched, no deny list entry was tried and no call left the network allow list, so that a violation is found even when every check passes.
+159. As a Loop user, I want an audit after every attempt, as part of verification, that checks no ref Loop alone writes moved but as Loop wrote it, nothing of the attempt reached the base or a `release/*` branch outside Loop's merge, no protected file was touched, no deny list entry was tried and no call left the network allow list, so that a violation is found even when every check passes.
 160. As a Loop user, I want a violation to refute the attempt, park the issue and tell me through the human channel, with what was found in the evidence, so that I look before anything else runs on that issue.
 
 ### Approvals in the middle of a run
@@ -84,7 +84,7 @@ M5 enforces the permissions in four layers, as PLAN 11.2 says, and adds approval
 ### Decisions taken before the spec (m4-45, 2026-11-27)
 
 - **Sandbox:** a sandbox plugin seam. macOS Seatbelt (`sandbox-exec`, a profile generated per attempt: the workspace writable, home secrets unreadable, a stripped environment) is built in M5; a container plugin comes later, for Linux and cloud mode.
-- **Worker token:** a fine grained personal access token per project, contents and pull requests write, no admin and no workflow scope, kept in the Keychain. Merging is blocked by branch protection, not by the token alone.
+- **Worker token:** a fine grained personal access token per project, contents and pull requests write, no admin and no workflow scope (issues write and Actions read added for the tracker and `ci: actions`, 2026-11-28), kept in the Keychain. Merging is blocked by branch protection, not by the token alone.
 - **Branch protection:** in M5, on Loop's `main` and on the playground repository, with Loop's own merge path kept working; the M5 exit tests it. Private projects get it when they can.
 - **Guard model:** in M5, as the last slice, after the hard layers (sandbox, token, protection, audit, approvals, deny list).
 - **Approvals in the middle of a run:** denied after 30 minutes without an answer; the agent is told and goes on or ends with `needs_info`, and the notice stays.
@@ -99,10 +99,18 @@ M5 enforces the permissions in four layers, as PLAN 11.2 says, and adds approval
 - Runnable criteria open with a backticked command followed by `passes`; prose criteria are marked `(judgment)` or name the test that proves them.
 - Loop builds M5 itself, so a slice that changes what an agent may do lands with the matching change to Loop's own `WORKFLOW.md` in its human steps, and Loop is reinstalled before the workflow uses it.
 
+### The tracker (decided 2026-11-28)
+
+- **M5 issues live in GitHub issues** on Loop's own repository, not in `.loop/issues/`. With no direct push to `main` for anyone, every tracker note and issue file of the `files` tracker would have to reach `main` through a pull request; GitHub issues keep the tracker state off the code branch. Specs stay in `.loop/specs/` and reach `main` through pull requests like any change.
+- **Two issues first, on the `files` tracker:** m5-00 lets `acceptance_commands` run on a GitHub issue when the tracker declares its issue text trusted (every possible editor of a dispatched issue is trusted, bl-157), so M5 keeps its runnable criteria; m5-01 (human) moves Loop's primary tracker to GitHub and keeps the open backlog in files as a second tracker that keeps the id `default`, so the store rows written as `default:<id>` since m4-12 stay its own and nothing in flight is orphaned. One `code` kind serves both trackers, its `on_delivered.move_to` a map by tracker id (`{ gh: closed, default: done }`, bl-266). `loop resume` reaches the issues of every tracker first (bl-273).
+- **The backlog.** New backlog issues go on GitHub, so the files backlog only shrinks. Moves, comments and follow ups of the remaining file issues still write the main checkout, so once Loop's `main` is protected they reach it through a pull request per batch (m5-34).
+- **Names.** Each GitHub issue's title opens with its milestone id, `m5-nn:`, so docs and comments keep naming it; blockers are GitHub's native "blocked by" links, areas a column 0 `Area:` line, and a backlog blocker a `Blocked by default:bl-nn` line. The no private names rule holds for GitHub issues as for files, before each issue is created.
+
 ### Human prerequisites
 
-- m5-00: a fine grained token for Loop and one for the playground repository, each with contents and pull requests write and nothing else, stored in the Keychain; the two tokens exposed in the m4-43 wave rotated and narrower gh scopes set (the owner steps of m4-43); the playground repository `owner/playground` ready on GitHub with the seeded issues' base. The rulesets themselves come with their slice.
-- m5-01: the module `sandbox-seatbelt` exists with its dependencies and runtime wiring, and `plugin-api` holds empty `Sandbox` and `SandboxProvider` interfaces, the m4-01 pattern, since agents cannot edit Gradle files.
+- m5-02: a fine grained token for Loop and one for the playground repository, each with contents and pull requests write, issues write for the tracker, Actions read under `ci: actions`, and no admin or workflow scope, stored in the Keychain; the two tokens exposed in the m4-43 wave rotated and narrower gh scopes set (the owner steps of m4-43); the playground repository `owner/playground` ready on GitHub with the seeded issues' base. The rulesets themselves come with their slice.
+- m5-03: the module `sandbox-seatbelt` exists with its dependencies and runtime wiring, and `plugin-api` holds empty `Sandbox` and `SandboxProvider` interfaces, the m4-01 pattern, since agents cannot edit Gradle files; and a macOS job in CI runs the real Seatbelt tests, since the build job runs on Linux and skips them.
+- m5-00 and m5-01 come before both: they move Loop's own tracker to GitHub issues (above).
 
 ### Layer 1, runtime policy and the deny list
 
@@ -121,7 +129,7 @@ M5 enforces the permissions in four layers, as PLAN 11.2 says, and adds approval
   - Readable in the home folder, nothing else: the workspace, the runner's own state folder and login (an agent can always read the login of the runtime it runs in), the caches and toolchains the workflow names under `sandbox.writable` and `sandbox.read_home` (for example `~/.gradle`, `~/.m2`, `~/Library/Developer` for Xcode and the simulator). The rest of the home folder, other checkouts and the shell history included, is unreadable.
   - Unreadable even inside an allowed folder: `~/.ssh`, `~/.config/gh`, `~/.git-credentials`, `~/.netrc`, `~/.aws`, `~/.docker/config.json`, `~/Library/Keychains`, the holdout folder, `LOOP_HOME` but what the attempt needs, the other workspaces, plus `sandbox.deny_read`.
   - Denied executables: `/usr/bin/security`, every `gh` on the agent's `PATH` and at the known install paths, `git-credential-*` helpers.
-  - Network: through Loop's proxy only (below).
+  - Network: through Loop's proxy only (below), loopback always allowed for the build's own servers. Until the proxy slice lands, outbound connections stay open and the audit records network as not audited.
 - **The runners.**
   - Claude Code: `~/.claude` and `~/.claude.json` writable, its Keychain login kept working, which is why the profile blocks `security` by executable rather than the Keychain service (open question 5).
   - Codex: `~/.codex` writable, `auth.json` readable. The thread keeps `danger-full-access`, since Loop's profile is now the boundary (m3-18 reasoning).
@@ -129,14 +137,14 @@ M5 enforces the permissions in four layers, as PLAN 11.2 says, and adds approval
   - The merge risk reviewers run in a read only profile: no writable path but their temporary folder.
 - **Tool calls.** `loop tool mcp` runs as the runner's child, so inside the profile, and today opens the run store itself (`cli/src/main/kotlin/loop/cli/ToolMcpCommand.kt`, `ResourceTools.kt`). A store writable by the agent would let it write its own answer or approval. So before the sandbox lands, the tool process talks to `loop run` over a Unix socket, and the profile keeps the store and `LOOP_HOME` unwritable (decided 2026-11-28, a broker as in the MCP security guidance and Claude Code's own sandbox runtime, which also gives a sandboxed process one sanctioned channel to a privileged proxy). The rules of the broker:
   - The socket sits at a short path (macOS caps a socket path at 104 bytes), for example `$TMPDIR/loop/<8 characters>.sock`, mode 0600 in a 0700 folder, created and removed by `loop run`, stale sockets removed at start, the length checked at start.
-  - The profile denies all network but a connect to that one socket, by its resolved real path (`(allow network-outbound (remote unix-socket (path-literal "...")))`), never a `subpath` over a folder where the agent could plant its own socket.
+  - Among Unix sockets, the profile allows only a connect to that one socket, by its resolved real path (`(allow network-outbound (remote unix-socket (path-literal "...")))`), never a `subpath` over a folder where the agent could plant its own socket.
   - Each attempt gets a random token of at least 128 bits, held by `loop run` with the attempt id, revoked when the attempt ends. The agent can read it, which only scopes it to its own attempt. The attempt and the issue come from the token, never from a field of the request; the peer's uid is a sanity check only, since the agent runs as me.
   - Every request is treated as hostile, since the agent can reach the socket without the tool process: every field validated, only the moves legal for the attempt's state accepted (an agent can move its issue to `review` or `needs_info`, never approve, answer its own question or touch another issue), a size cap, a rate limit per attempt, a request id so a replay changes nothing, and every call recorded.
   - Unverified until the sandbox slice: whether `sandbox-exec` honors the socket rule on the macOS in use (denials read with `log stream --predicate 'sender=="Sandbox"'`), and what the stdio pipe of the tool process needs inside the profile.
 - **Clone workspaces become the default** (bl-245 item 2), and the sandbox requires `workspace.git: clone` for git kinds: a worktree keeps its git folder in the project, which the profile would have to make writable. Preflight refuses `worktree` under a sandbox.
 - **Checks and holdouts.** Visible checks run in the check profile: the agent's writable paths plus the paths a resource grants, no token reader, the same network rule. A holdout check runs in the holdout profile, the only one that reads the holdout folder (`Holdouts.dir`, `spec-core/src/main/kotlin/loop/core/verify/Holdouts.kt`). That closes the read gap of bl-134 for Codex and of the shell read for Claude Code, at the OS level that m2-14 named.
 - **iOS checks.** The check profile of a kind whose checks hold a `resource:` of an iOS simulator allows the CoreSimulator mach services `simctl` needs, writes under the DerivedData path the workflow names (a per workspace `-derivedDataPath` is recommended, so a build never writes a shared folder), and the SwiftPM and Xcode caches listed in `sandbox.writable`. The simulator itself is started by CoreSimulator outside the profile, and `prepare`, `release` and the read only check of a resource keep running in `loop run`, unsandboxed (m4-25). The slice proves it on the second pilot app.
-- **Hooks.** Hooks run in the hook profile: the workspace writable, and the project's git folder writable for the refs Loop's hook scripts write. With the env allow list and git pinned through `GIT_CONFIG_COUNT` (no hook, no fsmonitor, lazy fetch off), this answers bl-251's unpinned hook git and the hook half of bl-262.
+- **Hooks.** Hooks run in the hook profile: the workspace writable, and the project's git folder writable for the refs Loop's hook scripts write. With the env allow list and git pinned through `GIT_CONFIG_COUNT` (no hook, no fsmonitor, lazy fetch off), this answers bl-251's unpinned hook git and the hook half of bl-262. Notice hooks (`on_human_needed`, which runs `terminal-notifier`) stay host side, since they touch no workspace and a profile would break them.
 - **What stays outside.** Loop's own git on a workspace (fingerprint, import, merge check git) stays host side with its pins (bl-253, bl-254). Its exposure to filters and merge drivers named by a tracked `.gitattributes` (bl-55) is open question 7.
 
 ### Network allow list
@@ -149,21 +157,21 @@ M5 enforces the permissions in four layers, as PLAN 11.2 says, and adds approval
 - **An allow list for agents and checks.** `agentEnvironment` becomes allow based: the basic names Loop keeps today (`HOME`, `PATH`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG`, `TERM`, `LC_*`, the kept set of `Host.kt`), the names the runner's profile declares, Loop's overrides, `agent.env`, and the host names listed in a new `agent.env_allow`. `AgentEnvPolicy` (`plugin-api/src/main/kotlin/loop/api/RunnerProvider.kt`) gains the allow list in place of `removedEnvNames`. A check gets the same environment plus the resource variables, and a holdout `LOOP_HOLDOUT`, as today. `SSH_AUTH_SOCK`, `GEMINI_API_KEY` and every other unnamed host variable are gone.
 - **Hooks.** `hookEnv` (`spec-core/src/main/kotlin/loop/core/workspace/HookEnv.kt`) stays the source of the `LOOP_*` variables; `ShellHookRunner` starts from the basic names instead of the host environment, plus `hooks.env_allow`.
 - **Keychain references.** A secret value in `WORKFLOW.md` may be `keychain:<service>` beside `$NAME`. Loop runs `/usr/bin/security find-generic-password -s <service> -w` itself, host side, when it builds the tracker or the delivery, and keeps the value in memory: never in its own environment, a file, an argument or a child's environment. The redactor learns the value like a `$NAME` secret (`secretValues`, `Host.kt`). The one off commands resolve it the same way (story 148); bl-264 stays for `stop` and `drain`, which should need no token at all.
-- **The token check.** Preflight refuses a pull request or tracker token that is neither fine grained (a `github_pat_` prefix) nor a GitHub App installation token (`ghs_`) unless `allow_classic_token: true`, so the gh CLI's own `gho_` token of m4-43 and classic `ghp_` tokens are refused (decided 2026-11-28). Loop cannot read a fine grained token's permissions, so the narrow scope stays a human step, named in m5-00.
+- **The token check.** Preflight refuses a pull request or tracker token that is neither fine grained (a `github_pat_` prefix) nor a GitHub App installation token (`ghs_`) unless `allow_classic_token: true`, so the gh CLI's own `gho_` token of m4-43 and classic `ghp_` tokens are refused (decided 2026-11-28). Loop cannot read a fine grained token's permissions, so the narrow scope stays a human step, named in m5-02.
 
 ### Layer 3, the worker token and branch protection
 
 - **One worker token per project,** in the Keychain, read by reference. Loop uses it for every GitHub write it makes host side: the push of `loop/<key>`, the pull request, the merge (`GitHubPullRequests.merge`, sha guarded since m2-26) and the tracker. Agents never get it: the environment does not hold it, and the sandbox blocks every way to read it.
 - **Branch protection,** as a ruleset on the base branch of Loop and of `owner/playground`: a pull request required with no approval count, no direct push, no force push, no deletion, and, under `ci: actions`, the CI checks required. A second ruleset protects `release/*` with no push but by a pull request. Loop's own path keeps working, since it pushes `loop/<key>` and merges through the pull request merge API, which a satisfied ruleset allows. The slice proves both: Loop's merge goes through, and a direct push and a force push with the same token are refused. No bypass (decided 2026-11-28): nobody pushes to `main` directly, the owner and operator sessions included. Every change, tracker notes and issue files too, reaches `main` through a pull request, so the ruleset has no bypass list and the playground proves a direct push by the owner is refused as well.
 - **The merge is not gated by a second credential** in M5: an agent cannot merge because it holds no credential, and a leaked token still cannot push to the base, rewrite it or lift the ruleset. A required status that only Loop could post would need a second token with commit statuses write; it is open question 2.
-- **The owner's own pushes.** I push straight to Loop's `main` today. The ruleset must let me through without letting the worker token through. How, is open question 1, settled on the playground before Loop's `main` gets the ruleset.
+- **The owner's own pushes.** I push straight to Loop's `main` today. Once the ruleset is on, nobody does (open question 1): my changes go through pull requests, and the tracker lives in GitHub issues, so notes on GitHub issues need no commit; the remaining backlog files go through a pull request per batch. The playground's ruleset and the GitHub recordings come early, the ruleset on Loop's `main` late, so the many human `WORKFLOW.md` steps of M5 land before every change needs a pull request.
 - **Visibility.** `loop status` says, per pull request repository, whether a ruleset applies to the base, where the token may read the rules, and warns otherwise; a private project without protection runs with the warning (the decision's "when they can").
 
 ### Layer 4, the audit after every attempt
 
 - **When.** At the end of every attempt that verifies, as a phase of `loop.core.verify` after the holdouts, and at the end of an attempt that ends without a result (failed, max turns, stopped), on its own. It needs no model.
 - **What it checks,** each a finding with its source:
-  - Refs: the project refs Loop alone writes (`refs/heads/loop/<key>`, `refs/loop/base/*`, `refs/loop/workspace/<key>`, `refs/loop/workspace-base/<key>`, `docs/workspaces.md`) are where Loop last wrote them, and no other project ref was written from the workspace. With the sandbox the project is unwritable, so this is the check that the boundary held.
+  - Refs: the project refs Loop alone writes (`refs/heads/loop/<key>`, `refs/loop/base/*`, `refs/loop/workspace/<key>`, `refs/loop/workspace-base/<key>`, `docs/workspaces.md`) are where Loop last wrote them. Only those refs can be a violation: ADR 0002 rejected a ref audit that cannot tell my own ref writes (a `git pull`, a branch) from an agent's, so any other moved project ref goes to the evidence, never a violation alone. With the sandbox the project is unwritable, so this is the check that the boundary held.
   - The remote: no commit made in the attempt's workspace is reachable from the base branch or a `release/*` branch on GitHub unless Loop merged it, and the attempt's pull request was not merged, closed or pushed to by anyone but Loop. It tests ancestry, not who pushed, since pull requests I merge myself during a run are normal.
   - Protected files: the `diff_policy` result of the verification, reused, not run again (m2-12).
   - Tried violations: every `policy_denied` event with a deny list id, every Seatbelt denial of a deny list path or executable, every `network_refused`. Where Seatbelt's denials are read from (the unified log or a report) is decided in the sandbox slice (open question 4).
@@ -188,12 +196,13 @@ M5 enforces the permissions in four layers, as PLAN 11.2 says, and adds approval
 ### What M5 absorbs
 
 - No M4 issue is open but m4-45, so M5 absorbs backlog items, each closed as moved in its slice with the parts not carried:
+  - bl-266, whole, and the new bl-273, before m5-01: the move map by tracker and `loop resume` on every tracker.
   - bl-267, whole (the first slice).
   - bl-245 item 2, clone as the default. Item 1, the replay of an unimported commit, stays in the backlog.
   - bl-134: the holdout profile closes the Codex read gap; the issue closes when the playground's holdout seed is refuted on Codex.
   - bl-251's unpinned hook git and bl-262 items 1 and 3: the hook profile and pins.
   - The check to use (TOCTOU) notes of bl-260, bl-261 and bl-262: answered by the sandbox, since the agent can no longer write the project between a check and a git process. Their other low findings stay in the backlog.
-  - The m4-43 security notes, items 2 to 4, and the Loop fixes it lists (an env allow list, hooks with the checks' env policy, a token never in `loop run`'s environment). Item 1 and the rotation are m5-00.
+  - The m4-43 security notes, items 2 to 4, and the Loop fixes it lists (an env allow list, hooks with the checks' env policy, a token never in `loop run`'s environment). Item 1 and the rotation are m5-02.
   - bl-270, as the first M5 run.
 - Related, not absorbed: bl-264 (`stop` and `drain` without a token), bl-55 (filters and merge drivers in Loop's own git, open question 7), bl-36 (holdout spellings, mostly moot once the folder is unreadable), bl-03 (process groups).
 
@@ -201,7 +210,7 @@ M5 enforces the permissions in four layers, as PLAN 11.2 says, and adds approval
 
 - **The seams of M1 to M4 stay:** the `loop` CLI on a temporary project with the command or fake runner, contract tests per plugin interface, recorded transcripts and recorded GitHub answers, and the conformance module.
 - **A fake sandbox** in `plugin-api` test fixtures records the profile it was given and runs the command unwrapped, so core tests check which profile each process got without macOS. `SandboxProviderContract` sits beside `ResourceProviderContract`.
-- **Real Seatbelt tests,** run on macOS only and skipped elsewhere with a reason: a probe command under a generated profile tries to read a secret under a temporary `HOME`, run `security`, `gh` and a git credential helper, write outside the workspace, read the holdout folder and open a socket past the proxy, and each must fail, while a write in the workspace and a read of the system folders succeed. Each runner's test proves its own runtime starts and finishes a scripted turn inside its profile; the runner contract's `sandbox` case becomes observable through the probe.
+- **Real Seatbelt tests,** run on macOS only (a macOS CI job, m5-03) and skipped elsewhere with a reason, and skipped with a reason inside an outer sandbox, since `sandbox-exec` refuses to apply a profile inside a restrictive one (`sandbox_apply: Operation not permitted`, checked on macOS 27). A probe command under a generated profile tries to read a secret under a temporary `HOME`, run `security`, `gh` and a git credential helper, write outside the workspace, read the holdout folder and open a socket past the proxy, and each must fail, while a write in the workspace and a read of the system folders succeed. Each runner's test proves its own runtime starts and finishes a scripted turn inside its profile; the runner contract's `sandbox` case becomes observable through the probe. Loop's own workflow keeps `sandbox: { kind: none }` until the check, holdout and hook profiles land, then switches to `seatbelt` in a human step (m5-25).
 - **The environment:** tests that an unlisted host variable reaches no agent, check or hook, that a `keychain:` value is never in a child's environment (a fake `security` on a test `PATH` host side), and that the redactor hides it.
 - **The audit** runs on real git repositories with the fake runner scripted to try each violation (a ref write in the project, a commit reaching the base on a recorded GitHub answer, a deny list command, a refused host), and with a clean attempt that finds nothing.
 - **Approvals** run on a fake clock: an answer before the timeout, a denial at 30 minutes, a restart in between, a deny list request refused at once.
@@ -224,11 +233,11 @@ M5 enforces the permissions in four layers, as PLAN 11.2 says, and adds approval
 
 | Question | Default if you do not decide |
 |---|---|
-| 1. How do my own changes reach Loop's `main` once the ruleset is on? | Decided 2026-11-28: no direct push for anyone, no bypass list. My commits, tracker notes and issue files go through pull requests like everything else. The `files` tracker in Loop's own repository then needs a way to land the issue state Loop writes in the main checkout (a pull request per batch of tracker notes, or the tracker moved out of the code branch); the slice of branch protection settles which |
+| 1. How do my own changes reach Loop's `main` once the ruleset is on? | Decided 2026-11-28: no direct push for anyone, no bypass list. My commits, tracker notes and issue files go through pull requests like everything else. Settled the same day: the tracker moves to GitHub issues (m5-00, m5-01), so notes on GitHub issues need no commit; the backlog left in files only shrinks, and its notes reach `main` through a pull request per batch (m5-34) |
 | 2. Should the merge also require a status only Loop can post, with a second token holding commit statuses write? | Decided 2026-11-28: No in M5: agents hold no credential, and the worker token cannot push to the base or lift the ruleset |
 | 3. Does `agy acp --sandbox`, and the read only sandbox of the Codex reviewer, still work inside Loop's Seatbelt profile? | A spike before the runner slice. If not, Loop's profile replaces theirs and the runner says so in its profile |
 | 4. Where does the audit read Seatbelt denials from? | Decided in the sandbox slice, from what a real `sandbox-exec` run reports; until then the audit reads policy denials and proxy refusals only |
-| 5. Does blocking `/usr/bin/security` by executable keep the Keychain token unreadable, given the item's access list, while Claude Code's own Keychain login keeps working? | Verified in the sandbox slice with a real Keychain item made like the m5-00 ones |
+| 5. Does blocking `/usr/bin/security` by executable keep the Keychain token unreadable, given the item's access list, while Claude Code's own Keychain login keeps working? | Verified in the spike m5-05, with a real Keychain item made like the m5-02 ones, before the Claude Code runner slice |
 | 6. Does the network proxy stay in M5? | Decided 2026-11-28: Yes, as the last slice before the audit's network part; if it slips, the audit records network as not audited and M5 exits without that part |
 | 7. Should Loop's own host side git on a workspace (fingerprint, import, merge check) run in a profile too, for the filters and merge drivers of bl-55? | No in M5: its pins stay; bl-55 stays deferred with a note |
 | 8. A violation parks the issue at once, rather than sending the findings back as a refutation usually does. Right? | Decided 2026-11-28: Park |
@@ -237,32 +246,50 @@ M5 enforces the permissions in four layers, as PLAN 11.2 says, and adds approval
 
 ## Slicing
 
-A dependency order for the M5 issues, to write in the next step. Lane A is the serial chain through the orchestrator; human slices are marked.
+The M5 issues, in dependency order, after the Fable 5.2 review of the slice list (m4-45, 2026-11-28). m5-00 and m5-01 live in the `files` tracker; m5-02 onward are created on GitHub once m5-01 is done. Issues that edit `Orchestrator.kt`, `Host.kt`, `Preflight.kt`, the status command or `AttemptTool.kt` name them in their area, so Loop serializes lane A. Every human `WORKFLOW.md` step reinstalls first, then edits, and keeps `OwnWorkflowTest` green.
 
-1. bl-270 prompt and workflow change (human), then the first M5 run proves it while the slices below run. Blockers: none.
-2. m5-00 tokens, Keychain, rotation, playground repository (human). Blockers: none.
-3. m5-01 module scaffolding and empty `Sandbox` interfaces (human). Blockers: none.
-4. A policy denial continues the turn (bl-267). Blockers: none.
-5. One deny list, generated runner policies, `policy_denied` events. Blockers: 4.
-6. Env allow list for agents and checks. Blockers: none.
-7. Hook environment and hook git pins. Blockers: 6.
-8. Keychain references, no token in `loop run`'s environment, one off commands, the token check. Blockers: 2.
-9. Tool calls over the run's socket, the store unwritable by the tool process. Blockers: none.
-10. Clone as the default and required under a sandbox (bl-245 item 2). Blockers: none.
-11. The sandbox seam, the Seatbelt provider and the agent profile on the Claude Code runner. Blockers: 3, 6, 9, 10.
-12. Spike: nested Seatbelt for `agy` and the Codex reviewer (human or research). Blockers: 11.
-13. Codex and `agy` in the sandbox. Blockers: 11, 12.
-14. Check, holdout and hook profiles. Blockers: 7, 11.
-15. iOS checks in the check profile, proven on the second pilot app. Blockers: 14.
-16. Branch protection on the playground, then on Loop's `main`, with Loop's merge proven and the `loop status` line (part human). Blockers: 2, 8.
-17. The network proxy and allow list. Blockers: 11.
-18. The audit: refs, remote ancestry, protected files, tried violations, refute, park, alert. Blockers: 5, 11, 16 (its network part: 17).
-19. Approvals in the middle of a run. Blockers: 5, 14, 17.
-20. The exit seeds and the playground run (human). Blockers: 13, 15, 16, 18.
-21. The guard model. Blockers: 18, 19. Last, by the decision; the exit does not wait for it unless the owner says so.
+1. m5-00 Acceptance commands on the GitHub tracker. Blockers: none. Agent.
+2. m5-01 Move Loop's own tracker to GitHub issues, the backlog kept in files. Blockers: m5-00, bl-266, bl-273. Human.
+3. m5-02 Human prerequisites: tokens, Keychain, rotation, playground: fine grained tokens for Loop and `owner/playground` in the Keychain, the m4-43 tokens rotated, narrower gh scopes (m4-43 item 1), the playground base. Blockers: none. Human.
+4. m5-03 Human scaffolding: `sandbox-seatbelt` module, empty `Sandbox` and `SandboxProvider`, a macOS CI job: m4-01 pattern, smoke test, a macOS job in `.github/` that runs the Seatbelt tests. Blockers: none. Human.
+5. m5-04 First M5 run proves ask, the per tracker limit and Codex resources: story 165, carries bl-270's criteria and the PLAN 16 edit, traces linked here and on bl-270. Blockers: none. Human.
+6. m5-05 Spike: what runs inside Seatbelt: nesting (`sandbox-exec` under an outer profile, `agy --sandbox`, the Codex reviewer, `xcodebuild` and SwiftPM), a real Keychain item with Claude Code's login (question 5), each runtime's real hosts. Blockers: m5-02. Human.
+7. m5-06 Playground ruleset and GitHub recordings: the ruleset on `owner/playground` (base and `release/*`, no bypass), recordings: rules read with and without a ruleset, refused push and force push, allowed merge, ancestry answers. Blockers: m5-02. Human.
+8. m5-07 A policy denial continues the turn (bl-267): story 142, Claude Code and Codex halves. Blockers: none. Agent.
+9. m5-08 One deny list, Claude Code settings from it, `policy_denied` events: stories 143 (Claude Code), 144. Blockers: m5-07. Agent.
+10. m5-09 Codex policy from the deny list: story 143, Codex, its `policy_denied` events. Blockers: m5-08. Agent.
+11. m5-10 `agy` policy from the deny list: story 143, `agy`, its `policy_denied` events. Blockers: m5-08. Agent.
+12. m5-11 Env allow list for agents, checks and the reviewers: story 145, `agent.env_allow`, the three reviewers' `hostEnv` and `removedEnvNames`. Blockers: none. Agent.
+13. m5-12 Hook environment and hook git pins: story 146, `hooks.env_allow`. Blockers: m5-11. Agent.
+14. m5-13 Keychain references, no token in `loop run`'s environment, one off commands: stories 147, 148, a `CONTEXT.md` Secret term as a human step. Blockers: m5-02. Agent.
+15. m5-14 The token check: story 157, preflight half, with its fixture sweep and the pilot apps' workflows. Blockers: m5-13. Agent.
+16. m5-15 Socket broker and the queued tools: the socket, a token per attempt, `submit_result`, `move`, `comment` on MCP, `loop tool` and Codex's `LoopToolCall`, its own real socket probe, an ADR for the broker as a human step. Blockers: none. Agent.
+17. m5-16 In turn tools over the broker, hostile request rules: resource tools, legal moves only, size cap, rate limit, replay id, the store unwritable by the tool process. Blockers: m5-15. Agent.
+18. m5-17 Clone as the default (bl-245 item 2): the ADR 0002 condition that the pilot app runs on clones, pilot workflows that need `worktree` say so. Blockers: none. Agent.
+19. m5-18 Sandbox seam, Seatbelt provider, agent profile: stories 149, 151, 152: `.scratch`, `TMPDIR`, `sandbox.writable`, `read_only`, `read_home`, `deny_read`, executables from the deny list, the network mode before the proxy, loopback, `clone --shared` objects readable, `git commit` and a Gradle test pass inside, tests skip inside an outer sandbox, question 4, an ADR for the seam as a human step. Blockers: m5-03, m5-08, m5-17. Agent.
+20. m5-19 Claude Code runner in the sandbox, its reviewer read only: story 150, Claude Code, question 5 from m5-05, the socket rule. Blockers: m5-18, m5-05, m5-11, m5-16. Agent.
+21. m5-20 Preflight refusal and the `loop status` sandbox line: story 155, the `worktree` refusal, `seatbelt` on Linux, the sweep of fixtures, conformance, docs and `loop init`; human step before dispatch: `sandbox: { kind: none }` in every workflow. Blockers: m5-18. Agent.
+22. m5-21 Codex runner in the sandbox, its reviewer read only: story 150, Codex. Blockers: m5-19, m5-05. Agent.
+23. m5-22 `agy` runner in the sandbox, its reviewer read only: story 150, `agy`, `--gemini-dir` under the home folder beside the unwritable profile. Blockers: m5-19, m5-05. Agent.
+24. m5-23 Check and holdout profiles: story 153, checks and holdouts, a `CONTEXT.md` Holdout check edit as a human step. Blockers: m5-19. Agent.
+25. m5-24 Hook profile: story 153, hooks, notice hooks stay host side. Blockers: m5-12, m5-18. Agent.
+26. m5-25 Loop's own workflow switches to Seatbelt: human: `seatbelt` in Loop's and the playground's workflows, one watched attempt, `kind: none` as the way back. Blockers: m5-19, m5-20, m5-23, m5-24. Human.
+27. m5-26 iOS checks in the check profile: story 154, proof on the second pilot app as a human step. Blockers: m5-23, m5-05. Agent.
+28. m5-27 Audit, local part: stories 159 (local), 160: only refs Loop alone writes are violations, other moved refs are evidence, protected files, tried violations, refute, park, alert, attempts with no result, network not audited, `CONTEXT.md` Verdict and channel event edits as human steps. Blockers: m5-08, m5-19. Agent.
+29. m5-28 `loop status` ruleset line: story 158, visibility, on m5-06's recordings. Blockers: m5-06, m5-13. Agent.
+30. m5-29 Audit, remote part: story 159 remote, the merge check reruns it, on m5-06's recordings. Blockers: m5-27, m5-13, m5-06. Agent.
+31. m5-30 Approvals: the request and the human side: story 161 and part of 162: `request_approval` on Claude Code and `agy`, `approval_requested` notice, the `loop status` listing, `loop approve` and `loop deny --request`, deny list refused at once, at most 3, a `CONTEXT.md` term as a human step. Blockers: m5-08, m5-16. Agent.
+32. m5-31 Approvals: the 30 minute timeout and the command run: story 162: timeout through the store, restart, the approved command run host side in the check profile. Blockers: m5-30, m5-23. Agent.
+33. m5-32 `request_approval` as a Codex client tool: story 161, Codex. Blockers: m5-30. Agent.
+34. m5-33 Network proxy and allow list, host approvals, the audit's network part: story 156, loopback, real hosts from m5-05, may slip. Blockers: m5-19, m5-27, m5-30, m5-05. Agent.
+35. m5-34 Branch protection on Loop's `main`: story 158, late, no bypass, the owner's own changes and the remaining backlog files through pull requests, one per batch of notes. Blockers: m5-06, m5-13, m5-25, m5-28. Human.
+36. m5-35 The exit: story 164, three seeds on Claude Code, the holdout seed also on Codex. Blockers: m5-09, m5-21, m5-22, m5-25, m5-26, m5-29. Human.
+37. m5-36 The guard model: story 163, last. Blockers: m5-21, m5-22, m5-29, m5-31, m5-32, m5-34. Agent.
+
+Splits from the 21 candidate slices of the draft, each for size or for Loop's own run: the deny list per runner, the seam apart from the Claude Code runner, the preflight refusal apart from both, Codex apart from `agy`, checks and holdouts apart from hooks, the broker in two, the audit in two, approvals in three, branch protection in three (the playground ruleset and recordings early, the `loop status` line, Loop's `main` late), the token check apart from the Keychain references, and a spike that settles what runs inside Seatbelt before any runner slice. The guard model waits for every hard layer but the proxy, which may slip.
 
 ## Further notes
 
 - The full design lives in PLAN sections 6.4, 6.10, 11, 12 and 17 M5; the earlier sandbox notes in `docs/spec-decisions.md` (the approval and sandbox rows of the Claude Code and Codex runners, holdout checks, the `sandbox` capability row, the `agy` spike's `--sandbox` notes, clone workspaces) and in `docs/workspaces.md` (threat model) and ADR 0002.
-- Workloads: Loop's own backlog in Loop mode on the `files` tracker builds M5; the playground repository proves the exit; the second pilot app proves the iOS check profile.
+- Workloads: Loop in Loop mode builds M5, from GitHub issues once m5-01 is done (m5-00 and m5-01 on the `files` tracker); the playground repository proves the exit; the second pilot app proves the iOS check profile.
 - M5 issues are written from this spec in m4-45, after the owner confirms the choices marked here and the open questions.

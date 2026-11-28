@@ -92,3 +92,8 @@ No M4 issue was added mid milestone or canceled: m4-46 to m4-54 were split off i
 14. The holdout exit seed runs on Codex too, closing bl-134.
 15. The spec stays `needs-triage` until the Fable review passes and the issues are written.
 16. PLAN 17 moves the guard model from M9 to M5, with a "moved to M5 (m4-45)" note on M9.
+
+2026-11-28 soule: M5 moves to GitHub issues before its issues are written (the owner's choice, after the Fable 5.2 review of the slice list). Branch protection with no bypass on Loop's `main` would make every tracker note of the `files` tracker a pull request; GitHub issues keep tracker state off the code branch.
+  - First, on the `files` tracker: m5-00 (acceptance commands on the GitHub tracker), bl-266 (a move map by tracker), bl-273 (`loop resume` on every tracker), then m5-01 (human: the switch, the files tracker kept as `default` for the backlog).
+  - Then m5-02 to m5-36 are created on GitHub from the spec's "Slicing" section, `needs-triage` until the Fable 5.2 review of the spec and all M5 issues passes. Criterion 3 lands there.
+  - The spec (`.loop/specs/loop-m5.md`) records it under "The tracker", and its slicing lists the 37 issues.
