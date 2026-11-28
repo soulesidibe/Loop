@@ -52,21 +52,21 @@ Rows recorded as gaps, with what replaces them until they are built:
 
 2026-11-27 soule: the plan was reviewed by Fable 5.2 at high effort before any change ("ready with changes"); its findings shaped what follows.
 
-2026-11-27 soule: evidence, one trace per gating row. The wave is run 63ace978 on Sigma, build 56976ce, unless another run is named.
+2026-11-27 soule: evidence, one trace per gating row. The wave is run 63ace978 on the second pilot app, build 56976ce, unless another run is named.
 
 - `claude --bg` per issue: 9 `attempt_started` on the `claude-code` runner in the wave.
 - Loop tools for agents: 10 `result_submitted` and 11 `issue_commented` in the wave. `file_followup`: bl-235 filed bl-239 (`followup_filed`, 2026-11-26T13:10Z, run 9ae661e3, on Loop). `ask`, `loop answer` and the resource tools on Codex: tests only, see the amendment of criterion 2 and bl-270.
-- Device requests: 33 `resource_requested`, 20 `resource_granted`, 6 `resource_queued`, 20 `resource_released`; the first grant was `sim-a` to Sigma-197 at 15:29:55Z. The checks took their simulator through `resource:` (`LOOP_RESOURCE_UDID` in Sigma's `check.sh`).
-- Delivery check for pull requests: 3 `merge_check_finished`, then Sigma pull requests 369 (Sigma-199, 18:14:28Z), 370 (Sigma-197, 18:28:32Z) and 371 (Sigma-244, 18:33:53Z) merged.
-- Verify contracts with evidence and fingerprints: 13 `verdict` events, each with a fingerprint and evidence files, for example r-1 verified (`tree:1ebc20bc894a4ed7`, 15:34:02Z) and Sigma-199 refuted (`git:f1a42a71...`, 16:21:56Z).
+- Device requests: 33 `resource_requested`, 20 `resource_granted`, 6 `resource_queued`, 20 `resource_released`; the first grant was `sim-a` to issue 197 at 15:29:55Z. The checks took their simulator through `resource:` (`LOOP_RESOURCE_UDID` in the app's `check.sh`).
+- Delivery check for pull requests: 3 `merge_check_finished`, then the second pilot app's pull requests 369 (issue 199, 18:14:28Z), 370 (issue 197, 18:28:32Z) and 371 (issue 244, 18:33:53Z) merged.
+- Verify contracts with evidence and fingerprints: 13 `verdict` events, each with a fingerprint and evidence files, for example r-1 verified (`tree:1ebc20bc894a4ed7`, 15:34:02Z) and issue 199 refuted (`git:f1a42a71...`, 16:21:56Z).
 - Scheduling: the area lock skipped bl-210 while bl-209 held `plugins/runner-claude-code` (`area_busy`, 2026-11-25T09:09Z, run b92a92fb, on Loop); `blocked_by` skipped m2-04 behind m2-03 (2026-11-12T11:12Z, run a2e09f2d); slot skips (`no_available_slots`) in the wave. The per tracker limit: tests only (bl-270).
-- Token accounting: `loop show d0e80896 --cost` (gh:Sigma-244) prints 23,297,507 tokens, 16.11 USD and a peak of 0.1691 of a 1,000,000 token window. `loop report` (m4-38) is merged.
+- Token accounting: `loop show d0e80896 --cost` (gh:244) prints 23,297,507 tokens, 16.11 USD and a peak of 0.1691 of a 1,000,000 token window. `loop report` (m4-38) is merged.
 - Spec preflight: 803 `preflight` events in the wave; a failing one caught a template using `loop.answer` before it was a variable (2026-11-25T15:43Z).
 - Template: r-1 ran on the research kind's own template (`template_version ee1a5a70...` on its `attempt_started`), and a config reload of `WORKFLOW.md` is recorded at 18:13:04Z.
 
-2026-11-27 soule: the global manager skill (`~/.claude/skills/iplmt-manager/SKILL.md`) is marked retired on 2026-11-27, in its description and with a header, and its files are kept. The project copies were left alone (a live `loop run` and uncommitted work in Sigma, a release in progress on the pilot app, an archived repository) and are bl-271.
+2026-11-27 soule: the global manager skill (`~/.claude/skills/iplmt-manager/SKILL.md`) is marked retired on 2026-11-27, in its description and with a header, and its files are kept. The project copies were left alone (a live `loop run` and uncommitted work in the second pilot app, a release in progress on the pilot app, an archived repository) and are bl-271.
 
-2026-11-27 soule: criterion 5 is not met. Sigma's Loop variant of the issue skill ends with one `submit_result` (line 48) and sends product questions through `needs_info` (lines 42 and 60), but nothing forbids `mcp__loop__move` (line 16), Sigma-199 attempt a1d53ccb moved its issue to `review` in the wave (`issue_move_requested`, 16:22:21Z), and line 47 has the agent `git mv` the issue file to `issues/done/`. The pilot app's copy has the same lines, and Sigma's base issue skill still reads its merge gates from the manager skill (line 184). The fix is bl-272.
+2026-11-27 soule: criterion 5 is not met. The second pilot app's Loop variant of the issue skill ends with one `submit_result` (line 48) and sends product questions through `needs_info` (lines 42 and 60), but nothing forbids `mcp__loop__move` (line 16), issue 199 attempt a1d53ccb moved its issue to `review` in the wave (`issue_move_requested`, 16:22:21Z), and line 47 has the agent `git mv` the issue file to `issues/done/`. The pilot app's copy has the same lines, and the second pilot app's base issue skill still reads its merge gates from the manager skill (line 184). The fix is bl-272.
 
 2026-11-27 soule: PLAN section 16 has a status column with three split rows and a paragraph of the skill's duties with no row, section 20 asks the two gap questions, and section 17 has the retirement bullet (42e3cb9, 6d9e894).
 

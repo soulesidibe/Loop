@@ -50,7 +50,7 @@ Like m3-29: the M5 issues are written from the plan and from what M4 taught, aft
 
 2026-11-28 soule: the M4 spec (`.loop/specs/loop-m4.md`) is updated with what M4 changed. Each change is a "Changed in M4", "Added in M4", "Found in M4", "Found in the exit" or "Held" note on the existing text; nothing was deleted.
 
-1. The exit wave ran on Sigma instead of the pilot app, whose release was in progress: one run delivered three code issues and one research issue (m4-43, spec-decisions "M4 exit wave"). Stories 124 and 140, the exit app decision, the workloads note.
+1. The exit wave ran on the second pilot app instead of the pilot app, whose release was in progress: one run delivered three code issues and one research issue (m4-43, spec-decisions "M4 exit wave"). Stories 124 and 140, the exit app decision, the workloads note.
 2. "The exit is one wave": held, one run of build 56976ce, never restarted (m4-43).
 3. Story 141: the manager skill was retired on 2026-11-27 with `loop doctor` and the M6 rows as gaps; the project copies are bl-271, the issue skill criterion bl-272, the tests only rows bl-270 (m4-44).
 4. Story 103: the wake turn follows bl-170 option E, and a subagent's own lines no longer mark a wake (m4-03, bl-122).
@@ -66,7 +66,7 @@ Like m3-29: the M5 issues are written from the plan and from what M4 taught, aft
 14. Reactions: `send_to_agent` is a retry in the kept workspace through the retry coordinator, the last slot parks the issue (m4-34), the bound survives a restart (bl-224); the glossary term is Reaction.
 15. Reactions: `ci_failed` never fires under `ci: none` and warns at load (m4-35); `changes_requested` sends and escalates once per round (m4-36); `approved_green` notifies once per head (m4-37).
 16. Found in the exit: generated files must not depend on the workspace path; a permission denial fails the attempt (bl-267); one off commands need the tracker token (bl-264); secrets reach agents and hooks until the M5 sandbox (m4-43, the M5 decisions above).
-17. Testing: the iOS provider was proven on Sigma; Android stayed out of the exit (m4-43).
+17. Testing: the iOS provider was proven on the second pilot app; Android stayed out of the exit (m4-43).
 18. Testing, the exit: a peak of 0.1691 of a 1,000,000 token window; touches counted by hand beside the ledger, `loop report` saying 1 of 4 delivered with zero touches (m4-43, bl-64).
 19. Testing: `ask`, `loop answer`, the per tracker limit and the resource tools on Codex are proven by tests only (m4-44, bl-270).
 20. Out of scope, bl-28: clone workspaces were built as an opt in, `workspace.git: clone` (ADR 0002); the default is bl-245, the sandbox stays in M5.

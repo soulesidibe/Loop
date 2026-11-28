@@ -9,7 +9,7 @@ blocked_by: []
 
 ## Parent
 
-None. Backlog, not scheduled in a milestone. Seen on 2026-11-27: `loop stop /Users/.../ayyam/WORKFLOW.md` from a shell without `$LOOP_AYYAM_GITHUB_TOKEN` failed with "tracker.provider.token uses $LOOP_AYYAM_GITHUB_TOKEN, which is not set", while `loop status` on the same workflow worked. The only way left to stop the run was a raw SIGTERM to its pid.
+None. Backlog, not scheduled in a milestone. Seen on 2026-11-27: `loop stop /Users/.../<pilot app>/WORKFLOW.md` from a shell without `$LOOP_<APP>_GITHUB_TOKEN` failed with "tracker.provider.token uses $LOOP_<APP>_GITHUB_TOKEN, which is not set", while `loop status` on the same workflow worked. The only way left to stop the run was a raw SIGTERM to its pid.
 
 ## What
 

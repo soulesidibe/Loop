@@ -9,11 +9,11 @@ blocked_by: []
 
 ## Parent
 
-None. Backlog. Found in the m4-43 wave on Sigma, 2026-11-27, issue Sigma-199 attempt 68b8b710.
+None. Backlog. Found in the m4-43 wave on the second pilot app, 2026-11-27, issue 199 attempt 68b8b710.
 
 ## What
 
-Claude Code denied one Bash call of the agent (a compound command with `rm -rf` cleaning evidence bundles). The turn's result carried it in `permission_denials`. Loop recorded `turn_input_required reason=Bash`, ended the attempt with `Failed reason="turn_input_required: Bash"`, and scheduled an error retry. The agent had finished its turn normally (`stop_reason: end_turn`, "flow test passed at all sizes; awaiting UI reviewer") and could have continued. The attempt took 1912 s, 5 turns and 6.34 usd, and used one of Sigma's two `max_attempts`; one more such denial would have parked the issue.
+Claude Code denied one Bash call of the agent (a compound command with `rm -rf` cleaning evidence bundles). The turn's result carried it in `permission_denials`. Loop recorded `turn_input_required reason=Bash`, ended the attempt with `Failed reason="turn_input_required: Bash"`, and scheduled an error retry. The agent had finished its turn normally (`stop_reason: end_turn`, "flow test passed at all sizes; awaiting UI reviewer") and could have continued. The attempt took 1912 s, 5 turns and 6.34 usd, and used one of the app's two `max_attempts`; one more such denial would have parked the issue.
 
 ## Agent brief
 

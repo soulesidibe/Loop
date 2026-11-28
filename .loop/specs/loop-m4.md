@@ -27,7 +27,7 @@ M4 makes Loop the harness I run every day, in parallel, and retires the manager 
 - **The human side:** a terminal channel that tells me when a run needs me, `ask` for human questions, `loop send-back`, and `file_followup`.
 - **Reactions** to merge conflicts, red CI, review comments and approved green pull requests.
 - **Observability:** `loop report`, `loop query`, `loop replay` and an OpenTelemetry export plugin.
-- **The exit:** a wave on the pilot app with two code issues in parallel and a non code issue, with GitHub and `files` trackers active at once, then the manager skill retired with its remaining gaps named. Changed in M4: the wave ran on Sigma, since the pilot app's release was in progress (m4-43).
+- **The exit:** a wave on the pilot app with two code issues in parallel and a non code issue, with GitHub and `files` trackers active at once, then the manager skill retired with its remaining gaps named. Changed in M4: the wave ran on the second pilot app, since the pilot app's release was in progress (m4-43).
 
 ## User stories
 
@@ -65,7 +65,7 @@ M4 makes Loop the harness I run every day, in parallel, and retires the manager 
 
 122. As a Loop user, I want devices declared under `resources:` and granted to agents through `request_resource` and `release_resource` in queue order, with locks in the store, so that two agents never share a device.
 123. As a Loop user, I want resource limits enforced, a read only check run after each release, and a check able to hold a resource, so that a device comes back as it was lent and two checks never share a simulator.
-124. As a Loop user, I want an iOS simulator provider, so that two issues of the pilot app verify in parallel, each on its own simulator. Changed in M4: proven on Sigma, not the pilot app (m4-43).
+124. As a Loop user, I want an iOS simulator provider, so that two issues of the pilot app verify in parallel, each on its own simulator. Changed in M4: proven on the second pilot app, not the pilot app (m4-43).
 125. As a Loop user, I want an Android provider that boots a configured AVD when no device is connected, so that Android work needs no device on my desk.
 
 ### The human side
@@ -93,14 +93,14 @@ M4 makes Loop the harness I run every day, in parallel, and retires the manager 
 
 ### Exit
 
-140. As a Loop user, I want a wave of at least 3 code issues on the pilot app, 2 in parallel, plus one content or research issue, delivered through Loop in one wave with GitHub and `files` trackers active at once and any restart recorded, so that parallel production is proven on real work. Changed in M4: the wave ran on Sigma, an iOS and Android app with its issues on GitHub, instead of the pilot app, whose release was in progress. One run, never restarted, delivered three code issues and one research issue (m4-43).
+140. As a Loop user, I want a wave of at least 3 code issues on the pilot app, 2 in parallel, plus one content or research issue, delivered through Loop in one wave with GitHub and `files` trackers active at once and any restart recorded, so that parallel production is proven on real work. Changed in M4: the wave ran on the second pilot app, an iOS and Android app with its issues on GitHub, instead of the pilot app, whose release was in progress. One run, never restarted, delivered three code issues and one research issue (m4-43).
 141. As a Loop user, I want the manager skill retired, with every row of PLAN section 16 either covered by Loop or named as a gap, so that I stop maintaining the skill. Changed in M4: retired on 2026-11-27, with `loop doctor` and the M6 rows as gaps. `ask`, `loop answer`, the per tracker limit and the resource tools on Codex count as proven by tests only, to prove in the first M5 run (bl-270), and the check that the issue skills never move the issue is handed to bl-272 (m4-44).
 
 ## Implementation decisions
 
 ### Decisions taken in m3-29
 
-- **The exit app is the pilot app.** The iOS simulator provider (m4-27) gates the exit. The Android provider (m4-28) is in scope but does not gate it. Changed in M4: the exit ran on Sigma with the same setup (GitHub tracker, Loop's worktree hooks, a check claiming a simulator), since the pilot app's release was in progress, and the owner accepted it as the exit wave (m4-43).
+- **The exit app is the pilot app.** The iOS simulator provider (m4-27) gates the exit. The Android provider (m4-28) is in scope but does not gate it. Changed in M4: the exit ran on the second pilot app with the same setup (GitHub tracker, Loop's worktree hooks, a check claiming a simulator), since the pilot app's release was in progress, and the owner accepted it as the exit wave (m4-43).
 - **A minimal bl-10 area lock lands in M4** (m4-17), since the exit runs two code issues in parallel on one app.
 - **`ask` is built** (m4-31, m4-52). `loop doctor` and the PLAN section 16 rows that belong to M6 (expert agents, the triage agent, brief extras through lessons, triage scope estimates) are recorded as gaps at retirement (m4-44), not built.
 - **`loop report` prints human touches as not reliable** until bl-64 is answered: the approve touch is rarely counted today.
@@ -214,8 +214,8 @@ M4 makes Loop the harness I run every day, in parallel, and retires the manager 
 ### Exit and retirement (m4-43 to m4-45)
 
 - m4-43, the exit run, is a human issue, blocked by m4-26, m4-27 and m4-49. m4-44 retires the manager skill, naming the PLAN 16 rows that gate retirement and recording `loop doctor` and the M6 rows as gaps; until M6 the issue skill's own subagents play the expert role. m4-45 writes the M5 issues, carries the open M4 issues and records the per kind runner gap.
-- Changed in M4: m4-43 ran on Sigma instead of the pilot app (above). m4-44 marked the global manager skill retired on 2026-11-27 and kept its files; the project copies are bl-271. Its criterion on the issue skills is not met, since nothing in the Loop variant forbids `move`, and is handed to bl-272. The rows proven by tests only go to the first M5 run (bl-270).
-- Found in the exit (m4-43): generated files must not depend on the workspace path (fixed in Sigma); a permission denial ends a finished turn as `turn_input_required` and fails the attempt (bl-267); one off commands need the tracker token (bl-264); host secrets and the tracker token can reach agents and hooks until the M5 sandbox, recorded in m4-43 and answered by the M5 decisions in m4-45.
+- Changed in M4: m4-43 ran on the second pilot app instead of the pilot app (above). m4-44 marked the global manager skill retired on 2026-11-27 and kept its files; the project copies are bl-271. Its criterion on the issue skills is not met, since nothing in the Loop variant forbids `move`, and is handed to bl-272. The rows proven by tests only go to the first M5 run (bl-270).
+- Found in the exit (m4-43): generated files must not depend on the workspace path (fixed in the second pilot app); a permission denial ends a finished turn as `turn_input_required` and fails the attempt (bl-267); one off commands need the tracker token (bl-264); host secrets and the tracker token can reach agents and hooks until the M5 sandbox, recorded in m4-43 and answered by the M5 decisions in m4-45.
 
 ### Slicing
 
@@ -228,10 +228,10 @@ M4 makes Loop the harness I run every day, in parallel, and retires the manager 
 - **New contracts:** `HumanChannel` and `ResourceProvider` get contract tests next to `TrackerAdapterContract` and `AgentRunnerContract`.
 - **Several trackers** are tested with a `files` tracker and a GitHub tracker on recorded responses in one temporary project: namespaced ids, a failing tracker, routed writes and cross tracker blockers.
 - **The fake runner** gains scripted `ask`, `request_resource`, `release_resource` and `file_followup` calls and scripted wakes, so the waits, grants and turn counting run without models.
-- **Resource providers** are tested against fake `xcrun simctl` and `adb` scripts, then proven on the pilot app in the exit. Changed in M4: the iOS provider was proven on Sigma; Android stayed out of the exit (m4-43).
+- **Resource providers** are tested against fake `xcrun simctl` and `adb` scripts, then proven on the pilot app in the exit. Changed in M4: the iOS provider was proven on the second pilot app; Android stayed out of the exit (m4-43).
 - **CI and reactions** are proven on recorded Actions answers while Actions is refused, including run 43779352010.
 - **Non code kinds** are tested on workspaces with and without git, checking the `tree:` fingerprint and the delivery to the issue.
-- **The exit** (m4-43) is the real proof: traces of the wave, the main session peaks and the human touches, recorded in the issue. Done on Sigma: the main sessions peaked at 0.1691 of a 1,000,000 token window, and the human touches were counted by hand beside the ledger, which says 1 of 4 delivered with zero touches (bl-64 still applies).
+- **The exit** (m4-43) is the real proof: traces of the wave, the main session peaks and the human touches, recorded in the issue. Done on the second pilot app: the main sessions peaked at 0.1691 of a 1,000,000 token window, and the human touches were counted by hand beside the ledger, which says 1 of 4 delivered with zero touches (bl-64 still applies).
 - **Changed in M4:** `ask`, `loop answer`, the per tracker limit and the resource tools on Codex are proven by tests only, not in a real run of M4 (m4-44, bl-270).
 
 ## Out of scope
@@ -249,6 +249,6 @@ M4 makes Loop the harness I run every day, in parallel, and retires the manager 
 ## Further notes
 
 - GitHub Actions refused every job for billing from 2026-11-16 until the repository went public, which made its minutes free. Issues written in that window prove CI behavior on recorded answers. m4-05 and m4-07 still matter for any repository whose Actions are refused or unused.
-- Workloads: Loop's own backlog in Loop mode on the `files` tracker, and the pilot app on GitHub for the exit. Changed in M4: Sigma on GitHub, beside a `files` tracker, for the exit (m4-43).
+- Workloads: Loop's own backlog in Loop mode on the `files` tracker, and the pilot app on GitHub for the exit. Changed in M4: the second pilot app on GitHub, beside a `files` tracker, for the exit (m4-43).
 - The full design lives in PLAN sections 6.1, 6.2, 6.5 to 6.10, 8.6, 10.4, 12 and 16; the M3 lessons in `docs/spec-decisions.md` (Codex exit run, Claude Code exit runs) and in [Loop, M1 to M3](loop-m1-to-m3.md).
 - M4 issues are written in m3-29 from the approved outline and its review; M5 issues at the end of M4 (m4-45).

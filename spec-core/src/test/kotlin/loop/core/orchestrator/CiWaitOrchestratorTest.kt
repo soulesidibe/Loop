@@ -644,7 +644,7 @@ class CiWaitOrchestratorTest {
             assertContains(comment, "the code was not judged")
             assertContains(
                 comment,
-                "Runs not started:\n- build (failure): https://github.com/soulesidibe/Loop-private/actions/runs/$REFUSED_RUN",
+                "Runs not started:\n- build (failure): https://github.com/owner/repo/actions/runs/$REFUSED_RUN",
             )
             assertContains(comment, "Check the Actions billing and limits of the repository")
             assertFalse(comment.contains("Failed runs"), comment)

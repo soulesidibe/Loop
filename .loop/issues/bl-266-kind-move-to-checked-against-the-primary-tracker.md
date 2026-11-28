@@ -9,7 +9,7 @@ blocked_by: []
 
 ## Parent
 
-None. Backlog, not scheduled in a milestone. Found on 2026-11-27 while setting up the m4-43 wave on Sigma: a `research` kind matching a `files` tracker (`match: { tracker: local }`) beside a GitHub primary tracker.
+None. Backlog, not scheduled in a milestone. Found on 2026-11-27 while setting up the m4-43 wave on the second pilot app: a `research` kind matching a `files` tracker (`match: { tracker: local }`) beside a GitHub primary tracker.
 
 ## What
 
@@ -18,7 +18,7 @@ None. Backlog, not scheduled in a milestone. Found on 2026-11-27 while setting u
 - `move_to: done` fails: `kinds.research.delivery.on_delivered.move_to is "done", which is not a terminal state, use one of closed.`
 - `move_to: closed` with `closed` in the files tracker's `terminal_states` fails: `trackers[0].terminal_states has "closed", which is not a state of the files tracker.`
 
-So such a kind cannot move its delivered issues to a terminal state at all. Sigma's workflow dropped `on_delivered` for the kind, so approved reports land in `review` and a human closes them.
+So such a kind cannot move its delivered issues to a terminal state at all. The second pilot app's workflow dropped `on_delivered` for the kind, so approved reports land in `review` and a human closes them.
 
 ## Agent brief
 

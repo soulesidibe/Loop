@@ -9,7 +9,7 @@ blocked_by: []
 
 ## Parent
 
-None. Backlog, not scheduled in a milestone. Seen on 2026-11-27: after both runs went idle, `loop log` ended on "WORKFLOW.md reloaded" (Loop) and "moved to closed after its checks passed" (ayyam), so an idle run looked unfinished.
+None. Backlog, not scheduled in a milestone. Seen on 2026-11-27: after both runs went idle, `loop log` ended on "WORKFLOW.md reloaded" (Loop) and "moved to closed after its checks passed" (the pilot app), so an idle run looked unfinished.
 
 ## What
 

@@ -13,7 +13,7 @@ None. Backlog. From m4-44 (retire the manager skill), 2026-11-27. Four gating pa
 
 ## What
 
-Loop's event store holds no `question_asked` or `question_answered` event, no `WORKFLOW.md` (Loop, Sigma, the pilot app) sets `max_concurrent_agents_by_tracker`, and the only Codex attempt predates M4. Nothing invites an agent to ask either: Loop's `WORKFLOW.md` says nobody answers questions during a run and sends product questions to `needs_info`, and the issue skills do the same.
+Loop's event store holds no `question_asked` or `question_answered` event, no `WORKFLOW.md` (Loop, the second pilot app, the pilot app) sets `max_concurrent_agents_by_tracker`, and the only Codex attempt predates M4. Nothing invites an agent to ask either: Loop's `WORKFLOW.md` says nobody answers questions during a run and sends product questions to `needs_info`, and the issue skills do the same.
 
 "The first M5 run" means the first `loop run` that works on M5 issues, on Loop or on a pilot project, before M5's exit wave.
 

@@ -45,13 +45,13 @@ Recorded for bl-68 on 2026-11-20 from the playground, `Soules-Studio-Ltd/loop-pl
 |---|---|
 | `issue-closed-by-another-request` | `PATCH /repos/<repo>/issues/<n>` with `{"state":"closed"}` sent one second after GitHub merged a pull request whose body ends `Closes #<n>`: 422 `Validation Failed`, `This issue was closed by another request. Reload it and try again.` A read right after shows the issue closed |
 
-Recorded for m4-07 (bl-98) on 2026-11-21 in m4-00, with `gh api -i`, from the archived private repository `soulesidibe/Loop-private`, where GitHub refused to start run 43779352010 for a billing reason on 2026-11-16. Each `<name>.json` is the body as received, with every email address replaced by one at `example.com` (the commit author `loop@localhost` became `loop@example.com`), and `<name>.headers` keeps the status and the `x-ratelimit-*` headers. Never edit them by hand:
+Recorded for m4-07 (bl-98) on 2026-11-21 in m4-00, with `gh api -i`, from an archived private repository, its owner and name since replaced by `owner/repo` in the bodies and below, where GitHub refused to start run 43779352010 for a billing reason on 2026-11-16. Each `<name>.json` is the body as received, with every email address replaced by one at `example.com` (the commit author `loop@localhost` became `loop@example.com`), and `<name>.headers` keeps the status and the `x-ratelimit-*` headers. Never edit them by hand:
 
 | Name | Request |
 |---|---|
-| `actions-run-43779352010` | `GET /repos/soulesidibe/Loop-private/actions/runs/43779352010`: 200, a completed run with conclusion `failure` |
-| `actions-run-43779352010-jobs` | `GET /repos/soulesidibe/Loop-private/actions/runs/43779352010/jobs`: 200, its one job, `failure` with zero steps |
-| `actions-runs-43779352010` | `GET /repos/soulesidibe/Loop-private/actions/runs?head_sha=1c495c0359f1fb41aef31782e7221ff699f6cb8c&per_page=100`: 200, the listing the CI wait reads, with run 43779352010 alone, the same run as `actions-run-43779352010` |
+| `actions-run-43779352010` | `GET /repos/owner/repo/actions/runs/43779352010`: 200, a completed run with conclusion `failure` |
+| `actions-run-43779352010-jobs` | `GET /repos/owner/repo/actions/runs/43779352010/jobs`: 200, its one job, `failure` with zero steps |
+| `actions-runs-43779352010` | `GET /repos/owner/repo/actions/runs?head_sha=1c495c0359f1fb41aef31782e7221ff699f6cb8c&per_page=100`: 200, the listing the CI wait reads, with run 43779352010 alone, the same run as `actions-run-43779352010` |
 
 Written by hand for the `merge_conflict` reaction (m4-34), after the shape GitHub documents in "REST API endpoints for pull requests" for `GET /repos/<owner>/<repo>/pulls/<number>`, because a conflicting pull request cannot be recorded from a repository no test may write to. Only the fields Loop reads and their neighbours are kept:
 
