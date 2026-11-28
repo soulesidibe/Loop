@@ -47,3 +47,29 @@ Like m3-29: the M5 issues are written from the plan and from what M4 taught, aft
 - Guard model: in M5, as the last slice, after the hard layers (sandbox, token, protection, audit, approvals, deny list).
 - Approvals in the middle of a run: denied after 30 minutes without an answer; the agent is told and goes on or ends with `needs_info`, and the notice stays.
 - Secrets: agents get an allow listed environment only, hooks get only the `LOOP_` variables and what the workflow names for them, and the token readers (`security`, `gh auth token`, `git credential`) are blocked by the sandbox. Answers the m4-43 security notes.
+
+2026-11-28 soule: the M4 spec (`.loop/specs/loop-m4.md`) is updated with what M4 changed. Each change is a "Changed in M4", "Added in M4", "Found in M4", "Found in the exit" or "Held" note on the existing text; nothing was deleted.
+
+1. The exit wave ran on Sigma instead of the pilot app, whose release was in progress: one run delivered three code issues and one research issue (m4-43, spec-decisions "M4 exit wave"). Stories 124 and 140, the exit app decision, the workloads note.
+2. "The exit is one wave": held, one run of build 56976ce, never restarted (m4-43).
+3. Story 141: the manager skill was retired on 2026-11-27 with `loop doctor` and the M6 rows as gaps; the project copies are bl-271, the issue skill criterion bl-272, the tests only rows bl-270 (m4-44).
+4. Story 103: the wake turn follows bl-170 option E, and a subagent's own lines no longer mark a wake (m4-03, bl-122).
+5. Story 106: the model named in `risk.reviewer` picks the reviewer's runtime, Claude Code, Codex (bl-214) or `agy` (bl-205).
+6. Added `agent.max_concurrent_verifications` (bl-188, spec-decisions "Build gate").
+7. Several trackers: a kind's `move_to` is checked against the primary tracker's states (bl-266, from m4-43).
+8. Research kind: sections come from `verify.require_sections`, and "sources reachable" is a documented `command` check, not built in (m4-23).
+9. Resources: the dirty mark, and `resource_queued` reasons `held`, `limit` and `dirty` (m4-26).
+10. Resources: a mutex per lock and a 10 minute core provider timeout (bl-208, in m4-28); the iOS `prepare_timeout_seconds` defaults to 300 (m4-27), raised to 900 in the wave (m4-43).
+11. Resources, found in the exit: a failed prepare parks an issue (bl-268), one attempt held two simulators (bl-269).
+12. Story 129: `loop.retry_kind` is `sent_back` and the reason comes as `loop.verify_findings` (m4-32, bl-221).
+13. Story 133: only trusted author associations count for `changes_requested` (m4-36).
+14. Reactions: `send_to_agent` is a retry in the kept workspace through the retry coordinator, the last slot parks the issue (m4-34), the bound survives a restart (bl-224); the glossary term is Reaction.
+15. Reactions: `ci_failed` never fires under `ci: none` and warns at load (m4-35); `changes_requested` sends and escalates once per round (m4-36); `approved_green` notifies once per head (m4-37).
+16. Found in the exit: generated files must not depend on the workspace path; a permission denial fails the attempt (bl-267); one off commands need the tracker token (bl-264); secrets reach agents and hooks until the M5 sandbox (m4-43, the M5 decisions above).
+17. Testing: the iOS provider was proven on Sigma; Android stayed out of the exit (m4-43).
+18. Testing, the exit: a peak of 0.1691 of a 1,000,000 token window; touches counted by hand beside the ledger, `loop report` saying 1 of 4 delivered with zero touches (m4-43, bl-64).
+19. Testing: `ask`, `loop answer`, the per tracker limit and the resource tools on Codex are proven by tests only (m4-44, bl-270).
+20. Out of scope, bl-28: clone workspaces were built as an opt in, `workspace.git: clone` (ADR 0002); the default is bl-245, the sandbox stays in M5.
+21. Out of scope, runners: `runner-acp` was pulled ahead in `.loop/specs/gemini-support.md` (PLAN 17).
+
+No M4 issue was added mid milestone or canceled: m4-46 to m4-54 were split off in m3-29 and the spec already lists them.

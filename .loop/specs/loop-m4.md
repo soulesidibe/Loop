@@ -27,7 +27,7 @@ M4 makes Loop the harness I run every day, in parallel, and retires the manager 
 - **The human side:** a terminal channel that tells me when a run needs me, `ask` for human questions, `loop send-back`, and `file_followup`.
 - **Reactions** to merge conflicts, red CI, review comments and approved green pull requests.
 - **Observability:** `loop report`, `loop query`, `loop replay` and an OpenTelemetry export plugin.
-- **The exit:** a wave on the pilot app with two code issues in parallel and a non code issue, with GitHub and `files` trackers active at once, then the manager skill retired with its remaining gaps named.
+- **The exit:** a wave on the pilot app with two code issues in parallel and a non code issue, with GitHub and `files` trackers active at once, then the manager skill retired with its remaining gaps named. Changed in M4: the wave ran on Sigma, since the pilot app's release was in progress (m4-43).
 
 ## User stories
 
@@ -35,10 +35,10 @@ M4 makes Loop the harness I run every day, in parallel, and retires the manager 
 
 101. As a Loop user, I want the default hard limit to keep every session under 25 percent of its window, so that the rule holds without a setting in each workflow.
 102. As a Loop user, I want a session whose model has no window in `context.windows` recorded as an event and shown in `loop status`, and the pinned Codex model's window shipped, so that a session never runs unlimited in silence.
-103. As a Loop user, I want a background wake (a subagent or a long run reporting back) never counted as a turn, so that `agent.max_turns` counts work, not wakes.
+103. As a Loop user, I want a background wake (a subagent or a long run reporting back) never counted as a turn, so that `agent.max_turns` counts work, not wakes. Changed in M4: a wake turn is a turn that reads the notification of a background task run that an earlier turn of the same session started (bl-170, option E); a subagent's own lines read while idle no longer mark a wake (m4-03, bl-122).
 104. As a Loop user, I want the usage of a wake that ends after the stop grace counted in spend, so that a rotation or a stop never loses tokens.
 105. As a Loop user, I want the auto merge `ci` condition to follow the kind's `ci` setting, with green under `ci: none` meaning the merge check passed, so that safe changes merge on their own while Actions is unavailable.
-106. As a Loop user, I want a merge risk reviewer for Codex results, run outside my own checkout, so that a Codex result can auto merge like a Claude Code one.
+106. As a Loop user, I want a merge risk reviewer for Codex results, run outside my own checkout, so that a Codex result can auto merge like a Claude Code one. Changed in M4: the model named in `risk.reviewer` picks the reviewer's runtime, Claude Code by default, Codex for a Codex model (bl-214) and `agy` for a `gemini-` model (bl-205).
 107. As a Loop user, I want a CI run that GitHub refused to start (billing, no step) read as not started, not red, so that a billing problem never sends verified work back as broken.
 108. As a Loop user, I want a lost network read as the runner being unavailable, using no attempt, so that a dropped connection or a sleep never parks an issue.
 109. As a Loop user, I want my machine kept awake while attempts run, so that an idle sleep never fails an attempt.
@@ -65,7 +65,7 @@ M4 makes Loop the harness I run every day, in parallel, and retires the manager 
 
 122. As a Loop user, I want devices declared under `resources:` and granted to agents through `request_resource` and `release_resource` in queue order, with locks in the store, so that two agents never share a device.
 123. As a Loop user, I want resource limits enforced, a read only check run after each release, and a check able to hold a resource, so that a device comes back as it was lent and two checks never share a simulator.
-124. As a Loop user, I want an iOS simulator provider, so that two issues of the pilot app verify in parallel, each on its own simulator.
+124. As a Loop user, I want an iOS simulator provider, so that two issues of the pilot app verify in parallel, each on its own simulator. Changed in M4: proven on Sigma, not the pilot app (m4-43).
 125. As a Loop user, I want an Android provider that boots a configured AVD when no device is connected, so that Android work needs no device on my desk.
 
 ### The human side
@@ -73,14 +73,14 @@ M4 makes Loop the harness I run every day, in parallel, and retires the manager 
 126. As a Loop user, I want `loop approve` to say what actually happens next for the issue, so that its message never contradicts the outcome.
 127. As a Loop user, I want to be told in the terminal and through a hook when a run needs me (a park, an approval, a question), so that I do not have to watch `loop status`.
 128. As an agent, I want `ask` for a question only a human can answer, so that my issue waits as `Waiting(ask)` and resumes with the answer from `loop answer`.
-129. As a Loop user, I want `loop send-back <issue>` with a reason, taking no attempt slot, so that work I reject returns to its agent with my words.
+129. As a Loop user, I want `loop send-back <issue>` with a reason, taking no attempt slot, so that work I reject returns to its agent with my words. Changed in M4: the next prompt carries the reason as `loop.verify_findings` and `loop.retry_kind` = `sent_back` (m4-32, bl-221).
 130. As an agent, I want `file_followup` to create a follow up issue in the parent's tracker, needing triage, so that findings outside my issue are not lost.
 
 ### Reactions
 
 131. As a Loop user, I want a delivered pull request that conflicts with main sent back to its agent, so that conflicts are fixed without me.
 132. As a Loop user, I want a red CI on a delivered pull request sent back to its agent, a set number of times, so that CI failures are fixed without me.
-133. As a Loop user, I want review comments that request changes sent back to the agent, and escalated to me after a set time, so that review loops do not stall.
+133. As a Loop user, I want review comments that request changes sent back to the agent, and escalated to me after a set time, so that review loops do not stall. Changed in M4: only reviews by trusted author associations count, by default `OWNER`, `MEMBER` and `COLLABORATOR` (`reactions.changes_requested.trusted_associations`, m4-36).
 134. As a Loop user, I want to be told when a pull request is approved and green, so that I merge it without polling GitHub.
 
 ### Observability
@@ -93,14 +93,14 @@ M4 makes Loop the harness I run every day, in parallel, and retires the manager 
 
 ### Exit
 
-140. As a Loop user, I want a wave of at least 3 code issues on the pilot app, 2 in parallel, plus one content or research issue, delivered through Loop in one wave with GitHub and `files` trackers active at once and any restart recorded, so that parallel production is proven on real work.
-141. As a Loop user, I want the manager skill retired, with every row of PLAN section 16 either covered by Loop or named as a gap, so that I stop maintaining the skill.
+140. As a Loop user, I want a wave of at least 3 code issues on the pilot app, 2 in parallel, plus one content or research issue, delivered through Loop in one wave with GitHub and `files` trackers active at once and any restart recorded, so that parallel production is proven on real work. Changed in M4: the wave ran on Sigma, an iOS and Android app with its issues on GitHub, instead of the pilot app, whose release was in progress. One run, never restarted, delivered three code issues and one research issue (m4-43).
+141. As a Loop user, I want the manager skill retired, with every row of PLAN section 16 either covered by Loop or named as a gap, so that I stop maintaining the skill. Changed in M4: retired on 2026-11-27, with `loop doctor` and the M6 rows as gaps. `ask`, `loop answer`, the per tracker limit and the resource tools on Codex count as proven by tests only, to prove in the first M5 run (bl-270), and the check that the issue skills never move the issue is handed to bl-272 (m4-44).
 
 ## Implementation decisions
 
 ### Decisions taken in m3-29
 
-- **The exit app is the pilot app.** The iOS simulator provider (m4-27) gates the exit. The Android provider (m4-28) is in scope but does not gate it.
+- **The exit app is the pilot app.** The iOS simulator provider (m4-27) gates the exit. The Android provider (m4-28) is in scope but does not gate it. Changed in M4: the exit ran on Sigma with the same setup (GitHub tracker, Loop's worktree hooks, a check claiming a simulator), since the pilot app's release was in progress, and the owner accepted it as the exit wave (m4-43).
 - **A minimal bl-10 area lock lands in M4** (m4-17), since the exit runs two code issues in parallel on one app.
 - **`ask` is built** (m4-31, m4-52). `loop doctor` and the PLAN section 16 rows that belong to M6 (expert agents, the triage agent, brief extras through lessons, triage scope estimates) are recorded as gaps at retirement (m4-44), not built.
 - **`loop report` prints human touches as not reliable** until bl-64 is answered: the approve touch is rarely counted today.
@@ -108,7 +108,7 @@ M4 makes Loop the harness I run every day, in parallel, and retires the manager 
 - **The 25 percent claim of the exit is for main sessions.** Subagents run in windows Loop does not measure (the subagent gap of M3).
 - **Default limits:** `hard_limit` 0.21, `soft_limit` stays 0.20. On a 475,000 window the 4,750 token gap means some Codex rotations become hard interrupts; that cost is accepted (m4-02).
 - **`agent.max_wake_turns`,** default 30, caps wake turns and ends the attempt with exit reason `max_wake_turns` (m4-03).
-- **The Codex result is reviewed through the claude-code command** (`runners.claude-code.command`), bl-145's first option (m4-06).
+- **The Codex result is reviewed through the claude-code command** (`runners.claude-code.command`), bl-145's first option (m4-06). Changed in M4: since bl-214 and bl-205 the model named in `risk.reviewer` picks the runtime. A Codex model gets a read only Codex reviewer, a `gemini-` model a read only `agy` reviewer, every other name the Claude Code one.
 - **A refused CI run is `not_started`:** under `ci: actions` it ends in `delivery_failed` and an unapproved `Waiting(approval)`, never counts as no run, and no reaction treats it as red (m4-07).
 - **`unstable` passes the `ci` condition under `ci: none`;** `dirty`, `blocked`, `behind` and unknown mergeability still fail it (m4-05).
 - **Sleep rule, option (a):** a failure after a sleep surfaces as a network error, so it takes no slot. No sleep detection is built (m4-08).
@@ -128,7 +128,7 @@ M4 makes Loop the harness I run every day, in parallel, and retires the manager 
 - **Reactions watch only waits that hold a pull request.** An issue delivered to a handoff state with no wait is not watched in M4 (m4-34).
 - **Verification is extracted to `loop.core.verify`** in its own issue (m4-54), so `loop replay --verify` (m4-41) edits no orchestrator code.
 - **The exporter is an `EventSink` behind the run's `Redactor`,** loaded through an `EventExporterProvider` (m4-42).
-- **The exit is one wave,** with any restart of `loop run` recorded (m4-43).
+- **The exit is one wave,** with any restart of `loop run` recorded (m4-43). Held: one run of build 56976ce, never restarted.
 - **The usage script row is covered** by the ledger and `loop show --cost`, per attempt; Codex shows no cost (m4-44).
 
 ### Rules for every M4 issue
@@ -158,6 +158,7 @@ M4 makes Loop the harness I run every day, in parallel, and retires the manager 
 - A network loss is `runner_unavailable` and takes no `max_attempts` slot; the next attempt starts fresh with the session brief (m4-08, bl-123, bl-156). m4-46 resumes the Claude Code session when the last occupancy was below the soft limit.
 - `loop run` holds an idle sleep assertion while attempts run (m4-09, bl-156).
 - `loop drain` is a new run state: running attempts finish, nothing new starts, the run stops (bl-110).
+- Added in M4: `agent.max_concurrent_verifications`, optional, caps the verification and merge check builds of a project, first in first out, unset meaning `agent.max_concurrent_agents` (bl-188).
 
 ### Several trackers (m4-11 to m4-17, m4-47 to m4-49)
 
@@ -168,6 +169,7 @@ M4 makes Loop the harness I run every day, in parallel, and retires the manager 
 - A per tracker concurrency limit beside the spec's limits; the requeue of waiting retries is quieter (m4-15, bl-77).
 - Cross tracker blockers are a body line, `Blocked by <tracker>:<id>`; within a tracker, native `blocked_by` stays (m4-16).
 - The area lock is an optional `area` field. A candidate whose area is busy is skipped with `candidate_skipped reason=area_busy`, no model involved (m4-17). Base fetches get a mutex per repository, so two verifications at once never degrade one to `diff_base_unpinned` (m4-49, bl-67, the fetch part).
+- Found in M4: a kind matching an extra tracker cannot move its issues to that tracker's terminal state, since `move_to` is checked against the primary's states (bl-266, from m4-43).
 
 ### Kinds (m4-18 to m4-23)
 
@@ -175,7 +177,7 @@ M4 makes Loop the harness I run every day, in parallel, and retires the manager 
 - Context sources per kind (PLAN 8.6) are pointers in the prompt's context sources slot, read on demand; a kind may set its own `template` (m4-19).
 - Verification and the workspace fingerprint work on a `workspace: plain` kind (`tree:<hash>`), before any non code kind; preflight refuses git only settings on it (m4-20).
 - `content`: `deliverable.files` on a worktree, checked by `command` checks the workflow declares (banned words and dashes, length, markdown lint), not new check types (m4-21). Delivered by `delivery.attach`, `human` by default (m4-22).
-- `research`: `populate: empty`, a `deliverable.report` posted on the issue, required sections present and sources reachable (m4-23).
+- `research`: `populate: empty`, a `deliverable.report` posted on the issue, required sections present and sources reachable (m4-23). Changed in M4: the sections are `kinds.<kind>.verify.require_sections`, and sources reachable is a documented `command` check, `docs/examples/research/check-sources.sh`, not built in, since no new check type lands in M4.
 
 ### Resources (m4-24 to m4-28, m4-50, m4-51)
 
@@ -184,19 +186,23 @@ M4 makes Loop the harness I run every day, in parallel, and retires the manager 
 - `request_resource` and `release_resource` reach both runners, over MCP for Claude Code (m4-25) and as client tools for Codex (m4-51).
 - Limits: at most 2 Android devices and emulators together, at most 2 self managed iOS simulators. On release the read only check runs, and a failure asks the agent to restore; a resource still dirty is never lent. A `command` check may hold a resource (m4-26).
 - Providers implement `ResourceProvider`. The Android one boots a configured AVD when no device is connected (m4-27, m4-28).
+- Added in M4: a resource whose read only check or provider check fails is marked dirty in the machine store and never lent until it is clean, and `resource_queued` says why a request waits, `held`, `limit` or `dirty` (m4-26).
+- Added in M4: provider calls never hold each other up, with a mutex per lock instead of one for all and a core timeout of 10 minutes on every `prepare`, `release` and read only check (bl-208, made in m4-28). The iOS provider's `prepare_timeout_seconds`, 300 by default, bounds its boot (m4-27); the exit wave raised it to 900 (m4-43).
+- Found in the exit: a failed prepare parks the check's issue at once, with no retry and no try on another resource (bl-268), and a queued request keeps its place after its holder got another resource, so one attempt can hold two (bl-269).
 
 ### The human side (m4-29 to m4-33, m4-52, m4-53)
 
 - `loop approve` messages match the outcome (m4-29, bl-69, bl-66), a CLI text fix with no channel.
 - `HumanChannel` with `terminal` as its core implementation, plus a notification hook, fired on a park, an approval wait and a question (m4-30, bl-109).
 - `ask` in M4 is for human questions only: it returns `pending` and the issue waits as `Waiting(ask)` (m4-31). `loop answer` ends the wait and the next attempt carries the answer (m4-52). Routing engineering and design questions to manager agents is M6.
-- `loop send-back` ends a `Waiting(approval)` and requeues the issue with the human's reason (m4-32, bl-99). bl-89's `loop reject` is the same command.
+- `loop send-back` ends a `Waiting(approval)` and requeues the issue with the human's reason (m4-32, bl-99). bl-89's `loop reject` is the same command. Changed in M4: the next prompt has `loop.retry_kind` = `sent_back` and the reason as `loop.verify_findings` (m4-32, bl-221).
 - `file_followup` reaches both runners and creates the issue in the parent's tracker unless the kind says otherwise (m4-33). The `files` tracker's label write becomes safe for front matter in its own issue (m4-53, bl-16).
 
 ### Reactions (m4-34 to m4-37)
 
-- Configured under `reactions:` as in PLAN 6.7. Each reaction resumes the issue's workspace with a continuation turn, `loop.retry_kind` = `reaction`, then verifies again. A reaction attempt takes a `max_attempts` slot.
+- Configured under `reactions:` as in PLAN 6.7. Each reaction resumes the issue's workspace with a continuation turn, `loop.retry_kind` = `reaction`, then verifies again. A reaction attempt takes a `max_attempts` slot. Changed in M4: `send_to_agent` ends the approval wait and schedules a retry in the issue's kept workspace through the retry coordinator, with its backoff, and the reaction that takes the last slot parks the issue instead of sending it back (m4-34). The bound survives a restart, derived from the stored events (bl-224). `notify_human` is the other action. The glossary term is Reaction (`CONTEXT.md`).
 - `ci_failed` is proven on recorded Actions answers (bl-89) and never fires on `not_started`. Under `ci: none`, `approved_green` reads green as the merge check passed.
+- Changed in M4: under `ci: none` `ci_failed` never fires, and the workflow loads with a warning saying so (m4-35). `changes_requested` counts only trusted reviews, sends each round of change requests once and tells the human once per round past `escalate_after` (m4-36). `approved_green` tells the human once per head (m4-37).
 
 ### Observability (m4-38 to m4-42, m4-54)
 
@@ -208,6 +214,8 @@ M4 makes Loop the harness I run every day, in parallel, and retires the manager 
 ### Exit and retirement (m4-43 to m4-45)
 
 - m4-43, the exit run, is a human issue, blocked by m4-26, m4-27 and m4-49. m4-44 retires the manager skill, naming the PLAN 16 rows that gate retirement and recording `loop doctor` and the M6 rows as gaps; until M6 the issue skill's own subagents play the expert role. m4-45 writes the M5 issues, carries the open M4 issues and records the per kind runner gap.
+- Changed in M4: m4-43 ran on Sigma instead of the pilot app (above). m4-44 marked the global manager skill retired on 2026-11-27 and kept its files; the project copies are bl-271. Its criterion on the issue skills is not met, since nothing in the Loop variant forbids `move`, and is handed to bl-272. The rows proven by tests only go to the first M5 run (bl-270).
+- Found in the exit (m4-43): generated files must not depend on the workspace path (fixed in Sigma); a permission denial ends a finished turn as `turn_input_required` and fails the attempt (bl-267); one off commands need the tracker token (bl-264); host secrets and the tracker token can reach agents and hooks until the M5 sandbox, recorded in m4-43 and answered by the M5 decisions in m4-45.
 
 ### Slicing
 
@@ -220,19 +228,20 @@ M4 makes Loop the harness I run every day, in parallel, and retires the manager 
 - **New contracts:** `HumanChannel` and `ResourceProvider` get contract tests next to `TrackerAdapterContract` and `AgentRunnerContract`.
 - **Several trackers** are tested with a `files` tracker and a GitHub tracker on recorded responses in one temporary project: namespaced ids, a failing tracker, routed writes and cross tracker blockers.
 - **The fake runner** gains scripted `ask`, `request_resource`, `release_resource` and `file_followup` calls and scripted wakes, so the waits, grants and turn counting run without models.
-- **Resource providers** are tested against fake `xcrun simctl` and `adb` scripts, then proven on the pilot app in the exit.
+- **Resource providers** are tested against fake `xcrun simctl` and `adb` scripts, then proven on the pilot app in the exit. Changed in M4: the iOS provider was proven on Sigma; Android stayed out of the exit (m4-43).
 - **CI and reactions** are proven on recorded Actions answers while Actions is refused, including run 43779352010.
 - **Non code kinds** are tested on workspaces with and without git, checking the `tree:` fingerprint and the delivery to the issue.
-- **The exit** (m4-43) is the real proof: traces of the wave, the main session peaks and the human touches, recorded in the issue.
+- **The exit** (m4-43) is the real proof: traces of the wave, the main session peaks and the human touches, recorded in the issue. Done on Sigma: the main sessions peaked at 0.1691 of a 1,000,000 token window, and the human touches were counted by hand beside the ledger, which says 1 of 4 delivered with zero touches (bl-64 still applies).
+- **Changed in M4:** `ask`, `loop answer`, the per tracker limit and the resource tools on Codex are proven by tests only, not in a real run of M4 (m4-44, bl-270).
 
 ## Out of scope
 
 - Manager agents (experts, triage, reviewer, retro), `ask` answered by agents, triage scope estimates and lessons: M6.
 - `loop doctor`: recorded as a gap at retirement.
-- Permissions hardening (a sandbox for every worker, a worker token that cannot merge, an audit after every attempt, bl-28): M5.
+- Permissions hardening (a sandbox for every worker, a worker token that cannot merge, an audit after every attempt, bl-28): M5. Changed in M4: bl-28's clone workspaces were built as an opt in, `workspace.git: clone`, so a workspace owns its refs, config and hooks (ADR 0002); making them the default is bl-245, and the sandbox, the worker token and the audit stay M5.
 - Human channels beyond the terminal (Telegram, Slack, HTTP) and the `ops` kind.
 - New check types (bl-14, bl-116, bl-118): after M4.
-- Linear, Jira and other trackers and runners: M7. Cross tracker work is proven with `files` and GitHub.
+- Linear, Jira and other trackers and runners: M7. Cross tracker work is proven with `files` and GitHub. Changed in M4: `runner-acp` was pulled ahead in its own spec, `.loop/specs/gemini-support.md`, to serve Gemini models through `agy` (PLAN 17).
 - Out of process plugins.
 - bl-151, the resume question beyond m4-46.
 - Remote mode: M8.
@@ -240,6 +249,6 @@ M4 makes Loop the harness I run every day, in parallel, and retires the manager 
 ## Further notes
 
 - GitHub Actions refused every job for billing from 2026-11-16 until the repository went public, which made its minutes free. Issues written in that window prove CI behavior on recorded answers. m4-05 and m4-07 still matter for any repository whose Actions are refused or unused.
-- Workloads: Loop's own backlog in Loop mode on the `files` tracker, and the pilot app on GitHub for the exit.
+- Workloads: Loop's own backlog in Loop mode on the `files` tracker, and the pilot app on GitHub for the exit. Changed in M4: Sigma on GitHub, beside a `files` tracker, for the exit (m4-43).
 - The full design lives in PLAN sections 6.1, 6.2, 6.5 to 6.10, 8.6, 10.4, 12 and 16; the M3 lessons in `docs/spec-decisions.md` (Codex exit run, Claude Code exit runs) and in [Loop, M1 to M3](loop-m1-to-m3.md).
 - M4 issues are written in m3-29 from the approved outline and its review; M5 issues at the end of M4 (m4-45).
