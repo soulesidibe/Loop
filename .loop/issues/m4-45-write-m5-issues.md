@@ -73,3 +73,22 @@ Like m3-29: the M5 issues are written from the plan and from what M4 taught, aft
 21. Out of scope, runners: `runner-acp` was pulled ahead in `.loop/specs/gemini-support.md` (PLAN 17).
 
 No M4 issue was added mid milestone or canceled: m4-46 to m4-54 were split off in m3-29 and the spec already lists them.
+
+2026-11-28 soule: the M5 spec draft is in `.loop/specs/loop-m5.md` (stories 142 to 165, label `needs-triage` until the Fable review of the spec and the issues). The owner settled the drafter's 16 open choices one by one:
+
+1. Merging under branch protection needs no second token: agents hold no credential, the worker token cannot push to the base or lift the ruleset.
+2. No direct push to `main` for anyone once the ruleset is on, no bypass list; every change, tracker notes and issue files too, goes through a pull request.
+3. An audit violation parks the issue at once, no retry.
+4. The audit also runs on attempts that end without a result.
+5. Preflight refuses a workflow with no `sandbox:` block; `kind: none` is the explicit way out.
+6. Reads: the system folders readable, the home folder unreadable but for an allow list, the secret paths unreadable even inside it.
+7. `loop tool mcp` reaches `loop run` over a Unix socket broker, with the rules of the MCP security guidance (short socket path, one exact Seatbelt rule, a token per attempt, every request treated as hostile).
+8. The sandbox requires clone workspaces, and clone becomes the default (bl-245 item 2).
+9. Checks, holdouts and hooks run in their own profiles; Loop's own host side git stays outside with its pins.
+10. The network allow list goes through a local proxy, in M5 as the last slice before the audit's network part, allowed to slip without blocking the exit.
+11. Approvals cover a network host or a command from `approvals.commands`, run by Loop, answered with `loop approve` or `loop deny --request`, at most 3 per attempt, `approvals.timeout_minutes`.
+12. New config names: `keychain:<service>`, `agent.env_allow`, `hooks.env_allow`, `sandbox.*`, `approvals.*`, `allow_classic_token`, `guard.model`.
+13. Preflight accepts `github_pat_` and `ghs_` tokens only, unless `allow_classic_token: true`.
+14. The holdout exit seed runs on Codex too, closing bl-134.
+15. The spec stays `needs-triage` until the Fable review passes and the issues are written.
+16. PLAN 17 moves the guard model from M9 to M5, with a "moved to M5 (m4-45)" note on M9.
