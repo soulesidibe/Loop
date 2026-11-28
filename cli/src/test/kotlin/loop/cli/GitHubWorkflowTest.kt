@@ -35,7 +35,7 @@ class GitHubWorkflowTest {
     private val token = "ghp_bl23TokenValue0123456789abcdefghij"
 
     private fun write(
-        provider: String = "    repo: Soules-Studio-Ltd/loop-playground\n    token: \$GITHUB_TOKEN\n",
+        provider: String = "    repo: owner/loop-playground\n    token: \$GITHUB_TOKEN\n",
         states: String = "",
         requiredLabels: String = "  required_labels: [ready-for-agent]\n",
     ): Path =
@@ -78,7 +78,7 @@ class GitHubWorkflowTest {
 
         assertEquals("github", workflow.trackerKind)
         val settings = assertIs<GitHubTrackerSettings>(workflow.trackerSettings)
-        assertEquals("Soules-Studio-Ltd", settings.owner)
+        assertEquals("owner", settings.owner)
         assertEquals("loop-playground", settings.repo)
         assertEquals(token, settings.token)
         assertEquals("GITHUB_TOKEN", settings.tokenEnvName)
@@ -311,11 +311,11 @@ class GitHubWorkflowTest {
     @Test
     fun `a reload that changes the github settings warns that the running tracker keeps the old ones`() {
         val previous = load(write()).getOrThrow()
-        val reloaded = load(write(provider = "    repo: Soules-Studio-Ltd/example-app\n    token: \$GITHUB_TOKEN\n")).getOrThrow()
+        val reloaded = load(write(provider = "    repo: owner/example-app\n    token: \$GITHUB_TOKEN\n")).getOrThrow()
 
         assertEquals(
             listOf(
-                "tracker.provider changed to Soules-Studio-Ltd/example-app, Loop keeps reading Soules-Studio-Ltd/loop-playground until loop run is restarted",
+                "tracker.provider changed to owner/example-app, Loop keeps reading owner/loop-playground until loop run is restarted",
             ),
             reloadWarnings(previous, reloaded, mapOf("GITHUB_TOKEN" to token)),
         )
@@ -331,7 +331,7 @@ class GitHubWorkflowTest {
 
         assertEquals(
             listOf(
-                "tracker.kind changed to files, Loop keeps reading the github tracker of Soules-Studio-Ltd/loop-playground until loop run is restarted",
+                "tracker.kind changed to files, Loop keeps reading the github tracker of owner/loop-playground until loop run is restarted",
                 // m3-05: the github keys left under tracker.provider are unknown to the files tracker.
                 "tracker.provider.repo is not a key of the files tracker, Loop ignores it",
                 "tracker.provider.token is not a key of the files tracker, Loop ignores it",

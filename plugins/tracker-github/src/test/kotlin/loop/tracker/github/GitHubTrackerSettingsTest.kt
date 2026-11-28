@@ -24,9 +24,9 @@ class GitHubTrackerSettingsTest {
 
     @Test
     fun `repo and a literal token give the settings with the defaults`() {
-        val settings = parse(mapOf("repo" to "Soules-Studio-Ltd/example-app", "token" to token)).getOrThrow()
+        val settings = parse(mapOf("repo" to "owner/example-app", "token" to token)).getOrThrow()
 
-        assertEquals("Soules-Studio-Ltd", settings.owner)
+        assertEquals("owner", settings.owner)
         assertEquals("example-app", settings.repo)
         assertEquals(token, settings.token)
         assertEquals(URI("https://api.github.com"), settings.apiUrl)

@@ -9,8 +9,8 @@ import kotlin.time.Duration.Companion.minutes
 /**
  * m3-25, story 96, spec 17.8 items 1 to 4: the GitHub tracker against the real playground repository, the `github`
  * target of the real integration profile (see [RealIntegration] and `docs/spec-decisions.md`). Skipped unless
- * `LOOP_REAL_INTEGRATION` names `github`; then it fails when `LOOP_PLAYGROUND_GITHUB_TOKEN` is missing, or when a
- * tracker call does not do what it should.
+ * `LOOP_REAL_INTEGRATION` names `github`; then it fails when `LOOP_REAL_GITHUB_REPO` or
+ * `LOOP_PLAYGROUND_GITHUB_TOKEN` is missing, or when a tracker call does not do what it should.
  *
  * The run is isolated: a fresh [RealIntegration.runId] names two labels of its own and the one issue it creates. The
  * tracker is scoped to the first label, so it sees no other issue, and its required label is the second, `<id>-ready`,
@@ -30,7 +30,7 @@ class GitHubRealSmokeTest {
 
         val failure = runCatching { runBlocking { withTimeout(RUN_CAP) { run.exercise(ready) } } }.exceptionOrNull()
         val cleanup = runBlocking { run.cleanUp() }
-        println("m3-25 real github run $id on ${GitHubRealProfile.REPO}:\n" + run.steps.joinToString("\n") { "  $it" })
+        println("m3-25 real github run $id on ${settings.owner}/${settings.repo}:\n" + run.steps.joinToString("\n") { "  $it" })
 
         if (failure != null) {
             cleanup.forEach(failure::addSuppressed)

@@ -229,7 +229,7 @@ An issue that needs an edit to a protected path names it as a human step in its 
 
 ## GitHub playground
 
-[`Soules-Studio-Ltd/loop-playground`](https://github.com/Soules-Studio-Ltd/loop-playground) is a private test repository where Loop opens issues, labels, branches and pull requests without touching a real project (story 87, m2-01). It was set up on 2026-11-13.
+The playground, written `owner/loop-playground` here, is a private test repository where Loop opens issues, labels, branches and pull requests without touching a real project (story 87, m2-01). It was set up on 2026-11-13.
 
 - **Project**: a tiny Kotlin calculator with one test suite, `CalcTest`. Run it with `./gradlew test`. The test `divides by zero` is committed disabled, so `main` passes.
 - **No CI.** The playground has no workflow. Checks run locally in the workspace.
@@ -243,11 +243,11 @@ An issue that needs an edit to a protected path names it as a human step in its 
 
 Loop reaches the playground with a fine grained token held in the environment variable `LOOP_PLAYGROUND_GITHUB_TOKEN`.
 
-- Resource owner `Soules-Studio-Ltd`, repository access limited to `loop-playground`.
+- Resource owner: the playground's owner, repository access limited to `loop-playground`.
 - Permissions: issues, contents and pull requests read and write, checks read.
 - Export it from a shell file outside every repository, such as `~/.zshenv`. Never write the value in a file of any repository, `WORKFLOW.md` included: reference it as `token: $LOOP_PLAYGROUND_GITHUB_TOKEN`.
 - The name is not `GITHUB_TOKEN` on purpose: the `gh` CLI reads `GITHUB_TOKEN`, so every shell would switch to the narrow token.
-- The `github` target of the real integration profile (m3-25) reads it too. Its issues write permission is enough for the labels that test creates and deletes. See `docs/spec-decisions.md`, real integration profile.
+- The `github` target of the real integration profile (m3-25) reads it too, and reads the playground itself, as `owner/name`, from `LOOP_REAL_GITHUB_REPO`, which has no default: with the profile on and the variable unset, the test fails naming it. Its issues write permission is enough for the labels that test creates and deletes. See `docs/spec-decisions.md`, real integration profile.
 - A variable referenced as the tracker token is removed from the agent's environment (`secret_environment_names`, see [`PLAN.md`](PLAN.md)), so no Attempt sees it.
 
 ### A WORKFLOW.md for the playground
@@ -259,7 +259,7 @@ Since bl-23, `tracker.kind: github` selects the [`github` tracker](plugins/track
 tracker:
   kind: github
   provider:
-    repo: Soules-Studio-Ltd/loop-playground
+    repo: owner/loop-playground
     token: $LOOP_PLAYGROUND_GITHUB_TOKEN
   required_labels: [ready-for-agent]
 workspace:
